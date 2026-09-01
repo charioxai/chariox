@@ -6,6 +6,21 @@ pub struct GetRoomEnvironmentStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetRoomEnvironmentEventsRequest {
+    pub session_id: String,
+    pub cursor: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListRoomEnvironmentActionHistoryRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub before_sequence: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomEnvironmentViewportRequest {
     pub css_width: u32,
     pub css_height: u32,
@@ -35,4 +50,22 @@ pub struct UpdateRoomEnvironmentViewportRequest {
     pub session_id: String,
     pub expected_revision: u64,
     pub viewport: RoomEnvironmentViewportRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestRoomEnvironmentInputTakeoverRequest {
+    pub session_id: String,
+    pub target: crate::session::InputTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRoomEnvironmentInputRequest {
+    pub session_id: String,
+    pub target: crate::session::InputTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRoomEnvironmentActionRequest {
+    pub session_id: String,
+    pub action_id: String,
 }

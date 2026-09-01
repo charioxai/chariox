@@ -181,6 +181,17 @@ pnpm --filter @chariox/cli run multi-user-workflow:drill
 
 It launches a scoped-token relay plus a local kernel, connects three relay clients with different `user_id`s, joins them into one session through an invite, and verifies the live transport path for per-user agent visibility, workflow node ownership, cross-owner edge creation, unrelated edge-removal denial, stale workflow revision rejection, endpoint-owner invocation denial, incident-edge removal by node owner, and private node-instruction redaction. It uses `dev-stub` agents only, so it does not spend provider turns.
 
+## Room Environment M1 Drill
+
+Use this after changing the shared Room Environment contract, relay routing, actor reconciliation, event replay, or Action-history reads:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run room-environment:m1-drill
+```
+
+Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/room-environment-m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
+
 ## Hosted Cloud Relay Drill
 
 Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:

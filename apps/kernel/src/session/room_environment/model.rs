@@ -1,5 +1,5 @@
 use super::action::{EnvironmentAction, EnvironmentActionState, InputTarget};
-use super::ownership::InputOwnership;
+use super::ownership::{InputOwnership, PendingInputTakeover};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +149,8 @@ pub struct RoomEnvironmentSnapshot {
     pub focused_tab_id: Option<String>,
     pub actions: Vec<EnvironmentAction>,
     pub input_ownership: Vec<InputOwnership>,
+    #[serde(default)]
+    pub pending_input_takeovers: Vec<PendingInputTakeover>,
     pub event_cursor: u64,
 }
 
@@ -221,6 +223,14 @@ pub enum EnvironmentError {
         action_id: String,
         state: EnvironmentActionState,
     },
+    ActionNotRunning {
+        action_id: String,
+        state: EnvironmentActionState,
+    },
+    ActionCancellationForbidden {
+        actor_id: String,
+        action_id: String,
+    },
     ActorKindConflict {
         actor_id: String,
     },
@@ -247,6 +257,8 @@ impl EnvironmentError {
             Self::InvalidEventCapacity => "environment_invalid_event_capacity",
             Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",
             Self::ActionAlreadyTerminal { .. } => "environment_action_terminal",
+            Self::ActionNotRunning { .. } => "environment_action_not_running",
+            Self::ActionCancellationForbidden { .. } => "environment_action_cancellation_forbidden",
             Self::ActorKindConflict { .. } => "environment_actor_kind_conflict",
         }
     }

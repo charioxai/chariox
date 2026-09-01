@@ -2,6 +2,136 @@ use super::*;
 use crate::session::CanonicalViewport;
 
 #[test]
+fn room_environment_takeover_and_release_use_authenticated_actor_and_room_lane() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-environment-takeover",
+                "worktree-environment-takeover",
+            ),
+        ))
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::StartRoomEnvironment(
+            StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        ))
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("managed runtime should become ready");
+    });
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: session.id().to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        ))
+        .expect("authenticated Room member should take desktop input");
+    let LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+        outcome,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert_eq!(outcome, crate::session::TakeoverOutcome::Granted);
+    assert_eq!(environment.input_ownership.len(), 1);
+    assert_eq!(
+        environment.input_ownership[0].actor_id,
+        crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        environment.input_ownership[0].target,
+        crate::session::InputTarget::Desktop
+    );
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::ReleaseRoomEnvironmentInput(
+            ReleaseRoomEnvironmentInputRequest {
+                session_id: session.id().to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        ))
+        .expect("authenticated Room member should release desktop input");
+    let LocalDaemonResponse::RoomEnvironmentInputReleased { environment } = response else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert!(environment.input_ownership.is_empty());
+}
+
+#[test]
+fn room_environment_action_cancel_uses_authenticated_actor_and_stable_errors() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-cancel",
+                "worktree-environment-cancel",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+    });
+
+    let error = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                action_id: "action-missing".to_string(),
+            }),
+        )
+        .expect_err("an unknown Action should not be cancelled");
+    assert!(matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "environment.action.cancel",
+            message,
+        } if message.starts_with("environment_unknown_action:")
+    ));
+}
+
+#[test]
 fn room_environment_reconciles_human_and_agent_presence() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
@@ -135,6 +265,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
 
     harness
         .dispatch(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            session_id: session.id().to_string(),
             agent_id: spawned.id().to_string(),
         }))
         .expect("agent should be destroyed");
@@ -569,6 +700,134 @@ fn room_environment_state_crosses_the_router_boundary() {
 }
 
 #[test]
+fn room_environment_event_replay_crosses_the_router_boundary() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-environment-events",
+                "worktree-environment-events",
+            ),
+        ))
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        let state = app.session_state_store();
+        state
+            .create_room_environment(
+                session.id(),
+                "environment-1",
+                CanonicalViewport::new(1280, 800, 1, 1280, 800).expect("viewport should be valid"),
+            )
+            .expect("Room should acquire an Environment");
+        state
+            .start_room_environment(
+                session.id(),
+                CanonicalViewport::new(1280, 800, 1, 1280, 800).expect("viewport should be valid"),
+            )
+            .expect("Room Environment should start");
+    });
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetRoomEnvironmentEvents(
+            GetRoomEnvironmentEventsRequest {
+                session_id: session.id().to_string(),
+                cursor: 0,
+            },
+        ))
+        .expect("Room Environment events should be projected through the router");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::RoomEnvironmentEvents {
+            replay: crate::session::EnvironmentReplay::Events {
+                events,
+                next_cursor,
+            }
+        } if !events.is_empty()
+            && events.windows(2).all(|pair| pair[0].event_id + 1 == pair[1].event_id)
+            && next_cursor == events.last().unwrap().event_id
+    ));
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetRoomEnvironmentEvents(
+            GetRoomEnvironmentEventsRequest {
+                session_id: session.id().to_string(),
+                cursor: u64::MAX,
+            },
+        ))
+        .expect("a replay gap should return the authoritative Room Environment snapshot");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::RoomEnvironmentEvents {
+            replay: crate::session::EnvironmentReplay::SnapshotRequired { snapshot }
+        } if snapshot.session_id == session.id()
+            && snapshot.environment_id == "environment-1"
+    ));
+}
+
+#[test]
+fn room_environment_action_history_crosses_the_authenticated_read_boundary() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-history",
+                "worktree-environment-history",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .create_room_environment(
+                session.id(),
+                "environment-1",
+                CanonicalViewport::new(1280, 800, 1, 1280, 800).expect("viewport should be valid"),
+            )
+            .expect("Room should acquire an Environment");
+    });
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+                crate::local::ListRoomEnvironmentActionHistoryRequest {
+                    session_id: session.id().to_string(),
+                    before_sequence: None,
+                    limit: Some(25),
+                },
+            ),
+        )
+        .expect("Room members should list Environment Action history");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::RoomEnvironmentActionHistoryListed { page }
+            if page.actions.is_empty() && page.next_before_sequence.is_none()
+    ));
+
+    let error = harness
+        .dispatch_as_user(
+            "outsider-1",
+            LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+                crate::local::ListRoomEnvironmentActionHistoryRequest {
+                    session_id: session.id().to_string(),
+                    before_sequence: None,
+                    limit: Some(25),
+                },
+            ),
+        )
+        .expect_err("an outsider must not list Environment Action history");
+    assert!(matches!(error, DaemonError::SessionAccessDenied { .. }));
+}
+
+#[test]
 fn room_environment_state_requires_room_membership() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -593,6 +852,17 @@ fn room_environment_state_requires_room_membership() {
             }),
         )
         .expect_err("an outsider must not read the Room Environment");
+    assert!(matches!(error, DaemonError::SessionAccessDenied { .. }));
+
+    let error = harness
+        .dispatch_as_user(
+            "outsider-1",
+            LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
+                session_id: session.id().to_string(),
+                cursor: 0,
+            }),
+        )
+        .expect_err("an outsider must not replay Room Environment events");
     assert!(matches!(error, DaemonError::SessionAccessDenied { .. }));
 }
 
@@ -636,6 +906,20 @@ fn room_environment_lifecycle_requires_room_membership() {
         }),
         LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
             session_id: session.id().to_string(),
+        }),
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: session.id().to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        ),
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+            session_id: session.id().to_string(),
+            target: crate::session::InputTarget::Desktop,
+        }),
+        LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+            session_id: session.id().to_string(),
+            action_id: "action-1".to_string(),
         }),
     ] {
         let error = harness

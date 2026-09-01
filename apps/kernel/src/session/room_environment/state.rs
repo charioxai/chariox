@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use super::action::{
-    ActionAdmission, EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal,
-    InputTarget,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentActionHistoryPage,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
 };
-use super::action_ledger::EnvironmentActionLedger;
+use super::action_ledger::{
+    ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
+};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
 use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
@@ -14,6 +16,9 @@ use super::model::{
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
+
+const DEFAULT_ACTION_QUEUE_CAPACITY: usize = 128;
+const MAX_ACTION_HISTORY_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomEnvironment {
@@ -45,6 +50,22 @@ impl RoomEnvironment {
         viewport: CanonicalViewport,
         event_capacity: usize,
     ) -> Result<Self, EnvironmentError> {
+        Self::new_with_capacities(
+            session_id,
+            environment_id,
+            viewport,
+            event_capacity,
+            DEFAULT_ACTION_QUEUE_CAPACITY,
+        )
+    }
+
+    pub(crate) fn new_with_capacities(
+        session_id: impl Into<String>,
+        environment_id: impl Into<String>,
+        viewport: CanonicalViewport,
+        event_capacity: usize,
+        action_queue_capacity: usize,
+    ) -> Result<Self, EnvironmentError> {
         Ok(Self {
             session_id: session_id.into(),
             environment_id: environment_id.into(),
@@ -55,7 +76,7 @@ impl RoomEnvironment {
             health: default_component_health(),
             actors: BTreeMap::new(),
             tabs: TabRegistry::new(),
-            action_ledger: EnvironmentActionLedger::new(event_capacity),
+            action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -74,8 +95,20 @@ impl RoomEnvironment {
             focused_tab_id,
             actions: self.action_ledger.actions(),
             input_ownership: self.action_ledger.ownership(),
+            pending_input_takeovers: self.action_ledger.pending_takeovers(),
             event_cursor: self.event_log.cursor(),
         }
+    }
+
+    pub fn action_history(
+        &self,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> EnvironmentActionHistoryPage {
+        self.action_ledger.action_history(
+            before_sequence,
+            limit.clamp(1, MAX_ACTION_HISTORY_PAGE_SIZE),
+        )
     }
 
     pub fn transition_to(&mut self, next: EnvironmentLifecycle) -> Result<(), EnvironmentError> {
@@ -308,11 +341,14 @@ impl RoomEnvironment {
             &self.actors,
             &self.tabs,
         )?;
-        if let ActionAdmission::Accepted { action_id } = &admission {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id: action_id.clone(),
-                state: EnvironmentActionState::Running,
-            });
+        match &admission {
+            ActionAdmission::Accepted { action_id } => {
+                self.emit_action_changed(action_id, EnvironmentActionState::Running);
+            }
+            ActionAdmission::Queued { action_id, .. } => {
+                self.emit_action_changed(action_id, EnvironmentActionState::Queued);
+            }
+            _ => {}
         }
         Ok(admission)
     }
@@ -323,14 +359,91 @@ impl RoomEnvironment {
         terminal: EnvironmentActionTerminal,
     ) -> Result<(), EnvironmentError> {
         let effect = self.action_ledger.finish(action_id, terminal)?;
-        self.emit(EnvironmentEventKind::ActionChanged {
-            action_id: action_id.to_string(),
-            state: effect.state,
-        });
+        self.emit_action_changed(action_id, effect.state);
         if effect.ownership_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        for started_action_id in effect.started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
         Ok(())
+    }
+
+    pub fn cancel_action(
+        &mut self,
+        actor_id: &str,
+        action_id: &str,
+    ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        let ActionCancellationEffect {
+            outcome,
+            action_changed,
+            started_action_ids,
+        } = self
+            .action_ledger
+            .cancel_as_actor(actor_id, action_id, &self.actors)?;
+        if action_changed {
+            let state = match outcome {
+                ActionCancellationOutcome::Cancelled => EnvironmentActionState::Cancelled,
+                ActionCancellationOutcome::CancellationRequested => EnvironmentActionState::Running,
+                ActionCancellationOutcome::AlreadyTerminal { action_state } => action_state,
+            };
+            self.emit_action_changed(action_id, state);
+        }
+        for started_action_id in started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
+        Ok(outcome)
+    }
+
+    pub fn cancel_action_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        action_id: &str,
+    ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+        let mut actors = self.actors.clone();
+        if let Some(existing) = actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        actors.insert(actor.actor_id.clone(), actor.clone());
+        let mut action_ledger = self.action_ledger.clone();
+        let ActionCancellationEffect {
+            outcome,
+            action_changed,
+            started_action_ids,
+        } = action_ledger.cancel_as_actor(&actor.actor_id, action_id, &actors)?;
+        let actors_changed = actors != self.actors;
+        self.actors = actors;
+        self.action_ledger = action_ledger;
+        if actors_changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        if action_changed {
+            let state = match outcome {
+                ActionCancellationOutcome::Cancelled => EnvironmentActionState::Cancelled,
+                ActionCancellationOutcome::CancellationRequested => EnvironmentActionState::Running,
+                ActionCancellationOutcome::AlreadyTerminal { action_state } => action_state,
+            };
+            self.emit_action_changed(action_id, state);
+        }
+        for started_action_id in started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
+        Ok(outcome)
     }
 
     pub fn request_takeover(
@@ -338,12 +451,83 @@ impl RoomEnvironment {
         actor_id: &str,
         target: InputTarget,
     ) -> Result<TakeoverOutcome, EnvironmentError> {
-        let (outcome, ownership_changed) =
-            self.action_ledger
-                .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
-        if ownership_changed {
+        let ActionTakeoverEffect {
+            outcome,
+            input_state_changed,
+            cancelled_action_ids,
+            started_action_ids,
+            cancellation_requested_action_ids,
+        } = self
+            .action_ledger
+            .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
+        for action_id in cancelled_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Cancelled);
+        }
+        for action_id in started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        for action_id in cancellation_requested_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        self.action_ledger.compact_terminal_actions();
+        Ok(outcome)
+    }
+
+    pub fn request_takeover_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        target: InputTarget,
+    ) -> Result<TakeoverOutcome, EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+
+        let mut actors = self.actors.clone();
+        if let Some(existing) = actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        actors.insert(actor.actor_id.clone(), actor.clone());
+
+        let mut action_ledger = self.action_ledger.clone();
+        let ActionTakeoverEffect {
+            outcome,
+            cancelled_action_ids,
+            started_action_ids,
+            cancellation_requested_action_ids,
+            ..
+        } = action_ledger.request_takeover(&actor.actor_id, target, &actors, &self.tabs)?;
+        let actors_changed = actors != self.actors;
+        let input_state_changed = action_ledger != self.action_ledger;
+        self.actors = actors;
+        self.action_ledger = action_ledger;
+        if actors_changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        for action_id in cancelled_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Cancelled);
+        }
+        for action_id in started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        for action_id in cancellation_requested_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        if input_state_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+        self.action_ledger.compact_terminal_actions();
         Ok(outcome)
     }
 
@@ -412,11 +596,9 @@ impl RoomEnvironment {
         self.health = default_component_health();
         let failed_action_ids = self.action_ledger.invalidate_runtime();
         for action_id in failed_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Failed,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }
+        self.action_ledger.compact_terminal_actions();
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
@@ -426,6 +608,31 @@ impl RoomEnvironment {
     fn emit(&mut self, kind: EnvironmentEventKind) {
         self.event_log
             .push(&self.environment_id, self.runtime_generation, kind);
+    }
+
+    fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
+        let Some(action) = self.action_ledger.action(action_id) else {
+            debug_assert!(
+                false,
+                "Action change must reference an Action in the ledger"
+            );
+            return;
+        };
+        debug_assert_eq!(action.state, state);
+        let cancellation_requested = action.cancellation_requested;
+        let submitted_at_ms = action.submitted_at_ms;
+        let started_at_ms = action.started_at_ms;
+        let finished_at_ms = action.finished_at_ms;
+        let outcome = action.outcome;
+        self.emit(EnvironmentEventKind::ActionChanged {
+            action_id: action_id.to_string(),
+            state,
+            cancellation_requested,
+            submitted_at_ms,
+            started_at_ms,
+            finished_at_ms,
+            outcome,
+        });
     }
 }
 

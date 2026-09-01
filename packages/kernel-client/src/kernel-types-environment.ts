@@ -49,19 +49,48 @@ export type RoomEnvironmentInputTarget =
 
 export type RoomEnvironmentAction = {
   action_id: string
+  sequence: number
   idempotency_key: string | null
   actor_id: string
   runtime_generation: number
   mode: "browser" | "computer"
   kind: string
   targets: RoomEnvironmentInputTarget[]
-  state: "running" | "completed" | "failed" | "cancelled"
+  state: "queued" | "running" | "completed" | "failed" | "cancelled"
+  cancellation_requested: boolean
+  submitted_at_ms: number
+  started_at_ms: number | null
+  finished_at_ms: number | null
+  outcome: RoomEnvironmentActionOutcome | null
 }
+
+export type RoomEnvironmentActionOutcome =
+  | { status: "completed" }
+  | { status: "failed"; code: "controller_failure" | "process_lost" }
+  | {
+      status: "cancelled"
+      reason: "requested" | "human_takeover" | "controller_cancellation"
+    }
 
 export type RoomEnvironmentInputOwnership = {
   target: RoomEnvironmentInputTarget
   actor_id: string
 }
+
+export type RoomEnvironmentPendingInputTakeover = {
+  target: RoomEnvironmentInputTarget
+  human_actor_id: string
+  blocking_action_ids: string[]
+}
+
+export type RoomEnvironmentTakeoverOutcome =
+  | { state: "granted" }
+  | { state: "cancellation_required"; action_ids: string[] }
+
+export type RoomEnvironmentActionCancellationOutcome =
+  | { state: "cancelled" }
+  | { state: "cancellation_requested" }
+  | { state: "already_terminal"; action_state: RoomEnvironmentAction["state"] }
 
 export type RoomEnvironmentSnapshot = {
   session_id: string
@@ -75,8 +104,40 @@ export type RoomEnvironmentSnapshot = {
   focused_tab_id: string | null
   actions: RoomEnvironmentAction[]
   input_ownership: RoomEnvironmentInputOwnership[]
+  pending_input_takeovers: RoomEnvironmentPendingInputTakeover[]
   event_cursor: number
 }
+
+export type RoomEnvironmentEventKind =
+  | { LifecycleChanged: { lifecycle: RoomEnvironmentLifecycle } }
+  | "RuntimeInvalidated"
+  | "HealthChanged"
+  | "TabsChanged"
+  | { ViewportChanged: { revision: number } }
+  | "ActorsChanged"
+  | "InputOwnershipChanged"
+  | {
+      ActionChanged: {
+        action_id: string
+        state: RoomEnvironmentAction["state"]
+        cancellation_requested: boolean
+        submitted_at_ms: number
+        started_at_ms: number | null
+        finished_at_ms: number | null
+        outcome: RoomEnvironmentActionOutcome | null
+      }
+    }
+
+export type RoomEnvironmentEvent = {
+  event_id: number
+  environment_id: string
+  runtime_generation: number
+  kind: RoomEnvironmentEventKind
+}
+
+export type RoomEnvironmentReplay =
+  | { Events: { events: RoomEnvironmentEvent[]; next_cursor: number } }
+  | { SnapshotRequired: { snapshot: RoomEnvironmentSnapshot } }
 
 export type RoomEnvironmentStateResponse = {
   RoomEnvironmentState: {
@@ -84,8 +145,43 @@ export type RoomEnvironmentStateResponse = {
   }
 }
 
+export type RoomEnvironmentEventsResponse = {
+  RoomEnvironmentEvents: {
+    replay: RoomEnvironmentReplay
+  }
+}
+
+export type RoomEnvironmentActionHistoryResponse = {
+  RoomEnvironmentActionHistoryListed: {
+    page: {
+      actions: RoomEnvironmentAction[]
+      next_before_sequence: number | null
+    }
+  }
+}
+
 export type RoomEnvironmentUpdatedResponse = {
   RoomEnvironmentUpdated: {
+    environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentTakeoverUpdatedResponse = {
+  RoomEnvironmentTakeoverUpdated: {
+    outcome: RoomEnvironmentTakeoverOutcome
+    environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentInputReleasedResponse = {
+  RoomEnvironmentInputReleased: {
+    environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentActionCancellationUpdatedResponse = {
+  RoomEnvironmentActionCancellationUpdated: {
+    outcome: RoomEnvironmentActionCancellationOutcome
     environment: RoomEnvironmentSnapshot
   }
 }

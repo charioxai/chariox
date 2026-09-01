@@ -9,8 +9,10 @@ mod state;
 mod tabs;
 
 pub use action::{
-    ActionAdmission, EnvironmentAction, EnvironmentActionRequest, EnvironmentActionState,
-    EnvironmentActionTerminal, EnvironmentMode, InputTarget,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentAction,
+    EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
+    EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
+    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode, InputTarget,
 };
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
 pub use model::{
@@ -19,7 +21,7 @@ pub use model::{
     EnvironmentComponent, EnvironmentComponentHealth, EnvironmentComponentHealthState,
     EnvironmentError, EnvironmentLifecycle, EnvironmentTab, RoomEnvironmentSnapshot,
 };
-pub use ownership::{InputOwnership, TakeoverOutcome};
+pub use ownership::{InputOwnership, PendingInputTakeover, TakeoverOutcome};
 pub(crate) use registry::RoomEnvironmentRegistry;
 pub use state::RoomEnvironment;
 

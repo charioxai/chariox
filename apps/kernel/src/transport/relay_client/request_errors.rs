@@ -64,10 +64,15 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
@@ -108,9 +113,11 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
 mod tests {
     use super::*;
     use crate::local::{
-        GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest,
-        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-        UpdateRoomEnvironmentViewportRequest,
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
+        GetRoomEnvironmentStateRequest, ListRoomEnvironmentActionHistoryRequest,
+        ReleaseRoomEnvironmentInputRequest, RequestRoomEnvironmentInputTakeoverRequest,
+        RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest,
+        StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
     };
 
     #[test]
@@ -120,6 +127,30 @@ mod tests {
         });
 
         assert_eq!(relay_request_kind(&request), "environment.state.get");
+    }
+
+    #[test]
+    fn room_environment_events_use_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
+                session_id: "session-1".to_string(),
+                cursor: 12,
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.events.get");
+    }
+
+    #[test]
+    fn room_environment_history_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+            ListRoomEnvironmentActionHistoryRequest {
+                session_id: "session-1".to_string(),
+                before_sequence: Some(12),
+                limit: Some(25),
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.history.list");
     }
 
     #[test]
@@ -185,5 +216,39 @@ mod tests {
         );
 
         assert_eq!(relay_request_kind(&request), "environment.viewport.update");
+    }
+
+    #[test]
+    fn room_environment_takeover_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.input.takeover");
+    }
+
+    #[test]
+    fn room_environment_input_release_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+                session_id: "session-1".to_string(),
+                target: crate::session::InputTarget::Desktop,
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.input.release");
+    }
+
+    #[test]
+    fn room_environment_action_cancel_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-1".to_string(),
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.action.cancel");
     }
 }

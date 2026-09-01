@@ -1,9 +1,11 @@
 use crate::error::DaemonError;
 use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
-    AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
-    DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
-    LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
+    AttachToSessionRequest, CancelRoomEnvironmentActionRequest, CycleAgentFocusRequest,
+    DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
+    FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
+    ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
+    RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
     UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
 };
@@ -146,6 +148,75 @@ impl SessionRuntimeStore {
                     room_environment_control_error("environment.viewport.update", error)
                 })
         });
+        (result, None)
+    }
+
+    pub(super) async fn request_room_environment_input_takeover(
+        &self,
+        request: RequestRoomEnvironmentInputTakeoverRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .request_room_environment_takeover_as_actor(&request.session_id, actor, request.target)
+            .map(
+                |(outcome, environment)| LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+                    outcome,
+                    environment,
+                },
+            )
+            .map_err(|error| room_environment_control_error("environment.input.takeover", error));
+        (result, None)
+    }
+
+    pub(super) async fn release_room_environment_input(
+        &self,
+        request: ReleaseRoomEnvironmentInputRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
+        let result = self
+            .state
+            .release_room_environment_input(&request.session_id, &actor_id, &request.target)
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentInputReleased { environment })
+            .map_err(|error| room_environment_control_error("environment.input.release", error));
+        (result, None)
+    }
+
+    pub(super) async fn cancel_room_environment_action(
+        &self,
+        request: CancelRoomEnvironmentActionRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .cancel_room_environment_action_as_actor(&request.session_id, actor, &request.action_id)
+            .map(|(outcome, environment)| {
+                LocalDaemonResponse::RoomEnvironmentActionCancellationUpdated {
+                    outcome,
+                    environment,
+                }
+            })
+            .map_err(|error| room_environment_control_error("environment.action.cancel", error));
         (result, None)
     }
 

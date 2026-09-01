@@ -2,13 +2,14 @@ use super::*;
 use crate::session::{
     CanonicalViewport, EnvironmentAction, EnvironmentActionState, EnvironmentActor,
     EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
-    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentLifecycle,
-    EnvironmentMode, EnvironmentTab, InputOwnership, InputTarget, RoomEnvironmentSnapshot,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentEvent,
+    EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab,
+    InputOwnership, InputTarget, RoomEnvironmentSnapshot,
 };
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -58,28 +59,53 @@ fn room_environment_state_shape_is_versioned() {
                 focused: true,
             }],
             focused_tab_id: Some("tab-1".to_string()),
-            actions: vec![EnvironmentAction {
-                action_id: "action-1".to_string(),
-                idempotency_key: Some("idempotency-1".to_string()),
-                actor_id: "agent-1".to_string(),
-                runtime_generation: 1,
-                mode: EnvironmentMode::Browser,
-                kind: "click".to_string(),
-                targets: vec![
-                    InputTarget::Desktop,
-                    InputTarget::BrowserTab("tab-1".to_string()),
-                ],
-                state: EnvironmentActionState::Running,
-            }],
+            actions: vec![
+                EnvironmentAction {
+                    action_id: "action-1".to_string(),
+                    sequence: 1,
+                    idempotency_key: Some("idempotency-1".to_string()),
+                    actor_id: "agent-1".to_string(),
+                    runtime_generation: 1,
+                    mode: EnvironmentMode::Browser,
+                    kind: "click".to_string(),
+                    targets: vec![
+                        InputTarget::Desktop,
+                        InputTarget::BrowserTab("tab-1".to_string()),
+                    ],
+                    state: EnvironmentActionState::Running,
+                    cancellation_requested: true,
+                    submitted_at_ms: 40,
+                    started_at_ms: Some(40),
+                    finished_at_ms: None,
+                    outcome: None,
+                },
+                EnvironmentAction {
+                    action_id: "action-2".to_string(),
+                    sequence: 2,
+                    idempotency_key: None,
+                    actor_id: "agent-1".to_string(),
+                    runtime_generation: 1,
+                    mode: EnvironmentMode::Browser,
+                    kind: "second-click".to_string(),
+                    targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
+                    state: EnvironmentActionState::Queued,
+                    cancellation_requested: false,
+                    submitted_at_ms: 41,
+                    started_at_ms: None,
+                    finished_at_ms: None,
+                    outcome: None,
+                },
+            ],
             input_ownership: vec![InputOwnership {
                 target: InputTarget::Desktop,
                 actor_id: "agent-1".to_string(),
             }],
+            pending_input_takeovers: Vec::new(),
             event_cursor: 0,
         },
     };
     assert_eq!(
-        serde_json::to_value(response).expect("Room Environment state response should encode"),
+        serde_json::to_value(&response).expect("Room Environment state response should encode"),
         serde_json::json!({
             "RoomEnvironmentState": {
                 "environment": {
@@ -115,40 +141,325 @@ fn room_environment_state_shape_is_versioned() {
                         "focused": true
                     }],
                     "focused_tab_id": "tab-1",
-                    "actions": [{
-                        "action_id": "action-1",
-                        "idempotency_key": "idempotency-1",
-                        "actor_id": "agent-1",
-                        "runtime_generation": 1,
-                        "mode": "browser",
-                        "kind": "click",
-                        "targets": [
-                            {
-                                "kind": "desktop"
-                            },
-                            {
+                    "actions": [
+                        {
+                            "action_id": "action-1",
+                            "sequence": 1,
+                            "idempotency_key": "idempotency-1",
+                            "actor_id": "agent-1",
+                            "runtime_generation": 1,
+                            "mode": "browser",
+                            "kind": "click",
+                            "targets": [
+                                {
+                                    "kind": "desktop"
+                                },
+                                {
+                                    "kind": "browser_tab",
+                                    "id": "tab-1"
+                                }
+                            ],
+                            "state": "running",
+                            "cancellation_requested": true,
+                            "submitted_at_ms": 40,
+                            "started_at_ms": 40,
+                            "finished_at_ms": null,
+                            "outcome": null
+                        },
+                        {
+                            "action_id": "action-2",
+                            "sequence": 2,
+                            "idempotency_key": null,
+                            "actor_id": "agent-1",
+                            "runtime_generation": 1,
+                            "mode": "browser",
+                            "kind": "second-click",
+                            "targets": [{
                                 "kind": "browser_tab",
                                 "id": "tab-1"
-                            }
-                        ],
-                        "state": "running"
-                    }],
+                            }],
+                            "state": "queued",
+                            "cancellation_requested": false,
+                            "submitted_at_ms": 41,
+                            "started_at_ms": null,
+                            "finished_at_ms": null,
+                            "outcome": null
+                        }
+                    ],
                     "input_ownership": [{
                         "target": {
                             "kind": "desktop"
                         },
                         "actor_id": "agent-1"
                     }],
+                    "pending_input_takeovers": [],
                     "event_cursor": 0
                 }
+            }
+        })
+    );
+
+    let mut previous_protocol_value =
+        serde_json::to_value(&response).expect("Room Environment response should encode");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment snapshot should be an object")
+        .remove("pending_input_takeovers");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment/actions/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment Action should be an object")
+        .remove("sequence");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment/actions/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment Action should be an object")
+        .remove("cancellation_requested");
+    for field in [
+        "submitted_at_ms",
+        "started_at_ms",
+        "finished_at_ms",
+        "outcome",
+    ] {
+        previous_protocol_value
+            .pointer_mut("/RoomEnvironmentState/environment/actions/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("Room Environment Action should be an object")
+            .remove(field);
+    }
+    let LocalDaemonResponse::RoomEnvironmentState { environment } =
+        serde_json::from_value(previous_protocol_value)
+            .expect("pre-v272 snapshots should decode with no pending takeovers")
+    else {
+        panic!("expected Room Environment state response");
+    };
+    assert!(environment.pending_input_takeovers.is_empty());
+    assert_eq!(environment.actions[0].sequence, 0);
+    assert!(!environment.actions[0].cancellation_requested);
+    assert_eq!(environment.actions[0].submitted_at_ms, 0);
+    assert_eq!(environment.actions[0].started_at_ms, None);
+    assert_eq!(environment.actions[0].finished_at_ms, None);
+    assert_eq!(environment.actions[0].outcome, None);
+
+    assert_eq!(
+        serde_json::to_value(crate::session::EnvironmentActionOutcome::Failed {
+            code: crate::session::EnvironmentActionFailureCode::ProcessLost,
+        })
+        .expect("redacted Action failure should encode"),
+        serde_json::json!({
+            "status": "failed",
+            "code": "process_lost",
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(crate::session::EnvironmentActionOutcome::Cancelled {
+            reason: crate::session::EnvironmentActionCancellationReason::HumanTakeover,
+        })
+        .expect("redacted Action cancellation should encode"),
+        serde_json::json!({
+            "status": "cancelled",
+            "reason": "human_takeover",
+        })
+    );
+}
+
+#[test]
+fn room_environment_event_replay_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+
+    let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
+        session_id: "session-1".to_string(),
+        cursor: 41,
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("Room Environment event request should encode"),
+        serde_json::json!({
+            "GetRoomEnvironmentEvents": {
+                "session_id": "session-1",
+                "cursor": 41,
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "GetRoomEnvironmentEvents": {
+                "session_id": "session-1",
+                "cursor": 41,
+            }
+        }))
+        .expect("Room Environment event request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentEvents {
+        replay: EnvironmentReplay::Events {
+            events: vec![EnvironmentEvent {
+                event_id: 42,
+                environment_id: "environment-1".to_string(),
+                runtime_generation: 3,
+                kind: EnvironmentEventKind::ViewportChanged { revision: 7 },
+            }],
+            next_cursor: 42,
+        },
+    };
+    let value = serde_json::json!({
+        "RoomEnvironmentEvents": {
+            "replay": {
+                "Events": {
+                    "events": [{
+                        "event_id": 42,
+                        "environment_id": "environment-1",
+                        "runtime_generation": 3,
+                        "kind": {
+                            "ViewportChanged": {
+                                "revision": 7,
+                            }
+                        }
+                    }],
+                    "next_cursor": 42,
+                }
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&response).expect("Room Environment event replay should encode"),
+        value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(value)
+            .expect("Room Environment event replay should decode"),
+        response
+    );
+    assert_eq!(
+        serde_json::from_value::<EnvironmentEventKind>(serde_json::json!({
+            "ActionChanged": {
+                "action_id": "action-1",
+                "state": "running",
+            }
+        }))
+        .expect("pre-v276 Action events should decode"),
+        EnvironmentEventKind::ActionChanged {
+            action_id: "action-1".to_string(),
+            state: EnvironmentActionState::Running,
+            cancellation_requested: false,
+            submitted_at_ms: 0,
+            started_at_ms: None,
+            finished_at_ms: None,
+            outcome: None,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(EnvironmentEventKind::ActionChanged {
+            action_id: "action-2".to_string(),
+            state: EnvironmentActionState::Completed,
+            cancellation_requested: false,
+            submitted_at_ms: 40,
+            started_at_ms: Some(41),
+            finished_at_ms: Some(44),
+            outcome: Some(crate::session::EnvironmentActionOutcome::Completed),
+        })
+        .expect("v278 Action event should encode"),
+        serde_json::json!({
+            "ActionChanged": {
+                "action_id": "action-2",
+                "state": "completed",
+                "cancellation_requested": false,
+                "submitted_at_ms": 40,
+                "started_at_ms": 41,
+                "finished_at_ms": 44,
+                "outcome": { "status": "completed" },
             }
         })
     );
 }
 
 #[test]
+fn room_environment_action_history_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+
+    let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+        ListRoomEnvironmentActionHistoryRequest {
+            session_id: "session-1".to_string(),
+            before_sequence: Some(42),
+            limit: Some(25),
+        },
+    );
+    let request_value = serde_json::json!({
+        "ListRoomEnvironmentActionHistory": {
+            "session_id": "session-1",
+            "before_sequence": 42,
+            "limit": 25,
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("Room Environment history request should encode"),
+        request_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(request_value)
+            .expect("Room Environment history request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentActionHistoryListed {
+        page: crate::session::EnvironmentActionHistoryPage {
+            actions: vec![EnvironmentAction {
+                action_id: "action-41".to_string(),
+                sequence: 41,
+                idempotency_key: None,
+                actor_id: "agent-1".to_string(),
+                runtime_generation: 2,
+                mode: EnvironmentMode::Computer,
+                kind: "key-chord".to_string(),
+                targets: vec![InputTarget::Desktop],
+                state: EnvironmentActionState::Completed,
+                cancellation_requested: false,
+                submitted_at_ms: 100,
+                started_at_ms: Some(101),
+                finished_at_ms: Some(102),
+                outcome: Some(crate::session::EnvironmentActionOutcome::Completed),
+            }],
+            next_before_sequence: Some(41),
+        },
+    };
+    let response_value = serde_json::json!({
+        "RoomEnvironmentActionHistoryListed": {
+            "page": {
+                "actions": [{
+                    "action_id": "action-41",
+                    "sequence": 41,
+                    "idempotency_key": null,
+                    "actor_id": "agent-1",
+                    "runtime_generation": 2,
+                    "mode": "computer",
+                    "kind": "key-chord",
+                    "targets": [{ "kind": "desktop" }],
+                    "state": "completed",
+                    "cancellation_requested": false,
+                    "submitted_at_ms": 100,
+                    "started_at_ms": 101,
+                    "finished_at_ms": 102,
+                    "outcome": { "status": "completed" },
+                }],
+                "next_before_sequence": 41,
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&response).expect("Room Environment history should encode"),
+        response_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(response_value)
+            .expect("Room Environment history should decode"),
+        response
+    );
+}
+
+#[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -196,6 +507,7 @@ fn room_environment_start_shape_is_versioned() {
             focused_tab_id: None,
             actions: Vec::new(),
             input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
             event_cursor: 1,
         },
     };
@@ -223,6 +535,7 @@ fn room_environment_start_shape_is_versioned() {
                     "focused_tab_id": null,
                     "actions": [],
                     "input_ownership": [],
+                    "pending_input_takeovers": [],
                     "event_cursor": 1
                 }
             }
@@ -232,7 +545,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -255,7 +568,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -278,7 +591,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -313,5 +626,202 @@ fn room_environment_viewport_update_shape_is_versioned() {
         serde_json::from_value::<LocalDaemonRequest>(value)
             .expect("viewport request should decode"),
         request
+    );
+}
+
+#[test]
+fn room_environment_takeover_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+
+    let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+        RequestRoomEnvironmentInputTakeoverRequest {
+            session_id: "session-1".to_string(),
+            target: InputTarget::Desktop,
+        },
+    );
+    let request_value = serde_json::json!({
+        "RequestRoomEnvironmentInputTakeover": {
+            "session_id": "session-1",
+            "target": {
+                "kind": "desktop"
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("takeover request should encode"),
+        request_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(request_value)
+            .expect("takeover request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+        outcome: crate::session::TakeoverOutcome::Granted,
+        environment: RoomEnvironmentSnapshot {
+            session_id: "session-1".to_string(),
+            environment_id: "environment-session-1".to_string(),
+            runtime_generation: 1,
+            lifecycle: EnvironmentLifecycle::Ready,
+            health: Vec::new(),
+            viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                .expect("viewport should be valid"),
+            actors: Vec::new(),
+            tabs: Vec::new(),
+            focused_tab_id: None,
+            actions: Vec::new(),
+            input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
+            event_cursor: 2,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("takeover response should encode"),
+        serde_json::json!({
+            "RoomEnvironmentTakeoverUpdated": {
+                "outcome": {
+                    "state": "granted"
+                },
+                "environment": {
+                    "session_id": "session-1",
+                    "environment_id": "environment-session-1",
+                    "runtime_generation": 1,
+                    "lifecycle": "ready",
+                    "health": [],
+                    "viewport": {
+                        "css_width": 1280,
+                        "css_height": 800,
+                        "device_scale_factor": 1,
+                        "desktop_pixel_width": 1280,
+                        "desktop_pixel_height": 800,
+                        "revision": 1,
+                        "last_actor_id": null
+                    },
+                    "actors": [],
+                    "tabs": [],
+                    "focused_tab_id": null,
+                    "actions": [],
+                    "input_ownership": [],
+                    "pending_input_takeovers": [],
+                    "event_cursor": 2
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn room_environment_input_release_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+
+    let request =
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+            session_id: "session-1".to_string(),
+            target: InputTarget::Desktop,
+        });
+    let request_value = serde_json::json!({
+        "ReleaseRoomEnvironmentInput": {
+            "session_id": "session-1",
+            "target": {
+                "kind": "desktop"
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("input release request should encode"),
+        request_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(request_value)
+            .expect("input release request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentInputReleased {
+        environment: RoomEnvironmentSnapshot {
+            session_id: "session-1".to_string(),
+            environment_id: "environment-session-1".to_string(),
+            runtime_generation: 1,
+            lifecycle: EnvironmentLifecycle::Ready,
+            health: Vec::new(),
+            viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                .expect("viewport should be valid"),
+            actors: Vec::new(),
+            tabs: Vec::new(),
+            focused_tab_id: None,
+            actions: Vec::new(),
+            input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
+            event_cursor: 3,
+        },
+    };
+    let response_value =
+        serde_json::to_value(&response).expect("input release response should encode");
+    assert_eq!(
+        response_value.pointer("/RoomEnvironmentInputReleased/environment/event_cursor"),
+        Some(&serde_json::json!(3))
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(response_value)
+            .expect("input release response should decode"),
+        response
+    );
+}
+
+#[test]
+fn room_environment_action_cancellation_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+
+    let request =
+        LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+            session_id: "session-1".to_string(),
+            action_id: "action-7".to_string(),
+        });
+    let request_value = serde_json::json!({
+        "CancelRoomEnvironmentAction": {
+            "session_id": "session-1",
+            "action_id": "action-7"
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("Action cancellation request should encode"),
+        request_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(request_value)
+            .expect("Action cancellation request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentActionCancellationUpdated {
+        outcome: crate::session::ActionCancellationOutcome::CancellationRequested,
+        environment: RoomEnvironmentSnapshot {
+            session_id: "session-1".to_string(),
+            environment_id: "environment-session-1".to_string(),
+            runtime_generation: 1,
+            lifecycle: EnvironmentLifecycle::Ready,
+            health: Vec::new(),
+            viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                .expect("viewport should be valid"),
+            actors: Vec::new(),
+            tabs: Vec::new(),
+            focused_tab_id: None,
+            actions: Vec::new(),
+            input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
+            event_cursor: 4,
+        },
+    };
+    let response_value =
+        serde_json::to_value(&response).expect("Action cancellation response should encode");
+    assert_eq!(
+        response_value.pointer("/RoomEnvironmentActionCancellationUpdated/outcome/state"),
+        Some(&serde_json::json!("cancellation_requested"))
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(response_value)
+            .expect("Action cancellation response should decode"),
+        response
     );
 }

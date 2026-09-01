@@ -6,6 +6,29 @@ export function getRoomEnvironmentStateRequest(sessionId: string) {
   }
 }
 
+export function getRoomEnvironmentEventsRequest(sessionId: string, cursor: number) {
+  return {
+    GetRoomEnvironmentEvents: {
+      session_id: sessionId,
+      cursor,
+    },
+  }
+}
+
+export function listRoomEnvironmentActionHistoryRequest(
+  sessionId: string,
+  beforeSequence: number | null = null,
+  limit: number | null = null,
+) {
+  return {
+    ListRoomEnvironmentActionHistory: {
+      session_id: sessionId,
+      before_sequence: beforeSequence,
+      limit,
+    },
+  }
+}
+
 export type RoomEnvironmentViewportRequest = {
   css_width: number
   css_height: number
@@ -52,6 +75,39 @@ export function updateRoomEnvironmentViewportRequest(
       session_id: sessionId,
       expected_revision: expectedRevision,
       viewport,
+    },
+  }
+}
+
+export function requestRoomEnvironmentInputTakeoverRequest(
+  sessionId: string,
+  target: import("./kernel-types-environment.js").RoomEnvironmentInputTarget,
+) {
+  return {
+    RequestRoomEnvironmentInputTakeover: {
+      session_id: sessionId,
+      target,
+    },
+  }
+}
+
+export function releaseRoomEnvironmentInputRequest(
+  sessionId: string,
+  target: import("./kernel-types-environment.js").RoomEnvironmentInputTarget,
+) {
+  return {
+    ReleaseRoomEnvironmentInput: {
+      session_id: sessionId,
+      target,
+    },
+  }
+}
+
+export function cancelRoomEnvironmentActionRequest(sessionId: string, actionId: string) {
+  return {
+    CancelRoomEnvironmentAction: {
+      session_id: sessionId,
+      action_id: actionId,
     },
   }
 }

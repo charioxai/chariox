@@ -39,7 +39,12 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentEvents { replay: crate::session::EnvironmentReplay, },
+    RoomEnvironmentActionHistoryListed { page: crate::session::EnvironmentActionHistoryPage, },
     RoomEnvironmentUpdated { environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentTakeoverUpdated { outcome: crate::session::TakeoverOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentInputReleased { environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentActionCancellationUpdated { outcome: crate::session::ActionCancellationOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     MetaagentTaskUpdated {
         session: RuntimeSession,
         #[serde(default, skip_serializing_if = "Option::is_none")]

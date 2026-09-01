@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, RoomEnvironment,
-    RoomEnvironmentSnapshot,
+    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, EnvironmentReplay,
+    RoomEnvironment, RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -160,6 +160,54 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn request_takeover_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        target: super::InputTarget,
+    ) -> Result<(super::TakeoverOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let outcome = environment.request_takeover_as_actor(actor, target)?;
+        Ok((outcome, environment.snapshot()))
+    }
+
+    pub(crate) fn release_input(
+        &mut self,
+        session_id: &str,
+        actor_id: &str,
+        target: &super::InputTarget,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.release_input(actor_id, target)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn cancel_action_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        action_id: &str,
+    ) -> Result<(super::ActionCancellationOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let outcome = environment.cancel_action_as_actor(actor, action_id)?;
+        Ok((outcome, environment.snapshot()))
+    }
+
     pub(crate) fn snapshot(
         &self,
         session_id: &str,
@@ -167,6 +215,33 @@ impl RoomEnvironmentRegistry {
         self.environments_by_session
             .get(session_id)
             .map(RoomEnvironment::snapshot)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })
+    }
+
+    pub(crate) fn events_after(
+        &self,
+        session_id: &str,
+        cursor: u64,
+    ) -> Result<EnvironmentReplay, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .map(|environment| environment.events_after(cursor))
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })
+    }
+
+    pub(crate) fn action_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<super::EnvironmentActionHistoryPage, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .map(|environment| environment.action_history(before_sequence, limit))
             .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
                 session_id: session_id.to_string(),
             })

@@ -143,6 +143,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetRoomEnvironmentEvents(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::StartRoomEnvironment(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -153,6 +159,15 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelRoomEnvironmentAction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::UpdateMetaagentTask(request) => Some(

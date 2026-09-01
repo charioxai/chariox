@@ -213,6 +213,25 @@ impl SessionStateStore {
         self.read().room_environment_snapshot(session_id)
     }
 
+    pub(crate) fn room_environment_events_after(
+        &self,
+        session_id: &str,
+        cursor: u64,
+    ) -> Result<super::EnvironmentReplay, EnvironmentError> {
+        self.read()
+            .room_environment_events_after(session_id, cursor)
+    }
+
+    pub(crate) fn room_environment_action_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<super::EnvironmentActionHistoryPage, EnvironmentError> {
+        self.read()
+            .room_environment_action_history(session_id, before_sequence, limit)
+    }
+
     pub(crate) fn start_room_environment(
         &self,
         session_id: &str,
@@ -268,6 +287,36 @@ impl SessionStateStore {
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         self.write()
             .reconcile_room_environment_actors(session_id, actors)
+    }
+
+    pub(crate) fn request_room_environment_takeover_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        target: super::InputTarget,
+    ) -> Result<(super::TakeoverOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.write()
+            .request_room_environment_takeover_as_actor(session_id, actor, target)
+    }
+
+    pub(crate) fn release_room_environment_input(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        target: &super::InputTarget,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .release_room_environment_input(session_id, actor_id, target)
+    }
+
+    pub(crate) fn cancel_room_environment_action_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        action_id: &str,
+    ) -> Result<(super::ActionCancellationOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.write()
+            .cancel_room_environment_action_as_actor(session_id, actor, action_id)
     }
 
     pub(crate) fn replace_publication_runtime_workflows(

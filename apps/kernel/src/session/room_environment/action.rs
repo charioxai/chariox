@@ -19,6 +19,7 @@ pub enum InputTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentActionState {
+    Queued,
     Running,
     Completed,
     Failed,
@@ -45,6 +46,8 @@ impl From<EnvironmentActionTerminal> for EnvironmentActionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentAction {
     pub action_id: String,
+    #[serde(default)]
+    pub sequence: u64,
     pub idempotency_key: Option<String>,
     pub actor_id: String,
     pub runtime_generation: u64,
@@ -52,6 +55,49 @@ pub struct EnvironmentAction {
     pub kind: String,
     pub targets: Vec<InputTarget>,
     pub state: EnvironmentActionState,
+    #[serde(default)]
+    pub cancellation_requested: bool,
+    #[serde(default)]
+    pub submitted_at_ms: u64,
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    #[serde(default)]
+    pub finished_at_ms: Option<u64>,
+    #[serde(default)]
+    pub outcome: Option<EnvironmentActionOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentActionHistoryPage {
+    pub actions: Vec<EnvironmentAction>,
+    pub next_before_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnvironmentActionOutcome {
+    Completed,
+    Failed {
+        code: EnvironmentActionFailureCode,
+    },
+    Cancelled {
+        reason: EnvironmentActionCancellationReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentActionFailureCode {
+    ControllerFailure,
+    ProcessLost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentActionCancellationReason {
+    Requested,
+    HumanTakeover,
+    ControllerCancellation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +202,13 @@ pub enum ActionAdmission {
         action_id: String,
         state: EnvironmentActionState,
     },
+    Queued {
+        action_id: String,
+        queue_sequence: u64,
+    },
+    RejectedSaturated {
+        capacity: usize,
+    },
     RejectedBusy {
         target: InputTarget,
         active_action_id: String,
@@ -163,5 +216,15 @@ pub enum ActionAdmission {
     RejectedTakeover {
         target: InputTarget,
         human_actor_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ActionCancellationOutcome {
+    Cancelled,
+    CancellationRequested,
+    AlreadyTerminal {
+        action_state: EnvironmentActionState,
     },
 }
