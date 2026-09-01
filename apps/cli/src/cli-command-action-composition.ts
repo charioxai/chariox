@@ -431,6 +431,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     isRelayConnection: () => Boolean(options.relayUrl),
     flashFooter,
     appendNotice,
+    sendRoomEnvironmentRequest: (request) => client.send(request),
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     appendCloudNotice,
     formatError,

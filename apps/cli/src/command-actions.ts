@@ -53,6 +53,10 @@ import {
   type SliceCommandHandlerDeps,
 } from "./slice-command-handlers.js"
 import {
+  handleRoomSlashCommand,
+  type RoomCommandHandlerDeps,
+} from "./room-command-handler.js"
+import {
   handleWorkspaceSlashCommand,
   handleWorktreeSlashCommand,
   type WorkspaceCommandHandlerDeps,
@@ -148,6 +152,7 @@ type CommandActionDeps =
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -294,6 +299,22 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleKernelSlashCommand(deps, command)
   }
 
+  const handleRoomCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "room" }>,
+  ): Promise<void> => {
+    if (!deps.sendRoomEnvironmentRequest) {
+      deps.flashFooter("Room environment controls are unavailable in this daemon", "error")
+      return
+    }
+    await handleRoomSlashCommand({
+      isAttached: deps.isAttached,
+      sessionId: () => deps.sessionState().id,
+      send: deps.sendRoomEnvironmentRequest,
+      appendNotice: deps.appendNotice,
+      flashFooter: deps.flashFooter,
+    }, command)
+  }
+
   const handleMcpCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "mcp" }>,
   ): Promise<void> => {
@@ -429,6 +450,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleKernelCommand,
     handleMachineCommand,
     handleSliceCommand,
+    handleRoomCommand,
     handleRelayCommand,
     handleCloudCommand,
     handleCollabCommand,
