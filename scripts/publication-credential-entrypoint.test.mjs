@@ -166,6 +166,34 @@ test("publication entrypoint stages root-only account bindings into the ephemera
   }
 })
 
+test("publication entrypoint keeps integration secrets scoped to runtime credential bindings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-integration-binding-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  const sourceProfile = join(sources, "000")
+  await mkdir(join(sourceProfile, "home"), { recursive: true })
+  await writeFile(join(sourceProfile, "profile.json"), JSON.stringify({
+    kind: "integration",
+    integration: "github-deployment-acceptance",
+    profileId: "profile-github",
+  }), { mode: 0o600 })
+  await writeFile(join(sourceProfile, "home", "secret"), "opaque-bearer-fixture", { mode: 0o600 })
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+      },
+    })
+    assert.equal(await readFile(join(bindings, "000", "home", "secret"), "utf8"), "opaque-bearer-fixture")
+    await assert.rejects(readFile(join(home, "secret")), { code: "ENOENT" })
+    assert.equal((await stat(join(bindings, "000", "home", "secret"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("publication entrypoint rejects hidden state in staged account binding roots", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-account-state-"))
   const home = join(root, "home")

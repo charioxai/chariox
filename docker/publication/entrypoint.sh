@@ -478,16 +478,21 @@ should_import_credential_binding_to_home() {
     const path = require("node:path")
     const profileDir = process.argv[1]
     const configured = process.env.CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS
-    if (!configured) process.exit(0)
     let identity
-    let manifest
     try {
       identity = JSON.parse(fs.readFileSync(path.join(profileDir, "profile.json"), "utf8"))
+    } catch {
+      if (!configured) process.exit(0)
+      process.exit(70)
+    }
+    if (identity.kind !== "provider") process.exit(1)
+    if (!configured) process.exit(0)
+    let manifest
+    try {
       manifest = JSON.parse(configured)
     } catch {
       process.exit(70)
     }
-    if (identity.kind !== "provider") process.exit(0)
     const provider = String(identity.provider || "").toLowerCase()
     const profileId = String(identity.profileId || "")
     const selected = (Array.isArray(manifest.accounts) ? manifest.accounts : [])
