@@ -62,6 +62,6 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 294 submits an authenticated human Environment Action without
-/// accepting a client-supplied Actor identity.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 294;
+/// Version 295 projects Actor presentation colors and pointer presence and
+/// accepts authenticated pointer updates without a client-supplied Actor identity.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 295;

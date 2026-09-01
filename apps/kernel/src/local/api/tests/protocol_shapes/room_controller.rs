@@ -11,7 +11,7 @@ use crate::transport::room_browser_controller::{
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 31);
     for (command, wire_command) in [
         (

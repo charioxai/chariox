@@ -215,6 +215,11 @@ impl SessionRuntimeCommandExecutor {
                     .update_room_environment_viewport(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
+                self.store
+                    .update_room_environment_pointer(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
                 self.store
                     .request_room_environment_input_takeover(request, caller_user_id)

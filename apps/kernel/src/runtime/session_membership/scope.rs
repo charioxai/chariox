@@ -167,6 +167,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

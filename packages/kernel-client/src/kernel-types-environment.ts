@@ -33,6 +33,14 @@ export type RoomEnvironmentActor = {
   kind: "human" | "agent"
   display_label: string
   presence: "present" | "away" | "disconnected"
+  presentation_color: "blue" | "cyan" | "green" | "amber" | "orange" | "rose" | "violet" | "slate"
+}
+
+export type RoomEnvironmentPointer = {
+  actor_id: string
+  x: number
+  y: number
+  viewport_revision: number
 }
 
 export type RoomEnvironmentTab = {
@@ -111,6 +119,7 @@ export type RoomEnvironmentSnapshot = {
   health: RoomEnvironmentComponentHealth[]
   viewport: RoomEnvironmentViewport
   actors: RoomEnvironmentActor[]
+  pointers: RoomEnvironmentPointer[]
   tabs: RoomEnvironmentTab[]
   focused_tab_id: string | null
   actions: RoomEnvironmentAction[]
@@ -126,6 +135,7 @@ export type RoomEnvironmentEventKind =
   | "TabsChanged"
   | { ViewportChanged: { revision: number } }
   | "ActorsChanged"
+  | "PointersChanged"
   | "InputOwnershipChanged"
   | {
       ActionChanged: {

@@ -14,8 +14,8 @@ use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
-    RoomEnvironmentSnapshot,
+    EnvironmentLifecycle, EnvironmentPointer, EnvironmentPointerPosition,
+    EnvironmentTabObservation, EnvironmentTabRuntimeBinding, RoomEnvironmentSnapshot,
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
@@ -33,6 +33,7 @@ pub struct RoomEnvironment {
     viewport: CanonicalViewport,
     health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
     actors: BTreeMap<String, EnvironmentActor>,
+    pointers: BTreeMap<String, EnvironmentPointer>,
     tabs: TabRegistry,
     element_references: ElementReferenceRegistry,
     action_ledger: EnvironmentActionLedger,
@@ -80,6 +81,7 @@ impl RoomEnvironment {
             viewport,
             health: default_component_health(),
             actors: BTreeMap::new(),
+            pointers: BTreeMap::new(),
             tabs: TabRegistry::new(),
             element_references: ElementReferenceRegistry::new(),
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
@@ -98,6 +100,7 @@ impl RoomEnvironment {
             health: self.health.values().cloned().collect(),
             viewport: self.viewport.clone(),
             actors: self.actors.values().cloned().collect(),
+            pointers: self.pointers.values().cloned().collect(),
             tabs,
             focused_tab_id,
             actions: self.action_ledger.actions(),
@@ -129,9 +132,11 @@ impl RoomEnvironment {
         if matches!(
             next,
             EnvironmentLifecycle::Stopped | EnvironmentLifecycle::Failed
-        ) && self.action_ledger.clear_ownership()
-        {
-            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        ) {
+            if self.action_ledger.clear_ownership() {
+                self.emit(EnvironmentEventKind::InputOwnershipChanged);
+            }
+            self.clear_pointers();
         }
         self.emit(EnvironmentEventKind::LifecycleChanged { lifecycle: next });
         Ok(())
@@ -250,18 +255,28 @@ impl RoomEnvironment {
     }
 
     pub fn register_actor(&mut self, actor: EnvironmentActor) -> Result<(), EnvironmentError> {
-        if let Some(existing) = self.actors.get_mut(&actor.actor_id) {
+        let changed = if let Some(existing) = self.actors.get_mut(&actor.actor_id) {
             if existing.kind != actor.kind {
                 return Err(EnvironmentError::ActorKindConflict {
                     actor_id: actor.actor_id,
                 });
             }
-            existing.display_label = actor.display_label;
-            existing.presence = EnvironmentActorPresence::Present;
+            if existing.display_label == actor.display_label
+                && existing.presence == EnvironmentActorPresence::Present
+            {
+                false
+            } else {
+                existing.display_label = actor.display_label;
+                existing.presence = EnvironmentActorPresence::Present;
+                true
+            }
         } else {
             self.actors.insert(actor.actor_id.clone(), actor);
+            true
+        };
+        if changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
         }
-        self.emit(EnvironmentEventKind::ActorsChanged);
         Ok(())
     }
 
@@ -287,6 +302,20 @@ impl RoomEnvironment {
         if reconciled != self.actors {
             self.actors = reconciled;
             self.emit(EnvironmentEventKind::ActorsChanged);
+            let present_actor_ids = self
+                .actors
+                .iter()
+                .filter_map(|(actor_id, actor)| {
+                    (actor.presence == EnvironmentActorPresence::Present)
+                        .then_some(actor_id.clone())
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let pointer_count = self.pointers.len();
+            self.pointers
+                .retain(|actor_id, _| present_actor_ids.contains(actor_id));
+            if self.pointers.len() != pointer_count {
+                self.emit(EnvironmentEventKind::PointersChanged);
+            }
         }
         Ok(())
     }
@@ -303,7 +332,126 @@ impl RoomEnvironment {
             })?
             .presence = presence;
         self.emit(EnvironmentEventKind::ActorsChanged);
+        if presence != EnvironmentActorPresence::Present {
+            self.remove_pointer(actor_id);
+        }
         Ok(())
+    }
+
+    pub fn update_pointer(
+        &mut self,
+        actor_id: &str,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<(), EnvironmentError> {
+        let actor = self
+            .actors
+            .get(actor_id)
+            .ok_or_else(|| EnvironmentError::UnknownActor {
+                actor_id: actor_id.to_string(),
+            })?;
+        if actor.presence != EnvironmentActorPresence::Present {
+            return Err(EnvironmentError::UnknownActor {
+                actor_id: actor_id.to_string(),
+            });
+        }
+        self.validate_pointer_update(runtime_generation, viewport_revision, position)?;
+        self.apply_pointer(actor_id, viewport_revision, position);
+        Ok(())
+    }
+
+    pub fn update_pointer_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<(), EnvironmentError> {
+        if let Some(existing) = self.actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        self.validate_pointer_update(runtime_generation, viewport_revision, position)?;
+        let actor_id = actor.actor_id.clone();
+        if position.is_none() && !self.pointers.contains_key(&actor_id) {
+            return Ok(());
+        }
+        self.register_actor(actor)?;
+        self.apply_pointer(&actor_id, viewport_revision, position);
+        Ok(())
+    }
+
+    fn validate_pointer_update(
+        &self,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+        if runtime_generation != self.runtime_generation {
+            return Err(EnvironmentError::StaleRuntimeGeneration {
+                expected: self.runtime_generation,
+                actual: runtime_generation,
+            });
+        }
+        if viewport_revision != self.viewport.revision {
+            return Err(EnvironmentError::StaleViewportRevision {
+                expected: self.viewport.revision,
+                actual: viewport_revision,
+            });
+        }
+        if let Some(position) = position {
+            if position.x >= self.viewport.desktop_pixel_width
+                || position.y >= self.viewport.desktop_pixel_height
+            {
+                return Err(EnvironmentError::PointerOutOfBounds {
+                    x: position.x,
+                    y: position.y,
+                    width: self.viewport.desktop_pixel_width,
+                    height: self.viewport.desktop_pixel_height,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_pointer(
+        &mut self,
+        actor_id: &str,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) {
+        let changed = match position {
+            Some(position) => {
+                let pointer = EnvironmentPointer {
+                    actor_id: actor_id.to_string(),
+                    x: position.x,
+                    y: position.y,
+                    viewport_revision,
+                };
+                if self.pointers.get(actor_id) == Some(&pointer) {
+                    false
+                } else {
+                    self.pointers.insert(actor_id.to_string(), pointer);
+                    true
+                }
+            }
+            None => self.pointers.remove(actor_id).is_some(),
+        };
+        if changed {
+            self.emit(EnvironmentEventKind::PointersChanged);
+        }
     }
 
     pub fn update_component_health(
@@ -386,6 +534,7 @@ impl RoomEnvironment {
         replacement.revision = self.viewport.revision + 1;
         replacement.last_actor_id = Some(actor_id.to_string());
         self.viewport = replacement;
+        self.clear_pointers();
         self.emit(EnvironmentEventKind::ViewportChanged {
             revision: self.viewport.revision,
         });
@@ -715,6 +864,7 @@ impl RoomEnvironment {
         self.runtime_generation += 1;
         self.lifecycle = EnvironmentLifecycle::Starting;
         self.tabs.clear();
+        self.clear_pointers();
         self.element_references.clear();
         self.health = default_component_health();
         let failed_action_ids = self.action_ledger.invalidate_runtime();
@@ -739,6 +889,19 @@ impl RoomEnvironment {
             self.emit_action_changed(&action_id, EnvironmentActionState::Running);
         }
         self.action_ledger.compact_terminal_actions();
+    }
+
+    fn clear_pointers(&mut self) {
+        if !self.pointers.is_empty() {
+            self.pointers.clear();
+            self.emit(EnvironmentEventKind::PointersChanged);
+        }
+    }
+
+    fn remove_pointer(&mut self, actor_id: &str) {
+        if self.pointers.remove(actor_id).is_some() {
+            self.emit(EnvironmentEventKind::PointersChanged);
+        }
     }
 
     fn emit(&mut self, kind: EnvironmentEventKind) {

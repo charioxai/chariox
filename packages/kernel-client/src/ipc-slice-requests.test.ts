@@ -15,7 +15,7 @@ test("legacy slice creation does not add a backend field", () => {
 })
 
 test("Room display admission sends the attachment and viewer identity in protocol 293", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 294)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
   assert.deepEqual(
     getSliceDisplayEndpointRequest("slice-1", {
       sessionId: "room-1",

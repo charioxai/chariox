@@ -71,6 +71,21 @@ pub struct UpdateRoomEnvironmentViewportRequest {
     pub viewport: RoomEnvironmentViewportRequest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomEnvironmentPointerPositionRequest {
+    pub x: u32,
+    pub y: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRoomEnvironmentPointerRequest {
+    pub session_id: String,
+    pub runtime_generation: u64,
+    pub viewport_revision: u64,
+    #[serde(default)]
+    pub pointer: Option<RoomEnvironmentPointerPositionRequest>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestRoomEnvironmentInputTakeoverRequest {
     pub session_id: String,

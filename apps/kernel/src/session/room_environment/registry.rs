@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use super::{
     ActionAdmission, CanonicalViewport, EnvironmentActionRequest, EnvironmentActionTerminal,
     EnvironmentActor, EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, EnvironmentReplay, EnvironmentTabObservation, RoomEnvironment,
-    RoomEnvironmentSnapshot,
+    EnvironmentLifecycle, EnvironmentPointerPosition, EnvironmentReplay, EnvironmentTabObservation,
+    RoomEnvironment, RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -185,6 +185,29 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         environment.update_viewport_as_actor(actor, expected_revision, viewport)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn update_pointer_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.update_pointer_as_actor(
+            actor,
+            runtime_generation,
+            viewport_revision,
+            position,
+        )?;
         Ok(environment.snapshot())
     }
 

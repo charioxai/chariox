@@ -122,6 +122,25 @@ impl KernelRuntimeState {
             )
     }
 
+    pub(crate) fn update_room_environment_pointer_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<crate::session::EnvironmentPointerPosition>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .update_room_environment_pointer_as_actor(
+                session_id,
+                actor,
+                runtime_generation,
+                viewport_revision,
+                position,
+            )
+    }
+
     pub(crate) fn reconcile_room_environment_actors(
         &self,
         session_id: &str,

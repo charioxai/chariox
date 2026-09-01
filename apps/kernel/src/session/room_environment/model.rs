@@ -72,12 +72,33 @@ pub enum EnvironmentActorPresence {
     Disconnected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentActorColor {
+    Blue,
+    Cyan,
+    Green,
+    Amber,
+    Orange,
+    Rose,
+    Violet,
+    Slate,
+}
+
+impl Default for EnvironmentActorColor {
+    fn default() -> Self {
+        Self::Slate
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentActor {
     pub actor_id: String,
     pub kind: EnvironmentActorKind,
     pub display_label: String,
     pub presence: EnvironmentActorPresence,
+    #[serde(default)]
+    pub presentation_color: EnvironmentActorColor,
 }
 
 impl EnvironmentActor {
@@ -86,13 +107,32 @@ impl EnvironmentActor {
         kind: EnvironmentActorKind,
         display_label: impl Into<String>,
     ) -> Self {
+        let actor_id = actor_id.into();
         Self {
-            actor_id: actor_id.into(),
+            presentation_color: actor_presentation_color(&actor_id),
+            actor_id,
             kind,
             display_label: display_label.into(),
             presence: EnvironmentActorPresence::Present,
         }
     }
+}
+
+fn actor_presentation_color(actor_id: &str) -> EnvironmentActorColor {
+    const COLORS: [EnvironmentActorColor; 8] = [
+        EnvironmentActorColor::Blue,
+        EnvironmentActorColor::Cyan,
+        EnvironmentActorColor::Green,
+        EnvironmentActorColor::Amber,
+        EnvironmentActorColor::Orange,
+        EnvironmentActorColor::Rose,
+        EnvironmentActorColor::Violet,
+        EnvironmentActorColor::Slate,
+    ];
+    let hash = actor_id.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    COLORS[hash as usize % COLORS.len()]
 }
 
 pub fn human_environment_actor_id(user_id: &str) -> String {
@@ -145,6 +185,8 @@ pub struct RoomEnvironmentSnapshot {
     pub health: Vec<EnvironmentComponentHealth>,
     pub viewport: CanonicalViewport,
     pub actors: Vec<EnvironmentActor>,
+    #[serde(default)]
+    pub pointers: Vec<EnvironmentPointer>,
     pub tabs: Vec<EnvironmentTab>,
     pub focused_tab_id: Option<String>,
     pub actions: Vec<EnvironmentAction>,
@@ -152,6 +194,20 @@ pub struct RoomEnvironmentSnapshot {
     #[serde(default)]
     pub pending_input_takeovers: Vec<PendingInputTakeover>,
     pub event_cursor: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentPointerPosition {
+    pub x: u32,
+    pub y: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentPointer {
+    pub actor_id: String,
+    pub x: u32,
+    pub y: u32,
+    pub viewport_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

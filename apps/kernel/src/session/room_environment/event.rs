@@ -23,6 +23,7 @@ pub enum EnvironmentEventKind {
         revision: u64,
     },
     ActorsChanged,
+    PointersChanged,
     InputOwnershipChanged,
     ActionChanged {
         action_id: String,
