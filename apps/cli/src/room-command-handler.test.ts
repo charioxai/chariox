@@ -166,7 +166,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID",
+    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
@@ -338,6 +338,105 @@ test("/room cancel renders every authoritative cancellation outcome", async () =
       new RegExp(`^Room action action-7 ${expected}\\nRoom environment environment-1`),
     )
   }
+})
+
+test("/room save uses the bound Environment slice and preserves the requested lifecycle", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (Object.prototype.hasOwnProperty.call(request, "GetRoomEnvironmentSlice")) {
+        return {
+          RoomEnvironmentSlice: {
+            binding: {
+              session_id: "session-1",
+              slice_id: "slice-1",
+              owner_kernel_id: "kernel-home",
+              worker_kernel_ref: "kernel-worker",
+            },
+          },
+        } as TResponse
+      }
+      return {
+        SliceStateSaved: {
+          slice: {
+            id: "slice-1",
+            name: "desktop",
+          },
+          state: {
+            id: "state-1",
+            image_ref: "chariox/slice-state:state-1",
+            home_archive_path: "/var/lib/chariox/states/state-1-home.tar.zst",
+          },
+        },
+      } as TResponse
+    },
+    appendNotice: (notice: string) => notices.push(notice),
+    flashFooter: () => undefined,
+  }
+  const restart = parseSlashCommand("/room save restart")
+  const shutdown = parseSlashCommand("/room save shutdown")
+  assert.equal(restart?.kind, "room")
+  assert.equal(shutdown?.kind, "room")
+
+  await handleRoomSlashCommand(deps, restart)
+  await handleRoomSlashCommand(deps, shutdown)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    {
+      SaveSliceState: {
+        slice_ref: "slice-1",
+        mode: "restart_agents",
+        scope: "this_slice",
+      },
+    },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    {
+      SaveSliceState: {
+        slice_ref: "slice-1",
+        mode: "shutdown",
+        scope: "this_slice",
+      },
+    },
+  ])
+  assert.deepEqual(notices, [
+    "saved slice state desktop (slice-1)\nstate=state-1\nimage=chariox/slice-state:state-1\nhome_archive=/var/lib/chariox/states/state-1-home.tar.zst",
+    "saved slice state desktop (slice-1)\nstate=state-1\nimage=chariox/slice-state:state-1\nhome_archive=/var/lib/chariox/states/state-1-home.tar.zst",
+  ])
+})
+
+test("/room save rejects invalid modes and an Environment without a bound slice", async () => {
+  const requests: unknown[] = []
+  const flashes: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return { RoomEnvironmentSlice: { binding: null } } as TResponse
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message: string) => flashes.push(message),
+  }
+  const invalid = parseSlashCommand("/room save later")
+  const unbound = parseSlashCommand("/room save restart")
+  assert.equal(invalid?.kind, "room")
+  assert.equal(unbound?.kind, "room")
+
+  await handleRoomSlashCommand(deps, invalid)
+  await handleRoomSlashCommand(deps, unbound)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
+  assert.deepEqual(flashes, [
+    "usage: /room save restart|shutdown",
+    "Room Environment has no bound slice to save",
+  ])
 })
 
 function roomEnvironment(): RoomEnvironmentSnapshot {
