@@ -60,6 +60,145 @@ fn lifecycle_rejects_unsafe_transitions_and_invalid_viewports() {
 }
 
 #[test]
+fn pointer_presence_is_actor_scoped_viewport_guarded_and_cleared_on_disconnect() {
+    let mut environment = ready_environment();
+    let actor = EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Miguel");
+    let presentation_color = actor.presentation_color;
+    assert_eq!(presentation_color, EnvironmentActorColor::Orange);
+    assert_eq!(
+        presentation_color,
+        EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Renamed").presentation_color
+    );
+    environment.register_actor(actor).unwrap();
+    let event_cursor = environment.snapshot().event_cursor;
+
+    environment
+        .update_pointer(
+            "user-1",
+            1,
+            1,
+            Some(EnvironmentPointerPosition { x: 320, y: 180 }),
+        )
+        .expect("present Actor should publish a pointer in the current viewport");
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot.pointers,
+        vec![EnvironmentPointer {
+            actor_id: "user-1".to_string(),
+            x: 320,
+            y: 180,
+            viewport_revision: 1,
+        }]
+    );
+    assert!(snapshot.actions.is_empty());
+    assert!(snapshot.input_ownership.is_empty());
+    assert!(matches!(
+        environment.events_after(event_cursor),
+        EnvironmentReplay::Events { events, .. }
+            if matches!(events.as_slice(), [EnvironmentEvent {
+                kind: EnvironmentEventKind::PointersChanged,
+                ..
+            }])
+    ));
+    assert_eq!(
+        environment.update_pointer(
+            "user-1",
+            1,
+            2,
+            Some(EnvironmentPointerPosition { x: 321, y: 180 }),
+        ),
+        Err(EnvironmentError::StaleViewportRevision {
+            expected: 1,
+            actual: 2,
+        })
+    );
+
+    environment
+        .set_actor_presence("user-1", EnvironmentActorPresence::Disconnected)
+        .unwrap();
+    assert!(environment.snapshot().pointers.is_empty());
+}
+
+#[test]
+fn clearing_an_absent_pointer_does_not_register_actor_presence() {
+    let mut environment = ready_environment();
+    let event_cursor = environment.snapshot().event_cursor;
+
+    environment
+        .update_pointer_as_actor(
+            EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Miguel"),
+            1,
+            1,
+            None,
+        )
+        .expect("clearing absent pointer presence should be idempotent");
+
+    let snapshot = environment.snapshot();
+    assert!(snapshot.actors.is_empty());
+    assert!(snapshot.pointers.is_empty());
+    assert_eq!(snapshot.event_cursor, event_cursor);
+}
+
+#[test]
+fn pointer_motion_coalesces_without_crowding_room_events_out_of_replay() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment =
+        RoomEnvironment::new_with_event_capacity("room-1", "environment-1", viewport, 3).unwrap();
+    environment.start_runtime().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "user-1",
+            EnvironmentActorKind::Human,
+            "Miguel",
+        ))
+        .unwrap();
+    let cursor = environment.snapshot().event_cursor;
+
+    for x in 10..20 {
+        environment
+            .update_pointer_as_actor(
+                EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Miguel"),
+                1,
+                1,
+                Some(EnvironmentPointerPosition { x, y: 180 }),
+            )
+            .unwrap();
+    }
+    environment.update_component_health(
+        EnvironmentComponent::Streamer,
+        EnvironmentComponentHealthState::Ready,
+        None,
+    );
+    for x in 20..30 {
+        environment
+            .update_pointer_as_actor(
+                EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Miguel"),
+                1,
+                1,
+                Some(EnvironmentPointerPosition { x, y: 180 }),
+            )
+            .unwrap();
+    }
+
+    assert!(matches!(
+        environment.events_after(cursor),
+        EnvironmentReplay::Events { events, .. }
+            if matches!(
+                events.as_slice(),
+                [
+                    EnvironmentEvent { kind: EnvironmentEventKind::PointersChanged, .. },
+                    EnvironmentEvent { kind: EnvironmentEventKind::HealthChanged, .. },
+                    EnvironmentEvent { kind: EnvironmentEventKind::PointersChanged, .. },
+                ]
+            )
+    ));
+    assert_eq!(environment.snapshot().pointers[0].x, 29);
+}
+
+#[test]
 fn tab_identity_survives_reconciliation_and_navigation_invalidates_old_references() {
     let mut environment = ready_environment();
     let tab_id = environment

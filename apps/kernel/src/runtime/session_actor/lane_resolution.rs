@@ -68,6 +68,9 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

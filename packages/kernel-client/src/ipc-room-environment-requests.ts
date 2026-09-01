@@ -87,6 +87,27 @@ export function updateRoomEnvironmentViewportRequest(
   }
 }
 
+export type RoomEnvironmentPointerPositionRequest = {
+  x: number
+  y: number
+}
+
+export function updateRoomEnvironmentPointerRequest(
+  sessionId: string,
+  runtimeGeneration: number,
+  viewportRevision: number,
+  pointer: RoomEnvironmentPointerPositionRequest | null,
+) {
+  return {
+    UpdateRoomEnvironmentPointer: {
+      session_id: sessionId,
+      runtime_generation: runtimeGeneration,
+      viewport_revision: viewportRevision,
+      pointer,
+    },
+  }
+}
+
 export function requestRoomEnvironmentInputTakeoverRequest(
   sessionId: string,
   target: import("./kernel-types-environment.js").RoomEnvironmentInputTarget,

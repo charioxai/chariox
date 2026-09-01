@@ -988,6 +988,99 @@ fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
 }
 
 #[test]
+fn room_environment_pointer_update_uses_authenticated_actor_and_clears_presence() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-environment-pointer",
+                "worktree-environment-pointer",
+            ),
+        ))
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::StartRoomEnvironment(
+            StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        ))
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("managed runtime should become ready");
+    });
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::UpdateRoomEnvironmentPointer(
+            UpdateRoomEnvironmentPointerRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: 1,
+                viewport_revision: 1,
+                pointer: Some(RoomEnvironmentPointerPositionRequest { x: 320, y: 180 }),
+            },
+        ))
+        .expect("authenticated Room member should publish pointer presence");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = response else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let expected_actor_id =
+        crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID);
+    assert_eq!(environment.pointers.len(), 1);
+    assert_eq!(environment.pointers[0].actor_id, expected_actor_id);
+    assert_eq!(
+        (environment.pointers[0].x, environment.pointers[0].y),
+        (320, 180)
+    );
+    assert!(environment.actions.is_empty());
+    assert!(environment.input_ownership.is_empty());
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::UpdateRoomEnvironmentPointer(
+            UpdateRoomEnvironmentPointerRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: 1,
+                viewport_revision: 2,
+                pointer: Some(RoomEnvironmentPointerPositionRequest { x: 321, y: 180 }),
+            },
+        ))
+        .expect_err("a stale pointer viewport must fail closed");
+    match error {
+        DaemonError::LocalTransport { operation, message } => {
+            assert_eq!(operation, "environment.pointer.update");
+            assert!(message.starts_with("environment_stale_viewport_revision:"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::UpdateRoomEnvironmentPointer(
+            UpdateRoomEnvironmentPointerRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: 1,
+                viewport_revision: 1,
+                pointer: None,
+            },
+        ))
+        .expect("mouse leave should clear authenticated pointer presence");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = response else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert!(environment.pointers.is_empty());
+}
+
+#[test]
 fn room_environment_start_rejects_invalid_initial_viewport_with_stable_code() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

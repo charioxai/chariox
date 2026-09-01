@@ -77,6 +77,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(_) => "environment.pointer.update",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
@@ -124,8 +125,9 @@ mod tests {
         CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
         GetRoomEnvironmentStateRequest, ListRoomEnvironmentActionHistoryRequest,
         ReleaseRoomEnvironmentInputRequest, RequestRoomEnvironmentInputTakeoverRequest,
-        RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest,
-        StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
+        RetryRoomEnvironmentRequest, RoomEnvironmentPointerPositionRequest,
+        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+        UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
     };
 
     #[test]
@@ -274,6 +276,19 @@ mod tests {
         );
 
         assert_eq!(relay_request_kind(&request), "environment.viewport.update");
+    }
+
+    #[test]
+    fn room_environment_pointer_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::UpdateRoomEnvironmentPointer(UpdateRoomEnvironmentPointerRequest {
+                session_id: "session-1".to_string(),
+                runtime_generation: 1,
+                viewport_revision: 2,
+                pointer: Some(RoomEnvironmentPointerPositionRequest { x: 320, y: 180 }),
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.pointer.update");
     }
 
     #[test]

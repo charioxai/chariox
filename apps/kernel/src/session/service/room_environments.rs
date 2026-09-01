@@ -171,6 +171,28 @@ impl SessionService {
         )
     }
 
+    pub(crate) fn update_room_environment_pointer_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<crate::session::EnvironmentPointerPosition>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.update_pointer_as_actor(
+            session_id,
+            actor,
+            runtime_generation,
+            viewport_revision,
+            position,
+        )
+    }
+
     pub(crate) fn reconcile_room_environment_actors(
         &mut self,
         session_id: &str,

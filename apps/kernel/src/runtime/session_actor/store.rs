@@ -7,8 +7,8 @@ use crate::local::{
     ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    SubmitRoomEnvironmentActionRequest, UpdateRoomEnvironmentViewportRequest,
-    UpdateSessionConfigRequest,
+    SubmitRoomEnvironmentActionRequest, UpdateRoomEnvironmentPointerRequest,
+    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -244,6 +244,39 @@ impl SessionRuntimeStore {
             other => other,
         }
         .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
+        (result, None)
+    }
+
+    pub(super) async fn update_room_environment_pointer(
+        &self,
+        request: UpdateRoomEnvironmentPointerRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let position = request
+            .pointer
+            .map(|pointer| crate::session::EnvironmentPointerPosition {
+                x: pointer.x,
+                y: pointer.y,
+            });
+        let result = self
+            .state
+            .update_room_environment_pointer_as_actor(
+                &request.session_id,
+                actor,
+                request.runtime_generation,
+                request.viewport_revision,
+                position,
+            )
+            .map_err(|error| room_environment_control_error("environment.pointer.update", error))
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
         (result, None)
     }
 

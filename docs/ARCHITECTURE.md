@@ -526,6 +526,8 @@ The kernel accepts or rejects viewport requests. While a user owns desktop input
 
 #### Actors, Actions, and input ordering
 
+Actor presence is kernel-owned ephemeral Room state. Protocol v295 assigns each Actor a stable semantic presentation color derived from the Actor ID and projects at most one desktop-pixel pointer per Actor. An authenticated pointer update carries the runtime generation, viewport revision, and optional coordinates. The session lane supplies the Actor identity. Presence does not create an Action or grant input ownership. The kernel removes the pointer when the Actor disconnects, the canonical viewport changes, the runtime is invalidated, or the Environment stops or fails. Consecutive pointer events coalesce in replay storage so mouse motion cannot crowd lifecycle, health, ownership, or Action events out of the bounded log. The overlay belongs above the display stream in Chariox clients, never in webpage DOM.
+
 Every Browser or Computer Action records:
 
 - Action, Actor, Room, and Environment identity

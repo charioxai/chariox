@@ -1,7 +1,7 @@
 use super::*;
 use crate::session::{
     CanonicalViewport, EnvironmentAction, EnvironmentActionState, EnvironmentActor,
-    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentActorColor, EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentEvent,
     EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab,
     InputOwnership, InputTarget, RoomEnvironmentSnapshot,
@@ -9,7 +9,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -50,7 +50,9 @@ fn room_environment_state_shape_is_versioned() {
                 kind: EnvironmentActorKind::Agent,
                 display_label: "Browser agent".to_string(),
                 presence: EnvironmentActorPresence::Present,
+                presentation_color: EnvironmentActorColor::Blue,
             }],
+            pointers: Vec::new(),
             tabs: vec![EnvironmentTab {
                 tab_id: "tab-1".to_string(),
                 url: "https://example.test/".to_string(),
@@ -133,8 +135,10 @@ fn room_environment_state_shape_is_versioned() {
                         "actor_id": "agent-1",
                         "kind": "agent",
                         "display_label": "Browser agent",
-                        "presence": "present"
+                        "presence": "present",
+                        "presentation_color": "blue"
                     }],
+                    "pointers": [],
                     "tabs": [{
                         "tab_id": "tab-1",
                         "url": "https://example.test/",
@@ -209,6 +213,16 @@ fn room_environment_state_shape_is_versioned() {
         .expect("Room Environment snapshot should be an object")
         .remove("pending_input_takeovers");
     previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment snapshot should be an object")
+        .remove("pointers");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment/actors/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment Actor should be an object")
+        .remove("presentation_color");
+    previous_protocol_value
         .pointer_mut("/RoomEnvironmentState/environment/actions/0")
         .and_then(serde_json::Value::as_object_mut)
         .expect("Room Environment Action should be an object")
@@ -237,6 +251,11 @@ fn room_environment_state_shape_is_versioned() {
         panic!("expected Room Environment state response");
     };
     assert!(environment.pending_input_takeovers.is_empty());
+    assert!(environment.pointers.is_empty());
+    assert_eq!(
+        environment.actors[0].presentation_color,
+        EnvironmentActorColor::Slate
+    );
     assert_eq!(environment.actions[0].sequence, 0);
     assert!(!environment.actions[0].cancellation_requested);
     assert_eq!(environment.actions[0].submitted_at_ms, 0);
@@ -268,7 +287,7 @@ fn room_environment_state_shape_is_versioned() {
 
 #[test]
 fn room_environment_event_replay_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
         session_id: "session-1".to_string(),
@@ -378,7 +397,7 @@ fn room_environment_event_replay_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_history_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
         ListRoomEnvironmentActionHistoryRequest {
@@ -462,7 +481,7 @@ fn room_environment_action_history_shape_is_versioned() {
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -506,6 +525,7 @@ fn room_environment_start_shape_is_versioned() {
             viewport: CanonicalViewport::new(1280, 800, 2, 2560, 1600)
                 .expect("viewport should be valid"),
             actors: Vec::new(),
+            pointers: Vec::new(),
             tabs: Vec::new(),
             focused_tab_id: None,
             actions: Vec::new(),
@@ -534,6 +554,7 @@ fn room_environment_start_shape_is_versioned() {
                         "last_actor_id": null
                     },
                     "actors": [],
+                    "pointers": [],
                     "tabs": [],
                     "focused_tab_id": null,
                     "actions": [],
@@ -548,7 +569,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -571,7 +592,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -594,7 +615,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -633,8 +654,46 @@ fn room_environment_viewport_update_shape_is_versioned() {
 }
 
 #[test]
+fn room_environment_pointer_update_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
+
+    let request =
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(UpdateRoomEnvironmentPointerRequest {
+            session_id: "session-1".to_string(),
+            runtime_generation: 3,
+            viewport_revision: 7,
+            pointer: Some(RoomEnvironmentPointerPositionRequest { x: 320, y: 180 }),
+        });
+    let value = serde_json::json!({
+        "UpdateRoomEnvironmentPointer": {
+            "session_id": "session-1",
+            "runtime_generation": 3,
+            "viewport_revision": 7,
+            "pointer": {
+                "x": 320,
+                "y": 180
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("pointer presence request should encode"),
+        value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(value)
+            .expect("pointer presence request should decode"),
+        request
+    );
+    assert_eq!(
+        serde_json::to_value(EnvironmentEventKind::PointersChanged)
+            .expect("pointer presence event should encode"),
+        serde_json::json!("PointersChanged")
+    );
+}
+
+#[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -671,6 +730,7 @@ fn room_environment_takeover_shape_is_versioned() {
             viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
                 .expect("viewport should be valid"),
             actors: Vec::new(),
+            pointers: Vec::new(),
             tabs: Vec::new(),
             focused_tab_id: None,
             actions: Vec::new(),
@@ -702,6 +762,7 @@ fn room_environment_takeover_shape_is_versioned() {
                         "last_actor_id": null
                     },
                     "actors": [],
+                    "pointers": [],
                     "tabs": [],
                     "focused_tab_id": null,
                     "actions": [],
@@ -716,7 +777,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
@@ -751,6 +812,7 @@ fn room_environment_input_release_shape_is_versioned() {
             viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
                 .expect("viewport should be valid"),
             actors: Vec::new(),
+            pointers: Vec::new(),
             tabs: Vec::new(),
             focused_tab_id: None,
             actions: Vec::new(),
@@ -774,7 +836,7 @@ fn room_environment_input_release_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_cancellation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request =
         LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
@@ -808,6 +870,7 @@ fn room_environment_action_cancellation_shape_is_versioned() {
             viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
                 .expect("viewport should be valid"),
             actors: Vec::new(),
+            pointers: Vec::new(),
             tabs: Vec::new(),
             focused_tab_id: None,
             actions: Vec::new(),
@@ -831,7 +894,7 @@ fn room_environment_action_cancellation_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_submission_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let request =
         LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
@@ -882,6 +945,7 @@ fn room_environment_action_submission_shape_is_versioned() {
             viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
                 .expect("viewport should be valid"),
             actors: Vec::new(),
+            pointers: Vec::new(),
             tabs: Vec::new(),
             focused_tab_id: None,
             actions: vec![EnvironmentAction {

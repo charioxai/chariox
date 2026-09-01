@@ -575,6 +575,8 @@ This does not require all provider adapters to use the same wire transport inter
 
 This section defines the logical contract for the Room-owned browser and graphical Environment. Local daemon protocol v269 introduces the membership-scoped `GetRoomEnvironmentState` request and `RoomEnvironmentState` response carrying the complete snapshot below. Protocol v270 adds membership-scoped `StartRoomEnvironment`, `StopRoomEnvironment`, and `RetryRoomEnvironment` requests plus the shared `RoomEnvironmentUpdated` response. Start creates the Room's default Environment on first use, keeps its identity on repeated start, and accepts only initial viewport dimensions; later start requests retain the kernel-owned viewport without validating their ignored viewport fields. Stop preserves Environment identity and runtime generation. Until the Milestone 2 managed controller reports process completion, stop records the `stopping` transition and synchronously returns the Environment as `stopped`, so start-after-stop remains available. Retry preserves Environment identity, invalidates failed runtime handles, increments runtime generation, and returns the lifecycle to `starting`. Protocol v271 adds `UpdateRoomEnvironmentViewport`. The request carries dimensions and the revision observed by the caller. It does not accept client-supplied Environment, Actor, owner, or new revision values. The session lane derives the namespaced `user:<user_id>` Actor from the authenticated caller and the kernel assigns the next revision. Protocol v272 adds membership-scoped `RequestRoomEnvironmentInputTakeover`, the `RoomEnvironmentTakeoverUpdated` response, and pending-takeover state in the shared snapshot. Protocol v273 adds membership-scoped `ReleaseRoomEnvironmentInput` and the authoritative `RoomEnvironmentInputReleased` response. Both input requests carry only the Room and target; the session lane derives the human Actor from the authenticated caller. Protocol v274 adds stable Action sequence numbers and the `queued` Action state to the shared snapshot. Protocol v275 adds membership-scoped `GetRoomEnvironmentEvents`; a client sends its last observed cursor and receives ordered events plus the next cursor, or an authoritative snapshot when the bounded replay window has a gap. Protocol v276 adds the Action `cancellation_requested` projection. Human takeover cancels queued agent work immediately and marks every blocking running Action for controller cancellation without falsely declaring it terminal. Protocol v277 adds membership-scoped `CancelRoomEnvironmentAction`; the session lane derives the human Actor, queued Actions become terminal immediately, and running Actions remain reserved until controller confirmation. Protocol v278 adds submission, start, and finish timestamps plus closed redacted terminal outcomes to every Action projection. Protocol v279 adds membership-scoped `ListRoomEnvironmentActionHistory`; pages are newest-first, use an exclusive Action sequence cursor, and remain complete when the bounded snapshot compacts terminal Actions. Rejections use stable `environment_*` error codes on the relay surface and include that code in local IPC error text. The remaining mutation and pushed-event surfaces are still design contracts. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
 
+Protocol v295 adds stable Actor presentation colors, pointer presence in the Environment snapshot, the `PointersChanged` event, and membership-scoped `UpdateRoomEnvironmentPointer`. The request carries the runtime generation, viewport revision, and either desktop-pixel coordinates or null to clear the pointer. It never accepts an Actor identity. The session lane derives the human Actor from the authenticated caller. Clearing an absent pointer is idempotent and does not register Actor presence. Pointer presence creates no Action, reservation, takeover, or input ownership. The kernel clears stale pointers when an Actor disconnects, the viewport changes, the runtime is invalidated, or the Environment stops or fails. Consecutive pointer changes supersede one another in the bounded replay log while still advancing the event cursor. Motion therefore does not evict unrelated Room events, and clients that observed the prior cursor still receive a later change.
+
 The current `session_id` is the wire identity for the product Room until a deliberate migration introduces `room_id`. New code must not create both identities for the same runtime domain. `environment_id` identifies the default shared Environment within that Room.
 
 ### Environment snapshot
@@ -921,6 +923,8 @@ Clients submit viewport requests with the revision they observed. The kernel acc
 
 Viewer-only scaling is local presentation state and does not change the canonical viewport.
 
+Pointer presence uses desktop-pixel coordinates from the canonical viewport. Each pointer carries one kernel-derived Actor ID and the viewport revision that makes its coordinates meaningful. Each Actor has one stable closed-enum presentation color derived from the Actor ID. Clients map that semantic color to their palette. They do not send CSS colors or choose another Actor's identity.
+
 ### Planned requests
 
 The smallest request set is:
@@ -930,6 +934,7 @@ The smallest request set is:
 - `environment.stop` (serialized in local daemon protocol v270)
 - `environment.retry` (serialized in local daemon protocol v270)
 - `environment.viewport.update` (serialized in local daemon protocol v271)
+- `environment.pointer.update` (serialized in local daemon protocol v295)
 - `environment.input.takeover` (serialized in local daemon protocol v272)
 - `environment.input.release` (serialized in local daemon protocol v273)
 - `environment.events.get` (serialized in local daemon protocol v275)
@@ -951,6 +956,7 @@ The smallest planned pushed-event set is:
 - `environment_tabs_changed`
 - `environment_viewport_changed`
 - `environment_presence_changed`
+- `environment_pointers_changed` (serialized as `PointersChanged` in local daemon protocol v295)
 - `environment_input_ownership_changed`
 - `environment_action_changed`
 
@@ -976,6 +982,8 @@ Process recovery follows these rules:
 
 Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. Protocol v269 clients may read the complete Environment snapshot. Protocol v270 clients may also request start, stop, and retry through the kernel-owned lifecycle lane. Protocol v271 clients may update the canonical viewport. Protocol v272 clients may request authenticated human takeover and observe pending takeover state. Protocol v273 clients may explicitly release their input target. Protocol v274 clients understand stable Action sequence numbers and queued Actions. Protocol v275 clients may replay bounded ordered Environment events or recover from a gap with an authoritative snapshot. Protocol v276 clients can distinguish a still-running Action whose controller cancellation has been requested. Protocol v277 clients may request authenticated Action cancellation. Protocol v278 clients can render the Action timeline and redacted terminal outcome without inferring completion from a controller response. Protocol v279 clients may page redacted Action history independently of the bounded hot snapshot. Protocol v294 clients may submit an attributed human pointer click after taking explicit desktop input ownership. The request carries the runtime generation, viewport revision, an opaque idempotency key, coordinates, button, and click count, but never accepts a caller-supplied Actor identity. During migration:
 
+Protocol v295 clients may render Actor colors and pointer presence and may publish or clear their authenticated pointer without gaining input ownership.
+
 - the kernel keeps the old tool names behind a compatibility adapter
 - compatibility calls still enter the kernel-owned Action path once it exists
 - an old client may observe the display but cannot claim human takeover or canonical viewport ownership
@@ -983,7 +991,7 @@ Protocol v268 clients know slice display endpoints and one-shot browser/computer
 - unknown Environment events remain ignorable only when the client's behavior stays safe
 - a client that needs takeover, Action history, stable Tabs, or canonical viewport requires the new minimum protocol version
 
-No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer; one that releases input must require v273 or newer; one that renders Action ordering or queue state must require v274 or newer; one that replays Environment events must require v275 or newer; one that renders active cancellation state must require v276 or newer; one that cancels Actions must require v277 or newer; one that renders Action timing or terminal outcomes must require v278 or newer; one that lists Action history must require v279 or newer; one that submits human Computer input must require v294 or newer.
+No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer; one that releases input must require v273 or newer; one that renders Action ordering or queue state must require v274 or newer; one that replays Environment events must require v275 or newer; one that renders active cancellation state must require v276 or newer; one that cancels Actions must require v277 or newer; one that renders Action timing or terminal outcomes must require v278 or newer; one that lists Action history must require v279 or newer; one that submits human Computer input must require v294 or newer; one that renders or publishes pointer presence must require v295 or newer.
 
 ## 4.2 Planned Command-Dispatch Surface
 

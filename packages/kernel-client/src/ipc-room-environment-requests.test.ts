@@ -14,6 +14,7 @@ import {
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
   updateRoomEnvironmentViewportRequest,
+  updateRoomEnvironmentPointerRequest,
   retryRoomEnvironmentRequest,
 } from "./ipc-room-environment-requests.js"
 import type {
@@ -34,8 +35,8 @@ test("Room Environment placement uses shared requests", () => {
   })
 })
 
-test("Room Environment state request matches protocol 290", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 294)
+test("Room Environment state request matches protocol 295", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -68,9 +69,18 @@ test("Room Environment state request matches protocol 290", () => {
         actors: [
           {
             actor_id: "human-1",
+            presentation_color: "blue",
             kind: "human",
             display_label: "Miguel",
             presence: "present",
+          },
+        ],
+        pointers: [
+          {
+            actor_id: "human-1",
+            x: 320,
+            y: 180,
+            viewport_revision: 1,
           },
         ],
         tabs: [
@@ -150,8 +160,8 @@ test("Room Environment state request matches protocol 290", () => {
   })
 })
 
-test("Room Environment event replay request matches protocol 290", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 294)
+test("Room Environment event replay request matches protocol 295", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -170,8 +180,14 @@ test("Room Environment event replay request matches protocol 290", () => {
               runtime_generation: 3,
               kind: { ViewportChanged: { revision: 7 } },
             },
+            {
+              event_id: 43,
+              environment_id: "environment-1",
+              runtime_generation: 3,
+              kind: "PointersChanged",
+            },
           ],
-          next_cursor: 42,
+          next_cursor: 43,
         },
       },
     },
@@ -185,13 +201,19 @@ test("Room Environment event replay request matches protocol 290", () => {
           runtime_generation: 3,
           kind: { ViewportChanged: { revision: 7 } },
         },
+        {
+          event_id: 43,
+          environment_id: "environment-1",
+          runtime_generation: 3,
+          kind: "PointersChanged",
+        },
       ],
-      next_cursor: 42,
+      next_cursor: 43,
     },
   })
 })
 
-test("Room Environment Action history request matches protocol 290", () => {
+test("Room Environment Action history request matches protocol 295", () => {
   assert.deepEqual(listRoomEnvironmentActionHistoryRequest("session-1", 42, 25), {
     ListRoomEnvironmentActionHistory: {
       session_id: "session-1",
@@ -252,6 +274,7 @@ test("Room Environment start request keeps viewport ownership at the kernel seam
           last_actor_id: null,
         },
         actors: [],
+        pointers: [],
         tabs: [],
         focused_tab_id: null,
         actions: [],
@@ -309,6 +332,26 @@ test("Room Environment viewport update carries only dimensions and observed revi
   )
 })
 
+test("Room Environment pointer update carries observed generations but no Actor identity", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
+  assert.deepEqual(updateRoomEnvironmentPointerRequest("session-1", 3, 7, { x: 320, y: 180 }), {
+    UpdateRoomEnvironmentPointer: {
+      session_id: "session-1",
+      runtime_generation: 3,
+      viewport_revision: 7,
+      pointer: { x: 320, y: 180 },
+    },
+  })
+  assert.deepEqual(updateRoomEnvironmentPointerRequest("session-1", 3, 7, null), {
+    UpdateRoomEnvironmentPointer: {
+      session_id: "session-1",
+      runtime_generation: 3,
+      viewport_revision: 7,
+      pointer: null,
+    },
+  })
+})
+
 test("Room Environment takeover request cannot forge Actor identity", () => {
   assert.deepEqual(
     requestRoomEnvironmentInputTakeoverRequest("session-1", { kind: "desktop" }),
@@ -348,7 +391,7 @@ test("Room Environment Action cancellation request cannot forge Actor identity",
 })
 
 test("Room Environment pointer click submission carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 294)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
   assert.deepEqual(
     submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-1", {
       kind: "pointer_click",
