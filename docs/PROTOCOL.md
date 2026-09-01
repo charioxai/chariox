@@ -664,7 +664,7 @@ Queue and reservation waits have bounded deadlines. Cancellation and process los
 
 ### Human takeover
 
-Takeover requests identify the Room and input target. The kernel derives the human Actor from the authenticated session caller; clients cannot claim another Actor identity. When no agent Action reserves the target, the response is `granted` and its authoritative snapshot shows the human owner. When an active agent Action blocks takeover, the response is `cancellation_required`; its snapshot projects the pending human Actor and blocking Action IDs, and each blocking Action projects `cancellation_requested` until the controller reports a terminal state. A later response may report `granted` only after every blocking Action has reached `cancelled`, `failed`, or `completed` and the target belongs to the human Actor.
+Takeover requests identify the Room and input target. The kernel derives the human Actor from the authenticated session caller; clients cannot claim another Actor identity. When no agent Action reserves the target, the response is `granted` and its authoritative snapshot shows the human owner. When an active agent Action blocks takeover, the response is `cancellation_required`; its snapshot projects the pending human Actor and blocking Action IDs, and each blocking Action projects `cancellation_requested` until the controller reports a terminal state. If the controller confirms cancellation, the terminal outcome records `human_takeover`, while an explicit Action-cancel request records `requested`. A later response may report `granted` only after every blocking Action has reached `cancelled`, `failed`, or `completed` and the target belongs to the human Actor. A queued Action from the new human owner starts as soon as the blocking Action is terminal; takeover ownership must not block that same Actor's queued work.
 
 Takeover emits ordered Action and ownership events. Every attached client projects the same transition. A takeover request is idempotent for the same Actor and target. A conflicting human request follows Room permission policy rather than last-writer-wins behavior.
 
@@ -724,6 +724,8 @@ Each event carries `session_id`, `environment_id`, `runtime_generation`, and the
 ### Recovery and history
 
 Action history is kernel-owned and append-only. History entries use the Action envelope plus safe diagnostic and artifact references. Raw display frames, screenshots, DOM snapshots, network bodies, clipboard values, and secrets are not embedded in the ledger. Their bounded artifacts follow Room permissions and retention policy.
+
+The Milestone 1 implementation retains complete Action history and idempotency records in memory so snapshot compaction cannot make a completed physical mutation repeatable. This is not the production retention implementation. Before the local persistence gate closes, the kernel must append these records to `OperationalHistoryStore`, retain only a bounded hot ledger in the Environment, and prove that paging and idempotent replay cross the hot-store boundary without repeating an Action. A lossy in-memory cap is forbidden because evicting an idempotency record could turn a response-loss retry into a second physical mutation.
 
 After reconnect, a client resumes from its last kernel event cursor. Replay preserves Action order and terminal state. After a replay gap, the client discards optimistic Actions and applies one full snapshot. It must not resubmit an Action unless the kernel reports that the original idempotency key is unknown or retryable.
 

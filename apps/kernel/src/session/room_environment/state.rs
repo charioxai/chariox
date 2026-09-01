@@ -611,10 +611,13 @@ impl RoomEnvironment {
     }
 
     fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
-        let action = self
-            .action_ledger
-            .action(action_id)
-            .expect("Action change must reference an Action in the ledger");
+        let Some(action) = self.action_ledger.action(action_id) else {
+            debug_assert!(
+                false,
+                "Action change must reference an Action in the ledger"
+            );
+            return;
+        };
         debug_assert_eq!(action.state, state);
         let cancellation_requested = action.cancellation_requested;
         let submitted_at_ms = action.submitted_at_ms;

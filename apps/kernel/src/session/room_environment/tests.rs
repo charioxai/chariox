@@ -755,7 +755,7 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
     assert_eq!(
         cancelled_running.outcome,
         Some(EnvironmentActionOutcome::Cancelled {
-            reason: EnvironmentActionCancellationReason::Requested,
+            reason: EnvironmentActionCancellationReason::HumanTakeover,
         })
     );
     let cancelled_queued = snapshot
@@ -829,6 +829,65 @@ fn only_the_authenticated_owner_can_release_input() {
             target: InputTarget::Desktop,
             actor_id: "user-1".to_string(),
         }]
+    );
+}
+
+#[test]
+fn human_takeover_promotes_the_new_owners_queued_action() {
+    let mut environment = ready_environment_with_agent();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "user-1",
+            EnvironmentActorKind::Human,
+            "Miguel",
+        ))
+        .unwrap();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let agent_action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "fill", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+    let human_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "user-1", 1, "click", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+
+    assert_eq!(
+        environment
+            .request_takeover("user-1", InputTarget::BrowserTab(tab_id.clone()))
+            .unwrap(),
+        TakeoverOutcome::CancellationRequired {
+            action_ids: vec![agent_action_id.clone()],
+        }
+    );
+    environment
+        .finish_action(&agent_action_id, EnvironmentActionTerminal::Cancelled)
+        .unwrap();
+
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot.input_ownership,
+        vec![InputOwnership {
+            target: InputTarget::BrowserTab(tab_id),
+            actor_id: "user-1".to_string(),
+        }]
+    );
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == human_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
     );
 }
 
