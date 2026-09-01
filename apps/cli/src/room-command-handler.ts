@@ -36,11 +36,24 @@ type SliceStateSavedResponse = {
   }
 }
 
+export type RoomViewerTarget = {
+  sessionId: string
+  agentId: string
+  sliceId: string
+}
+
+export type RoomViewerOpenResult = {
+  url: string
+  opened: boolean
+}
+
 export type RoomCommandHandlerDeps = {
   isAttached: () => boolean
   sessionId: () => string
+  focusedAgentId?: () => string | null
   send: <TResponse>(request: unknown) => Promise<TResponse>
   reconnectEventStream?: () => Promise<boolean>
+  openViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
   appendNotice: (notice: string) => void
   flashFooter: (message: string, tone: "info" | "error") => void
 }
@@ -50,7 +63,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "start", "stop", "retry", "reconnect", "takeover", "release", "cancel", "save"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "start", "stop", "retry", "reconnect", "view", "takeover", "release", "cancel", "save"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -103,6 +116,39 @@ export async function handleRoomSlashCommand(
       return
     }
     deps.appendNotice("Room reconnect requested; events will resume from the last received event.")
+    return
+  }
+  if (subcommand === "view") {
+    const agentId = deps.focusedAgentId?.()
+    if (!agentId) {
+      deps.flashFooter("focus an agent before opening the Room Environment", "error")
+      return
+    }
+    const bindingResponse = await deps.send<RoomEnvironmentSliceResponse>(
+      getRoomEnvironmentSliceRequest(sessionId),
+    )
+    if (!bindingResponse || typeof bindingResponse !== "object" || !("RoomEnvironmentSlice" in bindingResponse)) {
+      throw new Error("Room Environment slice response is malformed")
+    }
+    const binding = bindingResponse.RoomEnvironmentSlice.binding
+    if (!binding) {
+      deps.flashFooter("Room Environment has no bound slice to view", "error")
+      return
+    }
+    const opened = await deps.openViewer?.({
+      sessionId,
+      agentId,
+      sliceId: binding.slice_id,
+    })
+    if (!opened) {
+      deps.flashFooter("Chariox Cloud Web View is not configured; run /cloud link first", "error")
+      return
+    }
+    deps.appendNotice([
+      "Opening Room Environment in Chariox Cloud.",
+      `url=${opened.url}`,
+      opened.opened ? "browser=opened" : "browser=manual",
+    ].join("\n"))
     return
   }
   if (!subcommand || subcommand === "status" || subcommand === "show") {
@@ -229,7 +275,7 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomStartUsage(): string {

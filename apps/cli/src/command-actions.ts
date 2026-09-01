@@ -154,6 +154,7 @@ type CommandActionDeps =
   appendNotice: (message: string) => void
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
+  openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -310,10 +311,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleRoomSlashCommand({
       isAttached: deps.isAttached,
       sessionId: () => deps.sessionState().id,
+      focusedAgentId: deps.focusedAgentId,
       send: deps.sendRoomEnvironmentRequest,
       ...(deps.reconnectRoomEventStream
         ? { reconnectEventStream: deps.reconnectRoomEventStream }
         : {}),
+      ...(deps.openRoomViewer ? { openViewer: deps.openRoomViewer } : {}),
       appendNotice: deps.appendNotice,
       flashFooter: deps.flashFooter,
     }, command)

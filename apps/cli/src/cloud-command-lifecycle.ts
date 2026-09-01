@@ -75,6 +75,15 @@ export function buildHostedCloudTerminalUrl(apiUrl: string): string {
   return url.toString()
 }
 
+export function buildHostedCloudViewUrl(
+  apiUrl: string,
+  target: { sessionId: string; agentId: string; sliceId: string },
+): string {
+  const url = new URL("/view", apiUrl)
+  url.searchParams.set("view_target", `${target.sessionId}:${target.agentId}:${target.sliceId}`)
+  return url.toString()
+}
+
 export function isMissingKernelCloudProfileError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes("cloud relay profile missing") || message.includes("run /relay cloud login first")

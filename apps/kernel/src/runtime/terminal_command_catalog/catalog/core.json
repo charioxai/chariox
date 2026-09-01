@@ -208,6 +208,18 @@
         ]
       },
       {
+        "id": "room-view",
+        "label": "view",
+        "description": "Open the focused agent's Room Environment in the authenticated Chariox Cloud Web View",
+        "value": "/room view",
+        "searchAliases": [
+          "view room",
+          "open browser",
+          "open computer",
+          "cloud viewer"
+        ]
+      },
+      {
         "id": "room-takeover",
         "label": "takeover",
         "description": "Request authenticated human input ownership; defaults to desktop or append tab TAB_ID",
