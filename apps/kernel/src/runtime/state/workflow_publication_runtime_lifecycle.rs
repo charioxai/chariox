@@ -1,11 +1,17 @@
 //! Kernel-owned lifecycle control for local workflow publication runtimes.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
+use base64::Engine as _;
+use rand::RngCore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::process::{Child, Command};
@@ -60,9 +66,11 @@ struct WorkflowPublicationDeploymentBinding {
     setup_id: String,
     operation_key: String,
     deployment_id: String,
+    environment_id: String,
     release_id: String,
     package_digest: String,
     desired_revision: u64,
+    caller_claims_public_key_pem: String,
 }
 
 #[derive(Default)]
@@ -104,10 +112,7 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 &publication_id,
                 "stopped",
                 Some(None),
-                Some(serde_json::json!({
-                    "kind": "local_runtime",
-                    "status": "stopped",
-                })),
+                Some(stopped_publication_runtime_metadata(&publication, true)),
             )?;
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
@@ -288,9 +293,8 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
             session
                 .workflow_publications()
                 .iter()
-                .filter(|publication| publication.enabled())
                 .filter_map(|publication| {
-                    publication_deployment_binding(publication)
+                    publication_runtime_recovery_binding(publication)
                         .map(|binding| (publication.clone(), binding))
                 })
                 .collect::<Vec<_>>()
@@ -447,15 +451,18 @@ async fn inspect_publication_runtime(
             publication.id(),
             "running",
             Some(local_url.clone()),
-            Some(serde_json::json!({
-                "kind": "local_runtime",
-                "status": "running",
-                "host": process.host,
-                "port": process.port,
-                "local_url": process.local_url,
-                "process_id": process.process_id,
-                "package_root": serde_json::Value::Null,
-            })),
+            Some(publication_runtime_metadata_preserving_binding(
+                &publication,
+                serde_json::json!({
+                    "kind": "local_runtime",
+                    "status": "running",
+                    "host": process.host,
+                    "port": process.port,
+                    "local_url": process.local_url,
+                    "process_id": process.process_id,
+                    "package_root": serde_json::Value::Null,
+                }),
+            )),
         )?
     } else if publication.status() == Some("error") {
         publication
@@ -466,10 +473,7 @@ async fn inspect_publication_runtime(
             publication.id(),
             "stopped",
             Some(None),
-            Some(serde_json::json!({
-                "kind": "local_runtime",
-                "status": "stopped",
-            })),
+            Some(stopped_publication_runtime_metadata(&publication, false)),
         )?
     };
     if let Some(snapshot) = runtime_snapshot {
@@ -573,6 +577,7 @@ async fn start_publication_runtime(
     process_key: String,
     launch_context: PublicationRuntimeLaunchContext,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let launch_context = publication_runtime_launch_context(&publication, launch_context);
     if !runtime_state
         .owned
         .workflow_publication_runtimes
@@ -630,15 +635,18 @@ async fn start_publication_runtime_claimed(
             publication.id(),
             "running",
             None,
-            Some(serde_json::json!({
-                "kind": "local_runtime",
-                "status": "running",
-                "host": existing.host,
-                "port": existing.port,
-                "local_url": existing.local_url,
-                "process_id": existing.process_id,
-                "package_root": serde_json::Value::Null,
-            })),
+            Some(publication_runtime_metadata_preserving_binding(
+                &publication,
+                serde_json::json!({
+                    "kind": "local_runtime",
+                    "status": "running",
+                    "host": existing.host,
+                    "port": existing.port,
+                    "local_url": existing.local_url,
+                    "process_id": existing.process_id,
+                    "package_root": serde_json::Value::Null,
+                }),
+            )),
         )?;
         let open_url = refreshed.open_url().map(str::to_string);
         let viewer_url = refreshed.viewer_url().map(str::to_string);
@@ -687,12 +695,16 @@ async fn start_publication_runtime_claimed(
                 message: "publication package export returned an unexpected response".to_string(),
             });
         };
-        if package_digest != expected {
+        if let Err(message) = validate_bound_publication_package_digest(expected, &package_digest) {
+            let _ = mark_publication_runtime_error(
+                runtime_state,
+                &request.session_id,
+                publication.id(),
+                &message,
+            );
             return Err(publication_runtime_error(
                 "start workflow publication runtime",
-                format!(
-                    "publication package digest changed before deployment bind: expected {expected}, got {package_digest}"
-                ),
+                message,
             ));
         }
     }
@@ -717,7 +729,18 @@ async fn start_publication_runtime_claimed(
     if let Some(deployment_id) = launch_context.cloud_deployment_id.as_deref() {
         command.arg("--cloud-deployment").arg(deployment_id);
     }
+    let caller_claims_config = launch_context
+        .binding
+        .as_ref()
+        .map(write_publication_caller_claims_config)
+        .transpose()?;
+    if let Some(path) = caller_claims_config.as_ref() {
+        command.env("CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE", path);
+    }
     let mut child = command.spawn().map_err(|error| {
+        if let Some(path) = caller_claims_config.as_ref() {
+            let _ = fs::remove_file(path);
+        }
         let message = format!("failed to launch chariox publication gateway: {error}");
         let _ = mark_publication_runtime_error(
             runtime_state,
@@ -734,6 +757,9 @@ async fn start_publication_runtime_claimed(
     if let Err(message) =
         wait_for_publication_runtime_start(&mut child, &host, port, is_schedule_only).await
     {
+        if let Some(path) = caller_claims_config.as_ref() {
+            let _ = fs::remove_file(path);
+        }
         let _ = mark_publication_runtime_error(
             runtime_state,
             &request.session_id,
@@ -744,6 +770,9 @@ async fn start_publication_runtime_claimed(
             operation: "start workflow publication runtime",
             message,
         });
+    }
+    if let Some(path) = caller_claims_config.as_ref() {
+        let _ = fs::remove_file(path);
     }
     runtime_state
         .owned
@@ -788,6 +817,91 @@ async fn start_publication_runtime_claimed(
     })
 }
 
+fn write_publication_caller_claims_config(
+    binding: &WorkflowPublicationDeploymentBinding,
+) -> Result<PathBuf, DaemonError> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "deployment_id": binding.deployment_id,
+        "environment_id": binding.environment_id,
+        "public_key_pem": binding.caller_claims_public_key_pem,
+    }))
+    .map_err(|error| {
+        publication_runtime_error(
+            "start workflow publication runtime",
+            format!("failed to serialize caller claims config: {error}"),
+        )
+    })?;
+    for _ in 0..8 {
+        let mut suffix = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut suffix);
+        let path = std::env::temp_dir().join(format!(
+            "chariox-publication-caller-claims-{}.json",
+            suffix
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(&payload).and_then(|_| file.sync_all()) {
+                    let _ = fs::remove_file(&path);
+                    return Err(publication_runtime_error(
+                        "start workflow publication runtime",
+                        format!("failed to write caller claims config: {error}"),
+                    ));
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(publication_runtime_error(
+                    "start workflow publication runtime",
+                    format!("failed to create caller claims config: {error}"),
+                ));
+            }
+        }
+    }
+    Err(publication_runtime_error(
+        "start workflow publication runtime",
+        "failed to allocate caller claims config",
+    ))
+}
+
+fn validate_caller_claims_public_key(value: &str) -> Result<(), DaemonError> {
+    let lines = value.lines().collect::<Vec<_>>();
+    let decoded = lines.get(1).and_then(|encoded| {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()
+            .filter(|der| {
+                der.len() == 44
+                    && der[..12]
+                        == [
+                            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+                        ]
+                    && base64::engine::general_purpose::STANDARD.encode(der) == *encoded
+            })
+    });
+    let valid = !value.contains(['\r', '\0'])
+        && value.ends_with('\n')
+        && lines.len() == 3
+        && lines[0] == "-----BEGIN PUBLIC KEY-----"
+        && decoded.is_some()
+        && lines[2] == "-----END PUBLIC KEY-----";
+    if valid {
+        return Ok(());
+    }
+    Err(publication_runtime_error(
+        "bind workflow publication deployment",
+        "deployment bind caller_claims_public_key_pem must be a canonical Ed25519 SPKI public key",
+    ))
+}
+
 fn validated_deployment_binding(
     request: &BindWorkflowPublicationDeploymentRequest,
 ) -> Result<WorkflowPublicationDeploymentBinding, DaemonError> {
@@ -795,6 +909,7 @@ fn validated_deployment_binding(
         ("setup_id", request.setup_id.as_str()),
         ("operation_key", request.operation_key.as_str()),
         ("deployment_id", request.deployment_id.as_str()),
+        ("environment_id", request.environment_id.as_str()),
         ("release_id", request.release_id.as_str()),
     ] {
         if value.trim().is_empty() || value.len() > 200 || value.contains(['\r', '\n', '\0']) {
@@ -826,13 +941,16 @@ fn validated_deployment_binding(
             "deployment bind package_digest must be a lowercase sha256 digest",
         ));
     }
+    validate_caller_claims_public_key(&request.caller_claims_public_key_pem)?;
     Ok(WorkflowPublicationDeploymentBinding {
         setup_id: request.setup_id.clone(),
         operation_key: request.operation_key.clone(),
         deployment_id: request.deployment_id.clone(),
+        environment_id: request.environment_id.clone(),
         release_id: request.release_id.clone(),
         package_digest: request.package_digest.clone(),
         desired_revision: request.desired_revision,
+        caller_claims_public_key_pem: request.caller_claims_public_key_pem.clone(),
     })
 }
 
@@ -844,10 +962,50 @@ fn publication_deployment_binding(
         setup_id: binding.get("setup_id")?.as_str()?.to_string(),
         operation_key: binding.get("operation_key")?.as_str()?.to_string(),
         deployment_id: binding.get("deployment_id")?.as_str()?.to_string(),
+        environment_id: binding.get("environment_id")?.as_str()?.to_string(),
         release_id: binding.get("release_id")?.as_str()?.to_string(),
         package_digest: binding.get("package_digest")?.as_str()?.to_string(),
         desired_revision: binding.get("desired_revision")?.as_u64()?,
+        caller_claims_public_key_pem: binding
+            .get("caller_claims_public_key_pem")?
+            .as_str()?
+            .to_string(),
     })
+}
+
+fn publication_runtime_recovery_binding(
+    publication: &WorkflowPublicationDefinition,
+) -> Option<WorkflowPublicationDeploymentBinding> {
+    if !publication.enabled()
+        || publication
+            .deployment()
+            .and_then(|deployment| deployment.get("desired_state"))
+            .and_then(serde_json::Value::as_str)
+            == Some("stopped")
+    {
+        return None;
+    }
+    publication_deployment_binding(publication)
+}
+
+fn publication_runtime_launch_context(
+    publication: &WorkflowPublicationDefinition,
+    mut launch_context: PublicationRuntimeLaunchContext,
+) -> PublicationRuntimeLaunchContext {
+    if launch_context.binding.is_some() {
+        return launch_context;
+    }
+    let Some(binding) = publication_deployment_binding(publication) else {
+        return launch_context;
+    };
+    if launch_context.cloud_deployment_id.is_none() {
+        launch_context.cloud_deployment_id = Some(binding.deployment_id.clone());
+    }
+    if launch_context.expected_package_digest.is_none() {
+        launch_context.expected_package_digest = Some(binding.package_digest.clone());
+    }
+    launch_context.binding = Some(binding);
+    launch_context
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -875,9 +1033,11 @@ fn publication_runtime_deployment_metadata(
             "setup_id": binding.setup_id,
             "operation_key": binding.operation_key,
             "deployment_id": binding.deployment_id,
+            "environment_id": binding.environment_id,
             "release_id": binding.release_id,
             "package_digest": binding.package_digest,
             "desired_revision": binding.desired_revision,
+            "caller_claims_public_key_pem": binding.caller_claims_public_key_pem,
             "bound_at_ms": crate::session::unix_epoch_ms(),
         });
     }
@@ -1053,6 +1213,46 @@ fn mark_publication_runtime_status(
         )
 }
 
+fn publication_runtime_metadata_preserving_binding(
+    publication: &WorkflowPublicationDefinition,
+    mut metadata: serde_json::Value,
+) -> serde_json::Value {
+    let Some(binding) = publication
+        .deployment()
+        .and_then(|deployment| deployment.get("binding"))
+        .cloned()
+    else {
+        return metadata;
+    };
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("binding".to_string(), binding);
+    }
+    metadata
+}
+
+fn stopped_publication_runtime_metadata(
+    publication: &WorkflowPublicationDefinition,
+    explicitly_stopped: bool,
+) -> serde_json::Value {
+    let preserve_stopped_intent = explicitly_stopped
+        || publication
+            .deployment()
+            .and_then(|deployment| deployment.get("desired_state"))
+            .and_then(serde_json::Value::as_str)
+            == Some("stopped");
+    let mut metadata = publication_runtime_metadata_preserving_binding(
+        publication,
+        serde_json::json!({
+            "kind": "local_runtime",
+            "status": "stopped",
+        }),
+    );
+    if preserve_stopped_intent {
+        metadata["desired_state"] = serde_json::json!("stopped");
+    }
+    metadata
+}
+
 fn mark_publication_runtime_error(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
@@ -1091,6 +1291,15 @@ fn publication_runtime_package_kernel_url(
     expected_package_digest
         .is_none()
         .then(|| kernel_url.to_string())
+}
+
+fn validate_bound_publication_package_digest(expected: &str, actual: &str) -> Result<(), String> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(format!(
+        "publication package digest no longer matches the bound deployment: expected {expected}, got {actual}; rebind the deployment before restarting"
+    ))
 }
 
 fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
@@ -1263,12 +1472,18 @@ impl WorkflowPublicationRuntimeProcessStore {
 mod tests {
     use super::{
         launched_publication_runtime_message, launched_publication_runtime_status,
-        publication_local_url, publication_runtime_port, validate_publication_runtime_bind_address,
-        validated_deployment_binding, WorkflowPublicationRuntimeProcessStore,
+        publication_local_url, publication_runtime_launch_context,
+        publication_runtime_metadata_preserving_binding, publication_runtime_port,
+        publication_runtime_recovery_binding, stopped_publication_runtime_metadata,
+        validate_bound_publication_package_digest, validate_publication_runtime_bind_address,
+        validated_deployment_binding, write_publication_caller_claims_config,
+        PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
         DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
+    use std::fs;
     use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn launched_ingress_runtime_waits_for_endpoint_registration() {
@@ -1340,11 +1555,23 @@ mod tests {
             setup_id: "setup-1".to_string(),
             operation_key: "deployment-setup:setup-1:runtime".to_string(),
             deployment_id: "deployment-1".to_string(),
+            environment_id: "environment-1".to_string(),
             release_id: "release-1".to_string(),
             package_digest: format!("sha256:{}", "a".repeat(64)),
             desired_revision: 7,
+            caller_claims_public_key_pem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n".to_string(),
         };
-        validated_deployment_binding(&request).expect("valid binding should pass");
+        let binding = validated_deployment_binding(&request).expect("valid binding should pass");
+        let config_path = write_publication_caller_claims_config(&binding)
+            .expect("public verifier config should be created");
+        let metadata = fs::metadata(&config_path).expect("public verifier config metadata");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        let config = fs::read_to_string(&config_path).expect("public verifier config");
+        assert!(config.contains("\"deployment_id\":\"deployment-1\""));
+        assert!(config.contains("\"environment_id\":\"environment-1\""));
+        assert!(config.contains("\"public_key_pem\""));
+        assert!(!config.contains("secret"));
+        fs::remove_file(config_path).expect("public verifier config should be removable");
 
         request.operation_key = "deployment-setup:other:runtime".to_string();
         assert!(validated_deployment_binding(&request)
@@ -1357,6 +1584,12 @@ mod tests {
             .expect_err("malformed digest should fail")
             .to_string()
             .contains("lowercase sha256"));
+        request.package_digest = format!("sha256:{}", "a".repeat(64));
+        request.caller_claims_public_key_pem = "not-a-public-key".to_string();
+        assert!(validated_deployment_binding(&request)
+            .expect_err("non-Ed25519 public key should fail")
+            .to_string()
+            .contains("canonical Ed25519"));
     }
 
     #[test]
@@ -1375,6 +1608,137 @@ mod tests {
         assert_eq!(
             super::publication_runtime_package_kernel_url("ws://127.0.0.1:43118", None),
             Some("ws://127.0.0.1:43118".to_string()),
+        );
+    }
+
+    #[test]
+    fn bound_runtime_restart_requires_the_deployed_package_digest() {
+        assert!(validate_bound_publication_package_digest("sha256:exact", "sha256:exact").is_ok());
+        let error = validate_bound_publication_package_digest("sha256:exact", "sha256:changed")
+            .expect_err("changed source must require a fresh deployment binding");
+        assert!(error.contains("no longer matches the bound deployment"));
+        assert!(error.contains("rebind the deployment before restarting"));
+    }
+
+    #[test]
+    fn runtime_status_metadata_preserves_the_durable_cloud_binding() {
+        let publication = crate::session::WorkflowPublicationDefinition::new(
+            "publication-1",
+            "session-1",
+            "workflow-1",
+            "endpoint-1",
+            None,
+            Some("published".to_string()),
+            "ingress",
+            Some("/".to_string()),
+            vec!["GET".to_string()],
+            None,
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "owner-1",
+        );
+        let mut publication = publication;
+        publication.mark_served(
+            "running",
+            "https://relay.example.test/display/publication-1/",
+            serde_json::json!({
+                "kind": "tunnel",
+                "expires_at_ms": 123,
+                "binding": {
+                    "setup_id": "setup-1",
+                    "operation_key": "deployment-setup:setup-1:runtime",
+                    "deployment_id": "deployment-1",
+                    "environment_id": "environment-1",
+                    "release_id": "release-1",
+                    "package_digest": format!("sha256:{}", "a".repeat(64)),
+                    "desired_revision": 7,
+                    "caller_claims_public_key_pem": "public-key",
+                },
+            }),
+        );
+
+        let metadata = stopped_publication_runtime_metadata(&publication, false);
+
+        assert_eq!(metadata["kind"], "local_runtime");
+        assert_eq!(metadata["status"], "stopped");
+        assert_eq!(
+            metadata.pointer("/binding/deployment_id"),
+            Some(&serde_json::json!("deployment-1")),
+        );
+        assert!(metadata.get("expires_at_ms").is_none());
+        assert!(metadata.get("desired_state").is_none());
+        assert!(publication_runtime_recovery_binding(&publication).is_some());
+
+        let explicit_stop_metadata = stopped_publication_runtime_metadata(&publication, true);
+        assert_eq!(
+            explicit_stop_metadata.get("desired_state"),
+            Some(&serde_json::json!("stopped")),
+        );
+        publication.mark_served("stopped", "", explicit_stop_metadata);
+        assert!(publication_runtime_recovery_binding(&publication).is_none());
+        assert_eq!(
+            stopped_publication_runtime_metadata(&publication, false).get("desired_state"),
+            Some(&serde_json::json!("stopped")),
+        );
+        let restarted_metadata = publication_runtime_metadata_preserving_binding(
+            &publication,
+            serde_json::json!({
+                "kind": "local_runtime",
+                "status": "running",
+            }),
+        );
+        assert!(restarted_metadata.get("desired_state").is_none());
+        assert!(restarted_metadata.get("binding").is_some());
+        let launch_context = publication_runtime_launch_context(
+            &publication,
+            PublicationRuntimeLaunchContext::default(),
+        );
+        assert_eq!(
+            launch_context.cloud_deployment_id.as_deref(),
+            Some("deployment-1"),
+        );
+        let expected_package_digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            launch_context.expected_package_digest.as_deref(),
+            Some(expected_package_digest.as_str()),
+        );
+        assert_eq!(
+            launch_context
+                .binding
+                .as_ref()
+                .map(|binding| binding.setup_id.as_str()),
+            Some("setup-1"),
+        );
+
+        let unbound_publication = crate::session::WorkflowPublicationDefinition::new(
+            "publication-2",
+            "session-1",
+            "workflow-1",
+            "endpoint-1",
+            None,
+            Some("published".to_string()),
+            "ingress",
+            Some("/".to_string()),
+            vec!["GET".to_string()],
+            None,
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "owner-1",
+        );
+        assert_eq!(
+            stopped_publication_runtime_metadata(&unbound_publication, false),
+            serde_json::json!({
+                "kind": "local_runtime",
+                "status": "stopped",
+            }),
         );
     }
 

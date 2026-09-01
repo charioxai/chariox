@@ -116,6 +116,41 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
 }
 
 #[tokio::test]
+async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
+    let cloud_owner = "cloud-owner";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: cloud_owner.to_string(),
+        ..Default::default()
+    });
+    let (app, runtime, session_id, agent_id) =
+        agent_config_runtime_with_config_and_owner(config, cloud_owner).await;
+    let profile = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Validation")
+        .expect("host account profile should be created");
+
+    let agent = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            cloud_owner,
+            Some("codex".to_string()),
+            Some(profile.profile_id.clone()),
+            Some("gpt-5.6-luna".to_string()),
+            Some(Some("low".to_string())),
+        )
+        .await
+        .expect("Cloud owner should resolve the host-local account profile");
+
+    assert_eq!(agent.provider_account_profile(), profile.profile_id);
+    assert_eq!(agent.model(), Some("gpt-5.6-luna"));
+    assert_eq!(agent.effort(), Some("low"));
+}
+
+#[tokio::test]
 async fn agent_config_update_still_blocks_active_prompt_owner() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
@@ -278,6 +313,16 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
         Some(crate::provider::AgentPermissionLevel::Required)
     );
 
+    // Profile updates resolve the provider default through the account
+    // authority seam, so the exact stable profile ID — not the literal
+    // "default" sentinel — must cross the relay.
+    let resolved_default_profile_id = {
+        let app = app.lock().await;
+        app.provider_account_profile_registry()
+            .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+            .expect("seeded codex default should resolve")
+            .profile_id
+    };
     let profile_update = tokio::spawn({
         let runtime = runtime.clone();
         let session_id = session_id.clone();
@@ -326,7 +371,8 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             effort,
         } if leased_agent_id == "leased-agent-1"
             && provider == "codex"
-            && account_profile == "default"
+            && account_profile == resolved_default_profile_id
+            && account_profile != "default"
             && model.as_deref() == Some("gpt-5.4")
             && effort.as_deref() == Some("high")
     ));
@@ -336,7 +382,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             lease_id: "lease-1".to_string(),
             home_agent_id: agent_id.clone(),
             provider: "codex".to_string(),
-            account_profile: "default".to_string(),
+            account_profile: resolved_default_profile_id.clone(),
             model: Some("gpt-5.4".to_string()),
             effort: Some("high".to_string()),
             execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
@@ -404,6 +450,335 @@ async fn agent_profile_update_still_blocks_active_prompt_owner() {
     assert_active_turn_error(error, "update agent profile");
 }
 
+#[tokio::test]
+async fn substitute_add_rejects_account_not_registered_for_provider() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let _ = app;
+
+    let error = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: Some("ghost-profile".to_string()),
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect_err("unregistered substitute account must be rejected");
+
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            assert!(
+                !message.contains("ghost-profile"),
+                "error must not echo the internal profile id: {message}"
+            );
+            assert!(
+                !message.contains("default"),
+                "error must not leak the literal sentinel: {message}"
+            );
+            assert!(
+                message.contains("choose an available account alias") && message.contains("codex"),
+                "error should name the provider and be actionable: {message}"
+            );
+        }
+        other => panic!("expected registry rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn substitute_lifecycle_binds_stable_account_and_primary_edit_targets_snapshot() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let stable_profile_id = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Sub Work")
+        .expect("host account profile should be created")
+        .profile_id;
+
+    // Establish a concrete primary profile before substituting.
+    let primary = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("opencode".to_string()),
+            None,
+            Some("gpt-5.4".to_string()),
+            Some(Some("high".to_string())),
+        )
+        .await
+        .expect("initial primary profile should apply");
+    let primary_account = primary.account_profile().map(str::to_string);
+
+    runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: Some(stable_profile_id.clone()),
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect("registered substitute account should bind");
+
+    runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Activate {
+                index: 0,
+                reason: Some("manual".to_string()),
+            },
+        )
+        .await
+        .expect("manual activation should succeed");
+    {
+        let app = app.lock().await;
+        let agent = app.agents().get_agent(&agent_id).expect("agent exists");
+        assert_eq!(agent.provider(), "codex");
+        assert_eq!(agent.provider_account_profile(), stable_profile_id);
+    }
+
+    // Primary edit while substituted retargets the primary snapshot only.
+    let agent = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("gpt-5.6-edited".to_string()),
+            None,
+        )
+        .await
+        .expect("primary edit while substituted should update the snapshot");
+    assert_eq!(agent.model(), Some("gpt-5.4"));
+    assert_eq!(agent.primary_model(), Some("gpt-5.6-edited"));
+    assert_eq!(agent.active_substitute_index(), Some(0));
+
+    // Returning to primary lands on the edited values with the exact
+    // primary account.
+    let agent = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Primary {},
+        )
+        .await
+        .expect("return to primary should succeed");
+    assert_eq!(agent.provider(), "opencode");
+    assert_eq!(agent.model(), Some("gpt-5.6-edited"));
+    assert_eq!(agent.effort(), Some("high"));
+    assert_eq!(agent.account_profile().map(str::to_string), primary_account);
+}
+
+#[tokio::test]
+async fn substitute_add_resolves_current_default_to_stable_profile_id() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let first_default = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "First")
+        .expect("account profile should be created");
+    app.lock()
+        .await
+        .provider_account_profile_registry()
+        .set_default(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &first_default.profile_id,
+        )
+        .expect("default should be set");
+
+    let agent = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: None,
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect("omitted alias should resolve the current default");
+    assert_eq!(
+        agent.substitutes()[0].account_profile.as_deref(),
+        Some(first_default.profile_id.as_str())
+    );
+
+    // Changing the default afterwards must not move the bound substitute.
+    let second = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Second")
+        .expect("second profile should be created");
+    app.lock()
+        .await
+        .provider_account_profile_registry()
+        .set_default(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &second.profile_id,
+        )
+        .expect("default switch should succeed");
+    {
+        let app = app.lock().await;
+        let agent = app.agents().get_agent(&agent_id).expect("agent exists");
+        assert_eq!(
+            agent.substitutes()[0].account_profile.as_deref(),
+            Some(first_default.profile_id.as_str())
+        );
+    }
+
+    // Activation launches with the originally resolved stable ID.
+    runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Activate {
+                index: 0,
+                reason: Some("manual".to_string()),
+            },
+        )
+        .await
+        .expect("activation should succeed");
+    let app = app.lock().await;
+    let agent = app.agents().get_agent(&agent_id).expect("agent exists");
+    assert_eq!(agent.provider_account_profile(), first_default.profile_id);
+}
+
+#[tokio::test]
+async fn substitute_add_without_any_registered_account_rejects_with_actionable_error() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    {
+        // Deregister every codex account so no usable default exists.
+        let app = app.lock().await;
+        let registry = app.provider_account_profile_registry();
+        for profile in registry
+            .list(crate::session::DEFAULT_LOCAL_USER_ID, Some("codex"))
+            .expect("codex accounts should list")
+        {
+            registry
+                .remove_registration(
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    "codex",
+                    &profile.profile_id,
+                )
+                .expect("codex account should be removable");
+        }
+    }
+
+    let error = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: None,
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect_err("a missing default must be rejected");
+
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            assert!(
+                message.contains("no usable account profile is registered")
+                    && message.contains("codex"),
+                "error should name the provider and be actionable: {message}"
+            );
+            assert!(
+                !message.contains("default"),
+                "error must not leak the literal sentinel: {message}"
+            );
+        }
+        other => panic!("expected actionable default error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn substitute_add_rejects_profile_from_mismatched_provider() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let opencode_profile = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "opencode",
+            "Wrong Family",
+        )
+        .expect("opencode profile should be created");
+
+    let error = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: Some(opencode_profile.profile_id.clone()),
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect_err("cross-provider profile binding must be rejected");
+
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            assert!(
+                !message.contains(&opencode_profile.profile_id),
+                "error must not echo the internal profile id: {message}"
+            );
+            assert!(
+                !message.contains("default"),
+                "error must not leak the literal sentinel: {message}"
+            );
+            assert!(
+                message.contains("choose an available account alias") && message.contains("codex"),
+                "error should name the provider and be actionable: {message}"
+            );
+            // The public label may be shown as a hint; the id never is.
+            assert!(
+                message.contains("Wrong Family"),
+                "error may surface the public label as a hint: {message}"
+            );
+        }
+        other => panic!("expected mismatch rejection, got {other:?}"),
+    }
+}
+
 async fn agent_config_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
     agent_config_runtime_with_config(crate::config::DaemonConfig::for_tests()).await
 }
@@ -411,12 +786,19 @@ async fn agent_config_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, S
 async fn agent_config_runtime_with_config(
     config: crate::config::DaemonConfig,
 ) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
+    agent_config_runtime_with_config_and_owner(config, crate::session::DEFAULT_LOCAL_USER_ID).await
+}
+
+async fn agent_config_runtime_with_config_and_owner(
+    config: crate::config::DaemonConfig,
+    owner_user_id: &str,
+) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+                .with_owner_user_id(owner_user_id),
+        )
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();

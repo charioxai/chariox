@@ -683,7 +683,7 @@ test("executeShellCommand exports a workflow trigger package", async () => {
     }
     const publicationPackage = {
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: publication.id,
       workflow_id: publication.workflow_id,
       deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
@@ -693,7 +693,7 @@ test("executeShellCommand exports a workflow trigger package", async () => {
         return {
           WorkflowPublicationPackageExported: {
             publication,
-            package_version: 3,
+            package_version: 4,
             package_digest: `sha256:${"b".repeat(64)}`,
             package_archive_base64: Buffer.from("archive").toString("base64"),
             package_files: [
@@ -732,10 +732,10 @@ test("executeShellCommand exports a workflow trigger package", async () => {
     )
 
     assert.equal(result.ok, true)
-    assert.match(result.message ?? "", /exported workflow trigger publication-1 .*package v3 sha256:b+/)
+    assert.match(result.message ?? "", /exported workflow trigger publication-1 .*package v4 sha256:b+/)
     const packageJson = JSON.parse(await readFile(join(root, "exported", "publication.json"), "utf8"))
     assert.equal(packageJson.schema_version, 1)
-    assert.equal(packageJson.package_version, 3)
+    assert.equal(packageJson.package_version, 4)
     assert.deepEqual(
       JSON.parse(await readFile(join(root, "exported", "deployment-contract.json"), "utf8")),
       deploymentContract,

@@ -3,6 +3,7 @@ import type {
   WorkflowDefinition,
   WorkflowEndpointDefinition,
 } from "./cli-types.js"
+import { parseWorkflowEndpointMaxInstances } from "./workflow-endpoint-pool-projection.js"
 
 type FooterTone = "info" | "error"
 
@@ -32,6 +33,11 @@ export type WorkflowEndpointCommandDeps = {
     workflowRef: string,
     endpointRef: string,
     entryNodeId: string,
+  ) => Promise<WorkflowEndpointPayload>
+  setWorkflowEndpointMaxInstances?: (
+    workflowRef: string,
+    endpointRef: string,
+    maxInstances: number,
   ) => Promise<WorkflowEndpointPayload>
   removeWorkflowEndpoint?: (
     workflowRef: string,
@@ -108,6 +114,39 @@ export async function handleWorkflowEndpointCommand(
     )
     return
   }
+  if (action === "max-instances") {
+    const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+    const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
+    const endpointRef = explicitWorkflowRef ? args[3] : args[2]
+    const value = (explicitWorkflowRef ? args[4] : args[3])?.trim()
+    if (!workflowRef || !endpointRef || !value) {
+      deps.flashFooter(
+        "usage: /workflow endpoint max-instances [workflow-ref] <endpoint-ref> <count>",
+        "error",
+      )
+      return
+    }
+    if (!deps.setWorkflowEndpointMaxInstances) {
+      deps.flashFooter("workflow endpoint capacity commands unavailable", "error")
+      return
+    }
+    const maxInstances = parseWorkflowEndpointMaxInstances(value)
+    if (maxInstances === null) {
+      deps.flashFooter(
+        "usage: /workflow endpoint max-instances [workflow-ref] <endpoint-ref> <count 1-32>",
+        "error",
+      )
+      return
+    }
+    const payload = await deps.setWorkflowEndpointMaxInstances(workflowRef, endpointRef, maxInstances)
+    deps.applySessionState(payload.session)
+    deps.selectWorkflowCanvas(payload.workflow.id)
+    deps.flashFooter(
+      `workflow endpoint ${payload.endpoint.id} max-instances set to ${payload.endpoint.max_instances ?? maxInstances}`,
+      "info",
+    )
+    return
+  }
   if (action === "remove" || action === "delete") {
     const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(args[2]) ? args[2] : null
     const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
@@ -130,7 +169,7 @@ export async function handleWorkflowEndpointCommand(
     return
   }
   deps.flashFooter(
-    "usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind|rebind [workflow-ref] <endpoint-ref> <entry-node-id> | remove [workflow-ref] <endpoint-ref>",
+    "usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind|rebind [workflow-ref] <endpoint-ref> <entry-node-id> | max-instances [workflow-ref] <endpoint-ref> <count 1-32> | remove [workflow-ref] <endpoint-ref>",
     "error",
   )
 }

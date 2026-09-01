@@ -488,7 +488,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         &terminals,
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 12,
+        schema_version: 13,
         inventory_version,
         structural_version,
         activity_revision,
@@ -504,6 +504,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         terminals,
         launch_target,
         provider_accounts: Vec::new(),
+        git_credentials: Vec::new(),
     })
 }
 
@@ -1013,6 +1014,7 @@ fn waiting_room_public_project_summaries(
                 id: project.id().to_string(),
                 owner_user_id: project.owner_user_id().to_string(),
                 workspace_id: project.workspace_id().to_string(),
+                workspace_ids: project.workspace_ids().to_vec(),
                 name: project.name().to_string(),
                 kind: project.kind(),
                 status: project.status(),
@@ -1223,6 +1225,9 @@ mod tests {
             workspace_id: Some("workspace".to_string()),
             worktree_id: Some("worktree".to_string()),
             workspace_mount: Some("workspace".to_string()),
+            development: None,
+            development_storage_root: None,
+            development_publication: None,
             worker_kernel_ref: format!("slice:{id}"),
             worker_kernel_id: Some("worker-kernel".to_string()),
             worker_machine_id: Some("worker-machine".to_string()),
@@ -2071,7 +2076,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 12);
+        assert_eq!(snapshot.schema_version, 13);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());

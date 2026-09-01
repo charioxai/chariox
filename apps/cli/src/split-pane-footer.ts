@@ -14,6 +14,7 @@ export type SplitPaneFooterAgent = {
   meta_mode?: { activated_at_ms?: number; task_id?: string | null } | null
   alias: string | null
   provider: string
+  account_profile?: string | null
   model: string | null
   effort?: string | null
   substitutes?: Array<{ provider: string; model: string; variant?: string | null; kernel_id?: string | null; worktree_id?: string | null }>
@@ -27,12 +28,15 @@ export type SplitPaneFooterAgent = {
 export type SplitPaneFooterActiveRun = {
   agentInstanceId: string | null
   provider?: string | null
+  accountProfile?: string | null
   model: string | null
   variant: string | null
 }
 
 export type SplitPaneFooterOverride = {
   provider?: string | null
+  accountProfile?: string | null
+  accountLabel?: string | null
   model?: string | null
   variant?: string | null
 }
@@ -42,7 +46,7 @@ export type SplitPaneFooterPart = PromptMetaPart | {
   text: string
   tone: PromptMetaTone
 } | {
-  kind: "mode" | "permission" | "location" | "role" | "substitute"
+  kind: "account" | "mode" | "permission" | "location" | "role" | "substitute"
   text: string
   tone: PromptMetaTone
 }
@@ -95,6 +99,7 @@ export function formatSplitPaneFooterParts(
     ?? nonBlank(idleOverride?.variant)
     ?? nonBlank(agent.effort)
     ?? ""
+  const accountLabel = nonBlank(override?.accountLabel)
   const runtimeLocationPart = footerLocationPart(agent.location_label)
   const substitutePart = footerSubstitutePart(agent)
   const mode = nonBlank(agent.execution_mode)
@@ -107,11 +112,20 @@ export function formatSplitPaneFooterParts(
     },
     agent.meta_mode ? { kind: "role" as const, text: "Meta mode", tone: "accent" as const } : null,
     runtimeLocationPart,
-    ...formatPromptMetaParts(provider, model, variant),
+    ...withAccountPart(formatPromptMetaParts(provider, model, variant), accountLabel),
     mode ? { kind: "mode" as const, text: mode, tone: "info" as const } : null,
     permission ? { kind: "permission" as const, text: permission, tone: permission === "required" ? "warning" as const : "success" as const } : null,
     substitutePart,
   ])
+}
+
+function withAccountPart(parts: PromptMetaPart[], accountLabel: string | null): Array<PromptMetaPart | SplitPaneFooterPart | null> {
+  if (!accountLabel) return parts
+  return [
+    parts[0] ?? null,
+    { kind: "account", text: accountLabel, tone: "text" },
+    ...parts.slice(1),
+  ]
 }
 
 function footerLocationPart(locationLabel: string | null | undefined): SplitPaneFooterPart | null {

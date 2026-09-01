@@ -8,10 +8,12 @@ use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::auth::{
-    RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, VerifiedRelayIdentity,
+    RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, RelaySubjectKind,
+    VerifiedRelayIdentity,
 };
 use crate::protocol::{
-    ClientTarget, RelayCallerIdentity, RelayConnectionRole, RelayEnvelope, RelayError,
+    ClientTarget, DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayEnvelope,
+    RelayError,
 };
 use crate::registry::{
     DaemonKey, PendingClientRequest, PendingRequestKind, RelayRegistry, RelaySender,
@@ -781,6 +783,40 @@ pub(super) async fn peer_allows_action(
     !scoped_token || peer.allowed_actions.contains(&action)
 }
 
+pub(super) async fn peer_allows_target(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+    target: &ClientTarget,
+    resolved: &DaemonKey,
+) -> bool {
+    let guard = registry.read().await;
+    let Some(peer) = guard.peers.get(&peer_addr) else {
+        return false;
+    };
+    let scoped_token = peer
+        .identity
+        .as_ref()
+        .and_then(|identity| identity.token_id.as_ref())
+        .is_some();
+    if !scoped_token {
+        return true;
+    }
+    let Some(allowed) = peer.allowed_targets.as_ref() else {
+        return true;
+    };
+    allowed.iter().any(|candidate| {
+        candidate == &resolved.daemon_id
+            || target
+                .daemon_id
+                .as_ref()
+                .is_some_and(|daemon_id| candidate == daemon_id)
+            || target
+                .daemon_alias
+                .as_ref()
+                .is_some_and(|daemon_alias| candidate == daemon_alias)
+    })
+}
+
 pub(super) async fn reject_client_pending_on_target_backpressure(
     registry: &Arc<RwLock<RelayRegistry>>,
     client_sender: &RelaySender,
@@ -943,6 +979,54 @@ pub(super) fn current_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+pub(super) fn relay_auth_expiry_deadline(
+    verifier: &crate::auth::RelayAuthVerifier,
+    expires_at_ms: u64,
+) -> Option<std::time::Instant> {
+    if expires_at_ms == u64::MAX {
+        return None;
+    }
+    let remaining_ms = expires_at_ms.saturating_sub(verifier.live_verification_time_ms()?);
+    std::time::Instant::now().checked_add(std::time::Duration::from_millis(remaining_ms))
+}
+
+pub(super) fn validate_daemon_registration_identity(
+    identity: &VerifiedRelayIdentity,
+    registration: &DaemonRegistration,
+) -> Result<(), &'static str> {
+    if identity.token_id.is_none() {
+        return Ok(());
+    }
+    let subject_matches = match identity.subject_kind {
+        RelaySubjectKind::Kernel => {
+            identity.subject == registration.daemon_id
+                || registration.daemon_alias.as_deref() == Some(identity.subject.as_str())
+                || registration.kernel_alias.as_deref() == Some(identity.subject.as_str())
+                || registration
+                    .daemon_id
+                    .strip_prefix(identity.subject.as_str())
+                    .is_some_and(|suffix| suffix.starts_with(":peer-tmp:"))
+        }
+        RelaySubjectKind::Machine => identity.subject == registration.machine_id,
+        RelaySubjectKind::Service => true,
+        RelaySubjectKind::Client => false,
+    };
+    if !subject_matches {
+        return Err("relay token subject does not match daemon registration");
+    }
+    if let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() {
+        use sha2::{Digest, Sha256};
+        let actual = Sha256::digest(registration.public_key.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if actual != expected_thumbprint {
+            return Err("relay token key does not match daemon registration");
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn relay_log(level: &str, event: &str, fields: Value) {

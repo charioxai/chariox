@@ -274,7 +274,27 @@ function formatLiveSyncScopeSuffix(context: ShellAgentSessionContext): string {
   return worktree ? ` on ${worktree}` : ""
 }
 
-export function formatAgentSubstituteSummary(agent: AgentInstance): string {
+export type SubstituteAccountLabelResolver = (
+  provider: string,
+  accountProfile: string,
+) => string | null
+
+function formatSubstituteAccountSuffix(
+  provider: string,
+  accountProfile: string | null | undefined,
+  resolveAccountLabel?: SubstituteAccountLabelResolver,
+): string {
+  if (!accountProfile) {
+    return ""
+  }
+  const label = resolveAccountLabel?.(provider, accountProfile) ?? null
+  return label ? ` · account ${label}` : " · custom account"
+}
+
+export function formatAgentSubstituteSummary(
+  agent: AgentInstance,
+  resolveAccountLabel?: SubstituteAccountLabelResolver,
+): string {
   const substitutes = agent.substitutes ?? []
   if (substitutes.length === 0) {
     return `${formatAgentRef(agent)} has no substitutes`
@@ -282,7 +302,7 @@ export function formatAgentSubstituteSummary(agent: AgentInstance): string {
   const lines = substitutes.map((substitute, index) => {
     const marker = agent.active_substitute_index === index ? "*" : "-"
     const variant = substitute.variant ? `/${substitute.variant}` : ""
-    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}`
+    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}${formatSubstituteAccountSuffix(substitute.provider, substitute.account_profile, resolveAccountLabel)}`
   })
   const timeout = agent.substitution_timeout_ms == null ? "default" : `${agent.substitution_timeout_ms}ms`
   const footer = agent.last_substitution?.reason

@@ -49,6 +49,28 @@ impl KernelRuntimeState {
         Ok(config)
     }
 
+    pub(crate) async fn configure_managed_slice_relay(
+        &self,
+        relay_url: String,
+        relay_token: String,
+        recovery_token: String,
+        owner_public_key: String,
+    ) -> Result<crate::config::DaemonConfig, DaemonError> {
+        let config = self
+            .with_app_side_effect(move |app| {
+                app.configure_managed_slice_relay(
+                    relay_url,
+                    relay_token,
+                    recovery_token,
+                    owner_public_key,
+                )?;
+                Ok(app.config().clone())
+            })
+            .await?;
+        self.owned.config_projection.update(config.clone());
+        Ok(config)
+    }
+
     pub(crate) async fn persist_cloud_relay_profile(
         &self,
         profile: Option<crate::config::PersistedCloudRelayProfile>,

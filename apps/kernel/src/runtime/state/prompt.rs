@@ -25,27 +25,35 @@ impl KernelRuntimeOwnedState {
         if active_prompt.id() != prompt_id {
             return Ok(None);
         }
-        if active_prompt.workflow_run_id().is_some() {
-            if let Err(error) = self.workflow_fail_provider_prompt(
+        let workflow_prompt_settled = if active_prompt.workflow_run_id().is_some() {
+            match self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),
                 message,
             ) {
-                crate::logging::warn_with_fields(
-                    "daemon.prompt_delivery",
-                    "failed to settle workflow after prompt dispatch failure",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "agent_id": agent_id,
-                        "prompt_id": active_prompt.id(),
-                        "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
-                    }),
-                );
+                Ok(released_claim) => released_claim,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.prompt_delivery",
+                        "failed to settle workflow after prompt dispatch failure",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "prompt_id": active_prompt.id(),
+                            "provider_run_id": provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    false
+                }
             }
-        }
+        } else {
+            false
+        };
         let cancelled = self.cancel_active_prompt_only(session_id, agent_id)?;
+        self.agent_store
+            .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
         let completed_at_ms = crate::session::unix_epoch_ms();
         if !self.prompt_completion_recorded(provider_run_id) {
             self.record_assistant_message_completion(
@@ -60,7 +68,11 @@ impl KernelRuntimeOwnedState {
         }
         let released_claim = self.clear_prompt_activity(provider_run_id);
         let _ = self.session_snapshot(session_id)?;
-        Ok(Some(released_claim))
+        // Workflow failure settlement releases the claim by run/node identity before
+        // prompt activity is cleared by provider-run identity. Preserve that signal so
+        // the caller still retries nodes which were already blocked on the released
+        // worktree claim.
+        Ok(Some(released_claim || workflow_prompt_settled))
     }
 
     pub(super) fn complete_local_prompt_without_advance(
@@ -69,11 +81,27 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
-        self.complete_local_prompt_without_advance_if_matches(
+        self.settle_local_prompt_without_advance_if_matches(
             session_id,
             agent_id,
             provider_run_id,
             None,
+            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+        )
+    }
+
+    pub(super) fn fail_local_prompt_without_advance(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        self.settle_local_prompt_without_advance_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
         )
     }
 
@@ -83,6 +111,23 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: Option<&str>,
         expected_prompt_id: Option<&str>,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        self.settle_local_prompt_without_advance_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            expected_prompt_id,
+            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+        )
+    }
+
+    fn settle_local_prompt_without_advance_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        expected_prompt_id: Option<&str>,
+        settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -126,7 +171,12 @@ impl KernelRuntimeOwnedState {
             &completed,
             completion_provider_run_id.as_deref(),
             settled_at_ms,
+            settlement_status,
         );
+        if settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed {
+            self.agent_store
+                .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
+        }
         let completion_record_key = provider_run_id.unwrap_or(agent_id);
         if !self.prompt_completion_recorded(completion_record_key) {
             let provider_run_id = completion_provider_run_id
@@ -223,7 +273,46 @@ impl KernelRuntimeOwnedState {
             &completed,
             Some(&provider_run_id),
             crate::session::unix_epoch_ms(),
+            crate::git_observer::CompletedTurnSettlementStatus::Completed,
         );
+        let released_workflow_claim = match (
+            completed.workflow_run_id(),
+            completed.workflow_node_run_id(),
+        ) {
+            (Some(workflow_run_id), Some(workflow_node_run_id)) => self
+                .release_workflow_node_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                ),
+            _ => false,
+        };
+        let acquired_next_workflow_claim =
+            match self.ensure_workflow_prompt_workspace_claim(session_id, next_queued_prompt) {
+                Ok(acquired) => acquired,
+                Err(DaemonError::WorkspaceClaimConflict { .. }) => {
+                    let (active_prompt, queued_prompts) =
+                        self.prompt_state_owner.state_parts(&session, agent_id);
+                    self.mirror_prompt_owner_agent_state(
+                        session_id,
+                        agent_id,
+                        active_prompt,
+                        queued_prompts,
+                    )?;
+                    let released_claim =
+                        self.clear_prompt_activity(&provider_run_id) || released_workflow_claim;
+                    let _ = self.session_snapshot(session_id)?;
+                    return Ok(Some(OwnedPromptCompletion {
+                        completion: crate::session::PromptCompletion {
+                            completed,
+                            started_next: None,
+                        },
+                        released_claim,
+                        dispatch: None,
+                    }));
+                }
+                Err(error) => return Err(error),
+            };
         let Some(started_next) = self
             .prompt_state_owner
             .activate_next_queued_prompt_with_prompt_id(
@@ -233,6 +322,15 @@ impl KernelRuntimeOwnedState {
                 self.session_store.reserve_prompt_id(),
             )?
         else {
+            if acquired_next_workflow_claim == Some(true) {
+                self.release_workflow_node_workspace_claim(
+                    session_id,
+                    next_queued_prompt.workflow_run_id().unwrap_or_default(),
+                    next_queued_prompt
+                        .workflow_node_run_id()
+                        .unwrap_or_default(),
+                );
+            }
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, agent_id);
             self.mirror_prompt_owner_agent_state(
@@ -241,7 +339,8 @@ impl KernelRuntimeOwnedState {
                 active_prompt,
                 queued_prompts,
             )?;
-            let released_claim = self.clear_prompt_activity(&provider_run_id);
+            let released_claim =
+                self.clear_prompt_activity(&provider_run_id) || released_workflow_claim;
             let _ = self.session_snapshot(session_id)?;
             return Ok(Some(OwnedPromptCompletion {
                 completion: crate::session::PromptCompletion {
@@ -291,11 +390,7 @@ impl KernelRuntimeOwnedState {
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
             let hidden_system_context =
                 join_hidden_context(started_next.hidden_system_context(), &granted_skill_context);
-            let source_client_id = self
-                .attachment_store
-                .get_attachment(&source_attachment_id)
-                .ok()
-                .map(|attachment| attachment.client_id().to_string());
+            let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 agent_id,
                 self.agent_store.get_agent(agent_id)?.is_metaagent(),
@@ -375,6 +470,7 @@ impl KernelRuntimeOwnedState {
         completed_prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         settled_at_ms: u64,
+        settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
     ) {
         let started_at_ms = provider_run_id
             .and_then(|provider_run_id| {
@@ -398,7 +494,7 @@ impl KernelRuntimeOwnedState {
             completed_prompt.id(),
             provider_run_id,
             settled_at_ms,
-            "completed",
+            settlement_status.as_str(),
         );
         self.completed_git_turn_snapshots.record_prompt_settlement(
             session_id,
@@ -407,7 +503,7 @@ impl KernelRuntimeOwnedState {
             completed_prompt,
             settled_at_ms,
             started_at_ms,
-            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            settlement_status,
         );
     }
 }

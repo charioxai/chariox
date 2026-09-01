@@ -46,7 +46,7 @@ const DOCKER_RUNTIME_PATTERNS = [
 
 const CLOUD_RUNTIME_PATTERNS = [
   /\bchariox-cloud\b/i,
-  /\bScalingo\b/i,
+  /\bOpenShip\b/i,
   /cloud .*deployment/i,
   /deployment .*did not become ready/i,
   /publication deployment/i,

@@ -98,6 +98,7 @@ import type {
   SkillImportOutcome as KernelSkillImportOutcome,
   SkillImportSkip as KernelSkillImportSkip,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
+  WaitingRoomGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
   WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
   WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot as KernelWaitingRoomPublicSnapshot,
@@ -111,6 +112,7 @@ import type {
   WorkflowDefinition as KernelWorkflowDefinition,
   WorkflowEdgeDefinition as KernelWorkflowEdgeDefinition,
   WorkflowEndpointDefinition as KernelWorkflowEndpointDefinition,
+  WorkflowEndpointRuntimeInstance as KernelWorkflowEndpointRuntimeInstance,
   WorkflowFailureEvent as KernelWorkflowFailureEvent,
   WorkflowMessage as KernelWorkflowMessage,
   WorkflowNodeDefinition as KernelWorkflowNodeDefinition,
@@ -220,6 +222,8 @@ export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
 export type WaitingRoomTerminalView = KernelTerminalRecord
 
 export type WaitingRoomPublicSnapshot = KernelWaitingRoomPublicSnapshot
+
+export type WaitingRoomGitCredentialSummary = KernelWaitingRoomGitCredentialSummary
 
 export type WorkspaceLinkAttachment = KernelWorkspaceLinkAttachment
 
@@ -366,6 +370,8 @@ export type WorkflowSchemaDefinition = KernelWorkflowSchemaDefinition
 
 export type WorkflowEndpointDefinition = KernelWorkflowEndpointDefinition
 
+export type WorkflowEndpointRuntimeInstance = KernelWorkflowEndpointRuntimeInstance
+
 export type WorkflowScheduleTrigger = KernelWorkflowScheduleTrigger
 
 export type WorkflowScheduleDefinition = KernelWorkflowScheduleDefinition
@@ -422,6 +428,7 @@ export type SessionBinding = {
   session: RuntimeSession
   attachment: RuntimeAttachment
   providerRun: RuntimeProviderRun | null
+  providerLaunchIssue?: "credential_vault_locked" | null
   createdSession: boolean
   historyEntries: TranscriptEntry[]
   promptHistoryEntries: string[]

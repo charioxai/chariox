@@ -13,7 +13,9 @@ mod identity;
 mod pairings;
 mod paths;
 mod persisted_daemon;
+mod private_file;
 mod provider;
+mod publication_state;
 mod relay_profile;
 mod slices;
 mod storage;
@@ -29,15 +31,20 @@ pub use credentials::{
 };
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
+pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
 use persisted_daemon::HOSTED_STAGING_RELAY_URL;
+pub(crate) use persisted_daemon::{
+    load_managed_cloud_relay_profile, persist_managed_cloud_relay_profile,
+};
 #[cfg(test)]
 use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
 };
+pub(crate) use private_file::write_private_file;
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use slices::{
     SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
@@ -85,6 +92,9 @@ pub struct EventGeneratorManagementTarget {
 pub struct DaemonConfig {
     pub user_config_path: PathBuf,
     pub user_config: CharioxUserConfig,
+    /// Publication control state survives container replacement. Provider homes,
+    /// account registries and managed-context transfers must not use this root.
+    pub publication_control_state_root: Option<PathBuf>,
     pub daemon_id: String,
     pub host_machine_id: String,
     pub host_machine_alias: Option<String>,
@@ -92,6 +102,8 @@ pub struct DaemonConfig {
     pub daemon_alias: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
+    pub managed_slice_relay_recovery_token: Option<String>,
+    pub managed_slice_relay_owner_public_key: Option<String>,
     pub cloud_relay: Option<PersistedCloudRelayProfile>,
     pub relay_public_key: String,
     pub relay_private_key: String,
@@ -111,7 +123,7 @@ pub struct DaemonConfig {
     pub kernel_websocket_write_delay_ms: u64,
     pub runtime_mcp_host: String,
     pub runtime_mcp_port: u16,
-    pub session_history_root: PathBuf,
+    session_history_root_default: PathBuf,
     pub session_history_read_delay_ms: u64,
     pub operational_history_read_delay_ms: u64,
     pub provider_catalog_read_delay_ms: u64,
@@ -170,6 +182,7 @@ impl DaemonConfig {
         Self {
             user_config_path: Self::default_user_config_path(),
             user_config: CharioxUserConfig::default(),
+            publication_control_state_root: None,
             local_socket_path: Self::default_local_socket_path(&daemon_id),
             kernel_websocket_host: "127.0.0.1".to_string(),
             kernel_websocket_port: 43118,
@@ -177,7 +190,7 @@ impl DaemonConfig {
             kernel_websocket_write_delay_ms: DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS,
             runtime_mcp_host: "127.0.0.1".to_string(),
             runtime_mcp_port: 43120,
-            session_history_root: Self::default_session_history_root(),
+            session_history_root_default: Self::default_session_history_root(),
             session_history_read_delay_ms: 0,
             operational_history_read_delay_ms: 0,
             provider_catalog_read_delay_ms: 0,
@@ -192,6 +205,8 @@ impl DaemonConfig {
             daemon_alias: None,
             relay_url: None,
             relay_token: None,
+            managed_slice_relay_recovery_token: None,
+            managed_slice_relay_owner_public_key: None,
             cloud_relay: None,
             relay_public_key,
             relay_private_key,
@@ -218,11 +233,9 @@ impl DaemonConfig {
             std::process::id(),
             index
         ));
-        config.session_history_root = std::env::temp_dir().join("chariox-tests").join(format!(
-            "session-history-{}-{}",
-            std::process::id(),
-            index
-        ));
+        config.session_history_root_default = std::env::temp_dir()
+            .join("chariox-tests")
+            .join(format!("session-history-{}-{}", std::process::id(), index));
         config.user_config.history.operational.path = Some(
             std::env::temp_dir()
                 .join("chariox-tests")
@@ -278,7 +291,7 @@ impl DaemonConfig {
     }
 
     pub fn with_session_history_root(mut self, path: PathBuf) -> Self {
-        self.session_history_root = path;
+        self.session_history_root_default = path;
         self
     }
 

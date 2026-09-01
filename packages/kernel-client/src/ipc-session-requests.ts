@@ -38,6 +38,10 @@ export function renameProjectRequest(projectId: string, name: string) {
   return { RenameProject: { project_id: projectId, name } }
 }
 
+export function updateProjectWorkspacesRequest(projectId: string, workspaceIds: string[]) {
+  return { UpdateProjectWorkspaces: { project_id: projectId, workspace_ids: workspaceIds } }
+}
+
 export function archiveProjectRequest(projectId: string) {
   return { ArchiveProject: { project_id: projectId } }
 }

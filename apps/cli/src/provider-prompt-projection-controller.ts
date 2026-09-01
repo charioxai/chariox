@@ -19,6 +19,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type ProviderPromptProjectionDefaults = {
   provider?: string
+  accountProfile?: string
   model: string
   effort: string
 }
@@ -57,6 +58,7 @@ export function createProviderPromptProjectionController(
   // persisted default over a hardcoded literal.
   const currentProviderSelection = (): {
     provider: string
+    accountProfile: string
     model: string
     effort: string
   } => {
@@ -64,6 +66,11 @@ export function createProviderPromptProjectionController(
     const defaults = deps.getDefaults()
     return {
       provider: selection.provider ?? defaults.provider ?? "opencode",
+      accountProfile: deps.getProviderRun()?.account_profile
+        ?? deps.getFocusedAgent()?.account_profile
+        ?? deps.getWaitingRoomState().accountProfileId
+        ?? defaults.accountProfile
+        ?? "default",
       model: selection.model ?? defaults.model,
       effort: selection.effort ?? defaults.effort,
     }

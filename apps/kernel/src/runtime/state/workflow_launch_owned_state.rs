@@ -41,49 +41,52 @@ impl KernelRuntimeOwnedState {
             None,
             None,
         )?;
+        let agent_busy = self.workflow_agent_has_prompt_work(session_id, node_run.agent_id())?;
         let claim_id =
             self.workflow_dispatch_claim_id(session_id, workflow_run.id(), node_run.id());
-        match self.acquire_workflow_node_workspace_claim(
-            session_id,
-            &claim_id,
-            node_run.agent_id(),
-            workflow_run.id(),
-            node_run.id(),
-        ) {
-            Ok(()) => {}
-            Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
-                let _ = self
-                    .session_store
-                    .write()
-                    .block_workflow_node_on_workspace_claim(
-                        session_id,
-                        workflow_run.id(),
-                        node_run.id(),
-                    );
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachment_store
-                        .list_session_attachment_ids(session_id),
-                    format!(
-                        "Workflow run `{}` blocked node `{}` on a workspace claim: {error}",
-                        workflow_run.id(),
-                        node_run.node_id()
-                    ),
-                );
-                let _ = self.session_snapshot(session_id)?;
-                return Ok(WorkflowPromptDispatches::default());
-            }
-            Err(error) => return Err(error),
-        }
-        let _ = self
-            .session_store
-            .write()
-            .ready_workflow_node_after_workspace_claim(
+        if !agent_busy {
+            match self.acquire_workflow_node_workspace_claim(
                 session_id,
+                &claim_id,
+                node_run.agent_id(),
                 workflow_run.id(),
                 node_run.id(),
-            );
+            ) {
+                Ok(()) => {}
+                Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+                    let _ = self
+                        .session_store
+                        .write()
+                        .block_workflow_node_on_workspace_claim(
+                            session_id,
+                            workflow_run.id(),
+                            node_run.id(),
+                        );
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!(
+                            "Workflow run `{}` blocked node `{}` on a workspace claim: {error}",
+                            workflow_run.id(),
+                            node_run.node_id()
+                        ),
+                    );
+                    let _ = self.session_snapshot(session_id)?;
+                    return Ok(WorkflowPromptDispatches::default());
+                }
+                Err(error) => return Err(error),
+            }
+            let _ = self
+                .session_store
+                .write()
+                .ready_workflow_node_after_workspace_claim(
+                    session_id,
+                    workflow_run.id(),
+                    node_run.id(),
+                );
+        }
         let prompt = crate::session::PromptQueueItem::new(
             format!(
                 "pending-draft:workflow-launch:{}:{}",
@@ -106,6 +109,16 @@ impl KernelRuntimeOwnedState {
             workflow_run.id(),
             node_run.id(),
         )?;
+        // Only a prompt that started immediately may keep its workspace claim. A prompt
+        // queued behind existing agent work releases the claim so the queue head can be
+        // promoted later without hitting its own worktree conflict.
+        if !dispatches.admitted_workflow_prompt || dispatches.queued_workflow_prompt {
+            self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run.id(),
+                node_run.id(),
+            );
+        }
         let source_attachment_id =
             crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id());
         dispatches.extend(self.metaagent_workflow_event_prompt_dispatches(

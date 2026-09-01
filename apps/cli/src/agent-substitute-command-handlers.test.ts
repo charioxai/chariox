@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type {
   AgentInstance,
+  ProviderAccountProfile,
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
@@ -57,11 +58,161 @@ test("agent substitute add parses profile flags and applies update", async () =>
       provider: "codex",
       model: "gpt-5.4",
       variant: "high",
+      account_profile: null,
       kernel_id: "kernel-1",
       worktree_id: null,
     },
   })
   assert.equal(flashedMessage, "agent-1 substitute added: codex/gpt-5.4/high")
+})
+
+test("agent substitute add resolves an account alias to the stable profile id", async () => {
+  const currentAgent = agent()
+  const currentSession = session({ agents: [currentAgent] })
+  let appliedAction: Record<string, unknown> | null = null
+  let flashedMessage = ""
+
+  await handleAgentSubstituteCommand({
+    sessionState: () => currentSession,
+    focusedAgentId: () => currentAgent.id,
+    currentModelId: () => "gpt-5.4",
+    currentVariantId: () => "high",
+    flashFooter: (message) => { flashedMessage = message },
+    updateAgentSubstitutes: async (_sessionId, _agentId, action) => {
+      appliedAction = action
+      return { agent: currentAgent, session: currentSession }
+    },
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    launchAgentProviderRun: async () => providerRun(),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
+    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    listProviderAccountProfiles: async () => [
+      providerAccount({ profile_id: "codex-work-internal", label: "Work" }),
+      providerAccount({ profile_id: "codex-personal", label: "personal", is_default: true }),
+    ],
+  }, ["substitute", "add", "codex", "gpt-5.4", "--account", "WORK"])
+
+  assert.deepEqual(appliedAction, {
+    Add: {
+      provider: "codex",
+      model: "gpt-5.4",
+      variant: null,
+      account_profile: "codex-work-internal",
+      kernel_id: null,
+      worktree_id: null,
+    },
+  })
+  assert.equal(flashedMessage, "agent-1 substitute added: codex/gpt-5.4 · account Work")
+})
+
+test("agent substitute add rejects unknown account aliases without updating", async () => {
+  const currentAgent = agent()
+  const currentSession = session({ agents: [currentAgent] })
+  let updateCalls = 0
+  let flashedMessage = ""
+
+  await handleAgentSubstituteCommand({
+    sessionState: () => currentSession,
+    focusedAgentId: () => currentAgent.id,
+    currentModelId: () => "gpt-5.4",
+    currentVariantId: () => "high",
+    flashFooter: (message) => { flashedMessage = message },
+    updateAgentSubstitutes: async () => {
+      updateCalls += 1
+      return { agent: currentAgent, session: currentSession }
+    },
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    launchAgentProviderRun: async () => providerRun(),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
+    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    listProviderAccountProfiles: async () => [
+      providerAccount({ profile_id: "codex-work-internal", label: "Work" }),
+    ],
+  }, ["substitute", "add", "codex", "gpt-5.4", "--account", "missing"])
+
+  assert.equal(updateCalls, 0)
+  assert.equal(flashedMessage, "provider account alias missing was not found for codex")
+})
+
+test("agent substitute add rejects a dangling account flag without updating", async () => {
+  const currentAgent = agent()
+  const currentSession = session({ agents: [currentAgent] })
+  let updateCalls = 0
+  let flashedMessage = ""
+
+  for (const args of [
+    ["substitute", "add", "codex", "gpt-5.4", "--account"],
+    ["substitute", "add", "codex", "gpt-5.4", "--account", "--kernel", "kernel-1"],
+  ]) {
+    await handleAgentSubstituteCommand({
+      sessionState: () => currentSession,
+      focusedAgentId: () => currentAgent.id,
+      currentModelId: () => "gpt-5.4",
+      currentVariantId: () => "high",
+      flashFooter: (message) => { flashedMessage = message },
+      updateAgentSubstitutes: async () => {
+        updateCalls += 1
+        return { agent: currentAgent, session: currentSession }
+      },
+      applySessionState: () => {},
+      refreshAgentPanes: async () => {},
+      launchAgentProviderRun: async () => providerRun(),
+      setProviderRunState: () => {},
+      refreshSessionState: async () => currentSession,
+      resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
+      formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    }, args)
+
+    assert.equal(
+      flashedMessage,
+      "usage: /agent substitute add <provider> <model> [--variant v] [--account alias] [--kernel k] [--worktree dir] [--agent a]",
+    )
+  }
+  assert.equal(updateCalls, 0)
+})
+
+test("agent substitute activate launches with the substitute's own account profile", async () => {
+  const activatedAgent = agent({
+    account_profile: "primary-account",
+    active_substitute_index: 0,
+    substitutes: [
+      { provider: "codex", model: "gpt-5.4", account_profile: "codex-work-internal" },
+    ],
+  })
+  const currentSession = session({ agents: [activatedAgent] })
+  let launchedAccountProfile: string | undefined
+  let flashedMessage = ""
+
+  await handleAgentSubstituteCommand({
+    sessionState: () => currentSession,
+    focusedAgentId: () => activatedAgent.id,
+    currentModelId: () => "gpt-5.4",
+    currentVariantId: () => "high",
+    flashFooter: (message) => { flashedMessage = message },
+    updateAgentSubstitutes: async () => ({ agent: activatedAgent, session: currentSession }),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    launchAgentProviderRun: async (_provider, _model, _variant, _agentId, accountProfile) => {
+      launchedAccountProfile = accountProfile
+      return { ...providerRun(), account_profile: accountProfile ?? "default" }
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    resolveSessionAgent: () => ({ agent: activatedAgent, error: null }),
+    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    listProviderAccountProfiles: async () => [
+      providerAccount({ profile_id: "codex-work-internal", label: "Work" }),
+    ],
+  }, ["substitute", "activate", "0"])
+
+  assert.equal(launchedAccountProfile, "codex-work-internal")
+  assert.equal(flashedMessage, "agent-1 activated substitute 0: codex/gpt-5.4 · account Work")
 })
 
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
@@ -110,6 +261,28 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     },
     ...overrides,
   }
+}
+
+function providerAccount(
+  overrides: Partial<ProviderAccountProfile> = {},
+): ProviderAccountProfile {
+  return {
+    owner_user_id: "owner-1",
+    provider: "codex",
+    profile_id: "profile-1",
+    label: "Work",
+    origin: "chariox_created",
+    is_default: false,
+    auth_state: "authenticated",
+    identity_summary: null,
+    plan: null,
+    last_validated_at_ms: null,
+    usage: {
+      availability: "available",
+      source: "provider",
+    },
+    ...overrides,
+  } as ProviderAccountProfile
 }
 
 function providerRun(): RuntimeProviderRun {

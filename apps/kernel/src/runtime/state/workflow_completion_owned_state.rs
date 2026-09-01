@@ -12,16 +12,36 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let session = self.session_snapshot(session_id)?;
         self.durable_state_store
-            .persist_workflow_runtime_transition(&session, reason)?;
-        self.session_store
-            .write()
-            .archive_terminal_workflow_runs(session_id)?;
-        if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
-            self.session_projection.update(hot_session);
-        }
-        Ok(session)
+            .with_workflow_runtime_transition_lock(|| {
+                let session = self.session_snapshot(session_id)?;
+                self.durable_state_store
+                    .persist_workflow_runtime_transition(&session, reason)?;
+                let archived = self
+                    .session_store
+                    .write()
+                    .archive_terminal_workflow_runs(session_id)?;
+                if !archived.is_empty() {
+                    // Terminal runs leave the hot snapshot after this point, so push
+                    // one authoritative update per run before the projection change
+                    // wakes subscribers; otherwise diffing never observes the
+                    // terminal status.
+                    let recipient_attachment_ids = self
+                        .attachment_store
+                        .list_session_attachment_ids(session_id);
+                    for workflow_run in archived {
+                        self.terminal_stream.record_workflow_run_update(
+                            session_id,
+                            recipient_attachment_ids.clone(),
+                            workflow_run,
+                        );
+                    }
+                }
+                if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
+                    self.session_projection.update(hot_session);
+                }
+                Ok(session)
+            })
     }
 
     #[allow(dead_code)]
@@ -158,17 +178,10 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
-                if failure.retry_scheduled {
-                    format!(
-                        "Workflow handoff on edge `{}` failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
-                        failure.edge_id, failure.attempt, failure.max_attempts, failure.message
-                    )
-                } else {
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}` after attempt {}/{}: {}",
-                        failure.edge_id, failure.attempt, failure.max_attempts, failure.message
-                    )
-                },
+                format!(
+                    "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}`: {}",
+                    failure.edge_id, failure.message
+                ),
             );
         }
         if let Some(failure) = update.run_output_validation_failure.as_ref() {
@@ -187,17 +200,10 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
-                if failure.retry_scheduled {
-                    format!(
-                        "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
-                        failure.attempt, failure.max_attempts, failure.message
-                    )
-                } else {
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
-                        failure.attempt, failure.max_attempts, failure.message
-                    )
-                },
+                format!(
+                    "Workflow run `{workflow_run_id}` failed final output validation: {}",
+                    failure.message
+                ),
             );
         }
         if let Some(failure) = update.missing_output_failure.as_ref() {
@@ -216,17 +222,9 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
-                if failure.retry_scheduled {
-                    format!(
-                        "Workflow run `{workflow_run_id}` produced no structured output on attempt {}/{}; a corrective turn was scheduled.",
-                        failure.attempt, failure.max_attempts
-                    )
-                } else {
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed after producing no structured output on attempt {}/{}.",
-                        failure.attempt, failure.max_attempts
-                    )
-                },
+                format!(
+                    "Workflow run `{workflow_run_id}` failed because the provider produced no structured output."
+                ),
             );
         }
         if update.validation_warnings.is_empty()
@@ -243,16 +241,17 @@ impl KernelRuntimeOwnedState {
                     workflow_node_run_id,
                 )?;
         }
-        let released_workflow_claim = self.release_workflow_node_workspace_claim(
+        self.release_workflow_node_workspace_claim(
             session_id,
             workflow_run_id,
             workflow_node_run_id,
         );
         let mut dispatches =
-            self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches);
-        if released_workflow_claim {
-            dispatches.extend(self.workflow_retry_blocked_claims());
-        }
+            self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches)?;
+        // Queue promotion may already have exchanged the completed node's claim for the next
+        // shared-agent node. Retrying is safe in either case: conflicting work remains queued,
+        // while claims released by this completion immediately unblock eligible nodes.
+        dispatches.extend(self.workflow_retry_blocked_claims());
         let state_suffix = match update.workflow_run.status() {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
             crate::session::WorkflowRunStatus::Completing => "is completing",

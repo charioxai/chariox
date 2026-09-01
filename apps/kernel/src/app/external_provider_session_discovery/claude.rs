@@ -46,14 +46,22 @@ pub(super) fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSes
     Some(record)
 }
 
+#[cfg(test)]
 pub(super) fn read_claude_observed_turns(
     root: &Path,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
+    find_claude_observed_turns(root, provider_session_id).unwrap_or_default()
+}
+
+pub(super) fn find_claude_observed_turns(
+    root: &Path,
+    provider_session_id: &str,
+) -> Option<Vec<ObservedExternalProviderTurn>> {
     if let Some(path) = cached_provider_transcript_path_in_root("claude", provider_session_id, root)
     {
         if let Some(turns) = claude_observed_turns_from_path(&path, provider_session_id) {
-            return turns;
+            return Some(turns);
         }
     }
     let mut candidates = jsonl_candidates(&root.join("projects"), 3);
@@ -61,7 +69,6 @@ pub(super) fn read_claude_observed_turns(
     candidates
         .into_iter()
         .find_map(|path| claude_observed_turns_from_path(&path, provider_session_id))
-        .unwrap_or_default()
 }
 
 pub(super) fn claude_observed_turns_from_path(

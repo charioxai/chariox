@@ -20,6 +20,7 @@ mod workflow_canvas;
 mod workflow_definition;
 mod workflow_diagnostics;
 mod workflow_graph;
+mod workflow_instances;
 mod workflow_outputs;
 mod workflow_publication;
 mod workflow_run_records;
@@ -91,11 +92,18 @@ pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub(crate) use workflow_definition::{
     WorkflowCodeSourceDescriptor, WorkflowCodeStructureReplacement,
 };
+pub use workflow_graph::{
+    DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES, MAX_WORKFLOW_ENDPOINT_INSTANCES,
+};
+pub use workflow_instances::{
+    WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
+};
 pub use workflow_publication::{
     WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
-    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
-    WORKFLOW_PUBLICATION_KIND_EVENT_BASED, WORKFLOW_PUBLICATION_KIND_INGRESS,
-    WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY, WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+    WorkflowPublicationRuntimeMaterialization, WorkflowPublicationSnapshot,
+    WorkflowPublicationSourceSessionSnapshot, WORKFLOW_PUBLICATION_KIND_EVENT_BASED,
+    WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
+    WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
 };
 pub(crate) use workflow_scheduling::{WorkflowQueuedPromptInput, WorkflowScheduleReconfiguration};
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;

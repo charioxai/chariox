@@ -21,6 +21,7 @@ mod prompt_state_owner;
 mod provider_activation;
 mod provider_first_output_watchdog;
 mod provider_focus;
+mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
 mod provider_liveness;
@@ -113,8 +114,13 @@ pub(crate) use provider_first_output_watchdog::{
     ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
     PROVIDER_OUTPUT_TIMEOUT_MS,
 };
+pub(crate) use provider_launch_failure_retry::{
+    ProviderLaunchFailureRetry, ProviderLaunchFailureRetryScheduleOutcome,
+    ProviderLaunchFailureRetryStore,
+};
 pub(crate) use provider_launch_policy::{
-    apply_metaagent_launch_policy, failed_provider_resume_state_replacement,
+    apply_metaagent_launch_policy, default_provider_env_remove,
+    failed_provider_resume_state_replacement,
     failed_provider_resume_state_replacement_from_message, generate_runtime_mcp_auth_token,
     granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
     sanitize_resume_state_for_launch, workspace_live_sync_protected_roots,
@@ -134,6 +140,7 @@ pub struct DaemonApp {
     pub(crate) providers: ProviderProcessServiceStore,
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
+    provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     pub(crate) active_turns: ActiveTurnStore,
@@ -144,6 +151,11 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
+    managed_kernel_registration:
+        Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
     legacy_workflow_history: LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
@@ -180,6 +192,15 @@ impl DaemonApp {
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
+        if config.user_config.credential_vault.backend
+            == crate::config::CredentialVaultBackend::CharioxEncrypted
+        {
+            crate::secret::restore_transferred_vault_unlock(
+                &config.user_config.credential_vault.path,
+                &config.daemon_id,
+                &config.relay_private_key,
+            )?;
+        }
         crate::logging::info_with_fields(
             "daemon.startup",
             "daemon config validated",
@@ -191,7 +212,7 @@ impl DaemonApp {
 
         let history_started = Instant::now();
         let history = SessionHistoryStore::new_with_read_delay(
-            config.session_history_root.clone(),
+            config.session_history_root(),
             config.session_history_read_delay_ms,
         )?;
         crate::logging::info_with_fields(
@@ -200,7 +221,7 @@ impl DaemonApp {
             serde_json::json!({
                 "open_ms": history_started.elapsed().as_millis(),
                 "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
-                "session_history_root": config.session_history_root.display().to_string(),
+                "session_history_root": config.session_history_root().display().to_string(),
             }),
         );
 
@@ -221,7 +242,31 @@ impl DaemonApp {
         );
 
         let durable_state_started = Instant::now();
-        let durable_state = DurableKernelStateStore::open(config.durable_state_path())?;
+        let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let managed_context_root = config.private_runtime_state_root();
+        let managed_kernel_registration =
+            crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
+        let managed_context_launch_recovery =
+            managed_kernel_registration
+                .as_ref()
+                .and_then(|registration| {
+                    registration.context_plan.as_ref().map(|plan| {
+                        crate::managed_context::transfer::ManagedContextLaunchRecoveryBinding {
+                            environment_id: registration.environment_id.clone(),
+                            kernel_id: registration.kernel_id.clone(),
+                            plan: plan.package_binding(),
+                        }
+                    })
+                });
+        let managed_context_transfers =
+            crate::managed_context::transfer::ManagedContextTransferStore::open_with_launch_recovery(
+                managed_context_root.join("managed-context-transfers"),
+                managed_context_launch_recovery.as_ref(),
+            )?;
+        let managed_context_outbound =
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
+                managed_context_root.join("managed-context-outbound"),
+            )?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state store opened",
@@ -235,6 +280,10 @@ impl DaemonApp {
             crate::account_profile::ProviderAccountProfileRegistry::open(
                 config.account_profile_registry_path(),
             )?;
+        crate::publication_provider_accounts::materialize_publication_provider_accounts(
+            &provider_account_profiles,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )?;
         let provider_home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
             .map(std::path::PathBuf::from)
@@ -249,6 +298,7 @@ impl DaemonApp {
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
+            provider_launch_failure_retries: ProviderLaunchFailureRetryStore::default(),
             external_provider_sessions: ExternalProviderSessionIndexStore::default(),
             attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore::default(),
             active_turns: ActiveTurnStore::default(),
@@ -259,6 +309,9 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            managed_context_transfers,
+            managed_context_outbound,
+            managed_kernel_registration,
             legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
             provider_account_profiles,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
@@ -376,6 +429,24 @@ impl DaemonApp {
         self.durable_state.clone()
     }
 
+    pub(crate) fn managed_context_transfer_store(
+        &self,
+    ) -> crate::managed_context::transfer::ManagedContextTransferStore {
+        self.managed_context_transfers.clone()
+    }
+
+    pub(crate) fn managed_context_outbound_operation_store(
+        &self,
+    ) -> crate::managed_context::outbound_service::ManagedContextOutboundOperationStore {
+        self.managed_context_outbound.clone()
+    }
+
+    pub(crate) fn managed_kernel_registration(
+        &self,
+    ) -> Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration> {
+        self.managed_kernel_registration.clone()
+    }
+
     pub(crate) fn legacy_workflow_history_store(&self) -> LegacyWorkflowHistoryStore {
         self.legacy_workflow_history.clone()
     }
@@ -422,6 +493,10 @@ impl DaemonApp {
 
     pub(crate) fn provider_process_tracking_store(&self) -> ProviderProcessTrackingStore {
         self.provider_process_tracking.clone()
+    }
+
+    pub(crate) fn provider_launch_failure_retry_store(&self) -> ProviderLaunchFailureRetryStore {
+        self.provider_launch_failure_retries.clone()
     }
 
     pub(crate) fn external_provider_session_index_store(
@@ -607,6 +682,7 @@ mod tests {
         config_b.user_config.state.path = Some(state_path.display().to_string());
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.sessions().list_sessions().is_empty());
+        drop(app_b);
 
         let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
         assert!(app_a.sessions().get_session(&session_id).is_ok());
@@ -669,6 +745,7 @@ mod tests {
                         workspace_id: None,
                         worktree_id: None,
                         workspace_mount: Some("/repo".to_string()),
+                        development: None,
                         worker_kernel_ref: None,
                         display_url: Some("http://127.0.0.1:6080".to_string()),
                         provider_auth: Vec::new(),
@@ -692,6 +769,7 @@ mod tests {
         config_b.user_config.state.path = Some(state_path.display().to_string());
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.slices().list().is_empty());
+        drop(app_b);
 
         let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
         assert_eq!(

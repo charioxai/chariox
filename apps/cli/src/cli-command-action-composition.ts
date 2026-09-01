@@ -1,4 +1,5 @@
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
+import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
@@ -93,10 +94,12 @@ import {
 } from "./preferences.js"
 import {
   getProviderAuthStatus,
+  getProviderCatalog,
   getProviderLoginStatus,
   listProviderAccountProfiles,
   createProviderAccountProfile,
   linkProviderAccountProfile,
+  importNativeProviderAccountProfile,
   renameProviderAccountProfile,
   setDefaultProviderAccountProfile,
   refreshProviderAccountProfile,
@@ -205,6 +208,7 @@ export type CliCommandActionCompositionDeps = {
   attachBinding: AnyFn
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
+  applyAccountSelection: AnyFn
   applyModelSelection: AnyFn
   applyVariantSelection: AnyFn
   applyModeSelection: AnyFn
@@ -216,7 +220,7 @@ export type CliCommandActionCompositionDeps = {
   setRemoteMachinesState: AnyFn
   reconcileWaitingRoom: AnyFn
   setSlicesState: AnyFn
-  appLogger: { info: AnyFn } | null | undefined
+  appLogger: CharioxLogger | null | undefined
   setMultiAgentResponseLayout: AnyFn
   applyResponseLayout: AnyFn
   applySessionState: AnyFn
@@ -250,6 +254,7 @@ export type CliCommandActionCompositionDeps = {
   createWorkflowEndpoint: AnyFn
   assignWorkflowEndpointAlias: AnyFn
   bindWorkflowEndpoint: AnyFn
+  setWorkflowEndpointMaxInstances: AnyFn
   removeWorkflowEndpoint: AnyFn
   addWorkflowNode: AnyFn
   removeWorkflowNode: AnyFn
@@ -319,6 +324,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     attachBinding,
     transitionToNoSession,
     applyProviderSelection,
+    applyAccountSelection,
     applyModelSelection,
     applyVariantSelection,
     applyModeSelection,
@@ -364,6 +370,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
     removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,
@@ -450,8 +457,27 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
     updateAgentProfile: (sessionId, agentId, options) =>
       updateAgentProfile(client, sessionId, agentId, options),
+    getProviderCatalogForAgent: async (agent, provider, accountProfile) => {
+      const slices = await listSlices(client).catch(() => [])
+      const slice = slices.find((entry) =>
+        entry.agent_ids?.includes(agent.id)
+        || (agent.remote_execution?.worker_kernel_id
+          && entry.worker_kernel_id === agent.remote_execution.worker_kernel_id),
+      )
+      const workerRef = agent.remote_execution?.worker_kernel_id?.trim()
+      return getProviderCatalog(client, appLogger, {
+        provider,
+        accountProfile,
+        executionLocation: slice
+          ? { kind: "slice", slice_ref: slice.id }
+          : workerRef
+            ? { kind: "worker", kernel_ref: workerRef }
+            : { kind: "local" },
+      }, false)
+    },
     transitionToNoSession,
     applyProviderSelection,
+    applyAccountSelection,
     applyModelSelection,
     applyVariantSelection,
     applyModeSelection,
@@ -466,6 +492,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
     linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
+    importNativeProviderAccountProfile: (provider) => importNativeProviderAccountProfile(client, provider),
     renameProviderAccountProfile: (provider, profile, label) => renameProviderAccountProfile(client, provider, profile, label),
     setDefaultProviderAccountProfile: (provider, profile) => setDefaultProviderAccountProfile(client, provider, profile),
     refreshProviderAccountProfile: (provider, profile) => refreshProviderAccountProfile(client, provider, profile),
@@ -851,6 +878,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
     removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,

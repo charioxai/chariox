@@ -247,8 +247,14 @@ impl KernelRuntimeState {
                 .write()
                 .cancel_workflow_run(session_id, workflow_run_ref)?
         };
+        let workflow_claim_owner_prefix = format!("{workflow_run_id}:");
         let _ = owned.prompt_workspace_claims.remove_matching(|claim| {
-            claim.session_id == session_id && claim.operation == "workflow_node_dispatch"
+            claim.session_id == session_id
+                && claim
+                    .attachment_id
+                    .as_deref()
+                    .is_some_and(|owner| owner.starts_with(&workflow_claim_owner_prefix))
+                && claim.operation == "workflow_node_dispatch"
         });
         let session = owned.session_store.get_session(session_id)?;
         for agent in owned.agent_store.get_session_agents(session_id) {
@@ -307,6 +313,9 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let session_id = request.session_id.clone();
+        if let Err(error) = owned.require_publication_activation() {
+            return (Err(error), owned.session_snapshot(&session_id).ok());
+        }
         if let Err(error) = self
             .wait_for_workflow_prompt_cancellation_settlement(
                 &request.session_id,

@@ -258,16 +258,17 @@ impl KernelRuntimeOwnedState {
         );
         let _ = self.provider_store.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
-            let _ = self
-                .agent_store
-                .set_agent_runtime_profile_with_account_profile(
-                    agent_id,
-                    run.provider(),
-                    Some(run.model().to_string()),
-                    run.variant().map(str::to_string),
-                    Some(run.account_profile().to_string()),
-                    run.resume_state().clone(),
-                )?;
+            self.agent_store.set_agent_runtime_profile_durably(
+                &self.durable_state_store,
+                agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
+                run.resume_state().clone(),
+                Some(run.id()),
+                None,
+            )?;
         }
         if let Some(previous_active_run) = previous_active_run.as_ref() {
             self.prepare_provider_switch_context_handoff(previous_active_run, &run);

@@ -7,6 +7,7 @@ use super::super::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
     ProviderResumeState, ProviderRunTokenUsage,
 };
+use super::usage::merge_claude_account_usage;
 use super::ClaudeRuntimeState;
 
 pub(super) fn apply_claude_message(
@@ -62,6 +63,11 @@ fn apply_stream_event(
         return;
     }
     if event_kind == "message_start" {
+        state.active_stream_message_id = event
+            .get("message")
+            .and_then(|message| message.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(model) = event
             .get("message")
             .and_then(|message| message.get("model"))
@@ -72,13 +78,18 @@ fn apply_stream_event(
         }
     }
     if event_kind == "content_block_start" {
-        if let Some(text) = event
-            .get("content_block")
-            .and_then(|block| block.get("text"))
-            .and_then(Value::as_str)
-        {
-            push_text_chunk(provider_run_id, batch, text);
-            state.saw_text_delta = true;
+        if let Some(block) = event.get("content_block") {
+            let block_kind = block.get("type").and_then(Value::as_str).unwrap_or("text");
+            if let Some(text) = claude_block_text(block, block_kind) {
+                emit_authoritative_text(
+                    provider_run_id,
+                    state,
+                    batch,
+                    &claude_stream_block_key(state, event, block_kind),
+                    block_kind,
+                    text,
+                );
+            }
         }
     }
     if event_kind == "content_block_delta" {
@@ -92,8 +103,14 @@ fn apply_stream_event(
         {
             "text_delta" => {
                 if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                    push_text_chunk(provider_run_id, batch, text);
-                    state.saw_text_delta = true;
+                    emit_stream_text_delta(
+                        provider_run_id,
+                        state,
+                        batch,
+                        &claude_stream_block_key(state, event, "text"),
+                        "text",
+                        text,
+                    );
                 }
             }
             "thinking_delta" => {
@@ -102,7 +119,14 @@ fn apply_stream_event(
                     .or_else(|| delta.get("text"))
                     .and_then(Value::as_str)
                 {
-                    push_reasoning_chunk(provider_run_id, batch, text);
+                    emit_stream_text_delta(
+                        provider_run_id,
+                        state,
+                        batch,
+                        &claude_stream_block_key(state, event, "thinking"),
+                        "thinking",
+                        text,
+                    );
                 }
             }
             _ => {}
@@ -171,20 +195,13 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
     let resets_at_ms = info
         .get("resets_at")
         .or_else(|| info.get("resetsAt"))
-        .and_then(Value::as_u64)
-        .map(|value| {
-            if value < 10_000_000_000 {
-                value * 1_000
-            } else {
-                value
-            }
-        });
+        .and_then(super::usage::timestamp_ms);
     let scope = if limit_type.to_ascii_lowercase().contains("model") {
         ProviderAccountUsageMeterScope::Model
     } else {
         ProviderAccountUsageMeterScope::Account
     };
-    batch.account_usage = Some(ProviderAccountUsageSnapshot {
+    let snapshot = ProviderAccountUsageSnapshot {
         // The run-owning kernel replaces this placeholder with the selected
         // stable profile ID before persisting it.
         profile_id: String::new(),
@@ -192,7 +209,11 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
         availability: ProviderAccountUsageAvailability::Available,
         meters: vec![ProviderAccountUsageMeter {
             meter_id: format!("rate_limit/{limit_type}"),
-            label: limit_type.replace(['_', '-'], " "),
+            label: match limit_type.as_str() {
+                "five_hour" | "five-hour" => "5-hour".to_string(),
+                "seven_day" | "seven-day" => "Weekly".to_string(),
+                _ => limit_type.replace(['_', '-'], " "),
+            },
             kind: ProviderAccountUsageMeterKind::RollingLimit,
             scope,
             used_percent: utilization,
@@ -209,7 +230,8 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
         observed_at_ms: Some(observed_at_ms),
         source: "claude.rate_limit_event".to_string(),
         management_url: Some("https://claude.ai/settings/usage".to_string()),
-    });
+    };
+    merge_claude_account_usage(&mut batch.account_usage, snapshot);
 }
 
 fn apply_assistant_message(
@@ -229,24 +251,24 @@ fn apply_assistant_message(
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
-    if state.saw_text_delta {
-        return;
-    }
-    let message_id = message
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("assistant");
     if let Some(content) = message.get("content").and_then(Value::as_array) {
         for (index, block) in content.iter().enumerate() {
             let block_kind = block
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let Some(text) = block.get("text").and_then(Value::as_str) else {
+            let Some(text) = claude_block_text(block, block_kind) else {
                 continue;
             };
-            let key = format!("{message_id}:{index}");
-            emit_text_suffix(provider_run_id, state, batch, &key, block_kind, text);
+            let key = claude_assistant_block_key(state, message, block_kind, index);
+            emit_authoritative_text(provider_run_id, state, batch, &key, block_kind, text);
+            if state
+                .emitted_text_by_block
+                .get(&key)
+                .is_some_and(|emitted| emitted == text)
+            {
+                state.completed_text_blocks.insert(key);
+            }
         }
     }
 }
@@ -308,7 +330,7 @@ fn record_claude_session_id(
     }
 }
 
-fn emit_text_suffix(
+fn emit_stream_text_delta(
     provider_run_id: &str,
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
@@ -316,18 +338,96 @@ fn emit_text_suffix(
     block_kind: &str,
     text: &str,
 ) {
-    let offset = state
-        .emitted_text_offsets
-        .entry(key.to_string())
-        .or_default();
-    if *offset >= text.len() {
+    if text.is_empty() || state.completed_text_blocks.contains(key) {
         return;
     }
-    let suffix = &text[*offset..];
-    *offset = text.len();
+    state
+        .emitted_text_by_block
+        .entry(key.to_string())
+        .or_default()
+        .push_str(text);
+    match block_kind {
+        "thinking" => push_reasoning_chunk(provider_run_id, batch, text),
+        _ => push_text_chunk(provider_run_id, batch, text),
+    }
+}
+
+fn emit_authoritative_text(
+    provider_run_id: &str,
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+    key: &str,
+    block_kind: &str,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let emitted = state
+        .emitted_text_by_block
+        .entry(key.to_string())
+        .or_default();
+    if text == emitted.as_str() || emitted.starts_with(text) {
+        return;
+    }
+    let Some(suffix) = text.strip_prefix(emitted.as_str()) else {
+        crate::logging::debug_with_fields(
+            "daemon.provider.claude",
+            "Claude assistant snapshot did not match the streamed prefix",
+            serde_json::json!({
+                "block_key": key,
+                "streamed_len": emitted.len(),
+                "completed_len": text.len(),
+            }),
+        );
+        return;
+    };
     match block_kind {
         "thinking" => push_reasoning_chunk(provider_run_id, batch, suffix),
         _ => push_text_chunk(provider_run_id, batch, suffix),
+    }
+    *emitted = text.to_string();
+}
+
+fn claude_stream_block_key(state: &ClaudeRuntimeState, event: &Value, block_kind: &str) -> String {
+    let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
+    claude_scoped_block_key(state.active_stream_message_id.as_deref(), block_kind, index)
+}
+
+fn claude_assistant_block_key(
+    state: &mut ClaudeRuntimeState,
+    message: &Value,
+    block_kind: &str,
+    index: usize,
+) -> String {
+    let message_id = message.get("id").and_then(Value::as_str);
+    let key = claude_scoped_block_key(message_id, block_kind, index as u64);
+    if message_id.is_some() && !state.emitted_text_by_block.contains_key(&key) {
+        let legacy_key = claude_scoped_block_key(None, block_kind, index as u64);
+        if let Some(emitted) = state.emitted_text_by_block.remove(&legacy_key) {
+            state.emitted_text_by_block.insert(key.clone(), emitted);
+        }
+        if state.completed_text_blocks.remove(&legacy_key) {
+            state.completed_text_blocks.insert(key.clone());
+        }
+    }
+    key
+}
+
+fn claude_scoped_block_key(message_id: Option<&str>, block_kind: &str, index: u64) -> String {
+    match message_id {
+        Some(message_id) => format!("message:{message_id}:{block_kind}:{index}"),
+        None => format!("legacy:{block_kind}:{index}"),
+    }
+}
+
+fn claude_block_text<'a>(block: &'a Value, block_kind: &str) -> Option<&'a str> {
+    match block_kind {
+        "thinking" => block
+            .get("thinking")
+            .or_else(|| block.get("text"))
+            .and_then(Value::as_str),
+        _ => block.get("text").and_then(Value::as_str),
     }
 }
 

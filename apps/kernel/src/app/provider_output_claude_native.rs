@@ -32,16 +32,17 @@ use permission::{
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
     claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_visible,
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
-    clear_claude_hook_permission_tombstone, clear_claude_permission_recent,
+    claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
+    clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
     extract_native_hidden_instructions, format_claude_permission_message,
-    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
-    redact_native_hidden_instructions, should_bridge_claude_permission,
-    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
-    timestamp_millis, update_claude_permission_recent,
-    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
-    write_claude_headless_submit_retry, write_claude_hook_context_response,
-    write_claude_hook_permission_tombstone, write_claude_native_marker,
-    write_claude_permission_input, write_claude_permission_response,
+    mark_claude_yolo_rendered_permission_confirmed, normalize_claude_visible_prompt_for_headless,
+    read_claude_headless_submit_retry, redact_native_hidden_instructions,
+    should_bridge_claude_permission, take_claude_permission_inputs,
+    take_matching_claude_hook_permission_tombstone, timestamp_millis,
+    update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
+    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
+    write_claude_hook_context_response, write_claude_hook_permission_tombstone,
+    write_claude_native_marker, write_claude_permission_input, write_claude_permission_response,
 };
 #[cfg(test)]
 use transcript::drain_claude_transcript_file;
@@ -138,9 +139,8 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
 }
 
 fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {
-    let prompt = prompt.trim();
-    prompt == "[Request interrupted by user]"
-        || (prompt.starts_with("<task-notification>") && prompt.ends_with("</task-notification>"))
+    crate::provider::ExternalProviderObservationPolicy::for_provider("claude")
+        .user_prompt_is_internal_control(prompt)
 }
 
 fn claude_headless_dispatch_matches_prompt(
@@ -152,6 +152,40 @@ fn claude_headless_dispatch_matches_prompt(
     retry.prompt_id == dispatch_prompt_id
         && !retry.visible_prompt.is_empty()
         && claude_headless_prompt_matches(&retry.visible_prompt, observed_prompt)
+}
+
+fn acknowledge_claude_headless_dispatch_from_hook_events(
+    context_file: &str,
+    events_file: &str,
+    dispatch_prompt_id: &str,
+) {
+    let raw = fs::read_to_string(events_file).unwrap_or_default();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if event.get("hook_event_name").and_then(Value::as_str) != Some("UserPromptSubmit") {
+            continue;
+        }
+        let Some(observed_prompt) = event
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+        else {
+            continue;
+        };
+        if !claude_native_prompt_is_internal_control(observed_prompt)
+            && claude_headless_dispatch_matches_prompt(
+                context_file,
+                dispatch_prompt_id,
+                observed_prompt,
+            )
+        {
+            write_claude_native_marker(context_file, &format!("accepted:{dispatch_prompt_id}"));
+            return;
+        }
+    }
 }
 
 fn acknowledge_claude_headless_steering_enqueue(
@@ -240,6 +274,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
         )?;
         self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        self.process_claude_account_usage(provider_run)?;
 
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
@@ -331,6 +366,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 {
                     let context =
                         self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    crate::provider::ensure_claude_native_hidden_context_fits(
+                        provider_run_id,
+                        &context,
+                    )?;
+                    fs::write(context_file, &context).map_err(|error| {
+                        DaemonError::ProviderProtocol {
+                            provider_run_id: provider_run_id.to_string(),
+                            operation: "claude_hidden_context_write",
+                            message: error.to_string(),
+                        }
+                    })?;
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
@@ -387,6 +433,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     provider_run_id,
                     &agent_id,
                     context_file,
+                    provider_run,
                     native_interaction_bridge.clone(),
                     &event,
                 )?;
@@ -394,6 +441,38 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         Ok(outcome)
+    }
+
+    fn process_claude_account_usage(
+        &mut self,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let Some(path) = provider_run.pty_env().get("CHARIOX_CLAUDE_USAGE_FILE") else {
+            return Ok(());
+        };
+        let path = std::path::Path::new(path);
+        let consumed_path = path.with_extension("consuming");
+        if fs::rename(path, &consumed_path).is_err() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&consumed_path).unwrap_or_default();
+        let _ = fs::remove_file(&consumed_path);
+        if raw.trim().is_empty() {
+            return Ok(());
+        }
+        let Ok(value) = serde_json::from_str(&raw) else {
+            return Ok(());
+        };
+        let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
+            return Ok(());
+        };
+        self.app.provider_account_profiles.update_usage(
+            provider_run.owner_user_id(),
+            provider_run.provider(),
+            provider_run.account_profile(),
+            snapshot,
+        )?;
+        Ok(())
     }
 
     pub(crate) fn finish_deferred_stop(
@@ -606,6 +685,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if chunk.text.is_empty() {
                 continue;
             }
+            if chunk.kind == TerminalOutputKind::ProviderTool {
+                crate::transport::flow_control::note_prompt_tool_output(
+                    self.app,
+                    provider_run_id,
+                    Some(&chunk.merge_key_suffix),
+                    chunk.text.as_bytes(),
+                );
+            }
             if matches!(
                 chunk.kind,
                 TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
@@ -646,10 +733,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 &message_id,
                 unix_epoch_ms(),
             );
-            crate::transport::flow_control::mark_prompt_completion_recorded(
-                self.app,
-                provider_run_id,
-            );
         }
         Ok(())
     }
@@ -662,12 +745,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
         rendered: &str,
     ) -> Result<(), DaemonError> {
-        let Some(bridge) = native_interaction_bridge else {
-            return Ok(());
-        };
-        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
-            return Ok(());
-        };
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(());
         };
@@ -722,12 +799,31 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             update_claude_permission_recent(context_file, rendered)
         };
         if !visible && !claude_rendered_permission_visible(&recent) {
+            clear_claude_yolo_rendered_permission_confirmation(context_file);
             return Ok(());
         }
         if take_matching_claude_hook_permission_tombstone(context_file, &recent) {
             clear_claude_permission_recent(context_file);
             return Ok(());
         }
+        if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
+            if claude_yolo_rendered_permission_confirmation_pending(context_file, &recent) {
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
+            append_claude_headless_debug(context_file, "auto_confirm", "yolo_permission");
+            self.app
+                .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+            mark_claude_yolo_rendered_permission_confirmed(context_file, &recent);
+            clear_claude_permission_recent(context_file);
+            return Ok(());
+        }
+        let Some(bridge) = native_interaction_bridge else {
+            return Ok(());
+        };
+        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
+            return Ok(());
+        };
         let interaction_id = format!(
             "claude-rendered-permission-{provider_run_id}-{}",
             timestamp_millis()
@@ -788,18 +884,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_permission_event(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         agent_id: &str,
         context_file: &str,
+        provider_run: &RuntimeProviderRun,
         native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
         event: &Value,
     ) -> Result<(), DaemonError> {
-        let Some(bridge) = native_interaction_bridge else {
-            return Ok(());
-        };
         if !should_bridge_claude_permission(event) {
             return Ok(());
         }
@@ -808,6 +903,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         else {
+            return Ok(());
+        };
+        if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
+            write_claude_hook_permission_tombstone(context_file, event);
+            clear_claude_permission_recent(context_file);
+            write_claude_permission_response(
+                context_file,
+                request_id,
+                true,
+                "Allowed by Chariox yolo permission policy.",
+            );
+            return Ok(());
+        }
+        let Some(bridge) = native_interaction_bridge else {
             return Ok(());
         };
         let tool_name = event
@@ -917,6 +1026,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
             &prompt,
         )?;
+        if provider_run.provider() == "claude-headless" {
+            if let Some(events_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
+                // Workflow dispatch does not have a terminal client polling
+                // provider output. Observe the exact UserPromptSubmit hook
+                // here as well so successful headless injection does not rely
+                // on an unrelated output-pump request. Leave the event file
+                // intact for the normal bridge to drain transcript and Stop.
+                acknowledge_claude_headless_dispatch_from_hook_events(
+                    context_file,
+                    events_file,
+                    prompt.id,
+                );
+            }
+        }
         // Native TUI injection completes once Enter reaches the provider. A
         // headless run must additionally acknowledge UserPromptSubmit; an
         // `injected` marker only proves that bytes were written to the PTY and
@@ -1251,7 +1374,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 crate::prompt_assembly::strip_prompt_manifest_entries(prompt.hidden_system_context);
             join_claude_context([scheduled_hidden, native_hidden, attachment_context])
         };
-        let _ = fs::write(context_file, hidden_context);
+        crate::provider::ensure_claude_native_hidden_context_fits(
+            provider_run_id,
+            &hidden_context,
+        )?;
+        fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
+            provider_run_id: provider_run_id.to_string(),
+            operation: "claude_hidden_context_write",
+            message: error.to_string(),
+        })?;
         let visible = join_claude_context([native_attachment_suffix, visible]);
         if !visible.is_empty() {
             let input = if provider_run.provider() == "claude-headless" {

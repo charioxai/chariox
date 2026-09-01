@@ -3,8 +3,9 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import { NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
 import {
   createWaitingRoomKeyController,
   type WaitingRoomKeyControllerDeps,
@@ -57,6 +58,31 @@ test("waiting room key controller activates on enter", () => {
   assert.deepEqual(harness.calls(), ["activate"])
 })
 
+test("waiting room key controller opens managed configuration from the Machine field", () => {
+  const harness = createHarness({
+    state: waitingRoomState({
+      focus: "launch-machine",
+      selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    }),
+  })
+
+  assert.equal(harness.controller.handleKey({ name: "enter", eventType: "press" }), true)
+
+  assert.deepEqual(harness.calls(), ["open-managed-machine"])
+})
+
+test("waiting room key controller opens managed configuration when Machine cycles to new", () => {
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
+    remote: { managedEnvironments: [] },
+  })
+
+  assert.equal(harness.controller.handleKey({ name: "right", eventType: "press" }), true)
+
+  assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
+  assert.deepEqual(harness.calls(), ["reconcile", "open-managed-machine"])
+})
+
 test("waiting room key controller renames and restores the focused project", () => {
   const project = projectSummary({ status: "archived" })
   const harness = createHarness({
@@ -82,6 +108,7 @@ function createHarness(options: {
   state?: WaitingRoomState
   sessions?: SessionListEntry[]
   projects?: WaitingRoomProjectSummary[]
+  remote?: WaitingRoomRemoteState
 } = {}) {
   let state = options.state ?? waitingRoomState()
   const calls: string[] = []
@@ -98,9 +125,10 @@ function createHarness(options: {
     getWaitingRoomState: () => state,
     getSessions: () => options.sessions ?? [],
     getProviderCatalog: () => fallbackProviderCatalog(),
-    getRemoteState: () => options.projects ? { projects: options.projects } : {},
+    getRemoteState: () => options.remote ?? (options.projects ? { projects: options.projects } : {}),
     reconcileWaitingRoom: (nextState) => {
       calls.push("reconcile")
+      state = nextState
       reconciledStates.push(nextState)
     },
     setWaitingRoomState: (nextState) => {
@@ -123,6 +151,10 @@ function createHarness(options: {
     },
     activateWaitingRoom: () => {
       calls.push("activate")
+    },
+    openManagedMachineDialog: () => {
+      calls.push("open-managed-machine")
+      return true
     },
   })
 

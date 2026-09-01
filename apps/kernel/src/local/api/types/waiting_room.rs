@@ -18,6 +18,14 @@ pub struct WaitingRoomLaunchTarget {
     pub worktree_label: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitingRoomGitCredentialSummary {
+    pub credential_id: String,
+    pub hostname: String,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
@@ -42,6 +50,8 @@ pub struct WaitingRoomInventorySnapshot {
     pub launch_target: Option<WaitingRoomLaunchTarget>,
     #[serde(default)]
     pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
+    #[serde(default)]
+    pub git_credentials: Vec<WaitingRoomGitCredentialSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +80,8 @@ pub struct WaitingRoomPublicSnapshot {
     pub launch_target: Option<WaitingRoomLaunchTarget>,
     #[serde(default)]
     pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
+    #[serde(default)]
+    pub git_credentials: Vec<WaitingRoomGitCredentialSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +124,8 @@ pub struct WaitingRoomPublicProjectSummary {
     pub id: String,
     pub owner_user_id: String,
     pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_ids: Vec<String>,
     pub name: String,
     pub kind: crate::session::RuntimeProjectKind,
     pub status: crate::session::RuntimeProjectStatus,
@@ -270,6 +284,7 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             terminals: snapshot.terminals,
             launch_target: snapshot.launch_target,
             provider_accounts: snapshot.provider_accounts,
+            git_credentials: snapshot.git_credentials,
         }
     }
 }

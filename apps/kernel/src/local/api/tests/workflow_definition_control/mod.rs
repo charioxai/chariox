@@ -86,9 +86,23 @@ fn create_publication_test_graph(
     harness: &LocalRouterTestHarness,
     label: &str,
 ) -> PublicationTestGraph {
+    create_publication_test_graph_in_workspace(
+        harness,
+        label,
+        &format!("workspace-{label}"),
+        &format!("worktree-{label}"),
+    )
+}
+
+fn create_publication_test_graph_in_workspace(
+    harness: &LocalRouterTestHarness,
+    label: &str,
+    workspace_id: &str,
+    worktree_id: &str,
+) -> PublicationTestGraph {
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(&format!("workspace-{label}"), &format!("worktree-{label}")),
+            CreateSessionRequest::new(workspace_id, worktree_id),
         ))
         .expect("session create should succeed")
     {
@@ -114,6 +128,26 @@ fn create_publication_test_graph(
         .expect("agent should spawn")
     {
         LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    let agent = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentConfig(
+            UpdateAgentConfigRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                execution_mode: None,
+                clear_execution_mode: false,
+                permission_level: None,
+                clear_permission_level: false,
+                workspace_id: Some(workspace_id.to_string()),
+                clear_workspace_id: false,
+                worktree_id: Some(worktree_id.to_string()),
+                clear_worktree_id: false,
+            },
+        ))
+        .expect("publication test agent workspace should update")
+    {
+        LocalDaemonResponse::AgentConfigUpdated { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let workflow = match harness

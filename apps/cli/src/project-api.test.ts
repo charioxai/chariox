@@ -7,6 +7,7 @@ import {
   listProjects,
   renameProject,
   restoreProject,
+  updateProjectWorkspaces,
 } from "./project-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
@@ -16,6 +17,7 @@ test("project API sends the kernel-owned project lifecycle variants", async () =
   const responses = [
     { ProjectsListed: { projects: [project] } },
     { ProjectRenamed: { project: { ...project, name: "Renamed" } } },
+    { ProjectWorkspacesUpdated: { project: { ...project, workspace_ids: ["/repo", "/shared"] } } },
     { ProjectArchived: { project: { ...project, status: "archived" }, sessions: [] } },
     { ProjectDeleted: { project, sessions: [] } },
     { ProjectRestored: { project, sessions: [] } },
@@ -29,6 +31,7 @@ test("project API sends the kernel-owned project lifecycle variants", async () =
 
   await listProjects(client, true)
   await renameProject(client, project.id, "Renamed")
+  await updateProjectWorkspaces(client, project.id, ["/repo", "/shared"])
   await archiveProject(client, project.id)
   await deleteProject(client, project.id)
   await restoreProject(client, project.id)
@@ -36,6 +39,7 @@ test("project API sends the kernel-owned project lifecycle variants", async () =
   assert.deepEqual(requests, [
     { ListProjects: { include_archived: true } },
     { RenameProject: { project_id: project.id, name: "Renamed" } },
+    { UpdateProjectWorkspaces: { project_id: project.id, workspace_ids: ["/repo", "/shared"] } },
     { ArchiveProject: { project_id: project.id } },
     { DeleteProject: { project_id: project.id } },
     { RestoreProject: { project_id: project.id } },

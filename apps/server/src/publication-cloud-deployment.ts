@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 
 import { agentAppReplicaStatus } from "./publication-agent-app-replicas.js"
+import { publicationCloudOperationalFields } from "./publication-cloud-operational-status.js"
 import type { WorkflowPublicationConfig } from "./publication-types.js"
 
 export interface PublicationCloudProfile {
@@ -17,6 +18,7 @@ export interface RegisterCloudPublicationBackendInput {
   readonly localUrl?: string
   readonly status?: "ready" | "unavailable" | "failed"
   readonly lastError?: string | null
+  readonly operationalStatus?: unknown
   readonly profile?: PublicationCloudProfile | null
   readonly fetch?: typeof fetch
   readonly now?: () => number
@@ -51,6 +53,7 @@ export async function registerCloudPublicationDeploymentBackend(
     `${normalizeApiUrl(profile.apiUrl)}/publication-deployments/${encodeURIComponent(input.deploymentId)}/local-backend`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(5_000),
       headers: {
         accept: "application/json",
         "content-type": "application/json",
@@ -62,7 +65,7 @@ export async function registerCloudPublicationDeploymentBackend(
         runtimeSessionId: input.publication.session_id,
         ...(input.lastError ? { lastError: input.lastError } : {}),
         ...(status === "ready" ? {
-          backendTarget: localRuntimeBackendTarget(input.publication, input.localUrl!, input.now?.() ?? Date.now()),
+          backendTarget: localRuntimeBackendTarget(input.publication, input.localUrl!, input.now?.() ?? Date.now(), input.operationalStatus),
         } : {}),
       }),
     },
@@ -73,11 +76,12 @@ export async function registerCloudPublicationDeploymentBackend(
   return true
 }
 
-function localRuntimeBackendTarget(publication: WorkflowPublicationConfig, localUrl: string, updatedAtMs: number): Record<string, unknown> {
+function localRuntimeBackendTarget(publication: WorkflowPublicationConfig, localUrl: string, updatedAtMs: number, operationalStatus?: unknown): Record<string, unknown> {
   const base = {
     kind: "local_runtime",
     url: localUrl,
     updated_at_ms: updatedAtMs,
+    ...publicationCloudOperationalFields(operationalStatus),
   }
   if (publication.agent_app?.enabled !== true) return base
   const status = agentAppReplicaStatus(publication)
@@ -87,6 +91,29 @@ function localRuntimeBackendTarget(publication: WorkflowPublicationConfig, local
     activeReplicaCount: status.activeReplicaCount,
     readyReplicaCount: status.readyReplicaCount,
   }
+}
+
+export type PublicationCloudBackendIngress =
+  | { readonly kind: "no_cloud_deployment" }
+  | { readonly kind: "hosted_container" }
+  | { readonly kind: "unavailable"; readonly lastError: string }
+  | { readonly kind: "ready" }
+
+export function publicationCloudBackendIngress(input: {
+  readonly cloudDeploymentId?: string | null | undefined
+  readonly cloudRunnerKey?: string | null | undefined
+  readonly access: string
+}): PublicationCloudBackendIngress {
+  const deploymentId = input.cloudDeploymentId?.trim()
+  if (!deploymentId) return { kind: "no_cloud_deployment" }
+  if (input.cloudRunnerKey?.trim()) return { kind: "hosted_container" }
+  if (input.access !== "tunnel") {
+    return {
+      kind: "unavailable",
+      lastError: `Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access ${input.access}`,
+    }
+  }
+  return { kind: "ready" }
 }
 
 export async function appendCloudPublicationDeploymentLogs(

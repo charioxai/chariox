@@ -17,6 +17,7 @@ struct MockOpenCodeState {
     next_prompt_error: Option<String>,
     prompt_async_response_delay: Duration,
     abort_response_delay: Duration,
+    connected_mcp_servers: BTreeSet<String>,
     message_response_delay: Duration,
     response_delay: Duration,
     omit_session_status: bool,
@@ -53,6 +54,7 @@ impl MockOpenCodeServer {
             next_prompt_error: None,
             prompt_async_response_delay: Duration::ZERO,
             abort_response_delay: Duration::ZERO,
+            connected_mcp_servers: BTreeSet::new(),
             message_response_delay: Duration::ZERO,
             response_delay,
             omit_session_status: false,
@@ -269,7 +271,35 @@ fn handle_mock_opencode_request(
                 Value::Object(status_map)
             }
         }
-        ("POST", path) if path.starts_with("/mcp/") && path.ends_with("/connect") => json!(true),
+        ("POST", path) if path.starts_with("/mcp/") && path.ends_with("/connect") => {
+            let name = path
+                .strip_prefix("/mcp/")
+                .and_then(|value| value.strip_suffix("/connect"))
+                .expect("MCP connect path should include a server name");
+            state
+                .lock()
+                .expect("mock state should not be poisoned")
+                .connected_mcp_servers
+                .insert(name.to_string());
+            json!(true)
+        }
+        ("GET", "/mcp") => {
+            let state = state.lock().expect("mock state should not be poisoned");
+            Value::Object(
+                state
+                    .connected_mcp_servers
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.clone(),
+                            json!({
+                                "status": "connected",
+                            }),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         ("GET", path) if path.starts_with("/session/") && path.ends_with("/message") => {
             let response_delay = state
                 .lock()

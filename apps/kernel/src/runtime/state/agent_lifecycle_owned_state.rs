@@ -260,9 +260,7 @@ impl KernelRuntimeOwnedState {
             .list_runs()
             .into_iter()
             .filter(|run| {
-                run.session_id() == session_id
-                    && run.agent_instance_id() == Some(agent_id)
-                    && run.state() != crate::provider::ProviderRunState::Ended
+                run.session_id() == session_id && run.agent_instance_id() == Some(agent_id)
             })
             .map(|run| run.id().to_string())
             .collect::<Vec<_>>();

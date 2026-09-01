@@ -26,6 +26,9 @@ use super::session_lifecycle::{
 use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
+use super::workflow_instances::{
+    WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
+};
 use super::workflow_publication::{
     WorkflowEventBinding, WorkflowEventDeliveryReceipt, WorkflowPublicationDefinition,
     WorkflowPublicationSnapshot,
@@ -76,6 +79,7 @@ pub(crate) struct DurableWorkflowHotState {
     pub(crate) workflows: Vec<WorkflowDefinition>,
     pub(crate) workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
     pub(crate) workflow_queued_prompts: VecDeque<WorkflowQueuedPrompt>,
+    pub(crate) workflow_runtime_instances: Vec<WorkflowEndpointRuntimeInstance>,
     pub(crate) workflow_schedules: Vec<WorkflowScheduleDefinition>,
     pub(crate) workflow_consoles: Vec<WorkflowConsole>,
     pub(crate) workflow_publications: Vec<WorkflowPublicationDefinition>,
@@ -132,6 +136,8 @@ pub struct RuntimeSession {
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
     workflow_runs: Vec<WorkflowRun>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_runtime_instances: Vec<WorkflowEndpointRuntimeInstance>,
     /// Workflow runs whose provider prompt has been removed and is completing
     /// its post-provider settlement. This is process-local coordination state:
     /// on restart the durable prompt/run projection is reconciled normally.
@@ -165,6 +171,7 @@ impl RuntimeSession {
             workflows: self.workflows.clone(),
             workflow_prompt_queues: self.workflow_prompt_queues.clone(),
             workflow_queued_prompts: self.workflow_queued_prompts.clone(),
+            workflow_runtime_instances: self.workflow_runtime_instances.clone(),
             workflow_schedules: self.workflow_schedules.clone(),
             workflow_consoles: self.workflow_consoles.clone(),
             workflow_publications: self
@@ -186,6 +193,7 @@ impl RuntimeSession {
         self.workflows = state.workflows;
         self.workflow_prompt_queues = state.workflow_prompt_queues;
         self.workflow_queued_prompts = state.workflow_queued_prompts;
+        self.workflow_runtime_instances = state.workflow_runtime_instances;
         self.workflow_schedules = state.workflow_schedules;
         self.workflow_consoles = state.workflow_consoles;
         self.workflow_publication_state.workflow_publications = state.workflow_publications;
@@ -258,6 +266,7 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
+            workflow_runtime_instances: Vec::new(),
             settling_workflow_run_counts: BTreeMap::new(),
             workflow_prompt_queues: Vec::new(),
             workflow_queued_prompts: VecDeque::new(),

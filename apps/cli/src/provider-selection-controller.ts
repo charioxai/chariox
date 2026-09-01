@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  ProviderAccountProfile,
   ProviderAuthStatus,
   RuntimeProviderRun,
   RuntimeSession,
@@ -22,18 +23,24 @@ import {
   deriveWaitingRoomModelSelectionDecision,
   deriveWaitingRoomVariantSelectionDecision,
 } from "./waiting-room-controller.js"
+import {
+  defaultProviderAccountProfileId,
+  resolveProviderAccountSelection,
+} from "./waiting-room-provider-accounts.js"
 import type { SessionListEntry } from "./sessions.js"
 
 type FooterTone = "info" | "error"
 
 type CurrentProviderSelection = {
   provider: string
+  accountProfile?: string
   model: string
   effort: string
 }
 
 type ProviderSelectionDefaults = {
   provider: BackendProviderId
+  accountProfile?: string
   model: string
   effort: string
 }
@@ -43,6 +50,9 @@ type ProviderSelectionControllerDeps = {
   waitingRoomState: () => WaitingRoomState
   availableSessions: () => SessionListEntry[]
   providerCatalog: () => ProviderCatalog
+  providerAccounts?: () => readonly ProviderAccountProfile[]
+  loadProviderCatalog?: (provider: BackendProviderId, accountProfile: string) => Promise<ProviderCatalog>
+  setProviderCatalog?: (catalog: ProviderCatalog) => void
   themeRegistry: () => ThemeRegistry
   preferences: () => CharioxPreferences
   defaults: () => ProviderSelectionDefaults
@@ -67,7 +77,7 @@ type ProviderSelectionControllerDeps = {
   ) => Promise<{ session: RuntimeSession; agent?: AgentInstance }>
   applySessionState: (session: RuntimeSession) => void
   clearProviderRunState: () => void
-  getProviderAuthStatus: (provider: BackendProviderId) => Promise<ProviderAuthStatus>
+  getProviderAuthStatus: (provider: BackendProviderId, accountProfile: string) => Promise<ProviderAuthStatus>
   appendNotice: (text: string) => void
   flashFooter: (message: string, tone: FooterTone) => void
   warn?: (message: string, fields: Record<string, unknown>) => void
@@ -78,6 +88,7 @@ export type ProviderSelectionController = {
   applyModelSelection(modelId: string): Promise<void>
   applyVariantSelection(variant: string): Promise<void>
   applyProviderSelection(providerId: string): Promise<void>
+  applyAccountSelection(accountProfile: string): Promise<void>
   applyModeSelection(mode: string): Promise<void>
   applyPermissionSelection(permission: string): Promise<void>
 }
@@ -86,6 +97,10 @@ export function createProviderSelectionController(
   deps: ProviderSelectionControllerDeps,
 ): ProviderSelectionController {
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
+  const providerAccounts = () => deps.providerAccounts?.() ?? []
+  const loadProviderCatalog = (provider: BackendProviderId, accountProfile: string) => (
+    deps.loadProviderCatalog?.(provider, accountProfile) ?? Promise.resolve(deps.providerCatalog())
+  )
 
   const updateFocusedAgentProfile = async (
     selection: ProviderSelectionDefaults,
@@ -180,10 +195,18 @@ export function createProviderSelectionController(
         deps.flashFooter(`unknown provider: ${providerId}`, "error")
         return
       }
-      const catalog = deps.providerCatalog()
-      const localFallback = providerCatalogIsLocalFallback(catalog)
       const defaults = deps.defaults()
       const saved = deps.preferences().providers?.[providerId]
+      const accountProfile = defaultProviderAccountProfileId(providerAccounts(), providerId)
+      let catalog: ProviderCatalog
+      try {
+        catalog = await loadProviderCatalog(providerId, accountProfile)
+      } catch (error) {
+        deps.flashFooter(formatError(error), "error")
+        return
+      }
+      deps.setProviderCatalog?.(catalog)
+      const localFallback = providerCatalogIsLocalFallback(catalog)
       const selected = selectConfiguredModel(
         catalog,
         saved?.model ?? defaults.model,
@@ -191,6 +214,7 @@ export function createProviderSelectionController(
       )
       const nextDefaults = {
         provider: providerId,
+        accountProfile,
         model: selected?.id ?? defaults.model,
         effort: saved?.effort ?? (selected ? selectConfiguredVariant(selected, defaults.effort) : defaults.effort),
       }
@@ -199,6 +223,7 @@ export function createProviderSelectionController(
       deps.reconcileWaitingRoom({
         ...deps.waitingRoomState(),
         providerId,
+        accountProfileId: accountProfile,
         modelId: nextDefaults.model,
         effort: nextDefaults.effort,
       })
@@ -221,7 +246,7 @@ export function createProviderSelectionController(
 
       if (providerId === "codex") {
         try {
-          const status = await deps.getProviderAuthStatus(providerId)
+          const status = await deps.getProviderAuthStatus(providerId, accountProfile)
           if (status.auth_state !== "authenticated") {
             deps.appendNotice([
               "Codex is not logged in.",
@@ -236,6 +261,58 @@ export function createProviderSelectionController(
         }
       }
       deps.flashFooter(selectionMessage(`${backendProviderLabel(providerId)} selected`, localFallback), "info")
+    },
+    async applyAccountSelection(accountProfile) {
+      const current = deps.currentProviderSelection()
+      const provider = normalizeBackendProviderId(current.provider)
+      const selection = resolveProviderAccountSelection(providerAccounts(), provider, accountProfile)
+      if (selection.kind === "ambiguous") {
+        deps.flashFooter(`ambiguous ${backendProviderLabel(provider)} account: ${selection.aliases.join(", ")}`, "error")
+        return
+      }
+      if (selection.kind === "missing") {
+        deps.flashFooter(`unknown ${backendProviderLabel(provider)} account`, "error")
+        return
+      }
+      const profile = selection.profile
+      let catalog: ProviderCatalog
+      try {
+        catalog = await loadProviderCatalog(provider, profile.profile_id)
+      } catch (error) {
+        deps.flashFooter(formatError(error), "error")
+        return
+      }
+      deps.setProviderCatalog?.(catalog)
+      const selected = selectConfiguredModel(catalog, current.model, provider)
+      if (!selected) {
+        deps.flashFooter(`${profile.label} has no available ${backendProviderLabel(provider)} models`, "error")
+        return
+      }
+      const effort = selectConfiguredVariant(selected, current.effort)
+      const nextSelection = {
+        provider,
+        accountProfile: profile.profile_id,
+        model: selected.id,
+        effort,
+      }
+      deps.setDefaults(nextSelection)
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        providerId: provider,
+        accountProfileId: profile.profile_id,
+        modelId: selected.id,
+        effort,
+      })
+      if (deps.isAttached()) {
+        try {
+          const updated = await updateFocusedAgentProfile(nextSelection)
+          if (!updated) return
+        } catch (error) {
+          deps.flashFooter(formatError(error), "error")
+          return
+        }
+      }
+      deps.flashFooter(`account set to ${profile.label}`, "info")
     },
     async applyModeSelection(rawMode) {
       const mode = parseExecutionMode(rawMode)

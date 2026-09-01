@@ -142,6 +142,48 @@ pub(super) fn format_session_status(kind: &str) -> String {
     match kind {
         "busy" => "OpenCode is thinking...".to_string(),
         "idle" => "OpenCode is idle.".to_string(),
+        _ if is_connection_retry_status(kind) => {
+            crate::provider::provider_retry_status("OpenCode", None)
+        }
         other => format!("OpenCode status: {other}"),
+    }
+}
+
+pub(super) fn session_status_merge_key(kind: &str) -> &'static str {
+    if is_connection_retry_status(kind) {
+        crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY
+    } else {
+        "__provider_status__"
+    }
+}
+
+fn is_connection_retry_status(kind: &str) -> bool {
+    matches!(kind, "retry" | "reconnecting")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn retry_and_reconnecting_statuses_use_the_shared_connection_message() {
+        for status in ["retry", "reconnecting"] {
+            assert_eq!(
+                super::format_session_status(status),
+                "OpenCode connection interrupted — retrying."
+            );
+        }
+    }
+
+    #[test]
+    fn retry_and_reconnecting_statuses_use_the_structured_retry_key() {
+        for status in ["retry", "reconnecting"] {
+            assert_eq!(
+                super::session_status_merge_key(status),
+                crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+            );
+        }
+        assert_eq!(
+            super::session_status_merge_key("busy"),
+            "__provider_status__"
+        );
     }
 }

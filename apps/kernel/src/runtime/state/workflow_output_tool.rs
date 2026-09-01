@@ -199,7 +199,7 @@ impl KernelRuntimeOwnedState {
                 &context.session_id,
                 &workflow_run_id,
                 &update.dispatches,
-            ));
+            )?);
             if !self.workflow_publication_prompt_waits_for_provider_completion(
                 &context.session_id,
                 &workflow_run_id,

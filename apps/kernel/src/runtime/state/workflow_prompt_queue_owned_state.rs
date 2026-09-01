@@ -5,6 +5,499 @@ use super::*;
 const LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS: u64 = 5_000;
 
 impl KernelRuntimeOwnedState {
+    fn workflow_ensure_dispatchable_runtime_instance(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.workflow_cleanup_runtime_instances(session_id)?;
+        let Some(candidate) = self
+            .session_store
+            .write()
+            .workflow_runtime_instance_provision_candidate(session_id)?
+        else {
+            return Ok(false);
+        };
+
+        if candidate.primary {
+            let instance = self
+                .session_store
+                .write()
+                .ensure_primary_workflow_runtime_instance(session_id)?;
+            let Some(instance) = instance else {
+                return Ok(true);
+            };
+            if let Err(error) =
+                self.persist_workflow_runtime_session(session_id, "workflow_instance_provisioned")
+            {
+                let _ = self
+                    .session_store
+                    .write()
+                    .remove_workflow_runtime_instance(session_id, instance.id());
+                return Err(error);
+            }
+            return Ok(true);
+        }
+
+        let instance_id = format!("workflow-instance-{:032x}", rand::random::<u128>());
+        let mut node_agent_ids = std::collections::BTreeMap::new();
+        let mut materialized_agents = Vec::new();
+        let worktree_id = {
+            let worktree_root = self
+                .config_projection
+                .snapshot()
+                .workflow_runtime_artifact_root()
+                .join("instances")
+                .join(session_id);
+            std::fs::create_dir_all(&worktree_root).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "provision workflow runtime instance",
+                    message: format!(
+                        "failed to create workflow instance directory `{}`: {error}",
+                        worktree_root.display()
+                    ),
+                }
+            })?;
+            let target = worktree_root.join(&instance_id);
+            let placement = crate::agent::GitWorktreePlacement {
+                target_directory: Some(target.display().to_string()),
+                branch: None,
+                from_ref: Some("HEAD".to_string()),
+            };
+            let worktree_id =
+                crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
+                    &placement,
+                    std::path::Path::new(&candidate.source_worktree_id),
+                    None,
+                    "provision workflow runtime instance",
+                )?;
+            let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
+            for node in candidate.workflow.nodes() {
+                let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
+                    agent_id.clone()
+                } else {
+                    let source_agent = match self.agent_store.get_agent(node.agent_id()) {
+                        Ok(source_agent) => source_agent,
+                        Err(error) => {
+                            self.workflow_rollback_runtime_instance_provision(
+                                &candidate.source_worktree_id,
+                                &worktree_id,
+                                false,
+                                &materialized_agents,
+                            );
+                            return Err(error);
+                        }
+                    };
+                    let materialized = self.agent_store.materialize_workflow_runtime_agent(
+                        source_agent,
+                        session_id,
+                        &worktree_id,
+                    );
+                    materialized_agents.push(materialized.clone());
+                    agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
+                    materialized.id().to_string()
+                };
+                node_agent_ids.insert(node.id().to_string(), runtime_agent_id);
+            }
+            worktree_id
+        };
+
+        let instance = crate::session::WorkflowEndpointRuntimeInstance::new(
+            instance_id.clone(),
+            candidate.workflow.id(),
+            candidate.endpoint.id(),
+            candidate.workflow.revision(),
+            candidate.ordinal,
+            false,
+            node_agent_ids,
+            worktree_id.clone(),
+        );
+        if let Err(error) = self
+            .session_store
+            .write()
+            .register_workflow_runtime_instance(session_id, instance)
+        {
+            self.workflow_rollback_runtime_instance_provision(
+                &candidate.source_worktree_id,
+                &worktree_id,
+                false,
+                &materialized_agents,
+            );
+            return Err(error);
+        }
+        if let Err(error) =
+            self.persist_workflow_runtime_session(session_id, "workflow_instance_provisioned")
+        {
+            let _ = self
+                .session_store
+                .write()
+                .remove_workflow_runtime_instance(session_id, &instance_id);
+            self.workflow_rollback_runtime_instance_provision(
+                &candidate.source_worktree_id,
+                &worktree_id,
+                false,
+                &materialized_agents,
+            );
+            return Err(error);
+        }
+        if !materialized_agents.is_empty() {
+            if let Err(error) = self.durable_state_store.append_event(
+                "agents.created",
+                Some(session_id.to_string()),
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agents": &materialized_agents,
+                }),
+            ) {
+                let _ = self
+                    .session_store
+                    .write()
+                    .remove_workflow_runtime_instance(session_id, &instance_id);
+                let _ = self.persist_workflow_runtime_session(
+                    session_id,
+                    "workflow_instance_provision_rollback",
+                );
+                self.workflow_rollback_runtime_instance_provision(
+                    &candidate.source_worktree_id,
+                    &worktree_id,
+                    false,
+                    &materialized_agents,
+                );
+                return Err(error);
+            }
+        }
+        Ok(true)
+    }
+
+    pub(super) fn workflow_cleanup_runtime_instances(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let (source_worktree_id, missing_agent_instances, referenced_instance_worktrees) = {
+            let sessions = self.session_store.read();
+            let session = sessions.get_session(session_id)?;
+            let referenced_instance_worktrees = session
+                .workflow_runtime_instances()
+                .iter()
+                .filter(|instance| !instance.primary())
+                .map(|instance| std::path::PathBuf::from(instance.worktree_id()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let missing = session
+                .workflow_runtime_instances()
+                .iter()
+                .filter(|instance| !instance.primary())
+                .filter(|instance| {
+                    instance
+                        .node_agent_ids()
+                        .values()
+                        .any(|agent_id| self.agent_store.get_agent(agent_id).is_err())
+                })
+                .map(|instance| {
+                    (
+                        instance.id().to_string(),
+                        instance.active_run_id().map(str::to_string),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                session.worktree_id().to_string(),
+                missing,
+                referenced_instance_worktrees,
+            )
+        };
+        let removed_orphaned_agents = self
+            .workflow_cleanup_orphaned_runtime_agents(session_id, &referenced_instance_worktrees)?;
+        self.workflow_cleanup_orphaned_runtime_worktrees(session_id, &source_worktree_id);
+        for (instance_id, active_run_id) in missing_agent_instances {
+            if let Some(active_run_id) = active_run_id {
+                let node_run_id = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(session_id, &active_run_id)
+                    .ok()
+                    .and_then(|run| run.node_runs().first().map(|node| node.id().to_string()));
+                if let Some(node_run_id) = node_run_id {
+                    let _ = self.session_store.write().fail_workflow_node_run(
+                        session_id,
+                        &active_run_id,
+                        &node_run_id,
+                    );
+                } else {
+                    let _ = self
+                        .session_store
+                        .write()
+                        .release_workflow_runtime_instance_for_run(session_id, &active_run_id);
+                }
+            }
+            self.session_store
+                .write()
+                .mark_workflow_runtime_instance_stale(session_id, &instance_id)?;
+        }
+        let cleanup_ready = self
+            .session_store
+            .write()
+            .cleanup_ready_workflow_runtime_instances(session_id)?;
+        if cleanup_ready.is_empty() {
+            if removed_orphaned_agents > 0 {
+                self.persist_workflow_runtime_session(
+                    session_id,
+                    "orphaned_workflow_runtime_agents_cleaned",
+                )?;
+            }
+            return Ok(());
+        }
+        for instance in &cleanup_ready {
+            if !instance.primary() {
+                let agent_ids = instance
+                    .node_agent_ids()
+                    .values()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                for agent_id in agent_ids {
+                    self.workflow_cleanup_runtime_agent(session_id, &agent_id)?;
+                }
+                crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                    &source_worktree_id,
+                    instance.worktree_id(),
+                    "cleanup workflow runtime instance",
+                )?;
+            }
+            self.session_store
+                .write()
+                .remove_workflow_runtime_instance(session_id, instance.id())?;
+        }
+        self.persist_workflow_runtime_session(session_id, "workflow_instances_cleaned")?;
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id);
+        let _ = std::fs::remove_dir(&instance_root);
+        Ok(())
+    }
+
+    fn workflow_cleanup_orphaned_runtime_agents(
+        &self,
+        session_id: &str,
+        referenced_instance_worktrees: &std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Result<usize, DaemonError> {
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id);
+        let orphaned_agent_ids = self
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter(|agent| !agent.visible_in_freeform())
+            .filter_map(|agent| {
+                let worktree = std::path::PathBuf::from(agent.worktree_id()?);
+                (worktree.starts_with(&instance_root)
+                    && !referenced_instance_worktrees.contains(&worktree))
+                .then(|| agent.id().to_string())
+            })
+            .collect::<Vec<_>>();
+        for agent_id in &orphaned_agent_ids {
+            self.workflow_cleanup_runtime_agent(session_id, agent_id)?;
+        }
+        Ok(orphaned_agent_ids.len())
+    }
+
+    fn workflow_cleanup_runtime_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+            if run.state() != crate::provider::ProviderRunState::Ended {
+                let ended = self
+                    .provider_store
+                    .terminate_run_provider_only(session_id, run.id())?
+                    .into_run();
+                self.provider_run_projection.update(ended.clone());
+                self.remove_provider_process_tracking_for_run(ended.id(), None);
+            }
+        }
+        self.clear_agent_prompt_runtime_state(session_id, agent_id);
+        self.prompt_state_owner.remove_agent(session_id, agent_id);
+        self.external_provider_sessions
+            .detach_agent(session_id, agent_id);
+        self.attached_provider_transcript_cursors
+            .detach_agent(session_id, agent_id);
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Ok(());
+        };
+        let was_focused = agent.state() == crate::agent::AgentState::Focused
+            || self
+                .session_store
+                .read()
+                .get_session(session_id)?
+                .focused_agent_id()
+                == Some(agent_id);
+        let removed_agent = self
+            .agent_store
+            .destroy_workflow_runtime_agent(agent_id, &mut self.session_store.write())?;
+        if let Err(error) = self.durable_state_store.append_event(
+            "agent.deleted",
+            Some(agent.session_id().to_string()),
+            serde_json::json!({ "agent": &agent }),
+        ) {
+            self.agent_store.restore_agent(removed_agent);
+            if was_focused {
+                let _ = self.agent_store.focus_agent(
+                    session_id,
+                    agent_id,
+                    &mut self.session_store.write(),
+                );
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(super) fn workflow_cleanup_runtime_instances_exclusive(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.workflow_cleanup_runtime_instances(session_id)
+    }
+
+    pub(super) fn workflow_cleanup_deleted_session_runtime_artifacts(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> Result<(), DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for instance in session
+            .workflow_runtime_instances()
+            .iter()
+            .filter(|instance| !instance.primary())
+        {
+            crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                session.worktree_id(),
+                instance.worktree_id(),
+                "delete session workflow runtime instance",
+            )?;
+        }
+
+        self.workflow_cleanup_orphaned_runtime_worktrees(session.id(), session.worktree_id());
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session.id());
+        if instance_root.exists() {
+            std::fs::remove_dir_all(&instance_root).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "delete session workflow runtime instance",
+                    message: format!(
+                        "failed to remove deleted session workflow runtime artifacts at `{}`: {error}",
+                        instance_root.display(),
+                    ),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn workflow_cleanup_orphaned_runtime_worktrees(
+        &self,
+        session_id: &str,
+        source_worktree_id: &str,
+    ) {
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id);
+        let referenced_worktrees = self
+            .session_store
+            .read()
+            .get_session(session_id)
+            .map(|session| {
+                session
+                    .workflow_runtime_instances()
+                    .iter()
+                    .filter(|instance| !instance.primary())
+                    .map(|instance| std::path::PathBuf::from(instance.worktree_id()))
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let Ok(entries) = std::fs::read_dir(&instance_root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if referenced_worktrees.contains(&path) {
+                continue;
+            }
+            if let Err(error) = crate::git_worktree_placement::remove_git_worktree(
+                source_worktree_id,
+                &path,
+                "cleanup orphaned workflow runtime instance",
+            ) {
+                let fallback = std::fs::symlink_metadata(&path).and_then(|metadata| {
+                    if metadata.file_type().is_symlink() {
+                        std::fs::remove_file(&path)
+                    } else {
+                        std::fs::remove_dir_all(&path)
+                    }
+                });
+                if fallback.is_ok() {
+                    let _ = crate::git_worktree_placement::remove_git_worktree(
+                        source_worktree_id,
+                        &path,
+                        "prune orphaned workflow runtime instance",
+                    );
+                    continue;
+                }
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "orphaned workflow runtime worktree cleanup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "worktree": path,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+        let _ = std::fs::remove_dir(&instance_root);
+    }
+
+    fn workflow_rollback_runtime_instance_provision(
+        &self,
+        source_worktree_id: &str,
+        worktree_id: &str,
+        primary: bool,
+        materialized_agents: &[crate::agent::AgentInstance],
+    ) {
+        for agent in materialized_agents.iter().rev() {
+            let _ = self.agent_store.remove_workflow_runtime_agent(agent.id());
+        }
+        if !primary {
+            let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                source_worktree_id,
+                worktree_id,
+                "rollback workflow runtime instance",
+            );
+        }
+    }
+
     fn workflow_reconcile_live_orphans(&self, session_id: &str) {
         let reconciled = self
             .session_store
@@ -56,11 +549,24 @@ impl KernelRuntimeOwnedState {
         &self,
         now_ms: u64,
     ) -> WorkflowPromptDispatches {
-        let collection = match self
-            .session_store
-            .write()
-            .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
+        if !self.publication_activation.is_active() {
+            return WorkflowPromptDispatches::default();
+        }
+        let collection = if self
+            .config_projection
+            .snapshot()
+            .publication_control_state_root
+            .is_some()
         {
+            self.session_store
+                .write()
+                .collect_due_workflow_watchdogs_after_publication_activation(now_ms)
+        } else {
+            self.session_store
+                .write()
+                .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
+        };
+        let collection = match collection {
             Ok(collection) => collection,
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -119,18 +625,8 @@ impl KernelRuntimeOwnedState {
                 Some(plan.watchdog_id.clone()),
             )?;
         }
-        if self
-            .session_store
-            .read()
-            .session_has_active_workflow_run(&plan.session_id)?
-        {
-            let _ = self
-                .session_store
-                .write()
-                .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
-            return Ok(WorkflowPromptDispatches::default());
-        }
-        let outcome = self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
+        let (_outcome, dispatches) =
+            self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
         if self
             .session_store
             .read()
@@ -141,9 +637,7 @@ impl KernelRuntimeOwnedState {
                 .write()
                 .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
         }
-        Ok(outcome
-            .map(|(_, dispatches)| dispatches)
-            .unwrap_or_default())
+        Ok(dispatches)
     }
 
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
@@ -172,10 +666,10 @@ impl KernelRuntimeOwnedState {
             endpoint_ref,
         )?;
         self.workflow_validate_agents(session_id, &workflow)?;
-        let (queued_prompt, claimed_run) = self
+        let queued_prompt = self
             .session_store
             .write()
-            .enqueue_workflow_prompt_and_maybe_create_run(
+            .enqueue_workflow_prompt_with_publication_invocation(
                 session_id,
                 workflow.id(),
                 endpoint.id(),
@@ -185,47 +679,93 @@ impl KernelRuntimeOwnedState {
                 None,
                 publication_invocation,
             )?;
-        let Some((claimed_prompt, workflow_run, claimed_workflow, claimed_endpoint)) = claimed_run
-        else {
+        let (claimed, dispatches) =
+            self.workflow_start_next_queued_prompt_for_response(session_id)?;
+        let Some(claimed_outcome) = claimed else {
+            // This invocation dispatched nothing itself, but a concurrent
+            // invocation may have already admitted our prompt into the primary
+            // run between our enqueue and this point. Attribute that Started run
+            // to us so exactly one caller owns it. The invocation that performed
+            // the dispatch carries and applies the provider dispatches, so we
+            // return none here.
+            if let Some(workflow_run) =
+                self.workflow_started_run_for_queued_prompt(session_id, queued_prompt.id())?
+            {
+                return Ok((
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run: Box::new(workflow_run),
+                        workflow,
+                        endpoint,
+                    },
+                    dispatches,
+                ));
+            }
             return Ok((
                 crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
                     queued_prompt: Box::new(queued_prompt),
                     workflow,
                     endpoint,
                 },
-                WorkflowPromptDispatches::default(),
+                dispatches,
             ));
         };
-        let claimed_requested_prompt = claimed_prompt.id() == queued_prompt.id();
-        let (claimed_outcome, dispatches) = match self.workflow_schedule_queued_prompt_run(
-            session_id,
-            claimed_prompt.clone(),
-            workflow_run,
-            claimed_workflow,
-            claimed_endpoint,
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.record_queued_workflow_prompt_launch_failure(
-                    session_id,
-                    &claimed_prompt,
-                    &error,
-                );
-                return Err(error);
-            }
+        let claimed_requested_prompt = match &claimed_outcome {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                workflow_run, ..
+            } => workflow_run.queue_item_id() == Some(queued_prompt.id()),
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                queued_prompt: claimed,
+                ..
+            } => claimed.id() == queued_prompt.id(),
         };
         if claimed_requested_prompt {
-            Ok((claimed_outcome, dispatches))
-        } else {
-            Ok((
-                crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
-                    queued_prompt: Box::new(queued_prompt),
+            return Ok((claimed_outcome, dispatches));
+        }
+        // Our dispatch loop advanced a different invocation's (older) prompt. Our
+        // own prompt may itself have been admitted concurrently; if so, report
+        // Started for it while still returning the dispatches we own so they are
+        // applied exactly once.
+        if let Some(workflow_run) =
+            self.workflow_started_run_for_queued_prompt(session_id, queued_prompt.id())?
+        {
+            return Ok((
+                crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                    workflow_run: Box::new(workflow_run),
                     workflow,
                     endpoint,
                 },
                 dispatches,
-            ))
+            ));
         }
+        Ok((
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                queued_prompt: Box::new(queued_prompt),
+                workflow,
+                endpoint,
+            },
+            dispatches,
+        ))
+    }
+
+    /// Return the workflow run that admitted `queued_prompt_id`, if any. Under
+    /// concurrent invocation a different caller's dispatch loop may admit our
+    /// prompt into the single primary instance; this lets the owning invocation
+    /// report `Started` for its own prompt instead of a spurious `Enqueued`.
+    fn workflow_started_run_for_queued_prompt(
+        &self,
+        session_id: &str,
+        queued_prompt_id: &str,
+    ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+        let sessions = self.session_store.read();
+        let session = sessions.get_session(session_id)?;
+        Ok(session
+            .workflow_runs()
+            .iter()
+            .find(|workflow_run| {
+                workflow_run.queue_item_id() == Some(queued_prompt_id)
+                    && !workflow_run.status().is_terminal()
+            })
+            .cloned())
     }
 
     fn workflow_schedule_queued_prompt_run(
@@ -235,6 +775,7 @@ impl KernelRuntimeOwnedState {
         workflow_run: crate::session::WorkflowRun,
         workflow: crate::session::WorkflowDefinition,
         endpoint: crate::session::WorkflowEndpointDefinition,
+        failure_dispatches: &mut WorkflowPromptDispatches,
     ) -> Result<
         (
             crate::app::workflow_runtime::WorkflowLaunchOutcome,
@@ -255,6 +796,10 @@ impl KernelRuntimeOwnedState {
         {
             Ok(dispatches) => dispatches,
             Err(error) => {
+                let failed_node_run_id = workflow_run
+                    .node_runs()
+                    .first()
+                    .map(|node_run| node_run.id().to_string());
                 if let Some(node_run) = workflow_run.node_runs().first() {
                     let _ = self.session_store.write().record_workflow_failure_event(
                         session_id,
@@ -272,6 +817,19 @@ impl KernelRuntimeOwnedState {
                         node_run.id(),
                     );
                 }
+                if let Some(node_run_id) = failed_node_run_id {
+                    if self.release_workflow_node_workspace_claim(
+                        session_id,
+                        workflow_run.id(),
+                        &node_run_id,
+                    ) {
+                        failure_dispatches.extend(self.workflow_retry_blocked_claims());
+                    }
+                }
+                let _ = self
+                    .session_store
+                    .write()
+                    .release_workflow_runtime_instance_for_run(session_id, workflow_run.id());
                 return Err(error);
             }
         };
@@ -293,20 +851,25 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<
-        Option<(
-            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+        (
+            Option<crate::app::workflow_runtime::WorkflowLaunchOutcome>,
             WorkflowPromptDispatches,
-        )>,
+        ),
         DaemonError,
     > {
+        if !self.publication_activation.is_active() {
+            return Ok((None, WorkflowPromptDispatches::default()));
+        }
         self.workflow_reconcile_live_orphans(session_id);
+        let mut accumulated = WorkflowPromptDispatches::default();
         loop {
+            self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
             let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
                 .session_store
                 .write()
                 .dequeue_next_workflow_prompt_and_create_run(session_id)?
             else {
-                return Ok(None);
+                return Ok((None, accumulated));
             };
             match self.workflow_schedule_queued_prompt_run(
                 session_id,
@@ -314,8 +877,12 @@ impl KernelRuntimeOwnedState {
                 workflow_run,
                 workflow,
                 endpoint,
+                &mut accumulated,
             ) {
-                Ok(outcome) => return Ok(Some(outcome)),
+                Ok((outcome, dispatches)) => {
+                    accumulated.extend(dispatches);
+                    return Ok((Some(outcome), accumulated));
+                }
                 Err(error) => {
                     self.record_queued_workflow_prompt_launch_failure(
                         session_id,
@@ -331,8 +898,22 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> WorkflowPromptDispatches {
+        if !self.publication_activation.is_active() {
+            return WorkflowPromptDispatches::default();
+        }
         self.workflow_reconcile_live_orphans(session_id);
+        let mut accumulated = WorkflowPromptDispatches::default();
         loop {
+            if let Err(error) = self.workflow_ensure_dispatchable_runtime_instance(session_id) {
+                self.record_notice(
+                    session_id,
+                    None,
+                    self.attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!("Failed to provision workflow instance: {error}"),
+                );
+                return accumulated;
+            }
             let next_workflow = {
                 self.session_store
                     .write()
@@ -356,18 +937,18 @@ impl KernelRuntimeOwnedState {
                         })
                         .unwrap_or(false);
                     if queued_metaagent_is_busy {
-                        return WorkflowPromptDispatches::default();
+                        return accumulated;
                     }
                     let queued_metaagent_task = self
                         .session_store
                         .write()
                         .pop_next_queued_metaagent_task(session_id);
                     return match queued_metaagent_task {
-                        Ok(Some(task)) => WorkflowPromptDispatches {
-                            starting_metaagent_tasks: vec![task],
-                            ..WorkflowPromptDispatches::default()
-                        },
-                        Ok(None) => WorkflowPromptDispatches::default(),
+                        Ok(Some(task)) => {
+                            accumulated.starting_metaagent_tasks.push(task);
+                            accumulated
+                        }
+                        Ok(None) => accumulated,
                         Err(error) => {
                             self.record_notice(
                                 session_id,
@@ -376,7 +957,7 @@ impl KernelRuntimeOwnedState {
                                     .list_session_attachment_ids(session_id),
                                 format!("Failed to start queued Meta task: {error}"),
                             );
-                            WorkflowPromptDispatches::default()
+                            accumulated
                         }
                     };
                 }
@@ -388,7 +969,7 @@ impl KernelRuntimeOwnedState {
                             .list_session_attachment_ids(session_id),
                         format!("Failed to start queued workflow prompt: {error}"),
                     );
-                    return WorkflowPromptDispatches::default();
+                    return accumulated;
                 }
             };
             match self.workflow_schedule_queued_prompt_run(
@@ -397,6 +978,7 @@ impl KernelRuntimeOwnedState {
                 workflow_run,
                 workflow,
                 endpoint,
+                &mut accumulated,
             ) {
                 Ok((
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
@@ -418,7 +1000,7 @@ impl KernelRuntimeOwnedState {
                             endpoint.id()
                         ),
                     );
-                    return dispatches;
+                    accumulated.extend(dispatches);
                 }
                 Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
                 Err(error) => {

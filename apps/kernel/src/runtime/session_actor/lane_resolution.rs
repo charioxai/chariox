@@ -14,6 +14,7 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::ListProjects(_)
         | LocalDaemonRequest::RenameProject(_)
+        | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)
         | LocalDaemonRequest::DeleteProject(_)
         | LocalDaemonRequest::RestoreProject(_) => Ok(SESSION_CREATE_LANE_ID.to_string()),

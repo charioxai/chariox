@@ -1,7 +1,7 @@
 import { useRenderer } from "@opentui/solid"
 import { BoxRenderable, MouseButton, TextAttributes, TextRenderable } from "@opentui/core"
 
-import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "../cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowEndpointRuntimeInstance, WorkflowRun } from "../cli-types.js"
 import { theme } from "../theme.js"
 import type { WorkflowComponentSelection } from "../workflow-component-selection.js"
 import { resolveSelectedWorkflow, resolveSelectedWorkflowNodeId } from "../workflow-graph/selection.js"
@@ -10,11 +10,12 @@ import { buildWorkflowOutlineNodeLines } from "./text.js"
 
 export function buildWorkflowOutlineRenderable(
   renderer: ReturnType<typeof useRenderer>,
-  options: {
-    workflows: WorkflowDefinition[]
-    agents: AgentInstance[]
-    workflowRuns: WorkflowRun[]
-    selectedWorkflowId: string | null
+    options: {
+      workflows: WorkflowDefinition[]
+      agents: AgentInstance[]
+      workflowRuns: WorkflowRun[]
+      workflowRuntimeInstances?: WorkflowEndpointRuntimeInstance[]
+      selectedWorkflowId: string | null
     selectedNodeId: string | null
     selectedComponent?: WorkflowComponentSelection | null
     onSelectNode: (nodeId: string | null) => void
@@ -31,6 +32,7 @@ export function buildWorkflowOutlineRenderable(
     workflow: selectedWorkflow,
     agents: options.agents,
     workflowRuns: options.workflowRuns,
+    ...(options.workflowRuntimeInstances !== undefined ? { workflowRuntimeInstances: options.workflowRuntimeInstances } : {}),
     selectedNodeId,
     ...(options.selectedComponent !== undefined ? { selectedComponent: options.selectedComponent } : {}),
   })
@@ -108,7 +110,7 @@ export function buildWorkflowOutlineRenderable(
     if (options.onSelectComponent) {
       for (const endpoint of node.entryEndpoints) {
         nodeBox.add(buildComponentSelector(renderer, {
-          label: `endpoint ${endpoint.id}${endpoint.alias ? ` (${endpoint.alias})` : ""}`,
+          label: `${endpoint.id}${endpoint.alias ? ` (${endpoint.alias})` : ""} • pool ${endpoint.busyCount}/${endpoint.maxInstances} busy`,
           selected: options.selectedComponent?.kind === "endpoint" && options.selectedComponent.id === endpoint.id,
           onSelect: () => options.onSelectComponent?.({ kind: "endpoint", id: endpoint.id }, endpoint.entryNodeId),
         }))

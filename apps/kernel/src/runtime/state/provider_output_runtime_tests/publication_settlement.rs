@@ -1,7 +1,11 @@
 use super::*;
 
-#[tokio::test]
-async fn completed_publication_output_releases_workflow_workspace_claim() {
+async fn assert_completed_publication_output_settlement(
+    adapter_key: &str,
+    provider: &str,
+    client_interface: crate::provider::ProviderClientInterface,
+    waits_for_provider_completion: bool,
+) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -10,16 +14,24 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
             "worktree-publication-claim",
         ))
         .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "publication-settlement-test-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("test client should attach");
     let provider_run = app
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
-                "dev-stub",
-                "codex",
+                adapter_key,
+                provider,
                 "default",
                 "gpt-test",
             )
-            .with_agent_id(agent.id()),
+            .with_agent_id(agent.id())
+            .with_client_interface(client_interface),
         )
         .expect("provider run should launch");
     app.update_provider_run_projection(provider_run.clone());
@@ -91,6 +103,26 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
     .with_workflow_context(workflow_run.id(), &node_run_id);
     app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
         .expect("workflow prompt should start");
+    let active_prompt_id = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("workflow prompt should be active")
+        .id()
+        .to_string();
+    let queued_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "next queued prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let queued = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("next prompt should queue");
+    assert!(matches!(
+        queued,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
     let claim_id = format!(
         "workflow-node:{}:{}:{}",
         session.id(),
@@ -150,8 +182,84 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
         durable_run.status(),
         crate::session::WorkflowRunStatus::Completed
     );
-    assert!(
-        !runtime.owned.prompt_workspace_claims.contains(&claim_id),
-        "fast publication completion must release the workflow workspace claim"
-    );
+    if waits_for_provider_completion {
+        let hot_session = runtime
+            .owned
+            .session_store
+            .read()
+            .get_session(session.id())
+            .expect("hot session should remain available");
+        assert_eq!(
+            hot_session
+                .workflow_run(workflow_run.id())
+                .expect("terminal workflow run must remain hot until its provider prompt settles")
+                .status(),
+            crate::session::WorkflowRunStatus::Completed,
+        );
+        assert!(
+            hot_session
+                .durable_runtime_snapshot()
+                .workflow_run(workflow_run.id())
+                .is_some(),
+            "a crash before provider-prompt settlement must retain the referenced terminal run",
+        );
+        assert!(
+            runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "the provider-completion path retains the claim until prompt settlement",
+        );
+        let hot_session = runtime
+            .owned
+            .session_store
+            .read()
+            .get_session(session.id())
+            .expect("hot session should remain available");
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&hot_session, agent.id())
+                .as_ref()
+                .map(|prompt| prompt.id()),
+            Some(active_prompt_id.as_str()),
+            "validated output must not activate the next queued prompt before the provider turn ends",
+        );
+    } else {
+        assert!(
+            !runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "fast publication completion must release the workflow workspace claim",
+        );
+    }
+}
+
+#[tokio::test]
+async fn completed_publication_output_releases_workflow_workspace_claim() {
+    assert_completed_publication_output_settlement(
+        "dev-stub",
+        "codex",
+        crate::provider::ProviderClientInterface::Chariox,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn completed_publication_output_retains_terminal_run_until_provider_settlement() {
+    assert_completed_publication_output_settlement(
+        "codex",
+        "codex",
+        crate::provider::ProviderClientInterface::Chariox,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn completed_headless_claude_publication_waits_for_stop_before_advancing_queue() {
+    assert_completed_publication_output_settlement(
+        "claude",
+        "claude-headless",
+        crate::provider::ProviderClientInterface::NativeTui,
+        true,
+    )
+    .await;
 }

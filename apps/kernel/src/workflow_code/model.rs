@@ -593,6 +593,8 @@ pub struct WorkflowCodeEndpointDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<WorkflowCodeCanvasPoint>,
 }
 

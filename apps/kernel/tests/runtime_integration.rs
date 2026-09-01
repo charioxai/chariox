@@ -209,10 +209,21 @@ fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_atta
     assert!(session.queued_prompts().is_empty());
     assert!(
         app.terminal().input_records().iter().any(|record| {
-            record.source_attachment_id == first.id()
+            record.source_attachment_id == second.id()
                 && String::from_utf8_lossy(&record.bytes).contains("second integration prompt")
         }),
-        "promoted queued prompt should be echoed through the remaining attachment"
+        "promoted queued prompt should retain its detached source attribution"
+    );
+    assert!(
+        app.terminal().output_records().iter().any(|record| {
+            record.kind == chariox_kernel::terminal::TerminalOutputKind::PromptEcho
+                && record.source_attachment_id.as_deref() == Some(second.id())
+                && record
+                    .recipient_attachment_ids
+                    .iter()
+                    .any(|recipient| recipient == first.id())
+        }),
+        "the remaining attachment should receive the promoted queued prompt"
     );
 }
 

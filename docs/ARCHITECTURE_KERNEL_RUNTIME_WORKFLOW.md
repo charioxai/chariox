@@ -202,6 +202,21 @@ Rules:
   lists
 - deployed workflow sessions MUST NOT be editable through ordinary workflow,
   session, or agent authoring commands
+- a deployment replica may use a destination-owned materialization key to resume
+  its durable session and agent identities. Creation is one durable event;
+  retry does not restore initial schedules or overwrite queued work. Different
+  replicas use different keys, and conflicting snapshots fail closed.
+- runtime authority is exclusive per durable store, including during process
+  replacement. A process-lifetime file lease prevents two kernels from restoring
+  and scheduling the same work. The router owns the native permission bridge;
+  the provider store keeps a weak reference so teardown cannot retain its own
+  runtime and state lease through a reference cycle.
+- publication control state may survive container replacement independently of
+  the temporary kernel/provider home. Account registries, managed-context
+  transfers, provider credentials and transport capabilities remain private
+  ephemeral state. Retained workflow state and history are kernel-only, with
+  no direct gateway or app-action filesystem access. The runner still owns
+  volume retention, stop-before-start replacement, rollback and deletion.
 - the kernel remains the authority for source and deployed workflow
   sessions, workflow queues, workflow runs, provider runs, artifacts, and
   outputs
@@ -249,16 +264,16 @@ Execution and deployment modes:
   kernel, hidden deployed session, selected triggers, gateway when HTTP is
   selected, snapshot, requirements, scripts, and assets on a runner host
 
-For v1 Cloud deployment, Scalingo-hosted Chariox Cloud remains the control plane
+For v1 Cloud deployment, OpenShip-managed Chariox Cloud remains the control plane
 only. It owns account auth, deployment records, runner registration, deployment
 commands, status/log metadata, and the web UI. Runtime publication traffic MUST
-NOT be proxied through the Scalingo Cloud API/web process. A dedicated Hetzner
+NOT be proxied through the Chariox Cloud API/web process. A dedicated Chariox
 publication ingress exposes public workflow URLs and routes to either a
-local-runtime connector or a hosted publication container on the Hetzner
+local-runtime connector or a hosted publication container on an eligible
 publication runner.
 
 The public URL is represented as `public_base_url`. In staging this may be a
-path under the Hetzner publication ingress host; later product DNS may map the
+path under the publication ingress host; later product DNS may map the
 same contract to `https://<slug>.chariox.run/`. Callers should not need to know
 whether the backend is local-runtime ingress or a hosted container.
 

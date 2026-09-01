@@ -5,6 +5,7 @@ use std::future::Future;
 use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
+use crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection;
 use chariox_relay::protocol::RelayCallerIdentity;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
@@ -415,6 +416,7 @@ pub(super) async fn run_relay_subscription_loop(
                 notices,
                 completions,
                 workflow_design_events,
+                workflow_run_updates,
                 snapshot,
             } => {
                 if !records.is_empty() {
@@ -498,9 +500,32 @@ pub(super) async fn run_relay_subscription_loop(
                         return;
                     }
                 }
+                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
+                for workflow_run in workflow_run_updates {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::WorkflowRunUpdated {
+                            session_id: session_id.clone(),
+                            workflow_run,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                }
                 if let Some(snapshot) = *snapshot {
                     let previous_snapshot_ref = previous_snapshot.as_ref();
-                    let mut emitted_projection_delta = false;
+                    // A terminal run update is the authoritative replacement for the
+                    // archived run. Treat it as a projection delta so the fallback full
+                    // hot-session snapshot cannot immediately erase it in the client.
+                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
                     for event in [
                         agent_activity_changed_event(&snapshot, previous_snapshot_ref),
@@ -745,7 +770,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     resumed: bool,
     caller_user_id: String,
 ) {
-    let mut previous_waiting_room_snapshot = None;
+    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status = if resumed {
         Some(router.transport_relay_status_snapshot().await)
     } else {
@@ -768,11 +793,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             match router.waiting_room_public_snapshot(&caller_user_id).await {
                 Ok(snapshot) => {
                     inventory_dirty = false;
-                    if let Some(event) = waiting_room_rows_changed_event(
-                        snapshot.clone(),
-                        previous_waiting_room_snapshot.as_ref(),
-                    ) {
-                        previous_waiting_room_snapshot = Some(snapshot);
+                    for event in waiting_room_event_projection.project(snapshot) {
                         if emit_relay_event(
                             &router,
                             &outgoing_tx,
@@ -785,7 +806,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                         .await
                         .is_err()
                         {
-                            break;
+                            return;
                         }
                     }
                 }

@@ -171,3 +171,46 @@ fn cancelled_settlement_survives_late_provider_completion_projection() {
         CompletedTurnSettlementStatus::Cancelled
     );
 }
+
+#[test]
+fn failed_settlement_enriches_matching_git_observation_by_prompt_identity() {
+    let completed = CompletedGitTurnSnapshotStore::default();
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-failed",
+        "attachment-1",
+        "agent-1",
+        "fail me",
+        crate::session::PromptStatus::Running,
+    );
+    completed.record_prompt_settlement(
+        "session-1",
+        "agent-1",
+        "provider-run-1",
+        &prompt,
+        400,
+        Some(300),
+        CompletedTurnSettlementStatus::Failed,
+    );
+
+    let mut observed = tracked_snapshot(false, "");
+    observed.prompt_id = "prompt-failed".to_string();
+    observed.turn_id = "provider-run-1".to_string();
+    observed.started_at_ms = Some(300);
+    completed.record(CompletedGitTurnSnapshot::new(
+        observed.clone(),
+        observed,
+        None,
+        410,
+    ));
+
+    let projection = completed
+        .latest_projection_for_agent("session-1", "agent-1")
+        .expect("failed turn should remain projected");
+    assert_eq!(projection.turn_id, "provider-run-1");
+    assert_eq!(projection.prompt_id, "prompt-failed");
+    assert_eq!(
+        projection.settlement_status,
+        CompletedTurnSettlementStatus::Failed
+    );
+    assert!(projection.undo_available);
+}

@@ -42,6 +42,9 @@ export async function createPublicationEgressGateway({
   })
 
   server.on("connect", (request, clientSocket, head) => {
+    // Cover denial writes and async authorization before tunnel-specific handlers exist.
+    // A peer reset must close this connection, never terminate the shared gateway.
+    clientSocket.on("error", () => clientSocket.destroy())
     if (activeTunnels.size >= MAX_CONCURRENT_TUNNELS) {
       writeProxyFailure(clientSocket, 503, "capacity")
       return

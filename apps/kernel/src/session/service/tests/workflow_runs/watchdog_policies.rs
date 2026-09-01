@@ -138,6 +138,45 @@ fn workflow_watchdog_queue_policy_queues_one_pending_run() {
 }
 
 #[test]
+fn workflow_watchdog_runs_when_only_another_agent_is_busy() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+    let active = workflow_with_endpoint(&mut service, session.id(), "active", "agent-1");
+    let scheduled = workflow_with_endpoint(&mut service, session.id(), "scheduled", "agent-2");
+    service
+        .invoke_workflow_endpoint(
+            session.id(),
+            active.workflow.id(),
+            active.endpoint.id(),
+            Some("keep agent one busy".to_string()),
+        )
+        .expect("first workflow should invoke");
+    let watchdog = service
+        .create_workflow_watchdog(
+            session.id(),
+            scheduled.workflow.id(),
+            scheduled.endpoint.id(),
+            None,
+            1,
+            "run independently".to_string(),
+            WorkflowWatchdogPolicy::Queue,
+            None,
+        )
+        .expect("watchdog should create");
+
+    let plans = service
+        .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
+        .expect("watchdog collection should succeed");
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].workflow_id, scheduled.workflow.id());
+    assert_eq!(plans[0].endpoint_id, scheduled.endpoint.id());
+}
+
+#[test]
 fn publication_runtime_watchdogs_are_collected_from_hidden_materialized_session() {
     let mut service = SessionService::new(&test_config());
     let source_session = service

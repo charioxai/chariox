@@ -46,7 +46,7 @@ fn repeated_claude_permission_render_is_stored_once() {
 }
 
 #[test]
-fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
+fn claude_permission_detection_bridges_every_permission_request() {
     let mcp_permission = serde_json::json!({
         "hook_event_name": "PermissionRequest",
         "hook_context_request_id": "request-mcp",
@@ -59,8 +59,12 @@ fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
          Do you want to proceed?\n1. Yes\n2. Yes, and don't ask again\n3. No",
     ));
 
-    assert!(!should_bridge_claude_permission(&serde_json::json!({
+    assert!(should_bridge_claude_permission(&serde_json::json!({
         "hook_event_name": "PermissionRequest",
+        "tool_name": "mcp__chariox__session_status",
+    })));
+    assert!(!should_bridge_claude_permission(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
         "tool_name": "mcp__chariox__session_status",
     })));
     assert!(!should_bridge_claude_permission(&serde_json::json!({
@@ -68,6 +72,223 @@ fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
         "permission_mode": "bypassPermissions",
         "tool_name": "Bash",
     })));
+    assert!(!should_bridge_claude_permission(&serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "Bash",
+    })));
+}
+
+#[test]
+fn yolo_rendered_permission_is_confirmed_without_user_interaction() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-yolo-permission-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-yolo",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-yolo")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Yolo);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-yolo",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-yolo-permission".to_string(),
+            pty_target: Some("test-claude-yolo-permission".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-lc".to_string(), "cat".to_string()],
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    let bridge = RecordingPermissionBridge::default();
+    let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
+        std::sync::Arc::new(bridge.clone());
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(bridge_ref),
+            "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("yolo permission should be confirmed");
+    let confirmation_marker = root.join("yolo-rendered-permission-confirmed");
+    let first_confirmation = fs::read_to_string(&confirmation_marker)
+        .expect("yolo confirmation should leave a suppression marker");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("lingering yolo permission should be suppressed");
+    assert_eq!(
+        fs::read_to_string(&confirmation_marker)
+            .expect("yolo confirmation marker should remain present"),
+        first_confirmation,
+        "the same rendered prompt must not be confirmed twice"
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            "Write command\nprintf distinct\nDo you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("a distinct yolo permission should be confirmed immediately");
+    assert_ne!(
+        fs::read_to_string(&confirmation_marker)
+            .expect("distinct yolo confirmation marker should be present"),
+        first_confirmation,
+        "suppression must be scoped to the exact rendered prompt"
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            "Claude composer ready",
+        )
+        .expect("dismissed permission should clear suppression state");
+    assert!(
+        !confirmation_marker.exists(),
+        "a later permission prompt must be eligible for confirmation"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        bridge
+            .interaction_ids
+            .lock()
+            .expect("permission interaction recorder should not be poisoned")
+            .is_empty(),
+        "yolo permission must not create a user interaction"
+    );
+    assert!(!claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with("permission:")));
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn yolo_hook_permission_uses_kernel_policy_when_claude_reports_auto() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-yolo-hook-permission-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-yolo-hook",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-yolo-hook")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Yolo);
+    let run = RuntimeProviderRun::new(
+        "provider-run-yolo-hook",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-yolo-hook-permission".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let bridge = RecordingPermissionBridge::default();
+    let event = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "hook_context_request_id": "request-auto-yolo",
+        "permission_mode": "auto",
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "rm -rf /tmp/chariox-rev-head && echo \"cleaned\""
+        },
+    });
+
+    assert!(should_bridge_claude_permission(&event));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .resolve_permission_event(
+            "session-yolo-hook",
+            run.id(),
+            "agent-yolo-hook",
+            &context_file,
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            &event,
+        )
+        .expect("yolo hook permission should resolve without user interaction");
+
+    let response: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("permission-responses/request-auto-yolo.json"))
+            .expect("yolo hook should receive an immediate response"),
+    )
+    .expect("yolo hook response should be valid JSON");
+    assert_eq!(response["behavior"], "allow");
+    assert_eq!(
+        response["message"],
+        "Allowed by Chariox yolo permission policy."
+    );
+    assert!(
+        bridge
+            .interaction_ids
+            .lock()
+            .expect("permission interaction recorder should not be poisoned")
+            .is_empty(),
+        "the provider-reported mode must not override the kernel-owned yolo policy"
+    );
+    assert!(!claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with("permission:")));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -91,7 +312,8 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
         "default",
         "claude-sonnet",
     )
-    .with_agent_id("agent-1");
+    .with_agent_id("agent-1")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required);
     let run = RuntimeProviderRun::new(
         "provider-run-1",
         &request,
@@ -127,6 +349,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
             run.id(),
             "agent-1",
             &context_file,
+            &run,
             Some(bridge_ref.clone()),
             &event,
         )
@@ -314,15 +537,29 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
 
 #[test]
 fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
-    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude-headless");
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude-headless",
+        false,
+    );
 }
 
 #[test]
 fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
-    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude");
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude", false);
 }
 
-fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
+#[test]
+fn late_claude_transcript_drain_does_not_complete_the_next_prompt() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude-headless",
+        true,
+    );
+}
+
+fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+    provider: &str,
+    advance_next_prompt_before_late_drain: bool,
+) {
     use std::io::Write as _;
 
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -341,8 +578,9 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-stop-test-{}-{}-{}",
+        "chariox-claude-headless-stop-test-{}-{}-{}-{}",
         provider,
+        advance_next_prompt_before_late_drain,
         std::process::id(),
         timestamp_millis()
     ));
@@ -428,6 +666,24 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         other => panic!("unexpected prompt outcome: {other:?}"),
     };
     write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
+    let queued_prompt = if advance_next_prompt_before_late_drain {
+        match app
+            .record_native_prompt_started_with_attachments(
+                session.id(),
+                attachment.id(),
+                attachment.id(),
+                agent.id(),
+                "next headless prompt",
+                Vec::new(),
+            )
+            .expect("next native prompt should be queued")
+        {
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => Some(prompt),
+            other => panic!("unexpected next prompt outcome: {other:?}"),
+        }
+    } else {
+        None
+    };
 
     let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
@@ -442,6 +698,25 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         .as_deref()
         .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
+    let next_active_prompt_id = if let Some(queued_prompt) = queued_prompt {
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("stopped prompt should complete");
+        let next_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let next = app
+            .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                session.id(),
+                agent.id(),
+                Some(queued_prompt.id()),
+                next_prompt_id,
+            )
+            .expect("next prompt activation should succeed")
+            .expect("next prompt should activate");
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+        Some(next.id().to_string())
+    } else {
+        None
+    };
+
     std::fs::OpenOptions::new()
         .append(true)
         .open(&transcript_file)
@@ -450,13 +725,29 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         .expect("late transcript output should finish writing");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
+        .drain_known_claude_transcripts(session.id(), run.id(), &context_file)
+        .expect("late transcript output should drain");
+    assert!(
+        !crate::transport::flow_control::prompt_completion_recorded(&app, run.id()),
+        "Claude transcript completion must not compete with the prompt-bound Stop settlement",
+    );
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
         .finish_deferred_stop(session.id(), run.id(), &run)
         .expect("deferred transcript drain should finish");
 
-    assert!(app
+    let active_prompt = app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
-        .expect("settled prompt state should load")
-        .is_none());
+        .expect("settled prompt state should load");
+    if let Some(next_active_prompt_id) = next_active_prompt_id {
+        assert_eq!(
+            active_prompt.as_ref().map(|prompt| prompt.id()),
+            Some(next_active_prompt_id.as_str()),
+            "the stale Stop and transcript flush must not settle the next prompt",
+        );
+    } else {
+        assert!(active_prompt.is_none());
+    }
     let output = app
         .terminal()
         .output_records()
@@ -575,7 +866,9 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     ));
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
     fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
     let context_file = context_file.display().to_string();
     let request = crate::provider::LaunchProviderRequest::new(
         "session-1",
@@ -595,10 +888,16 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
             pty_target: None,
             pty_program: None,
             pty_args: Vec::new(),
-            pty_env: std::collections::BTreeMap::from([(
-                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
-                context_file.clone(),
-            )]),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
             pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: None,
@@ -635,11 +934,32 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
         .expect("injected prompt should remain pending");
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
 
-    write_claude_native_marker(&context_file, &format!("accepted:{prompt_id}"));
+    fs::write(
+        &events_file,
+        [
+            serde_json::json!({
+                "hook_event_name": "Stop",
+            })
+            .to_string(),
+            serde_json::json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "Explain the lifecycle briefly.",
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("hook events should be written");
     let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
-        .expect("acknowledged prompt should complete dispatch");
+        .expect("hook-acknowledged prompt should complete dispatch");
     assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
+    assert!(
+        fs::read_to_string(&events_file)
+            .expect("events should remain available to the normal output bridge")
+            .contains("Stop"),
+        "dispatch acknowledgement must not consume later lifecycle events"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -1318,6 +1638,19 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
     assert!(!claude_headless_prompt_waiting_in_composer(
         &format!("{rendered} Gitifying... esc to interrupt"),
         prompt,
+    ));
+}
+
+#[test]
+fn claude_headless_composer_detects_current_cycle_footer_only_with_prompt_glyph() {
+    assert!(claude_headless_composer_visible(
+        "──────────────── ❯ ──────────────── ⏵⏵ mode (shift+tab to cycle)"
+    ));
+    assert!(!claude_headless_composer_visible(
+        "The documentation says shift+tab to cycle through modes."
+    ));
+    assert!(!claude_headless_composer_visible(
+        "❯ stale composer frame followed much later by reviewer prose: The documentation says shift+tab to cycle through modes."
     ));
 }
 

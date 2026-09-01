@@ -16,6 +16,7 @@ export type SelectionCommandHandlerDeps = {
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   flashFooter: (message: string, tone: FooterTone) => void
   applyModelSelection: (value: string) => Promise<void>
+  applyAccountSelection?: (value: string) => Promise<void>
   applyVariantSelection: (value: string) => Promise<void>
   applyModeSelection?: (value: string) => Promise<void>
   applyPermissionSelection?: (value: string) => Promise<void>
@@ -45,6 +46,21 @@ export async function handleModelSlashCommand(
     return
   }
   await deps.applyModelSelection(value)
+}
+
+export async function handleAccountSlashCommand(
+  deps: SelectionCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "account" }>,
+): Promise<void> {
+  if (!command.value) {
+    deps.flashFooter("usage: /account <account>", "error")
+    return
+  }
+  if (!deps.applyAccountSelection) {
+    deps.flashFooter("account selection is unavailable in this build", "error")
+    return
+  }
+  await deps.applyAccountSelection(command.value)
 }
 
 export async function handleVariantSlashCommand(

@@ -127,6 +127,16 @@ impl SessionStateStore {
             .rename_project(project_id, name, caller_user_id)
     }
 
+    pub(crate) fn update_project_workspaces(
+        &self,
+        project_id: &str,
+        workspace_ids: Vec<String>,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .update_project_workspaces(project_id, workspace_ids, caller_user_id)
+    }
+
     pub(crate) fn archive_project(
         &self,
         project_id: &str,
@@ -173,6 +183,14 @@ impl SessionStateStore {
 
     pub(crate) fn restore_session(&self, session: RuntimeSession) -> RuntimeSession {
         self.write().restore_session(session)
+    }
+
+    pub(crate) fn commit_publication_runtime_configuration(
+        &self,
+        session: RuntimeSession,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write()
+            .commit_publication_runtime_configuration(session)
     }
 
     pub(crate) fn restore_session_with_default_project_name_hint(

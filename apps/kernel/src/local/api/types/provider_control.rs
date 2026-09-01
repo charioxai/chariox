@@ -80,6 +80,8 @@ pub enum AgentSubstituteAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         variant: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_profile: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         kernel_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree_id: Option<String>,
@@ -173,6 +175,11 @@ pub struct GetProviderAuthStatusRequest {
 pub struct StartProviderLoginRequest {
     pub provider: String,
     pub account_profile: String,
+    /// Optional client-selected enrollment method (public names such as
+    /// `device_code` or `terminal`). `None` keeps the provider's historical
+    /// default. Validated against what the provider adapter supports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +276,12 @@ pub struct LinkProviderAccountProfileRequest {
     pub provider: String,
     pub label: String,
     pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportNativeProviderAccountProfileRequest {
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

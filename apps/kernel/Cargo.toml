@@ -31,6 +31,7 @@ aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"
 flate2 = "1.0.35"
+fs2 = "0.4.3"
 hkdf = "0.12.4"
 hmac = "0.12.1"
 p256 = { version = "0.13.2", features = ["ecdh"] }
@@ -38,7 +39,9 @@ sha2 = "0.10.8"
 tar = "0.4.43"
 ureq = "2.12.1"
 url = "2.5.4"
+unicode-normalization = "0.1.24"
 zeroize = "1.8.1"
+ed25519-dalek = "2.1.1"
 chariox-event-protocol = { path = "../../packages/event-protocol" }
 
 [lib]
@@ -52,3 +55,7 @@ path = "src/main.rs"
 [[bin]]
 name = "chariox-cli"
 path = "src/bin/chariox-cli.rs"
+
+[[bin]]
+name = "chariox-managed-bootstrap"
+path = "src/bin/chariox-managed-bootstrap.rs"

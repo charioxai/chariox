@@ -1,36 +1,29 @@
 use super::*;
 
-async fn wait_for_workflow_prompt_delivery(
-    runtime: &KernelRuntimeState,
+fn submit_delivered_prompt_fixture(
+    app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
-    workflow_run_id: &str,
-    node_run_index: usize,
-) -> crate::session::RuntimeSession {
-    for _ in 0..200 {
-        let session = runtime
-            .owned
-            .session_snapshot(session_id)
-            .expect("session snapshot should exist");
-        let node_run = session
-            .workflow_run(workflow_run_id)
-            .and_then(|run| run.node_runs().get(node_run_index));
-        let delivered = node_run.is_some_and(|node_run| {
-            node_run.status() == crate::session::WorkflowNodeRunStatus::Running
-                && session
-                    .active_prompt_for_agent(agent_id)
-                    .is_some_and(|prompt| {
-                        prompt.workflow_node_run_id() == Some(node_run.id())
-                            && prompt.durable_delivery_phase()
-                                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
-                    })
-        });
-        if delivered {
-            return session;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("workflow prompt should be dispatched and delivered");
+    provider_run: &crate::provider::RuntimeProviderRun,
+    prompt: crate::session::PromptQueueItem,
+) -> crate::session::PromptQueueItem {
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session_id, prompt, false)
+        .expect("prompt fixture should start")
+    else {
+        panic!("prompt fixture should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session_id,
+        agent_id,
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run.id().to_string()),
+        provider_run.provider_session_id().map(str::to_string),
+    )
+    .expect("prompt fixture should be delivered");
+    crate::transport::flow_control::note_prompt_started(app, provider_run.id());
+    prompt
 }
 
 #[tokio::test]
@@ -182,12 +175,7 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
         "complete only after turn/completed",
         crate::session::PromptStatus::Queued,
     );
-    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
-        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("prompt should start")
-    else {
-        panic!("prompt should start immediately");
-    };
+    let prompt = submit_delivered_prompt_fixture(&mut app, session.id(), agent.id(), &run, prompt);
     let active_prompt_id = prompt.id().to_string();
     app.mark_active_prompt_delivery(
         session.id(),
@@ -724,7 +712,7 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
 }
 
 #[tokio::test]
-async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn() {
+async fn workflow_prompt_without_structured_output_fails_without_automatic_retry() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -749,7 +737,7 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
 
     let workflow = app
         .sessions_mut()
-        .create_workflow(session.id(), Some("missing-output-retry".to_string()))
+        .create_workflow(session.id(), Some("missing-output-failure".to_string()))
         .expect("workflow should be created");
     let node = app
         .sessions_mut()
@@ -773,7 +761,7 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
             session.id(),
             workflow.id(),
             endpoint.id(),
-            Some("return challenge RUNTIME-RETRY".to_string()),
+            Some("return challenge RUNTIME-FAILURE".to_string()),
         )
         .expect("workflow run should be created");
     let first_node_run_id = workflow_run.node_runs()[0].id().to_string();
@@ -851,177 +839,23 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
             crate::provider::ProviderPromptSignalBatch::default(),
         )
         .await
-        .expect("quiet drain should settle and schedule a correction");
+        .expect("quiet drain should settle into a visible failure");
 
-    let session_state =
-        wait_for_workflow_prompt_delivery(&runtime, session.id(), agent.id(), workflow_run.id(), 1)
-            .await;
-    let resolved_run = session_state
-        .workflow_run(workflow_run.id())
-        .expect("workflow run should exist");
-    assert_eq!(resolved_run.node_runs().len(), 2);
-    assert_eq!(
-        resolved_run.node_runs()[0].status(),
-        crate::session::WorkflowNodeRunStatus::Failed
-    );
-    let correction_node_run = &resolved_run.node_runs()[1];
-    assert_eq!(
-        correction_node_run.status(),
-        crate::session::WorkflowNodeRunStatus::Running
-    );
-    let correction_prompt = correction_node_run
-        .turn_envelope()
-        .and_then(|envelope| envelope.rendered_prompt())
-        .expect("corrective workflow turn should preserve its rendered prompt");
-    assert!(correction_prompt.contains("return challenge RUNTIME-RETRY"));
-    assert!(correction_prompt.contains(
-        "The previous workflow turn ended without the required validated structured output"
-    ));
-    assert!(correction_prompt.contains("validate_and_submit_workflow_run_output"));
-    assert!(resolved_run.final_output().is_none());
-    assert!(resolved_run.failure_events().iter().any(|event| {
-        event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
-            && event.source_node_run_id() == first_node_run_id
-    }));
-    let active_prompt = session_state
-        .active_prompt_for_agent(agent.id())
-        .expect("corrective workflow prompt should be active");
-    assert_eq!(
-        active_prompt.workflow_node_run_id(),
-        Some(correction_node_run.id())
-    );
-    assert!(active_prompt.prompt().contains(
-        "The previous workflow turn ended without the required validated structured output"
-    ));
-    let correction_prompt_id = active_prompt.id().to_string();
-    let correction_provider_run = runtime
-        .owned
-        .provider_store
-        .get_run_for_agent(session.id(), agent.id())
-        .expect("corrective workflow provider should be active");
-    let correction_provider_run_id = correction_provider_run.id().to_string();
-    runtime
-        .owned
-        .session_store
-        .write()
-        .submit_workflow_run_final_output(
-            session.id(),
-            workflow_run.id(),
-            correction_node_run.id(),
-            crate::session::WorkflowOutputPayload::new(
-                r#"{"summary":"corrected","output":{"message":"done"}}"#,
-                Vec::<crate::session::WorkflowArtifactRef>::new(),
-            ),
-            true,
-            None,
-        )
-        .expect("corrective workflow output should validate");
-
-    runtime
-        .apply_owned_structured_output_batch(
-            session.id(),
-            &correction_provider_run_id,
-            Vec::new(),
-            crate::provider::ProviderPromptSignalBatch {
-                chunks: vec![crate::provider::ProviderPromptChunk {
-                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
-                    merge_key: Some("corrective-structured-output".to_string()),
-                    bytes: b"```json\n{\"summary\":\"corrected\",\"output\":{\"message\":\"done\"}}\n```"
-                        .to_vec(),
-                }],
-                completions: vec![crate::provider::ProviderAssistantCompletion {
-                    message_id: "corrective-structured-output".to_string(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                }],
-                prompt_completed: true,
-                ..crate::provider::ProviderPromptSignalBatch::default()
-            },
-        )
-        .await
-        .expect("corrective structured output should begin settling");
-    runtime
-        .settle_owned_provider_prompt(
-            session.id(),
-            &correction_provider_run_id,
-            true,
-            false,
-            false,
-        )
-        .await
-        .expect("corrective workflow completion should request settlement");
-    tokio::time::sleep(std::time::Duration::from_millis(
-        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
-    ))
-    .await;
-    runtime
-        .settle_owned_provider_prompt(
-            session.id(),
-            &correction_provider_run_id,
-            false,
-            false,
-            true,
-        )
-        .await
-        .expect("corrective workflow prompt should settle after output drains");
-
-    let settled_session = runtime
+    let session_state = runtime
         .owned
         .session_snapshot(session.id())
-        .expect("settled session snapshot should exist");
-    assert!(settled_session
-        .active_prompt_for_agent(agent.id())
-        .is_none());
-    let settled_workflow_run = runtime
-        .owned
-        .durable_state_store
-        .resolve_workflow_run(
-            settled_session.host_daemon_id(),
-            settled_session.id(),
-            workflow_run.id(),
-        )
-        .expect("workflow run lookup should succeed")
-        .expect("completed workflow run should exist in durable history");
-    assert_eq!(
-        settled_workflow_run.status(),
-        crate::session::WorkflowRunStatus::Completed
-    );
+        .expect("failed workflow session should resolve");
+    assert!(session_state.workflow_run(workflow_run.id()).is_none());
+    assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
     assert_eq!(
         runtime
             .owned
             .provider_store
-            .get_run(&correction_provider_run_id)
+            .get_run(run.id())
             .expect("provider run should exist")
             .state(),
         crate::provider::ProviderRunState::Ended
     );
-    {
-        let app = app.lock().await;
-        assert!(
-            !app.pty().has_process(run.id()),
-            "retiring a workflow provider run must remove its managed PTY before the agent can be launched again"
-        );
-        assert!(
-            !app.provider_process_tracking
-                .read()
-                .run_processes
-                .contains_key(run.id()),
-            "retiring a workflow provider run must remove its managed process tracking"
-        );
-    }
-    assert!(runtime.owned.active_turns.get(run.id()).is_none());
-
-    let settlement_events = runtime
-        .owned
-        .operational_history_store
-        .load_session_events_for_agent_sequence_range(session.id(), agent.id(), 0, i64::MAX as u64)
-        .expect("operational prompt history should load");
-    assert!(settlement_events.iter().any(|event| {
-        event.prompt_id.as_deref() == Some(correction_prompt_id.as_str())
-            && event
-                .metadata
-                .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
-    }));
-
     let durable_run = runtime
         .owned
         .durable_state_store
@@ -1030,12 +864,22 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
         .expect("workflow settlement should persist the run");
     assert_eq!(
         durable_run.status(),
-        crate::session::WorkflowRunStatus::Completed
+        crate::session::WorkflowRunStatus::Failed
     );
+    assert_eq!(durable_run.node_runs().len(), 1);
+    assert_eq!(
+        durable_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Failed
+    );
+    assert!(durable_run.final_output().is_none());
+    assert!(durable_run.failure_events().iter().any(|event| {
+        event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
+            && event.source_node_run_id() == first_node_run_id
+    }));
 }
 
 #[tokio::test]
-async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
+async fn runtime_owned_invalid_handoff_fails_without_automatic_retry() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, classifier_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1065,7 +909,7 @@ async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
 
     let workflow = app
         .sessions_mut()
-        .create_workflow(session.id(), Some("runtime-handoff-correction".to_string()))
+        .create_workflow(session.id(), Some("runtime-handoff-failure".to_string()))
         .expect("workflow should be created");
     let classifier = app
         .sessions_mut()
@@ -1192,57 +1036,52 @@ async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
     runtime
         .settle_owned_provider_prompt(session.id(), provider_run.id(), false, false, true)
         .await
-        .expect("invalid handoff should settle into correction");
+        .expect("invalid handoff should settle into a visible failure");
 
-    let session_state = wait_for_workflow_prompt_delivery(
-        &runtime,
-        session.id(),
-        classifier_agent.id(),
-        workflow_run.id(),
-        1,
-    )
-    .await;
-    let resolved_run = session_state
-        .workflow_run(workflow_run.id())
-        .expect("workflow run should exist");
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("failed workflow session should resolve");
+    assert!(session_state.workflow_run(workflow_run.id()).is_none());
+    let resolved_run = runtime
+        .owned
+        .durable_state_store
+        .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+        .expect("durable workflow run should load")
+        .expect("failed workflow run should be archived");
     assert_eq!(
         resolved_run.status(),
-        crate::session::WorkflowRunStatus::Running
+        crate::session::WorkflowRunStatus::Failed
     );
-    assert_eq!(resolved_run.node_runs().len(), 2);
+    assert_eq!(resolved_run.node_runs().len(), 1);
     assert_eq!(
         resolved_run.node_runs()[0].status(),
         crate::session::WorkflowNodeRunStatus::Failed
     );
-    assert_eq!(resolved_run.node_runs()[1].node_id(), classifier.id());
-    assert_eq!(
-        resolved_run
-            .node_runs()
-            .iter()
-            .filter(|node_run| node_run.node_id() == specialist.id())
-            .count(),
-        0
-    );
-    assert_eq!(
-        resolved_run
-            .messages()
-            .iter()
-            .filter(|message| message.message_type() == "handoff")
-            .count(),
-        0
-    );
-    let correction_prompt = session_state
-        .active_prompt_for_agent(classifier_agent.id())
-        .expect("classifier correction should be active")
-        .prompt();
-    assert_eq!(
-        correction_prompt.matches("classify runtime task").count(),
-        1
-    );
+    assert!(resolved_run
+        .node_runs()
+        .iter()
+        .all(|node_run| node_run.node_id() != specialist.id()));
+    assert!(resolved_run
+        .messages()
+        .iter()
+        .all(|message| message.message_type() != "handoff"));
     assert!(resolved_run.failure_events().iter().any(|event| {
         event.kind() == crate::session::WorkflowFailureKind::OutputValidationFailed
             && event.source_node_run_id() == first_node_run_id
     }));
+    assert!(session_state
+        .active_prompt_for_agent(classifier_agent.id())
+        .is_none());
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(provider_run.id())
+            .expect("provider run should exist")
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
     std::fs::remove_file(schema).ok();
 }
 

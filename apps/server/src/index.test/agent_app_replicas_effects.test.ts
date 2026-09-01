@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto"
+import { createHmac, generateKeyPairSync, sign } from "node:crypto"
 
 import {
   acquireAgentAppReplica,
@@ -44,6 +44,7 @@ import {
 import {
   configurePublicationCallerClaimsRuntimeForTests,
   readPrivatePublicationCallerClaimsConfigFile,
+  verifyPublicationCallerClaims,
 } from "../publication-caller-claims.js"
 import {
   agentAppCallerSession,
@@ -124,7 +125,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>secure app</main>")
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: "pub-caller-claims",
     source_session_id: "session-1",
     workflow_id: "workflow-1",
@@ -147,7 +148,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
       captured_at_ms: 1,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: 1,
     },
@@ -156,6 +157,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
     credential_slots: [],
     configuration: [],
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",
@@ -387,6 +389,7 @@ test("publication caller claims config file is private and consumed once", async
   const root = await mkdtemp(join(tmpdir(), "chariox-server-caller-claims-config-"))
   const configPath = join(root, "caller-claims.json")
   const insecureConfigPath = join(root, "caller-claims-insecure.json")
+  const publicKeyConfigPath = join(root, "caller-claims-public-key.json")
   try {
     await writeFile(configPath, JSON.stringify({
       schema_version: 1,
@@ -401,6 +404,19 @@ test("publication caller claims config file is private and consumed once", async
     })
     await assert.rejects(readFile(configPath, "utf8"), /ENOENT/)
 
+    const publicKeyPem = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n"
+    await writeFile(publicKeyConfigPath, JSON.stringify({
+      schema_version: 1,
+      deployment_id: "deployment-1",
+      environment_id: "environment-1",
+      public_key_pem: publicKeyPem,
+    }), { mode: 0o600 })
+    assert.deepEqual(readPrivatePublicationCallerClaimsConfigFile(publicKeyConfigPath), {
+      deploymentId: "deployment-1",
+      environmentId: "environment-1",
+      publicKeyPem,
+    })
+
     await writeFile(insecureConfigPath, JSON.stringify({
       schema_version: 1,
       deployment_id: "deployment-1",
@@ -414,6 +430,50 @@ test("publication caller claims config file is private and consumed once", async
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("publication caller claims accept Ed25519 signatures with a public-only runtime verifier", (t) => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519")
+  const publicKeyPem = publicKey.export({ format: "pem", type: "spki" }).toString()
+  configurePublicationCallerClaimsRuntimeForTests({
+    deploymentId: "deployment-1",
+    environmentId: "environment-1",
+    publicKeyPem,
+    now: () => new Date(CALLER_CLAIMS_NOW_SECONDS * 1_000),
+  })
+  t.after(() => configurePublicationCallerClaimsRuntimeForTests(undefined))
+
+  const encodedHeader = Buffer.from(JSON.stringify({ alg: "EdDSA", typ: "JWT" })).toString("base64url")
+  const encodedPayload = Buffer.from(JSON.stringify({
+    iss: "chariox-cloud",
+    aud: "deployment-1",
+    sub: "user:user-1",
+    org: "account-1",
+    roles: ["member"],
+    deployment_id: "deployment-1",
+    environment_id: "environment-1",
+    invocation_id: "invocation-ed25519",
+    nonce: "nonce-ed25519",
+    iat: CALLER_CLAIMS_NOW_SECONDS,
+    exp: CALLER_CLAIMS_NOW_SECONDS + 60,
+  })).toString("base64url")
+  const unsigned = `${encodedHeader}.${encodedPayload}`
+  const token = `${unsigned}.${sign(null, Buffer.from(unsigned), privateKey).toString("base64url")}`
+
+  assert.deepEqual(verifyPublicationCallerClaims({
+    "x-chariox-caller-claims": token,
+    "x-chariox-invocation-id": "invocation-ed25519",
+  }), {
+    accountId: "account-1",
+    deploymentId: "deployment-1",
+    environmentId: "environment-1",
+    expiresAt: new Date((CALLER_CLAIMS_NOW_SECONDS + 60) * 1_000),
+    invocationId: "invocation-ed25519",
+    issuedAt: new Date(CALLER_CLAIMS_NOW_SECONDS * 1_000),
+    nonce: "nonce-ed25519",
+    roles: ["member"],
+    subject: "user:user-1",
+  })
 })
 
 test("agent app replica scheduler preserves caller order without blocking other callers", async () => {

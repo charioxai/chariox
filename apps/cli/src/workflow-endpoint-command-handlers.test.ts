@@ -85,6 +85,50 @@ test("workflow endpoint rebinds and removes endpoints from the selected workflow
   ])
 })
 
+test("workflow endpoint max-instances sets endpoint capacity through the existing dep", async () => {
+  const harness = createHarness({
+    setWorkflowEndpointMaxInstances: async (workflowRef, endpointRef, maxInstances) => {
+      harness.calls.push(`max-instances:${workflowRef}:${endpointRef}:${maxInstances}`)
+      return payload({
+        workflowId: workflowRef,
+        endpoint: endpoint({ id: endpointRef, max_instances: maxInstances }),
+      })
+    },
+  })
+
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "max-instances", "endpoint-1", "4"])
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "max-instances", "workflow-1", "endpoint-1", "2"])
+
+  assert.deepEqual(harness.calls, [
+    "max-instances:workflow-1:endpoint-1:4",
+    "apply:session-1",
+    "select:workflow-1",
+    "footer:info:workflow endpoint endpoint-1 max-instances set to 4",
+    "max-instances:workflow-1:endpoint-1:2",
+    "apply:session-1",
+    "select:workflow-1",
+    "footer:info:workflow endpoint endpoint-1 max-instances set to 2",
+  ])
+})
+
+test("workflow endpoint max-instances validates the count range", async () => {
+  const harness = createHarness({
+    setWorkflowEndpointMaxInstances: async (workflowRef, endpointRef, maxInstances) => (
+      payload({ workflowId: workflowRef, endpoint: endpoint({ id: endpointRef, max_instances: maxInstances }) })
+    ),
+  })
+
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "max-instances", "endpoint-1", "0"])
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "max-instances", "workflow-1", "endpoint-1", "33"])
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "max-instances", "endpoint-1"])
+
+  assert.deepEqual(harness.calls, [
+    "footer:error:usage: /workflow endpoint max-instances [workflow-ref] <endpoint-ref> <count 1-32>",
+    "footer:error:usage: /workflow endpoint max-instances [workflow-ref] <endpoint-ref> <count 1-32>",
+    "footer:error:usage: /workflow endpoint max-instances [workflow-ref] <endpoint-ref> <count>",
+  ])
+})
+
 test("workflow endpoint command validates action usage", async () => {
   const harness = createHarness({ selectedWorkflowRef: null })
 
@@ -93,7 +137,7 @@ test("workflow endpoint command validates action usage", async () => {
 
   assert.deepEqual(harness.calls, [
     "footer:error:usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias]",
-    "footer:error:usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind|rebind [workflow-ref] <endpoint-ref> <entry-node-id> | remove [workflow-ref] <endpoint-ref>",
+    "footer:error:usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind|rebind [workflow-ref] <endpoint-ref> <entry-node-id> | max-instances [workflow-ref] <endpoint-ref> <count 1-32> | remove [workflow-ref] <endpoint-ref>",
   ])
 })
 

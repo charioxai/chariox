@@ -17,7 +17,7 @@ use support::runtime_integration::{
 #[test]
 fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -183,7 +183,7 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
 #[test]
 fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -307,7 +307,7 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
 #[test]
 fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_selection() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
@@ -481,7 +481,7 @@ fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_select
 #[test]
 fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");

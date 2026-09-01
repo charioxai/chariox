@@ -17,8 +17,8 @@ use crate::transport::kernel_protocol::{
     agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
     event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
     runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, waiting_room_rows_changed_event, workflow_run_only_changed,
-    workflow_run_updated_events, KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope,
+    subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
+    KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
@@ -96,6 +96,7 @@ pub(super) async fn run_subscription_loop(
                 notices,
                 completions,
                 workflow_design_events,
+                workflow_run_updates,
                 snapshot,
             } => {
                 if !records.is_empty()
@@ -171,9 +172,32 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
+                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
+                for workflow_run in workflow_run_updates {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::WorkflowRunUpdated {
+                            session_id: subscription.session_id.clone(),
+                            workflow_run,
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
                 if let Some(snapshot) = *snapshot {
                     let previous_snapshot_ref = previous_snapshot.as_ref();
-                    let mut emitted_projection_delta = false;
+                    // A terminal run update is the authoritative replacement for the
+                    // archived run. Treat it as a projection delta so the fallback full
+                    // hot-session snapshot cannot immediately erase it in the client.
+                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
                     for event in [
                         agent_activity_changed_event(&snapshot, previous_snapshot_ref),
@@ -390,6 +414,7 @@ pub(crate) enum WatchResult {
         notices: Vec<RuntimeNoticeRecord>,
         completions: Vec<AssistantMessageCompletionRecord>,
         workflow_design_events: Vec<crate::local::WorkflowDesignOpForwarded>,
+        workflow_run_updates: Vec<crate::session::WorkflowRun>,
         snapshot: Box<Option<SessionSnapshotProjection>>,
     },
     Unavailable(String),
@@ -444,6 +469,9 @@ pub(crate) fn watch_subscription_state(
     let completions = app
         .terminal_mut()
         .drain_completion_records(session_id, attachment_id);
+    let workflow_run_updates = app
+        .terminal()
+        .drain_workflow_run_updates(session_id, attachment_id);
     let workflow_design_events = app.workflow_design_event_store().events_since(
         session_id,
         last_workflow_design_sequence,
@@ -485,6 +513,7 @@ pub(crate) fn watch_subscription_state(
         notices,
         completions,
         workflow_design_events,
+        workflow_run_updates,
         snapshot,
     }
 }
@@ -745,7 +774,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: Arc<AtomicBool>,
 ) {
-    let mut previous_waiting_room_snapshot = None;
+    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut previous_provider_catalog = None;
@@ -763,11 +792,7 @@ async fn run_waiting_room_inventory_subscription_loop(
             {
                 Ok(snapshot) => {
                     inventory_dirty = false;
-                    if let Some(event) = waiting_room_rows_changed_event(
-                        snapshot.clone(),
-                        previous_waiting_room_snapshot.as_ref(),
-                    ) {
-                        previous_waiting_room_snapshot = Some(snapshot);
+                    for event in waiting_room_event_projection.project(snapshot) {
                         if !emit_kernel_event(
                             &runtime,
                             &outgoing_tx,
@@ -780,7 +805,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                         )
                         .await
                         {
-                            break;
+                            return;
                         }
                     }
                 }

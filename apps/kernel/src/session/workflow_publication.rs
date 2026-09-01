@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +16,12 @@ pub const WORKFLOW_PUBLICATION_KIND_INGRESS: &str = "ingress";
 pub const WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY: &str = "schedule_only";
 pub const WORKFLOW_PUBLICATION_KIND_EVENT_BASED: &str = "event_based";
 pub const WORKFLOW_PUBLICATION_WORKSPACE_ROOT: &str = "/workspace";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationRuntimeMaterialization {
+    pub key: String,
+    pub agent_id_map: BTreeMap<String, String>,
+}
 
 fn default_workflow_publication_kind() -> String {
     WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()
@@ -243,6 +249,8 @@ pub struct WorkflowPublicationDefinition {
     creation_operation_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     creation_request_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_materialization: Option<WorkflowPublicationRuntimeMaterialization>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -307,6 +315,7 @@ impl WorkflowPublicationDefinition {
             source_snapshot_digest: None,
             creation_operation_key: None,
             creation_request_digest: None,
+            runtime_materialization: None,
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -417,6 +426,16 @@ impl WorkflowPublicationDefinition {
 
     pub fn source_snapshot_digest(&self) -> Option<&str> {
         self.source_snapshot_digest.as_deref()
+    }
+
+    pub(crate) fn set_runtime_snapshot_digest(&mut self, digest: String) -> Result<(), String> {
+        if self.runtime_materialization.is_none() {
+            return Err(
+                "only a materialized runtime can change its resolved configuration".to_string(),
+            );
+        }
+        self.source_snapshot_digest = Some(digest);
+        Ok(())
     }
 
     pub fn validate_source_snapshot(
@@ -542,6 +561,17 @@ impl WorkflowPublicationDefinition {
 
     pub fn creation_operation_key(&self) -> Option<&str> {
         self.creation_operation_key.as_deref()
+    }
+
+    pub fn runtime_materialization(&self) -> Option<&WorkflowPublicationRuntimeMaterialization> {
+        self.runtime_materialization.as_ref()
+    }
+
+    pub(crate) fn set_runtime_materialization(
+        &mut self,
+        materialization: WorkflowPublicationRuntimeMaterialization,
+    ) {
+        self.runtime_materialization = Some(materialization);
     }
 
     pub fn creation_request_digest(&self) -> Option<&str> {

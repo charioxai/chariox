@@ -5,6 +5,7 @@ impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
+        self.validate_publication_control_state_root()?;
         if self
             .relay_url
             .as_deref()
@@ -46,7 +47,7 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
-        if self.session_history_root.as_os_str().is_empty() {
+        if self.session_history_root().as_os_str().is_empty() {
             return Err(DaemonError::InvalidConfig {
                 field: "session_history_root",
                 message: "value must not be empty",

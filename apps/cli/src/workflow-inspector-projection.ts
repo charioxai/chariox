@@ -12,6 +12,11 @@ import type { WorkflowComponentSelection } from "./workflow-component-selection.
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
 import { resolveActiveWorkflowRun } from "@chariox/kernel-client/workflow-prompt-state"
 import { sessionWorkflowSchedules } from "@chariox/kernel-client/session-workflow-state"
+import {
+  buildWorkflowEndpointPoolStatus,
+  formatWorkflowEndpointPoolSummary,
+  workflowEndpointCapacity,
+} from "./workflow-endpoint-pool-projection.js"
 
 export type WorkflowInspectorMode = "logs" | "trace" | "edit"
 
@@ -104,7 +109,7 @@ function buildEditInspector(
       `Selected: ${formatComponentSelection(resolved)}`,
       `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
     ],
-    body: buildEditBody(workflow, resolved, selectedNode),
+    body: buildEditBody(workflow, resolved, selectedNode, input.session),
     hint: resolved.selection.kind === "node"
       ? "Press Enter or use /workflow node instructions set to open the node editor."
       : "Use slash commands to update the selected workflow component.",
@@ -335,6 +340,7 @@ function buildEditBody(
   workflow: WorkflowDefinition,
   resolved: { selection: WorkflowComponentSelection; node: WorkflowNodeDefinition | null },
   selectedNode: WorkflowNodeDefinition | null,
+  session?: RuntimeSession,
 ) {
   const selection = resolved.selection
   if (selection.kind === "workflow") {
@@ -386,13 +392,27 @@ function buildEditBody(
   if (!endpoint) {
     return "Selected endpoint no longer exists."
   }
-  return [
+  const lines = [
     "Editable endpoint fields",
     `- alias: ${endpoint.alias ?? "none"}`,
     `- entry-node: ${endpoint.entry_node_id}`,
+    `- max-instances: ${workflowEndpointCapacity(endpoint)}`,
+  ]
+  if (session) {
+    const pool = buildWorkflowEndpointPoolStatus(
+      workflow.id,
+      endpoint,
+      session.workflow_runtime_instances ?? [],
+      session.workflow_runs ?? [],
+    )
+    lines.push(`- pool: ${formatWorkflowEndpointPoolSummary(pool)}`)
+  }
+  lines.push(
     "",
     "Use /workflow endpoint alias to rename.",
     "Use /workflow endpoint bind to change the entry node.",
+    "Use /workflow endpoint max-instances to set run capacity.",
     "Use /workflow run <endpoint-ref> <prompt> to start a workflow run.",
-  ].join("\n")
+  )
+  return lines.join("\n")
 }

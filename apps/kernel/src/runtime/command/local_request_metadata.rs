@@ -126,6 +126,30 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
+            LocalRequestMetadata::new("managed_environment.catalog", Normal)
+        }
+        LocalDaemonRequest::GetManagedEnvironment(_) => {
+            LocalRequestMetadata::new("managed_environment.get", Normal)
+        }
+        LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
+            LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
+        }
+        LocalDaemonRequest::CreateManagedEnvironment(_) => {
+            LocalRequestMetadata::new("managed_environment.create", Interactive)
+        }
+        LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_) => {
+            LocalRequestMetadata::new("managed_environment.lifecycle", Interactive)
+        }
+        LocalDaemonRequest::StartManagedContextTransfer(_) => {
+            LocalRequestMetadata::new("managed_context.transfer.start", Background)
+        }
+        LocalDaemonRequest::GetManagedContextTransferStatus(_) => {
+            LocalRequestMetadata::new("managed_context.transfer.status", Normal)
+        }
+        LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
+            LocalRequestMetadata::new("managed_context.launch_target.get", Normal)
+        }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
                 .session(&request.session_id)
@@ -401,6 +425,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
+        LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
         LocalDaemonRequest::DeleteProject(_) => "project.delete",
         LocalDaemonRequest::RestoreProject(_) => "project.restore",
@@ -438,6 +463,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
         LocalDaemonRequest::CreateProviderAccountProfile(_) => "provider_account.create",
         LocalDaemonRequest::LinkProviderAccountProfile(_) => "provider_account.link",
+        LocalDaemonRequest::ImportNativeProviderAccountProfile(_) => {
+            "provider_account.native.import"
+        }
         LocalDaemonRequest::RenameProviderAccountProfile(_) => "provider_account.rename",
         LocalDaemonRequest::SetDefaultProviderAccountProfile(_) => "provider_account.default.set",
         LocalDaemonRequest::RefreshProviderAccountProfile(_) => "provider_account.refresh",
@@ -705,6 +733,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "workflow_publication.endpoint.register"
         }
         LocalDaemonRequest::MaterializeWorkflowPublication(_) => "workflow_publication.materialize",
+        LocalDaemonRequest::ActivateWorkflowPublicationRuntime(_) => {
+            "workflow_publication.runtime.activate"
+        }
         LocalDaemonRequest::CreateWorkflowEndpoint(_) => "workflow_endpoint.create",
         LocalDaemonRequest::AliasWorkflowEndpoint(_) => "workflow_endpoint.alias",
         LocalDaemonRequest::BindWorkflowEndpoint(_) => "workflow_endpoint.bind",
@@ -774,6 +805,14 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::DeleteKernel(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
+        | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
+        | LocalDaemonRequest::GetManagedEnvironment(_)
+        | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
+        | LocalDaemonRequest::CreateManagedEnvironment(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
+        | LocalDaemonRequest::StartManagedContextTransfer(_)
+        | LocalDaemonRequest::GetManagedContextTransferStatus(_)
+        | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),

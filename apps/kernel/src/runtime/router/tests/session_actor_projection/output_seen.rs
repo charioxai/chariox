@@ -297,7 +297,10 @@ async fn output_seen_ack_survives_kernel_restart() {
         app.save_durable_state_snapshot()
             .expect("unread output state should be snapshotted");
 
-        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let app = Arc::new(Mutex::new(app));
+        let app_dropped = Arc::downgrade(&app);
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        drop(app);
         let ack_request =
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest {
                 session_id: session_id.clone(),
@@ -315,6 +318,13 @@ async fn output_seen_ack_survives_kernel_restart() {
             .expect("acknowledged session should remain projected");
         assert!(!acknowledged.agent_activity[&agent_id].unread_idle_output);
         drop(router);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app_dropped.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session lane should release the first daemon");
         (session_id, agent_id)
     };
 

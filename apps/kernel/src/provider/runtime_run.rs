@@ -63,6 +63,10 @@ pub struct RuntimeProviderRun {
     #[serde(skip)]
     workflow_event_context_enabled: bool,
     workflow_event_actions_enabled: bool,
+    /// Identifies the workflow node whose first turn received this provider's
+    /// fresh context. Runtime-only because a restart may safely flush again.
+    #[serde(skip)]
+    workflow_fresh_context_node_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<CharioxMcpServerConfig>,
     #[serde(
@@ -139,6 +143,7 @@ impl RuntimeProviderRun {
             workflow_event_reply_enabled: request.workflow_event_reply_enabled,
             workflow_event_context_enabled: request.workflow_event_context_enabled,
             workflow_event_actions_enabled: request.workflow_event_actions_enabled,
+            workflow_fresh_context_node_run_id: None,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
             provider_config_overrides: request.provider_config_overrides.clone(),
@@ -202,6 +207,7 @@ impl RuntimeProviderRun {
             workflow_event_reply_enabled: false,
             workflow_event_context_enabled: false,
             workflow_event_actions_enabled: false,
+            workflow_fresh_context_node_run_id: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             provider_config_overrides: BTreeMap::new(),
@@ -451,6 +457,14 @@ impl RuntimeProviderRun {
 
     pub fn workflow_event_actions_enabled(&self) -> bool {
         self.workflow_event_actions_enabled
+    }
+
+    pub fn workflow_fresh_context_node_run_id(&self) -> Option<&str> {
+        self.workflow_fresh_context_node_run_id.as_deref()
+    }
+
+    pub fn mark_workflow_fresh_context(&mut self, workflow_node_run_id: impl Into<String>) {
+        self.workflow_fresh_context_node_run_id = Some(workflow_node_run_id.into());
     }
 
     pub fn set_control_capabilities(&mut self, capabilities: Vec<ControlCapability>) {

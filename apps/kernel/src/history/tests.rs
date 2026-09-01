@@ -93,7 +93,7 @@ fn appends_and_loads_session_history() {
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
 
     store
@@ -134,7 +134,7 @@ fn session_history_append_rejects_prompt_origin_without_source_attachment() {
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
     let entry = SessionHistoryEntry::provider_output(
         session.id(),
@@ -165,7 +165,7 @@ fn session_history_append_rejects_external_provider_observed_without_complete_id
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
     let valid = external_observed_entry(session.id());
 
@@ -217,7 +217,7 @@ fn session_history_replace_rejects_external_provider_observed_without_complete_i
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
     let valid = external_observed_entry(session.id());
     let merge_key = valid
@@ -252,7 +252,7 @@ fn session_history_replacement_appends_and_deduplicates_without_rewriting_the_fi
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
     let original = external_observed_entry(session.id());
     let merge_key = original.merge_key.clone().expect("merge key");
@@ -370,7 +370,7 @@ fn session_history_load_hides_external_observer_state_signals() {
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
     let signal = SessionHistoryEntry::external_provider_observed_state_signal(
         session.id(),
@@ -402,7 +402,7 @@ fn session_history_load_rehydrates_file_image_attachment_previews() {
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let store = SessionHistoryStore::new(config.session_history_root.clone())
+    let store = SessionHistoryStore::new(config.session_history_root())
         .expect("history store should initialize");
     let image_path = std::env::temp_dir().join(format!(
         "chariox-jsonl-history-preview-{}-{}.png",

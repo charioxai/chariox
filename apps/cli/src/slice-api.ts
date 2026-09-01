@@ -6,6 +6,7 @@ import type {
   SliceRecord,
   SliceSavedStateRecord,
 } from "./cli-types.js"
+import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import {
   createSliceBackupRequest,
   createSliceRequest,
@@ -41,6 +42,7 @@ export async function createSlice(
     workspaceId?: string | null
     worktreeId?: string | null
     workspaceMount?: string | null
+    developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
     workerKernelRef?: string | null
     displayUrl?: string | null
     fromSavedState?: string | null

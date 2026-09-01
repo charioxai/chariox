@@ -9,6 +9,9 @@ export function commandCenterCompletionText(item: CommandCenterItem): string {
   if (item.kind === "provider") {
     return `/provider ${item.value}`
   }
+  if (item.kind === "account") {
+    return `/account ${item.value}`
+  }
   if (item.kind === "model") {
     return `/model ${item.value}`
   }

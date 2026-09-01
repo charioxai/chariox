@@ -3,6 +3,7 @@ import {
   providerSupportsNamespaceCommands,
 } from "./provider-command-catalog.js"
 import {
+  buildAccountItems,
   buildModelItems,
   buildProviderItems,
   buildProviderNamespaceItems,
@@ -44,6 +45,10 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
 
   if (normalized.startsWith("/model ")) {
     return commandTreeContains(context.commandTree, "model") ? buildModelItems(normalized, context) : []
+  }
+
+  if (normalized.startsWith("/account ")) {
+    return commandTreeContains(context.commandTree, "account") ? buildAccountItems(normalized, context) : []
   }
 
   if (normalized.startsWith("/variant ")) {

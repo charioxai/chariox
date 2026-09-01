@@ -434,6 +434,47 @@ pub(crate) fn waiting_room_rows_changed_event(
     })
 }
 
+pub(crate) fn waiting_room_inventory_changed_event(
+    snapshot: &WaitingRoomPublicSnapshot,
+    previous_snapshot: Option<&WaitingRoomPublicSnapshot>,
+) -> Option<KernelEvent> {
+    let requires_full_refresh = previous_snapshot.is_none_or(|previous| {
+        previous.external_provider_sessions != snapshot.external_provider_sessions
+            || previous.external_provider_sessions_has_more
+                != snapshot.external_provider_sessions_has_more
+            || previous.external_provider_sessions_next_cursor
+                != snapshot.external_provider_sessions_next_cursor
+            || previous.relay_status != snapshot.relay_status
+            || previous.remote_machines != snapshot.remote_machines
+            || previous.remote_kernels != snapshot.remote_kernels
+            || previous.terminals != snapshot.terminals
+            || previous.provider_accounts != snapshot.provider_accounts
+            || previous.git_credentials != snapshot.git_credentials
+    });
+    requires_full_refresh.then(|| KernelEvent::WaitingRoomInventoryChanged {
+        inventory_version: snapshot.inventory_version.clone(),
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct WaitingRoomInventoryEventProjection {
+    previous_snapshot: Option<WaitingRoomPublicSnapshot>,
+}
+
+impl WaitingRoomInventoryEventProjection {
+    pub(crate) fn project(&mut self, snapshot: WaitingRoomPublicSnapshot) -> Vec<KernelEvent> {
+        let inventory_event =
+            waiting_room_inventory_changed_event(&snapshot, self.previous_snapshot.as_ref());
+        let rows_event =
+            waiting_room_rows_changed_event(snapshot.clone(), self.previous_snapshot.as_ref());
+        self.previous_snapshot = Some(snapshot);
+        [rows_event, inventory_event]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
 pub(crate) fn agent_activity_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -754,6 +795,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         }
         DaemonError::ProviderProtocol { .. } => {
             kernel_error("provider_protocol_error", error, true)
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "credential_vault_locked" =>
+        {
+            kernel_error("credential_vault_locked", error, false)
         }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),

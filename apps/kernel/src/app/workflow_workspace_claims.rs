@@ -11,13 +11,12 @@ impl DaemonApp {
         workflow_node_run_id: &str,
     ) -> Result<(), DaemonError> {
         let session = self.sessions.get_session(session_id)?;
+        let agent = self.agents.get_agent(agent_id)?;
         let workspace_id = session.workspace_id().to_string();
-        let worktree_id = self
-            .agents
-            .get_agent(agent_id)
-            .ok()
-            .and_then(|agent| agent.worktree_id().map(str::to_string))
-            .unwrap_or_else(|| session.worktree_id().to_string());
+        let worktree_id = agent
+            .worktree_id()
+            .unwrap_or_else(|| session.worktree_id())
+            .to_string();
         let claim = self.workspace_coordinator.acquire_worktree_write_claim(
             workspace_id,
             worktree_id,

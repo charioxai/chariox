@@ -19,6 +19,8 @@ pub struct CreateSliceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_mount: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development: Option<crate::managed_context::package::ManagedContextDevelopmentSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_kernel_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_url: Option<String>,

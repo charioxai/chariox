@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -169,23 +169,23 @@ impl StdioMcpProcess {
                 message: format!("MCP `{}` is not a stdio MCP", backing.name),
             });
         };
-        let mut command_builder = Command::new(command);
+        let mut environment = env.clone();
+        for key in env_vars {
+            if let Ok(value) = std::env::var(key) {
+                environment.insert(key.clone(), value);
+            }
+        }
+        let mut command_builder = crate::provider::managed_isolated_utility_command(
+            command.clone(),
+            args.clone(),
+            environment,
+            cwd.as_deref().map(std::path::PathBuf::from),
+            &format!("mcp:{}", backing.name),
+        )?;
         command_builder
-            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        if let Some(cwd) = cwd {
-            command_builder.current_dir(cwd);
-        }
-        for (key, value) in env {
-            command_builder.env(key, value);
-        }
-        for key in env_vars {
-            if let Ok(value) = std::env::var(key) {
-                command_builder.env(key, value);
-            }
-        }
         let mut child = command_builder
             .spawn()
             .map_err(|error| DaemonError::LocalTransport {

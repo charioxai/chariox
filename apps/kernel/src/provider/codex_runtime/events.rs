@@ -332,9 +332,19 @@ pub(super) fn apply_notification_with_manifest(
             });
         }
         CodexNotification::Error { message } => {
-            if codex_error_is_retry_progress(&message) {
+            if let Some((attempt, limit)) = codex_retry_progress(&message) {
                 turn_tracker.note_activity();
-                notices.push(message);
+                chunks.push(CodexOutputChunk {
+                    kind: TerminalOutputKind::ProviderStatus,
+                    merge_key: Some(
+                        crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY.to_string(),
+                    ),
+                    bytes: crate::provider::provider_retry_status(
+                        "Codex",
+                        Some(&format!("{attempt}/{limit}")),
+                    )
+                    .into_bytes(),
+                });
                 return;
             }
             *active_turn_id = None;
@@ -345,17 +355,11 @@ pub(super) fn apply_notification_with_manifest(
     }
 }
 
-fn codex_error_is_retry_progress(message: &str) -> bool {
-    let Some(progress) = message.trim().strip_prefix("Reconnecting...") else {
-        return false;
-    };
-    let Some((attempt, limit)) = progress.trim().split_once('/') else {
-        return false;
-    };
-    let (Ok(attempt), Ok(limit)) = (attempt.parse::<u32>(), limit.parse::<u32>()) else {
-        return false;
-    };
-    limit > 0 && attempt > 0 && attempt <= limit
+fn codex_retry_progress(message: &str) -> Option<(u32, u32)> {
+    let progress = message.trim().strip_prefix("Reconnecting...")?;
+    let (attempt, limit) = progress.trim().split_once('/')?;
+    let (attempt, limit) = (attempt.parse::<u32>().ok()?, limit.parse::<u32>().ok()?);
+    (limit > 0 && attempt > 0 && attempt <= limit).then_some((attempt, limit))
 }
 
 pub(super) fn backfill_completed_turn(

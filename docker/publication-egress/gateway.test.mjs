@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
+import { once } from "node:events"
 import { connect, createServer as createNetServer } from "node:net"
 import test from "node:test"
 
@@ -13,6 +15,56 @@ import { tlsClientHello } from "./test-helpers.mjs"
 const policy = buildPublicationEgressPolicy([
   { id: "provider:openai", host: "api.openai.com", ports: [443] },
 ])
+
+test("publication egress survives a client reset while authorizing a tunnel", { timeout: 10_000 }, async () => {
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", `
+    import { createPublicationEgressGateway } from ${JSON.stringify(new URL("./gateway.mjs", import.meta.url).href)};
+    const gateway = await createPublicationEgressGateway({
+      policy: ${JSON.stringify(policy)}, host: "127.0.0.1", port: 0,
+      resolveHost: async () => {
+        process.send({ resolving: true });
+        await new Promise(resolve => process.once("message", resolve));
+        throw new Error("publication egress destination is unavailable");
+      },
+      log: () => {},
+    });
+    process.send({ port: gateway.address.port });
+  `], { stdio: ["ignore", "ignore", "pipe", "ipc"] })
+  let stderr = ""
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk })
+  const exited = once(child, "exit")
+  const failure = exited.then(([code, signal]) => { throw new Error(`gateway exited ${code}/${signal}: ${stderr}`) })
+  // Observe rejection immediately, including while the client socket is being reset.
+  failure.catch(() => {})
+  let socket
+  try {
+    const [{ port }] = await Promise.race([once(child, "message"), failure])
+    const resolving = once(child, "message")
+    socket = connect(port, "127.0.0.1")
+    socket.on("error", () => {})
+    await once(socket, "connect")
+    socket.write("CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n")
+    assert.deepEqual((await Promise.race([resolving, failure]))[0], { resolving: true })
+    const closed = once(socket, "close")
+    socket.resetAndDestroy()
+    await closed
+    // Let the kernel deliver the TCP reset while DNS authorization is still pending.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await Promise.race([
+      (async () => {
+        const health = await fetch(`http://127.0.0.1:${port}/healthz`)
+        assert.equal(health.status, 200)
+        assert.equal((await health.json()).policy_digest, policy.policy_digest)
+      })(),
+      failure,
+    ])
+    child.send({ finishAuthorization: true })
+  } finally {
+    socket?.destroy()
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM")
+    await exited
+  }
+})
 
 test("publication egress authorization binds CONNECT, SNI, policy, and all DNS answers", async () => {
   const authorized = await authorizePublicationEgressTunnel({

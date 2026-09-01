@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  buildAccountItems,
   buildModelItems,
   buildProviderItems,
   buildProviderNamespaceItems,
@@ -54,6 +55,29 @@ test("command center dynamic items project provider, model, variant, and view ch
   assert.equal(buildModelItems("/model gpt", context)[0]?.kind, "model")
   assert.equal(buildVariantItems("/variant med", context)[0]?.value, "medium")
   assert.equal(buildViewItems("/view spl")[0]?.value, "/view split")
+})
+
+test("command center account choices display labels but execute stable profile ids", () => {
+  const items = buildAccountItems("/account val", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerAccounts: [{
+      provider: "codex",
+      profile_id: "secondary",
+      label: "Validation",
+      identity_summary: "validation@example.com",
+      auth_state: "authenticated",
+      is_default: false,
+    } as never],
+    currentProvider: "codex",
+    currentAccount: "default",
+    currentModel: "codex/gpt-5.6-luna",
+    currentVariant: "low",
+  })
+
+  assert.deepEqual(items.map((item) => ({ label: item.label, value: item.value })), [{
+    label: "Validation",
+    value: "secondary",
+  }])
 })
 
 test("command center marks provider and model choices from local fallback provider catalog", () => {

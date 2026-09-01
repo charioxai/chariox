@@ -22,6 +22,8 @@ type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget, TBox = 
   setHotkeysOpen: (open: boolean) => void
   setTerminalPairingOpen: (open: boolean) => void
   setSessionBrowserOpen: (open: boolean) => void
+  setManagedMachineOpen?: (open: boolean) => void
+  onManagedMachineClosed?: () => void
   setTerminalPairing: (pairing: TerminalPairingLinkView | null) => void
   setTerminalPairingQrLines: (lines: string[]) => void
   getSessionCount: () => number
@@ -46,9 +48,11 @@ export type CliDialogOverlayController<TBox = unknown> = {
   closeHotkeys(): void
   closeTerminalPairing(): void
   closeSessionBrowser(): void
+  closeManagedMachine(): void
   openHotkeys(): void
   openTerminalPairing(): Promise<void>
   openSessionBrowser(): void
+  openManagedMachine(): void
   toggleHotkeys(): void
 }
 
@@ -77,6 +81,8 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       const activeMode = mode()
       if (activeMode === "session-browser") {
         controller.closeSessionBrowser()
+      } else if (activeMode === "managed-machine") {
+        controller.closeManagedMachine()
       } else if (activeMode === "terminal-pairing") {
         controller.closeTerminalPairing()
       } else if (activeMode === "hotkeys") {
@@ -132,6 +138,16 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       }
       const restoreTarget = savedFocus
       deps.setSessionBrowserOpen(false)
+      controller.render()
+      restoreFocusLater(restoreTarget)
+    },
+    closeManagedMachine() {
+      if (!deps.getOpenState().managedMachineOpen) {
+        return
+      }
+      const restoreTarget = savedFocus
+      deps.setManagedMachineOpen?.(false)
+      deps.onManagedMachineClosed?.()
       controller.render()
       restoreFocusLater(restoreTarget)
     },
@@ -199,6 +215,18 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       controller.render()
       deps.flashFooter("select a session to open, archive, or delete", "info")
     },
+    openManagedMachine() {
+      if (deps.getOpenState().managedMachineOpen) {
+        return
+      }
+      captureFocus()
+      deps.setHotkeysOpen(false)
+      deps.setTerminalPairingOpen(false)
+      deps.setSessionBrowserOpen(false)
+      deps.setManagedMachineOpen?.(true)
+      controller.render()
+      deps.flashFooter("configure the new Chariox-managed machine", "info")
+    },
     toggleHotkeys() {
       deps.debugHotkey?.(`toggle open=${deps.getOpenState().hotkeysOpen} current=${focusType(deps.getCurrentFocus())}`)
       deps.logDebug?.("toggleHotkeys invoked", {
@@ -215,6 +243,9 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       }
       if (deps.getOpenState().sessionBrowserOpen) {
         controller.closeSessionBrowser()
+      }
+      if (deps.getOpenState().managedMachineOpen) {
+        controller.closeManagedMachine()
       }
       controller.openHotkeys()
     },

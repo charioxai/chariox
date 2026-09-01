@@ -6,6 +6,9 @@ import type {
   RuntimeSession,
   WorkflowRun,
 } from "./cli-types.js"
+import type {
+  WorkflowEndpointRuntimeInstance,
+} from "./cli-types.js"
 import { buildWorkflowInspectorProjection } from "./workflow-inspector-projection.js"
 
 test("workflow inspector projects node instruction editor metadata and callbacks", () => {
@@ -295,6 +298,36 @@ test("workflow inspector edit mode describes edge and endpoint fields", () => {
   assert.match(endpointInspector?.body ?? "", /Editable endpoint fields/)
   assert.match(endpointInspector?.body ?? "", /alias: Run/)
   assert.match(endpointInspector?.body ?? "", /entry-node: node-2/)
+
+  const endpointPoolInspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          nodes: [
+            { id: "node-1", agent_id: "agent-1" },
+            { id: "node-2", agent_id: "agent-2" },
+          ],
+          edges: [],
+          endpoints: [{ id: "endpoint-1", alias: "Run", entry_node_id: "node-2", max_instances: 3 }],
+        },
+      ],
+      workflow_runtime_instances: [endpointRuntimeInstance("instance-1", "busy", "run-1")],
+      workflow_runs: [],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    selectedWorkflowComponent: { kind: "endpoint", id: "endpoint-1" },
+    inspectorMode: "edit",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {},
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.match(endpointPoolInspector?.body ?? "", /max-instances: 3/)
+  assert.match(endpointPoolInspector?.body ?? "", /pool: 1\/3 busy • 1 registered • 1 active run/)
 })
 
 test("workflow inspector resolves edge selection to source node trace", () => {
@@ -440,5 +473,26 @@ function workflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     started_at_ms: 1,
     completed_at_ms: null,
     ...overrides,
+  }
+}
+
+function endpointRuntimeInstance(
+  id: string,
+  status: "idle" | "busy" | "stale",
+  activeRunId: string | null,
+): WorkflowEndpointRuntimeInstance {
+  return {
+    id,
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    workflow_revision: 1,
+    ordinal: 1,
+    primary: true,
+    node_agent_ids: {},
+    worktree_id: "worktree-1",
+    status,
+    active_run_id: activeRunId,
+    created_at_ms: 1,
+    updated_at_ms: 1,
   }
 }

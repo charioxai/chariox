@@ -283,18 +283,26 @@ impl DurableSnapshotScheduler {
     }
 
     fn write_checkpoint(&self, sequence: u64) -> Result<(), DaemonError> {
-        let payload = DurableKernelSnapshotPayload::capture(
-            &self.sessions,
-            &self.agents,
-            &self.slices,
-            &self.metaagent_events,
-        );
-        self.durable_state.save_entity_checkpoint(
-            &self.owner_id,
-            sequence,
-            checkpoint_entities(&payload)?,
-        )?;
-        Ok(())
+        // Workflow transitions persist before publishing their new in-memory
+        // projection. Capturing between those two steps would checkpoint the
+        // old projection at the new event sequence and skip the event on
+        // restart. The shared transition lock makes capture linearizable with
+        // the durable commit and in-memory publication.
+        self.durable_state
+            .with_workflow_runtime_transition_lock(|| {
+                let payload = DurableKernelSnapshotPayload::capture(
+                    &self.sessions,
+                    &self.agents,
+                    &self.slices,
+                    &self.metaagent_events,
+                );
+                self.durable_state.save_entity_checkpoint(
+                    &self.owner_id,
+                    sequence,
+                    checkpoint_entities(&payload)?,
+                )?;
+                Ok(())
+            })
     }
 
     pub(crate) async fn run(self, poll_interval: Duration) {
@@ -532,6 +540,7 @@ mod tests {
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
+                    development: None,
                     worker_kernel_ref: None,
                     display_url: Some("http://127.0.0.1:6080".to_string()),
                     provider_auth: Vec::new(),
@@ -561,6 +570,52 @@ mod tests {
         assert_eq!(snapshot.sequence, outcome.latest_event_sequence);
         assert_eq!(snapshot.payload["sessions"][0]["id"], session.id());
         assert_eq!(snapshot.payload["slices"][0]["id"], slice.id);
+    }
+
+    #[test]
+    fn checkpoint_capture_waits_for_workflow_transition_publication() {
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let durable_state = app.durable_state_store();
+        let scheduler = DurableSnapshotScheduler::new(
+            app.config().daemon_id.clone(),
+            durable_state.clone(),
+            app.session_state_store(),
+            app.agents().clone(),
+            app.slices(),
+            app.metaagent_event_store(),
+            1,
+        );
+        let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+
+        let checkpoint = durable_state
+            .with_workflow_runtime_transition_lock(|| {
+                let checkpoint = std::thread::spawn(move || {
+                    attempted_tx.send(()).expect("attempt should signal");
+                    let result = scheduler.tick_once();
+                    finished_tx.send(()).expect("completion should signal");
+                    result
+                });
+                attempted_rx.recv().expect("checkpoint should attempt");
+                assert!(
+                    finished_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+                    "checkpoint captured while a workflow transition was unpublished",
+                );
+                Ok(checkpoint)
+            })
+            .expect("transition lock should release");
+
+        assert!(checkpoint
+            .join()
+            .expect("checkpoint thread should join")
+            .is_ok());
+        finished_rx
+            .recv()
+            .expect("checkpoint should finish after release");
     }
 
     #[tokio::test]

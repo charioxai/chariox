@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import { LocalIpcError } from "./ipc.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createBaseDeps } from "./session-lifecycle.test-support.js"
 import type { ProviderPreferences } from "./preferences.js"
@@ -60,6 +61,37 @@ test("transitionToNoSession resets session-bound state and refreshes the waiting
     "refreshWaitingRoomData",
     "requestRender",
   ])
+})
+
+test("rollbackAttachedSession detaches and clears only the exact target binding", async () => {
+  const attachment = { id: "att-managed", session_id: "session-managed" }
+  let currentAttachment: typeof attachment | null = attachment
+  let currentSessionId = "session-managed"
+  const { deps, calls } = createBaseDeps({
+    attachmentState: () => currentAttachment,
+    sessionState: () => ({ id: currentSessionId }),
+    detachAttachment: async (attachmentId: string) => {
+      calls.push(`detachAttachment:${attachmentId}`)
+    },
+    setAttachmentState: (next: typeof attachment | null) => {
+      calls.push("setAttachmentState")
+      currentAttachment = next
+    },
+    setSessionState: (session: RuntimeSession) => {
+      calls.push("setSessionState")
+      currentSessionId = session.id
+    },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  assert.equal(await controller.rollbackAttachedSession("session-other"), false)
+  assert.equal(calls.length, 0)
+
+  assert.equal(await controller.rollbackAttachedSession("session-managed"), true)
+  assert.equal(currentAttachment, null)
+  assert.equal(currentSessionId, "no-session")
+  assert.equal(calls[0], "detachAttachment:att-managed")
+  assert.ok(calls.includes("refreshWaitingRoomData"))
 })
 
 test("attachBinding reattaches and hydrates the attached session before restoring the attached state", async () => {
@@ -523,6 +555,65 @@ test("attachBinding does not mask unrelated provider launch failures", async () 
     controller.attachBinding({ id: "session-launch-failure" }, false),
     (error) => error === launchError,
   )
+})
+
+test("attachBinding preserves the actionable vault warning after session hydration", async () => {
+  const statusLines: string[] = []
+  const attachedSession: RuntimeSession = {
+    id: "session-vault-locked",
+    project_id: "project-default",
+    alias: "vault-locked",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: ["att-vault-locked"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-vault-locked",
+    max_agents: 6,
+    agents: [{
+      id: "agent-vault-locked",
+      agent_ref: "agent-vault-locked",
+      session_id: "session-vault-locked",
+      alias: "agent-vault-locked",
+      provider: "codex",
+      account_profile: "codex-secondary",
+      model: "gpt-5.6-luna",
+      effort: "low",
+      worktree_id: "/tmp/workspace",
+      state: "Idle",
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-vault-locked", session_id: "session-vault-locked" }),
+    getSessionState: async () => attachedSession,
+    launchProviderRun: async () => {
+      throw new LocalIpcError(
+        "handle kernel response",
+        "local transport `credential_vault_locked` failed: Chariox vault is locked",
+        "local_transport_error",
+        true,
+      )
+    },
+    hydrateAttachedSessionBinding: async () => attachedSession,
+    setStatusLine: (message: string) => statusLines.push(message),
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-vault-locked" }, false)
+
+  assert.equal(statusLines.at(-1), "Chariox vault locked. Run /credential vault manage.")
 })
 
 test("attachBinding skips provider launch when existing session exposes no visible agents", async () => {

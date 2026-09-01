@@ -778,3 +778,123 @@ fn bootstrap_preserves_prepared_workflow_run_with_durable_prompt_after_restart()
     );
     assert!(workflow_run.failure_events().is_empty());
 }
+
+#[test]
+fn bootstrap_preserves_per_agent_workflow_queue_without_duplicate_dispatch() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, agent_id, first_run_id, second_run_id, queued_prompt_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-queue",
+                "worktree-queue",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let first_run_id = "workflow-run-active".to_string();
+        let second_run_id = "workflow-run-queued".to_string();
+        let mut restored_session = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should still exist");
+        for (run_id, node_run_id) in [
+            (&first_run_id, "node-run-active"),
+            (&second_run_id, "node-run-queued"),
+        ] {
+            let mut node_run = WorkflowNodeRun::new(
+                node_run_id,
+                "node-1",
+                &agent_id,
+                1,
+                WorkflowNodeRunStatus::Ready,
+            );
+            node_run.set_turn_envelope(Some(WorkflowTurnEnvelope::new(
+                format!("workflow-ack:{node_run_id}"),
+                format!("assembled prompt for {run_id}"),
+                None,
+                None,
+            )));
+            let mut workflow_run = WorkflowRun::new(
+                run_id,
+                format!("workflow-{run_id}"),
+                "endpoint-1",
+                "node-1",
+                Some(format!("invoke {run_id}")),
+                None,
+                vec![node_run],
+                Vec::new(),
+            );
+            workflow_run.set_active_node_run(node_run_id);
+            restored_session.create_workflow_run(workflow_run);
+        }
+        app.sessions.restore_session(restored_session);
+        let first = app
+            .prompt_owner_submit_prepared_prompt(
+                &session_id,
+                PromptQueueItem::new(
+                    "prompt-active-draft",
+                    "workflow-run:workflow-run-active",
+                    &agent_id,
+                    "first prompt",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context(&first_run_id, "node-run-active"),
+                false,
+            )
+            .expect("first workflow prompt should persist");
+        assert!(matches!(first, PromptSubmissionOutcome::Started { .. }));
+        let second = app
+            .prompt_owner_submit_prepared_prompt(
+                &session_id,
+                PromptQueueItem::new(
+                    "prompt-queued-draft",
+                    "workflow-run:workflow-run-queued",
+                    &agent_id,
+                    "second prompt",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context(&second_run_id, "node-run-queued"),
+                false,
+            )
+            .expect("second workflow prompt should persist");
+        let queued_prompt_id = match second {
+            PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+            other => panic!("expected queued workflow prompt, got {other:?}"),
+        };
+        app.save_durable_state_snapshot()
+            .expect("snapshot should save active and queued workflow prompts");
+        (
+            session_id,
+            agent_id,
+            first_run_id,
+            second_run_id,
+            queued_prompt_id,
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    let active = restored
+        .active_prompt_for_agent(&agent_id)
+        .expect("active workflow prompt should restore");
+    assert_eq!(active.workflow_run_id(), Some(first_run_id.as_str()));
+    let queued = restored
+        .queued_prompts_for_agent(&agent_id)
+        .expect("per-agent workflow queue should restore");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id(), queued_prompt_id);
+    assert_eq!(queued[0].workflow_run_id(), Some(second_run_id.as_str()));
+    assert_eq!(queued[0].workflow_node_run_id(), Some("node-run-queued"));
+    let mut prompt_ids = queued
+        .iter()
+        .map(|prompt| prompt.id())
+        .chain(std::iter::once(active.id()))
+        .collect::<Vec<_>>();
+    prompt_ids.sort();
+    prompt_ids.dedup();
+    assert_eq!(prompt_ids.len(), 2, "restart must not duplicate dispatch");
+}

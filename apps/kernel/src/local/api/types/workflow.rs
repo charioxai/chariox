@@ -394,9 +394,11 @@ pub struct BindWorkflowPublicationDeploymentRequest {
     pub setup_id: String,
     pub operation_key: String,
     pub deployment_id: String,
+    pub environment_id: String,
     pub release_id: String,
     pub package_digest: String,
     pub desired_revision: u64,
+    pub caller_claims_public_key_pem: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +416,14 @@ pub struct RegisterWorkflowPublicationEndpointRequest {
 pub struct MaterializeWorkflowPublicationRequest {
     pub publication_id: String,
     pub snapshot: WorkflowPublicationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivateWorkflowPublicationRuntimeRequest {
+    pub publication_id: String,
+    pub runtime_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -956,6 +966,8 @@ pub struct WorkflowDesignEndpoint {
     pub entry_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -968,6 +980,8 @@ pub struct WorkflowDesignEndpointPatch {
     pub alias: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

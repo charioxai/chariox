@@ -86,6 +86,45 @@ fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
     );
 }
 
+#[test]
+fn managed_slice_worker_does_not_request_remote_inventory_with_daemon_token() {
+    assert!(should_refresh_remote_inventory(true, false));
+    assert!(!should_refresh_remote_inventory(true, true));
+    assert!(!should_refresh_remote_inventory(false, false));
+}
+
+#[tokio::test]
+async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
+    let relay_url = "wss://relay.example.test";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(relay_url.to_string());
+    config.relay_token = Some("new-token".to_string());
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap");
+    let registration = app.relay_registration();
+    let mut active_token = "old-token".to_string();
+
+    let heartbeat_registration =
+        dynamic_relay_heartbeat_registration(relay_url, &mut active_token, &config, || {
+            std::future::ready(registration.clone())
+        })
+        .await
+        .expect("rotation should preserve the socket")
+        .expect("rotation should return an authenticated heartbeat registration");
+
+    assert_eq!(active_token, "new-token");
+    assert_eq!(heartbeat_registration.auth_token, "new-token");
+
+    let steady_state =
+        dynamic_relay_heartbeat_registration(relay_url, &mut active_token, &config, || async {
+            panic!("steady state must not rebuild registration")
+        })
+        .await
+        .expect("steady state should preserve the socket");
+
+    assert!(steady_state.is_none());
+    assert_eq!(active_token, "new-token");
+}
+
 #[tokio::test]
 async fn cloud_presence_publish_gate_skips_running_task() {
     let (_tx, rx) = oneshot::channel::<()>();
@@ -297,4 +336,181 @@ async fn bounded_cloud_relay_refresh_times_out() {
     .await;
 
     assert_eq!(result, CloudRelayRefreshResult::TimedOut);
+}
+
+#[tokio::test]
+async fn post_connect_hook_confirms_through_owner_handler_and_clears_worker_pending() {
+    let (owner_confirmed, worker_pending, attempts) =
+        exercise_post_connect_confirmation(true, false).await;
+    assert!(owner_confirmed);
+    assert!(!worker_pending);
+    assert_eq!(attempts, 1);
+}
+
+#[tokio::test]
+async fn post_connect_hook_clears_worker_pending_after_terminal_owner_rejection() {
+    let (owner_confirmed, worker_pending, attempts) =
+        exercise_post_connect_confirmation(false, false).await;
+    assert!(!owner_confirmed);
+    assert!(!worker_pending);
+    assert_eq!(attempts, 1);
+}
+
+#[tokio::test]
+async fn post_connect_hook_retries_retryable_rejection_on_same_connection() {
+    let (owner_confirmed, worker_pending, attempts) =
+        exercise_post_connect_confirmation(true, true).await;
+    assert!(owner_confirmed);
+    assert!(!worker_pending);
+    assert_eq!(attempts, 2);
+}
+
+async fn exercise_post_connect_confirmation(
+    owner_accepts_worker_key: bool,
+    reject_first_attempt_as_retryable: bool,
+) -> (bool, bool, usize) {
+    let mut worker_config = crate::config::DaemonConfig::for_tests();
+    worker_config.relay_url = Some("wss://relay.example.test".to_string());
+    worker_config.relay_token = Some("runtime-token".to_string());
+    let worker_public_key = worker_config.relay_public_key.clone();
+    let worker_kernel_id = worker_config.daemon_id.clone();
+    let worker_app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(worker_config).expect("worker daemon should bootstrap"),
+    ));
+    let worker_router = Arc::new(CommandRouter::with_interactive_capacity(worker_app, 1));
+    let worker_state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (worker_outgoing, mut worker_priority_rx, _worker_event_rx) =
+        RelayOutgoingSender::channel(4);
+
+    let mut owner_config = crate::config::DaemonConfig::for_tests();
+    owner_config.daemon_id = "owner-1".to_string();
+    let owner_public_key = owner_config.relay_public_key.clone();
+    let owner_private_key = owner_config.relay_private_key.clone();
+    let owner_app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(owner_config).expect("owner daemon should bootstrap"),
+    ));
+    let owner_router = Arc::new(CommandRouter::with_interactive_capacity(owner_app, 1));
+    let owner_state = Arc::new(RwLock::new(RelayClientState::default()));
+    owner_state
+        .write()
+        .await
+        .begin_managed_slice_relay_activation(
+            "slice-1".to_string(),
+            worker_kernel_id.clone(),
+            "slice:dev".to_string(),
+            if owner_accepts_worker_key {
+                worker_public_key.clone()
+            } else {
+                "replacement-key".to_string()
+            },
+            "activation-1".to_string(),
+        );
+    let (owner_outgoing, _owner_priority_rx, _owner_event_rx) = RelayOutgoingSender::channel(1);
+
+    worker_state
+        .write()
+        .await
+        .stage_managed_slice_activation_confirmation(
+            super::super::connection_state::PendingManagedSliceActivationConfirmation::new(
+                "slice-1".to_string(),
+                "owner-1".to_string(),
+                owner_public_key,
+                worker_kernel_id.clone(),
+                "activation-1".to_string(),
+            ),
+        );
+    set_connected(
+        &worker_state,
+        worker_outgoing,
+        "wss://relay.example.test".to_string(),
+    )
+    .await
+    .expect("worker relay should become connected");
+    let task = spawn_pending_managed_slice_activation_confirmation_after_connect(
+        Arc::clone(&worker_router),
+        Arc::clone(&worker_state),
+    )
+    .await
+    .expect("post-connect hook should claim pending confirmation");
+
+    let expected_attempts = if reject_first_attempt_as_retryable {
+        2
+    } else {
+        1
+    };
+    for attempt in 0..expected_attempts {
+        let envelope = timeout(Duration::from_secs(1), worker_priority_rx.recv())
+            .await
+            .expect("confirmation should be queued")
+            .expect("confirmation channel should stay open");
+        let RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            target,
+            encrypted_request,
+        } = envelope
+        else {
+            panic!("expected a peer confirmation request")
+        };
+        assert_eq!(target.daemon_id.as_deref(), Some("owner-1"));
+        let encrypted_response = if reject_first_attempt_as_retryable && attempt == 0 {
+            let response =
+                crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code: "owner_temporarily_unavailable".to_string(),
+                    retryable: true,
+                };
+            relay_crypto::encrypt_payload_for_peer(
+                &owner_private_key,
+                &worker_public_key,
+                &serde_json::to_vec(&response).expect("retryable response should encode"),
+            )
+            .expect("retryable response should encrypt")
+        } else {
+            let caller_identity = chariox_relay::protocol::RelayCallerIdentity {
+                realm_id: "realm-1".to_string(),
+                subject: "slice:dev".to_string(),
+                subject_kind: chariox_relay::auth::RelaySubjectKind::Kernel,
+                expires_at_ms: u64::MAX,
+                token_id: Some("runtime-token-1".to_string()),
+                user_id: Some("user-1".to_string()),
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(&worker_public_key),
+                ),
+            };
+            let outcome = handle_daemon_peer_request(
+                &owner_router,
+                &owner_state,
+                &owner_outgoing,
+                &worker_kernel_id,
+                Some(caller_identity),
+                encrypted_request,
+            )
+            .await;
+            assert!(outcome.error.is_none());
+            outcome
+                .encrypted_response
+                .expect("owner should return an encrypted activation result")
+        };
+        resolve_pending_peer_response_for_test(
+            &worker_state,
+            request_id,
+            "owner-1".to_string(),
+            encrypted_response,
+        )
+        .await;
+    }
+
+    timeout(Duration::from_secs(1), task)
+        .await
+        .expect("confirmation task should finish")
+        .expect("confirmation task should not panic");
+    let owner_confirmed = owner_state
+        .read()
+        .await
+        .managed_slice_relay_activation_confirmed("slice-1", "activation-1");
+    let worker_pending = worker_state
+        .read()
+        .await
+        .pending_managed_slice_activation_confirmation()
+        .is_some();
+    (owner_confirmed, worker_pending, expected_attempts)
 }

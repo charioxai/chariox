@@ -162,6 +162,14 @@ impl WorkflowTurnEnvelope {
         &self.runtime_tool_calls
     }
 
+    pub fn dispatched_at_ms(&self) -> Option<u64> {
+        self.dispatched_at_ms
+    }
+
+    pub fn acknowledged_at_ms(&self) -> Option<u64> {
+        self.acknowledged_at_ms
+    }
+
     pub fn pending_output_submissions(&self) -> Option<&WorkflowTurnOutputSubmissions> {
         self.pending_output_submissions.as_ref()
     }

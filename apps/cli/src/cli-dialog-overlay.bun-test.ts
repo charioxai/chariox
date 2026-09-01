@@ -66,3 +66,46 @@ test("session browser keeps nonzero ERROR visible at 80 columns", async () => {
     harness.renderer.destroy()
   }
 })
+
+test("managed-machine dialog renders deployment fields outside the session form", async () => {
+  const harness = await createTestRenderer({ width: 100, height: 30, useThread: false })
+  const overlayBox = new BoxRenderable(harness.renderer, {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: 100,
+    height: 30,
+  })
+  harness.renderer.root.add(overlayBox)
+  try {
+    renderCliDialogOverlay({
+      overlayBox,
+      renderer: harness.renderer,
+      dimensions: { width: 100, height: 30 },
+      mode: "managed-machine",
+      onDismiss() {},
+      sessions: [],
+      normalizeSessionBrowserIndex: () => 0,
+      terminalPairing: null,
+      terminalPairingQrLines: [],
+      hotkeySections: [],
+      managedMachineRows: [{
+        id: "managed-compute",
+        title: "Compute class",
+        value: "agent-small",
+        titleWidth: 28,
+        indent: 1,
+        focused: true,
+        selectable: true,
+        scrollbar: "",
+      }],
+    })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /New Chariox-managed machine/)
+    assert.match(frame, /Compute class/)
+    assert.match(frame, /agent-small/)
+  } finally {
+    harness.renderer.destroy()
+  }
+})

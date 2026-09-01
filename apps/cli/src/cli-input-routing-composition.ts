@@ -56,6 +56,7 @@ export type CliInputRoutingCompositionDeps = {
   handleAttachmentCommand: AnyFn
   handleSessionCommand: AnyFn
   handleProviderCommand: AnyFn
+  handleAccountCommand: AnyFn
   handleModelCommand: AnyFn
   handleVariantCommand: AnyFn
   handleModeCommand: AnyFn
@@ -190,6 +191,8 @@ export type CliInputRoutingCompositionDeps = {
   activateWaitingRoom: AnyFn
   startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
+  handleManagedMachineDialogKey: AnyFn
+  openManagedMachineDialog: AnyFn
   toggleWorkspaceScreen: AnyFn
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
@@ -200,6 +203,21 @@ export type CliInputRoutingCompositionDeps = {
 }
 
 export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
+  const waitingRoomRemoteTargets = () => {
+    const targets = deps.waitingRoomTargets()
+    const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
+    return {
+      ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
+      ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
+      ...(managedEnvironmentCatalog
+        ? {
+            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
+            managedContextSources: managedEnvironmentCatalog.contextSources,
+            managedEnvironments: managedEnvironmentCatalog.environments,
+          }
+        : {}),
+    }
+  }
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
@@ -219,6 +237,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleAttachmentCommand: deps.handleAttachmentCommand,
     handleSessionCommand: deps.handleSessionCommand,
     handleProviderCommand: deps.handleProviderCommand,
+    handleAccountCommand: deps.handleAccountCommand,
     handleModelCommand: deps.handleModelCommand,
     handleVariantCommand: deps.handleVariantCommand,
     handleModeCommand: deps.handleModeCommand,
@@ -543,7 +562,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
-      workspaceId: deps.waitingRoomTargets().workspacePath,
+      ...waitingRoomRemoteTargets(),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -571,6 +590,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     activateWaitingRoom: () => {
       void deps.activateWaitingRoom()
     },
+    openManagedMachineDialog: deps.openManagedMachineDialog,
   })
 
   const handleWorkflowDetailPaneKey = (event: { eventType?: string; name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean }) => {
@@ -630,6 +650,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
     handleSessionBrowserKey: deps.handleSessionBrowserKey,
     requestExit: () => {
       void deps.requestExit()

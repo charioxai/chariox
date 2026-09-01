@@ -1,8 +1,20 @@
 import type {
   AgentInstance,
+  ProviderAccountProfile,
   RuntimeSession,
 } from "./cli-types.js"
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
+import {
+  normalizeBackendProviderId,
+  selectConfiguredModel,
+  selectConfiguredVariant,
+  type ProviderCatalog,
+} from "./provider-catalog.js"
+import {
+  providerAccountDisplayLabel,
+  providerAccountsForProvider,
+  selectedProviderAccount,
+} from "./waiting-room-provider-accounts.js"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
@@ -34,11 +46,18 @@ export type AgentConfigCommandHandlerDeps = {
     agentId: string,
     options: {
       provider?: string | null
+      accountProfile?: string | null
       model?: string | null
       effort?: string | null
       clearEffort?: boolean
     },
   ) => Promise<AgentConfigUpdatePayload>
+  listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
+  getProviderCatalogForAgent?: (
+    agent: AgentInstance,
+    provider: string,
+    accountProfile: string,
+  ) => Promise<ProviderCatalog>
   aliasAgent?: (
     sessionId: string,
     agentId: string,
@@ -122,7 +141,7 @@ export async function handleAgentModeCommand(
 export async function handleAgentProfileCommand(
   deps: AgentConfigCommandHandlerDeps,
   args: string[],
-  subcommand: "provider" | "model" | "variant",
+  subcommand: "provider" | "account" | "model" | "variant",
 ): Promise<void> {
   if (!deps.updateAgentProfile) {
     deps.flashFooter("agent profile updates are unavailable in this build", "error")
@@ -138,10 +157,16 @@ export async function handleAgentProfileCommand(
   if (!rawValue) {
     const value = subcommand === "provider"
       ? resolved.agent.provider
+      : subcommand === "account"
+        ? await agentAccountDisplayValue(deps, resolved.agent)
       : subcommand === "model"
         ? resolved.agent.model ?? "<none>"
         : resolved.agent.effort ?? "<none>"
     deps.flashFooter(`${deps.formatAgentLabel(resolved.agent)} ${subcommand}: ${value}`, "info")
+    return
+  }
+  if (subcommand === "account") {
+    await updateAgentAccountProfile(deps, resolved.agent, rawValue)
     return
   }
   const shouldClearEffort = subcommand === "variant" && ["clear", "none", "-", "default"].includes(rawValue)
@@ -159,6 +184,58 @@ export async function handleAgentProfileCommand(
       ? payload.agent.model ?? "<none>"
       : payload.agent.effort ?? "<none>"
   deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} ${subcommand}: ${value}`, "info")
+}
+
+async function agentAccountDisplayValue(
+  deps: AgentConfigCommandHandlerDeps,
+  agent: AgentInstance,
+): Promise<string> {
+  const profileId = agent.account_profile?.trim() || "default"
+  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  const profiles = await deps.listProviderAccountProfiles(agent.provider)
+  const profile = selectedProviderAccount(profiles, agent.provider, profileId)
+  return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
+}
+
+async function updateAgentAccountProfile(
+  deps: AgentConfigCommandHandlerDeps,
+  agent: AgentInstance,
+  accountAlias: string,
+): Promise<void> {
+  if (!deps.listProviderAccountProfiles || !deps.getProviderCatalogForAgent) {
+    deps.flashFooter("agent account updates are unavailable in this build", "error")
+    return
+  }
+  try {
+    const profiles = await deps.listProviderAccountProfiles(agent.provider)
+    const accounts = providerAccountsForProvider(profiles, agent.provider)
+    const profile = accountAlias === "default"
+      ? selectedProviderAccount(accounts, agent.provider, "default")
+      : accounts.find((entry) => entry.label.localeCompare(accountAlias, undefined, { sensitivity: "accent" }) === 0)
+    if (!profile) {
+      deps.flashFooter(`account is unavailable for ${agent.provider}`, "error")
+      return
+    }
+    const catalog = await deps.getProviderCatalogForAgent(agent, agent.provider, profile.profile_id)
+    const provider = normalizeBackendProviderId(agent.provider)
+    const model = selectConfiguredModel(catalog, agent.model, provider)
+    if (!model) {
+      deps.flashFooter(`no models are available for ${providerAccountDisplayLabel(profile)}`, "error")
+      return
+    }
+    const effort = selectConfiguredVariant(model, agent.effort)
+    const payload = await deps.updateAgentProfile!(deps.sessionState().id, agent.id, {
+      provider: agent.provider,
+      accountProfile: profile.profile_id,
+      model: model.id,
+      ...(effort ? { effort } : { clearEffort: true }),
+    })
+    deps.applySessionState(payload.session)
+    await deps.refreshAgentPanes(payload.session)
+    deps.flashFooter(`${deps.formatAgentLabel(payload.agent)} account: ${providerAccountDisplayLabel(profile)}`, "info")
+  } catch (error) {
+    deps.flashFooter(deps.formatError(error), "error")
+  }
 }
 
 export async function handleAgentPermissionsCommand(

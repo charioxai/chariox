@@ -418,10 +418,10 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, worker) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            workspace.to_string_lossy(),
-            workspace.to_string_lossy(),
-        ))
+        .create_session(
+            CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(

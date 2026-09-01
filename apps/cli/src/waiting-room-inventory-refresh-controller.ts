@@ -14,6 +14,7 @@ import type {
   WaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
 const maximumTrackedKernelInventories = 64
@@ -45,12 +46,19 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
+  setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
+  getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
+  setLaunchTarget?: (target: WaitingRoomInventory["launchTarget"]) => void
   setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
   setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
   warn?: (message: string, fields: Record<string, unknown>) => void
   formatError?: (error: unknown) => string
   cachedInventories?: readonly WaitingRoomInventory[]
+  getCacheScopeKey?: () => string
+  loadCachedInventories?: () => readonly WaitingRoomInventory[]
+  directTargetKernelId?: string | null
+  getDirectTargetKernelId?: () => string | null | undefined
   persistInventory?: (inventory: WaitingRoomInventory) => void
   getLocalKernelPresences?: () => readonly LocalKernelPresence[]
 }
@@ -70,14 +78,17 @@ export function createWaitingRoomInventoryRefreshController(
   const formatError = options.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
   let inventoryVersion: string | null = null
   let activeKernelId: string | null = null
+  let managedEnvironmentCatalogScope: string | null = null
   let inventoryInvalidated = false
+  let cacheScopeKey = options.getCacheScopeKey?.() ?? null
+  let directTargetKernelId = currentDirectTargetKernelId(options)
   const inventoriesByKernel = new Map(
     (options.cachedInventories ?? []).map((inventory) => [inventory.kernelId, inventory]),
   )
   let pendingRefresh: Promise<void> | null = null
 
-  if (inventoriesByKernel.size > 0) {
-    options.setAvailableSessions(mergedCachedSessions(inventoriesByKernel.values()))
+  if ((options.cachedInventories?.length ?? 0) > 0) {
+    options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
   }
 
   const rememberInventory = (inventory: WaitingRoomInventory) => {
@@ -105,35 +116,61 @@ export function createWaitingRoomInventoryRefreshController(
     if (options.getInventoryStatus() !== "ready") {
       options.setInventoryStatus("loading")
     }
-    const snapshot = await options.getInventory().catch((error) => {
-      options.warn?.("waiting room inventory refresh failed", { error: formatError(error) })
-      options.setInventoryStatus("error")
-      return null
-    })
-    if (!snapshot) {
-      return
-    }
-    options.setInventoryStatus("ready")
-    const previousActiveKernelId = activeKernelId
-    const previousInventoryVersion = inventoryVersion
-    activeKernelId = snapshot.kernelId
-    inventoryVersion = inventoryInvalidated
-      ? null
-      : inventoriesByKernel.get(snapshot.kernelId)?.inventoryVersion
-        ?? (previousActiveKernelId === null ? previousInventoryVersion : null)
-    inventoryInvalidated = false
-    if (snapshot.inventoryVersion === inventoryVersion) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      refreshProjectionScope()
+      const requestedCacheScopeKey = cacheScopeKey
+      const requestedTargetKernelId = directTargetKernelId
+      let snapshot: WaitingRoomInventory
+      try {
+        snapshot = await options.getInventory()
+      } catch (error) {
+        refreshProjectionScope()
+        if (
+          requestedCacheScopeKey !== cacheScopeKey
+          || requestedTargetKernelId !== directTargetKernelId
+        ) {
+          options.setInventoryStatus("loading")
+          continue
+        }
+        options.warn?.("waiting room inventory refresh failed", { error: formatError(error) })
+        options.setInventoryStatus("error")
+        return
+      }
+      refreshProjectionScope()
+      if (
+        requestedCacheScopeKey !== cacheScopeKey
+        || requestedTargetKernelId !== directTargetKernelId
+      ) {
+        options.setInventoryStatus("loading")
+        continue
+      }
+      options.setInventoryStatus("ready")
+      const previousActiveKernelId = activeKernelId
+      const previousInventoryVersion = inventoryVersion
+      activeKernelId = snapshot.kernelId
+      inventoryVersion = inventoryInvalidated
+        ? null
+        : inventoriesByKernel.get(snapshot.kernelId)?.inventoryVersion
+          ?? (previousActiveKernelId === null ? previousInventoryVersion : null)
+      inventoryInvalidated = false
+      if (snapshot.inventoryVersion === inventoryVersion) {
+        applySupplementalInventory(snapshot)
+        options.reconcileWaitingRoom(options.getWaitingRoomState())
+        return
+      }
+
+      inventoryVersion = snapshot.inventoryVersion
+      rememberInventory(snapshot)
+      options.persistInventory?.(snapshot)
+      options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
       applySupplementalInventory(snapshot)
       options.reconcileWaitingRoom(options.getWaitingRoomState())
       return
     }
-
-    inventoryVersion = snapshot.inventoryVersion
-    rememberInventory(snapshot)
-    options.persistInventory?.(snapshot)
-    options.setAvailableSessions(mergedCachedSessions(inventoriesByKernel.values()))
-    applySupplementalInventory(snapshot)
-    options.reconcileWaitingRoom(options.getWaitingRoomState())
+    options.setInventoryStatus("error")
+    options.warn?.("waiting room inventory scope changed repeatedly during refresh", {
+      cache_scope_changed: true,
+    })
   }
 
   const applySupplementalInventory = (snapshot: WaitingRoomInventory) => {
@@ -153,6 +190,16 @@ export function createWaitingRoomInventoryRefreshController(
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
     options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
+    const nextManagedEnvironmentCatalogScope = options.getManagedEnvironmentCatalogScope?.(snapshot)
+      ?? snapshot.kernelId
+    if (snapshot.managedEnvironmentCatalog !== undefined) {
+      managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
+      options.setManagedEnvironmentCatalog?.(snapshot.managedEnvironmentCatalog)
+    } else if (managedEnvironmentCatalogScope !== nextManagedEnvironmentCatalogScope) {
+      managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
+      options.setManagedEnvironmentCatalog?.(undefined)
+    }
+    options.setLaunchTarget?.(snapshot.launchTarget)
     options.setProjects?.(snapshot.projects ?? [])
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),
@@ -167,11 +214,34 @@ export function createWaitingRoomInventoryRefreshController(
     options.setExternalProviderSessionsPage?.(externalProviderSessionPageState(externalProviderSessionsPage))
   }
 
+  const refreshProjectionScope = () => {
+    const nextScopeKey = options.getCacheScopeKey?.() ?? null
+    const nextDirectTargetKernelId = currentDirectTargetKernelId(options)
+    const cacheScopeChanged = nextScopeKey !== cacheScopeKey
+    const directTargetChanged = nextDirectTargetKernelId !== directTargetKernelId
+    if (!cacheScopeChanged && !directTargetChanged) {
+      return
+    }
+    if (cacheScopeChanged) {
+      cacheScopeKey = nextScopeKey
+      inventoriesByKernel.clear()
+      for (const inventory of options.loadCachedInventories?.() ?? []) {
+        inventoriesByKernel.set(inventory.kernelId, inventory)
+      }
+    }
+    directTargetKernelId = nextDirectTargetKernelId
+    activeKernelId = null
+    inventoryVersion = null
+    inventoryInvalidated = true
+    options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+  }
+
   return {
     applyRowsChanged(patch) {
       if (!options.isKernelConnected()) {
         return
       }
+      refreshProjectionScope()
       if (patch.inventoryVersion === inventoryVersion) {
         options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
@@ -208,7 +278,7 @@ export function createWaitingRoomInventoryRefreshController(
         }
         rememberInventory(nextInventory)
         options.persistInventory?.(nextInventory)
-        options.setAvailableSessions(mergedCachedSessions(inventoriesByKernel.values()))
+        options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
         options.setProjects?.(nextInventory.projects)
       } else {
         options.setAvailableSessions(mergeWaitingRoomSessionRows(
@@ -230,6 +300,7 @@ export function createWaitingRoomInventoryRefreshController(
       if (!options.isKernelConnected()) {
         return
       }
+      refreshProjectionScope()
       options.setInventoryStatus("ready")
       options.setRelayStatus(status)
       options.reconcileWaitingRoom(options.getWaitingRoomState())
@@ -238,6 +309,7 @@ export function createWaitingRoomInventoryRefreshController(
       if (!options.isKernelConnected()) {
         return
       }
+      refreshProjectionScope()
       options.setInventoryStatus("ready")
       const localPresence = mergeLocalKernelPresence(
         machines,
@@ -260,6 +332,7 @@ export function createWaitingRoomInventoryRefreshController(
       return pendingRefresh
     },
     invalidate() {
+      refreshProjectionScope()
       inventoryVersion = null
       inventoryInvalidated = true
     },
@@ -288,6 +361,27 @@ function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): Sess
     .sort((left, right) => (
       (right.last_used_at_ms ?? right.created_at_ms ?? 0) - (left.last_used_at_ms ?? left.created_at_ms ?? 0)
     ))
+}
+
+function visibleSessions(
+  inventoriesByKernel: ReadonlyMap<string, WaitingRoomInventory>,
+  directTargetKernelId: string | null | undefined,
+): SessionListEntry[] {
+  const targetKernelId = directTargetKernelId?.trim()
+  if (targetKernelId) {
+    const target = inventoriesByKernel.get(targetKernelId)
+    return target ? mergedCachedSessions([target]) : []
+  }
+  return mergedCachedSessions(inventoriesByKernel.values())
+}
+
+function currentDirectTargetKernelId(
+  options: Pick<
+    WaitingRoomInventoryRefreshControllerOptions,
+    "directTargetKernelId" | "getDirectTargetKernelId"
+  >,
+): string | null {
+  return (options.getDirectTargetKernelId?.() ?? options.directTargetKernelId)?.trim() || null
 }
 
 function mergeLocalKernelPresence(

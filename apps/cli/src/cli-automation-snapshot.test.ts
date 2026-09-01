@@ -6,10 +6,11 @@ import type { ShellContext } from "@chariox/kernel-client/shell-core"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "@chariox/kernel-client/external-provider-observation"
-import type { AgentInstance, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeSession, ProviderAccountProfile } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
+import type { RelayStatusView } from "./relay-api.js"
 
 test("buildCliAutomationSnapshot projects session and interaction state for automation", () => {
   const catalog = fallbackProviderCatalog()
@@ -131,6 +132,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     externalProviderSessionsState: () => [],
     externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
     slicesState: () => [],
+    providerAccountsState: () => [],
     waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
     themeRegistryState: () => DEFAULT_THEME_REGISTRY,
     selectedWorkflowId: () => "workflow-1",
@@ -281,6 +283,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     externalProviderSessionsState: () => [],
     externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
     slicesState: () => [],
+    providerAccountsState: () => [],
     waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
     themeRegistryState: () => DEFAULT_THEME_REGISTRY,
     selectedWorkflowId: () => null,
@@ -507,6 +510,7 @@ test("buildCliAutomationSnapshot trusts projected idle runtime state over stale 
       externalProviderSessionsState: () => [],
       externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
       slicesState: () => [],
+      providerAccountsState: () => [],
       waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
       themeRegistryState: () => DEFAULT_THEME_REGISTRY,
       selectedWorkflowId: () => null,
@@ -588,6 +592,7 @@ test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", ()
     }],
     externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
     slicesState: () => [],
+    providerAccountsState: () => [],
     waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
     themeRegistryState: () => DEFAULT_THEME_REGISTRY,
     selectedWorkflowId: () => null,
@@ -625,6 +630,82 @@ test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", ()
     focused: false,
     selectable: true,
   })
+})
+
+test("buildCliAutomationSnapshot shows the selected account and provider profiles after connect", () => {
+  const catalog = fallbackProviderCatalog()
+  const snapshot = buildCliAutomationSnapshot({
+    workspaceScreenMode: () => "agents",
+    workflowScreenActive: () => false,
+    daemonDisconnected: () => false,
+    statusLine: () => "ready",
+    sessionState: () => ({
+      id: "session-1",
+      workspace_id: "/repo",
+      worktree_id: "/repo",
+      focused_agent_id: null,
+      agents: [],
+      active_interactions: [],
+      workflows: [],
+      workflow_runs: [],
+    }) as unknown as RuntimeSession,
+    focusedAgentId: () => null,
+    agentActivityLabels: () => ({}),
+    streamingAgentId: () => null,
+    agentBusyLatch: () => false,
+    isAttached: () => false,
+    waitingRoomState: () => createWaitingRoomState([], catalog, "opencode", "default", "", "opencode", DEFAULT_THEME_REGISTRY),
+    availableSessions: () => [],
+    providerCatalogState: () => catalog,
+    waitingRoomCloudNotice: () => null,
+    waitingRoomInventoryStatus: () => "ready",
+    relayStatusState: () => ({
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+    }) as RelayStatusView,
+    remoteMachinesState: () => [],
+    remoteKernelsState: () => [],
+    terminalsState: () => [],
+    externalProviderSessionsState: () => [],
+    externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
+    slicesState: () => [],
+    providerAccountsState: () => [1, 2, 3, 4].map((index) => ({
+      owner_user_id: "local",
+      profile_id: `profile-${index}`,
+      provider: "opencode",
+      label: `opencode-${index}`,
+      origin: "linked",
+      is_default: index === 1,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: `profile-${index}`,
+        provider: "opencode",
+        availability: "available",
+        source: "test",
+      },
+    }) as ProviderAccountProfile),
+    waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
+    themeRegistryState: () => DEFAULT_THEME_REGISTRY,
+    selectedWorkflowId: () => null,
+    selectedWorkflowNodeId: () => null,
+    workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
+    workspaceShellEntries: () => [],
+    transcriptEntries: () => [],
+    visibleTranscriptAgentId: () => null,
+    agentPaneEntries: () => ({}),
+    footerFlash: () => null,
+    interactionChoiceSelection: () => 0,
+    interactionCustomReply: () => "",
+    interactionCustomEditing: () => false,
+  })
+
+  const rows = (snapshot.waitingRoom as { rows: Array<Record<string, unknown>> }).rows
+  assert.equal(rows.find((row) => row.id === "account")?.value, "opencode-1")
+  assert.equal(rows.find((row) => row.id === "provider-accounts")?.value, "4 profiles · Press Enter")
 })
 
 function pickExternalFields(entry: Record<string, unknown> | undefined): Record<string, unknown> {

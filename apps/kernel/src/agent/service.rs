@@ -244,6 +244,83 @@ impl AgentService {
         self.store.insert(agent)
     }
 
+    pub(crate) fn materialize_workflow_runtime_agent(
+        &mut self,
+        agent: AgentInstance,
+        session_id: &str,
+        worktree_id: &str,
+    ) -> AgentInstance {
+        // A workflow instance copy must never reuse the source agent's visible
+        // alias; allocate a deterministic user-facing alias by appending the
+        // next available numeric suffix (e.g. `pr-reviewer` -> `pr-reviewer-2`).
+        // Runtime ids/refs stay internal and are freshly minted below.
+        let copied_alias = agent
+            .alias()
+            .map(|source_alias| self.next_workflow_copy_alias(session_id, source_alias));
+        let mut agent = agent.materialized_for_workflow_runtime(
+            self.store.next_agent_id(),
+            generate_agent_ref(),
+            session_id,
+            worktree_id,
+        );
+        if let Some(copied_alias) = copied_alias {
+            agent.set_alias(Some(copied_alias));
+        }
+        self.store.insert(agent)
+    }
+
+    /// Allocate the next collision-free visible alias for a workflow instance
+    /// copy of `base_alias` within `session_id`. Copies start at `-2` and skip
+    /// any alias already present in the session (including the source alias and
+    /// earlier copies).
+    fn next_workflow_copy_alias(&self, session_id: &str, base_alias: &str) -> String {
+        let taken: std::collections::HashSet<String> = self
+            .store
+            .get_by_session(session_id)
+            .into_iter()
+            .filter_map(|agent| agent.alias().map(str::to_string))
+            .collect();
+        let mut suffix: u64 = 2;
+        loop {
+            let candidate = format!("{base_alias}-{suffix}");
+            if !taken.contains(&candidate) {
+                return candidate;
+            }
+            suffix = suffix.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn remove_workflow_runtime_agent(
+        &mut self,
+        agent_id: &str,
+    ) -> Option<AgentInstance> {
+        let agent = self.store.get(agent_id)?;
+        if agent.visible_in_freeform() || agent.is_processing() {
+            return None;
+        }
+        self.store.remove(agent_id)
+    }
+
+    pub(crate) fn destroy_workflow_runtime_agent(
+        &mut self,
+        agent_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if agent.visible_in_freeform() || agent.is_processing() {
+            return Err(DaemonError::LocalTransport {
+                operation: "cleanup workflow runtime instance",
+                message: format!("runtime agent `{agent_id}` remained active"),
+            });
+        }
+        self.destroy_agent(agent_id, sessions)
+    }
+
     /// Create default agent for a new session
     pub fn create_default_agent(
         &mut self,
@@ -305,14 +382,23 @@ impl AgentService {
                             .any(|agent| agent.id() == focused_agent_id)
                     });
 
-            // If canonical focus now points at a removed/missing agent, focus the first remaining agent.
+            // Runtime workflow copies have no Freeform pane. If canonical focus
+            // disappears, prefer a visible agent or leave the session unfocused.
             if was_focused || focus_is_stale_after_destroy {
-                if let Some(first) = remaining_agents.first() {
-                    if let Some(stored) = self.store.get_mut(first.id()) {
-                        stored.set_state(stored.state().with_focus(true));
+                let replacement = remaining_agents
+                    .iter()
+                    .find(|agent| agent.visible_in_freeform())
+                    .map(|agent| agent.id().to_string());
+                for agent in &remaining_agents {
+                    if let Some(stored) = self.store.get_mut(agent.id()) {
+                        stored.set_state(
+                            stored
+                                .state()
+                                .with_focus(replacement.as_deref() == Some(stored.id())),
+                        );
                     }
-                    sessions.set_focused_agent(&session_id, Some(first.id().to_string()))?;
                 }
+                sessions.set_focused_agent(&session_id, replacement)?;
             }
         } else {
             // No agents left, clear focused agent
@@ -320,6 +406,44 @@ impl AgentService {
         }
 
         Ok(agent)
+    }
+
+    pub(crate) fn repair_stale_session_focus(
+        &mut self,
+        session_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<bool, DaemonError> {
+        let focused_agent_id = sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .map(str::to_string);
+        let agents = self.store.get_by_session(session_id);
+        let visible_agents = agents
+            .iter()
+            .filter(|agent| agent.visible_in_freeform())
+            .collect::<Vec<_>>();
+        let focus_is_valid = match focused_agent_id.as_deref() {
+            Some(focused_agent_id) => visible_agents
+                .iter()
+                .any(|agent| agent.id() == focused_agent_id),
+            None => visible_agents.is_empty(),
+        };
+        if focus_is_valid {
+            return Ok(false);
+        }
+
+        let replacement = visible_agents.first().map(|agent| agent.id().to_string());
+        for agent in agents {
+            if let Some(stored) = self.store.get_mut(agent.id()) {
+                stored.set_state(
+                    stored
+                        .state()
+                        .with_focus(replacement.as_deref() == Some(stored.id())),
+                );
+            }
+        }
+        sessions.set_focused_agent(session_id, replacement)?;
+        Ok(true)
     }
 
     /// Focus an agent (tap navigation)
@@ -477,6 +601,21 @@ impl AgentService {
         )
     }
 
+    pub(crate) fn set_agent_provider_resume_state(
+        &mut self,
+        agent_id: &str,
+        resume_state: ProviderResumeState,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_provider_resume_state(resume_state);
+        Ok(agent.clone())
+    }
+
     pub fn set_agent_runtime_profile_with_account_profile(
         &mut self,
         agent_id: &str,
@@ -595,6 +734,24 @@ impl AgentService {
             agent.model().map(str::to_string),
             agent.effort().map(str::to_string),
         );
+        Ok(agent.clone())
+    }
+
+    pub fn set_agent_primary_profile_snapshot(
+        &mut self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        account_profile: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_primary_profile_snapshot(provider, model, effort, account_profile);
         Ok(agent.clone())
     }
 
@@ -993,5 +1150,309 @@ fn normalized_agent_alias_key(alias: &str) -> String {
 impl Default for AgentService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod workflow_copy_alias_tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    use crate::session::CreateSessionRequest;
+
+    fn insert_source(service: &mut AgentService, session_id: &str, alias: &str) -> AgentInstance {
+        let id = service.store.next_agent_id();
+        let mut agent = AgentInstance::new(
+            id,
+            generate_agent_ref(),
+            session_id,
+            Some(alias.to_string()),
+            "codex",
+            Some("gpt-5-codex".to_string()),
+            Some("high".to_string()),
+            Some("wt-source".to_string()),
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_execution_mode_override(Some(AgentExecutionMode::Build));
+        agent.set_permission_level_override(Some(AgentPermissionLevel::Yolo));
+        agent.set_account_profile(Some("acct-primary".to_string()));
+        agent.grant_mcp("home_browser");
+        agent.grant_skill("dataviz");
+        service.store.insert(agent)
+    }
+
+    #[test]
+    fn sequential_copies_receive_incrementing_numeric_suffixes() {
+        let mut service = AgentService::new();
+        let source = insert_source(&mut service, "s1", "pr-reviewer");
+
+        let copy_a = service.materialize_workflow_runtime_agent(source.clone(), "s1", "wt-a");
+        let copy_b = service.materialize_workflow_runtime_agent(source.clone(), "s1", "wt-b");
+
+        assert_eq!(copy_a.alias(), Some("pr-reviewer-2"));
+        assert_eq!(copy_b.alias(), Some("pr-reviewer-3"));
+        // Runtime ids/refs stay internal and are freshly minted per copy.
+        assert_ne!(copy_a.id(), source.id());
+        assert_ne!(copy_a.agent_ref(), source.agent_ref());
+        assert_ne!(copy_a.id(), copy_b.id());
+        assert!(!copy_a.visible_in_freeform());
+    }
+
+    #[test]
+    fn copies_skip_pre_existing_alias_collisions() {
+        let mut service = AgentService::new();
+        let source = insert_source(&mut service, "s2", "pr-reviewer");
+        // A pre-existing agent already occupies the first suffixed alias.
+        let _collision = insert_source(&mut service, "s2", "pr-reviewer-2");
+
+        let copy = service.materialize_workflow_runtime_agent(source, "s2", "wt");
+
+        assert_eq!(copy.alias(), Some("pr-reviewer-3"));
+    }
+
+    #[test]
+    fn multiple_agents_get_independent_suffix_sequences() {
+        let mut service = AgentService::new();
+        let reviewer = insert_source(&mut service, "s3", "pr-reviewer");
+        let tester = insert_source(&mut service, "s3", "tester");
+
+        let reviewer_copy = service.materialize_workflow_runtime_agent(reviewer, "s3", "wt");
+        let tester_copy = service.materialize_workflow_runtime_agent(tester, "s3", "wt");
+
+        assert_eq!(reviewer_copy.alias(), Some("pr-reviewer-2"));
+        assert_eq!(tester_copy.alias(), Some("tester-2"));
+    }
+
+    #[test]
+    fn copy_preserves_provider_model_effort_permissions_and_extensions() {
+        let mut service = AgentService::new();
+        let source = insert_source(&mut service, "s4", "pr-reviewer");
+
+        let copy = service.materialize_workflow_runtime_agent(source.clone(), "s4", "wt");
+
+        assert_eq!(copy.provider(), source.provider());
+        assert_eq!(copy.model(), source.model());
+        assert_eq!(copy.effort(), source.effort());
+        assert_eq!(
+            copy.execution_mode_override(),
+            source.execution_mode_override()
+        );
+        assert_eq!(
+            copy.permission_level_override(),
+            source.permission_level_override()
+        );
+        assert_eq!(copy.account_profile(), source.account_profile());
+        assert_eq!(copy.extension_grants(), source.extension_grants());
+        // The copy is pinned to its own instance worktree, not the source's.
+        assert_eq!(copy.worktree_id(), Some("wt"));
+        assert_ne!(copy.worktree_id(), source.worktree_id());
+        // The visible alias is the only identity that changes.
+        assert_ne!(copy.alias(), source.alias());
+    }
+
+    #[test]
+    fn durable_reconstruction_continues_the_suffix_sequence() {
+        // Simulate a restart where an earlier copy (pr-reviewer-2) has been
+        // restored into the session store from durable state. A fresh copy must
+        // continue from the next available suffix rather than reuse it.
+        let mut service = AgentService::new();
+        let source = insert_source(&mut service, "s5", "pr-reviewer");
+
+        let restored = service.materialize_workflow_runtime_agent(source.clone(), "s5", "wt");
+        assert_eq!(restored.alias(), Some("pr-reviewer-2"));
+
+        let next = service.materialize_workflow_runtime_agent(source, "s5", "wt");
+        assert_eq!(next.alias(), Some("pr-reviewer-3"));
+    }
+
+    #[test]
+    fn agents_without_a_source_alias_stay_unaliased() {
+        let mut service = AgentService::new();
+        let id = service.store.next_agent_id();
+        let source = AgentInstance::new(
+            id,
+            generate_agent_ref(),
+            "s6",
+            None,
+            "codex",
+            None,
+            None,
+            Some("wt".to_string()),
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let source = service.store.insert(source);
+
+        let copy = service.materialize_workflow_runtime_agent(source, "s6", "wt");
+
+        assert_eq!(copy.alias(), None);
+    }
+
+    #[test]
+    fn destroying_a_focused_runtime_copy_repairs_canonical_session_focus() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let source = insert_source(&mut service, session.id(), "reviewer");
+        let copy = service.materialize_workflow_runtime_agent(
+            source.clone(),
+            session.id(),
+            "runtime-worktree",
+        );
+        service
+            .focus_agent(session.id(), copy.id(), &mut sessions)
+            .expect("runtime copy should focus");
+
+        service
+            .destroy_workflow_runtime_agent(copy.id(), &mut sessions)
+            .expect("idle runtime copy should be destroyed");
+
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id(),
+            Some(source.id())
+        );
+        assert_eq!(
+            service
+                .get_focused_agent(session.id())
+                .expect("remaining source should focus")
+                .id(),
+            source.id()
+        );
+    }
+
+    #[test]
+    fn stale_restored_focus_repairs_to_a_visible_agent() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let source = insert_source(&mut service, session.id(), "reviewer");
+        let copy = service.materialize_workflow_runtime_agent(
+            source.clone(),
+            session.id(),
+            "runtime-worktree",
+        );
+        sessions
+            .set_focused_agent(session.id(), Some(copy.id().to_string()))
+            .expect("hidden runtime focus should be stored");
+
+        assert!(service
+            .repair_stale_session_focus(session.id(), &mut sessions)
+            .expect("stale focus should repair"));
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id(),
+            Some(source.id())
+        );
+        assert_eq!(
+            service
+                .get_agent(source.id())
+                .expect("source should remain")
+                .state(),
+            AgentState::Focused
+        );
+        assert_ne!(
+            service
+                .get_agent(copy.id())
+                .expect("copy should remain")
+                .state(),
+            AgentState::Focused
+        );
+        assert!(!service
+            .repair_stale_session_focus(session.id(), &mut sessions)
+            .expect("valid focus should stay unchanged"));
+    }
+
+    #[test]
+    fn destroying_a_focused_runtime_copy_skips_remaining_hidden_copies() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let first_hidden = insert_source(&mut service, session.id(), "legacy-runtime");
+        service
+            .store
+            .get_mut(first_hidden.id())
+            .expect("first runtime agent should exist")
+            .set_visible_in_freeform(false);
+        let second_hidden = service.materialize_workflow_runtime_agent(
+            first_hidden.clone(),
+            session.id(),
+            "runtime-worktree-2",
+        );
+        let visible = insert_source(&mut service, session.id(), "reviewer");
+        service
+            .focus_agent(session.id(), first_hidden.id(), &mut sessions)
+            .expect("runtime agent should focus for the legacy-state fixture");
+
+        service
+            .destroy_workflow_runtime_agent(first_hidden.id(), &mut sessions)
+            .expect("focused runtime copy should be destroyed");
+
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id(),
+            Some(visible.id())
+        );
+        assert_eq!(
+            service
+                .get_agent(visible.id())
+                .expect("visible agent should remain")
+                .state(),
+            AgentState::Focused
+        );
+        assert_ne!(
+            service
+                .get_agent(second_hidden.id())
+                .expect("hidden copy should remain")
+                .state(),
+            AgentState::Focused
+        );
+    }
+
+    #[test]
+    fn repair_clears_focus_when_only_hidden_runtime_agents_remain() {
+        let mut service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let hidden = insert_source(&mut service, session.id(), "legacy-runtime");
+        service
+            .store
+            .get_mut(hidden.id())
+            .expect("runtime agent should exist")
+            .set_visible_in_freeform(false);
+        service
+            .focus_agent(session.id(), hidden.id(), &mut sessions)
+            .expect("legacy hidden focus should be stored");
+
+        assert!(service
+            .repair_stale_session_focus(session.id(), &mut sessions)
+            .expect("hidden-only focus should repair"));
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should remain")
+                .focused_agent_id(),
+            None
+        );
+        assert_ne!(
+            service
+                .get_agent(hidden.id())
+                .expect("hidden agent should remain")
+                .state(),
+            AgentState::Focused
+        );
     }
 }

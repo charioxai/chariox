@@ -455,6 +455,16 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(super) fn mark_workflow_fresh_context(
+        &mut self,
+        run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.mark_workflow_fresh_context(workflow_node_run_id);
+        Ok(run.clone())
+    }
+
     fn adapter_for(
         &self,
         adapter_key: &str,

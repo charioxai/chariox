@@ -36,7 +36,7 @@ impl<'a> ProviderTerminalInput<'a> {
         )
     }
 
-    pub(crate) fn send_remote_provider_input(
+    pub(crate) fn send_unattached_provider_input(
         &mut self,
         session_id: &str,
         provider_run_id: &str,

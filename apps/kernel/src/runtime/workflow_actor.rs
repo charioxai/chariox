@@ -137,6 +137,7 @@ impl WorkflowRuntime {
         if matches!(
             request,
             LocalDaemonRequest::MaterializeWorkflowPublication(_)
+                | LocalDaemonRequest::ActivateWorkflowPublicationRuntime(_)
         ) {
             return Ok(session_id);
         }
@@ -374,6 +375,9 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         }
         LocalDaemonRequest::TestWorkflowEventBinding(request) => request.session_id.clone(),
         LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
+            format!("publication-materialize:{}", request.publication_id)
+        }
+        LocalDaemonRequest::ActivateWorkflowPublicationRuntime(request) => {
             format!("publication-materialize:{}", request.publication_id)
         }
         LocalDaemonRequest::CreateWorkflowEndpoint(request) => request.session_id.clone(),

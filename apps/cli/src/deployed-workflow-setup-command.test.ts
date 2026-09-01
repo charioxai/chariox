@@ -18,6 +18,7 @@ import type {
 import type { RelayCloudProfile } from "./preferences.js"
 
 const sourceDigest = `sha256:${"a".repeat(64)}`
+const callerClaimsPublicKeyPem = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n"
 
 test("TUI deployment setup publishes a draft and binds a local runtime", async () => {
   const fixture = await setupFixture({ mode: "local_runtime", bindStates: ["running"] })
@@ -47,6 +48,28 @@ test("TUI deployment setup publishes a draft and binds a local runtime", async (
     assert.deepEqual(fixture.cloud.setup?.configuration.publication.parser, { kind: "query_params" })
     assert.equal(fixture.cloud.promotionKeys[0], fixture.cloud.setup?.operationKeys.runtime)
     assert.equal(fixture.cloud.checkpoints.at(-1)?.kind, "runtime_bound")
+    assert.deepEqual(fixture.cloud.localBackendUpdates, [{
+      accountId: "account-1",
+      status: "ready",
+      runtimeSessionId: "session-1",
+      backendTarget: {
+        kind: "local_runtime",
+        url: "https://relay.example.test/display/deployment-1/",
+        updated_at_ms: fixture.cloud.localBackendUpdates[0]?.backendTarget.updated_at_ms,
+      },
+    }])
+    assert.deepEqual(fixture.bindInputs, [{
+      session_id: "session-1",
+      publication_ref: "publication-1",
+      setup_id: "setup-1",
+      operation_key: "setup-1:runtime",
+      deployment_id: "deployment-1",
+      environment_id: "environment-1",
+      release_id: "release-1",
+      package_digest: fixture.cloud.setup?.packageDigest,
+      desired_revision: 1,
+      caller_claims_public_key_pem: callerClaimsPublicKeyPem,
+    }])
   } finally {
     await fixture.cleanup()
   }
@@ -154,6 +177,52 @@ test("TUI local setup pauses for a missing relay and resumes idempotently", asyn
   }
 })
 
+test("TUI local setup reports a bound runtime registration failure as safely resumable", async () => {
+  const fixture = await setupFixture({ mode: "local_runtime", localBackendAvailable: false })
+  try {
+    await assert.rejects(
+      executeDeploymentSetupCommand(profile, [
+        "publication", "publication-1",
+        "--slug", "backend-resume",
+        "--mode", "local-runtime",
+      ], fixture.runtime),
+      /runtime is bound.*resume this setup/i,
+    )
+    assert.equal(fixture.cloud.setup?.status, "active")
+    assert.equal(fixture.cloud.setup?.stage, "runtime")
+
+    fixture.cloud.localBackendAvailable = true
+    const resumed = await executeDeploymentSetupCommand(profile, [
+      "resume", fixture.cloud.setup!.id,
+    ], fixture.runtime)
+    assert.equal(resumed.footer, "deployment backend-resume ready")
+    assert.equal(fixture.cloud.localBackendUpdates.length, 1)
+  } finally {
+    await fixture.cleanup()
+  }
+})
+
+test("TUI local setup reports an invalid bound runtime without calling it resumable", async () => {
+  const fixture = await setupFixture({ mode: "local_runtime", omitRuntimeSessionId: true })
+  try {
+    await assert.rejects(
+      executeDeploymentSetupCommand(profile, [
+        "publication", "publication-1",
+        "--slug", "invalid-runtime-binding",
+        "--mode", "local-runtime",
+      ], fixture.runtime),
+      (error: unknown) => {
+        assert.match(String(error), /deployment runtime session ID/i)
+        assert.doesNotMatch(String(error), /resume this setup/i)
+        return true
+      },
+    )
+    assert.equal(fixture.cloud.localBackendUpdates.length, 0)
+  } finally {
+    await fixture.cleanup()
+  }
+})
+
 test("TUI deployment setup rejects package paths that escape its temporary root", async () => {
   const escapeName = `chariox-setup-escape-${randomUUID()}`
   const fixture = await setupFixture({ mode: "hosted_container", unsafePackagePath: `../${escapeName}` })
@@ -179,7 +248,9 @@ async function setupFixture(options: {
   readonly mode: "local_runtime" | "hosted_container"
   readonly credentialsReady?: boolean
   readonly bindStates?: Array<"running" | "waiting_for_relay">
+  readonly localBackendAvailable?: boolean
   readonly unsafePackagePath?: string
+  readonly omitRuntimeSessionId?: boolean
 }) {
   const packageRoot = await deployedWorkflowPackageFixture()
   const prepared = await preparePublicationReleasePackage(packageRoot)
@@ -195,8 +266,13 @@ async function setupFixture(options: {
   })))
   if (options.unsafePackagePath) packageFiles[0] = { ...packageFiles[0]!, path: options.unsafePackagePath }
 
-  const cloud = new FakeDeploymentCloud(options.mode, options.credentialsReady ?? true)
+  const cloud = new FakeDeploymentCloud(
+    options.mode,
+    options.credentialsReady ?? true,
+    options.localBackendAvailable ?? true,
+  )
   const kernelVariants: string[] = []
+  const bindInputs: Record<string, unknown>[] = []
   const bindStates = [...(options.bindStates ?? ["running"])]
   const publication = publicationFixture()
   const sendKernelRequest = async (request: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -208,7 +284,7 @@ async function setupFixture(options: {
       case "ExportWorkflowPublicationPackage": return {
         WorkflowPublicationPackageExported: {
           publication,
-          package_version: 3,
+          package_version: 4,
           package_digest: prepared.packageDigest,
           package_archive_base64: prepared.artifact.archiveBase64,
           package_files: packageFiles,
@@ -216,10 +292,13 @@ async function setupFixture(options: {
       }
       case "BindWorkflowPublicationDeployment": {
         const input = request.BindWorkflowPublicationDeployment as Record<string, unknown>
+        bindInputs.push(input)
         return {
           WorkflowPublicationDeploymentBound: {
             ...input,
             state: bindStates.shift() ?? "running",
+            ...(options.omitRuntimeSessionId ? {} : { runtime_session_id: "session-1" }),
+            tunnel_url: "https://relay.example.test/display/deployment-1/",
           },
         }
       }
@@ -236,6 +315,7 @@ async function setupFixture(options: {
   globalThis.fetch = cloud.fetch
   return {
     cloud,
+    bindInputs,
     kernelVariants,
     runtime,
     cleanup: async () => {
@@ -248,9 +328,16 @@ async function setupFixture(options: {
 class FakeDeploymentCloud {
   setup: DeploymentSetup | null = null
   credentialsReady: boolean
+  localBackendAvailable: boolean
   readonly checkpoints: DeploymentSetupCheckpoint[] = []
   readonly promotionKeys: string[] = []
   readonly audienceMutations: Record<string, unknown>[] = []
+  readonly localBackendUpdates: Array<{
+    accountId: string
+    status: string
+    runtimeSessionId: string
+    backendTarget: { kind: string; url: string; updated_at_ms: number }
+  }> = []
   private audience = {
     mode: "restricted" as "public" | "restricted",
     defaultRoles: [] as string[],
@@ -280,8 +367,10 @@ class FakeDeploymentCloud {
   constructor(
     private readonly mode: "local_runtime" | "hosted_container",
     credentialsReady: boolean,
+    localBackendAvailable: boolean,
   ) {
     this.credentialsReady = credentialsReady
+    this.localBackendAvailable = localBackendAvailable
   }
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -318,6 +407,9 @@ class FakeDeploymentCloud {
     }
     if (url.pathname === "/deployment-projects" && method === "GET") {
       return jsonResponse({ projects: [], portfolio: [] })
+    }
+    if (url.pathname === "/publication-caller-claims/verifier" && method === "GET") {
+      return jsonResponse({ algorithm: "Ed25519", publicKeyPem: callerClaimsPublicKeyPem })
     }
     if (url.pathname === "/deployment-projects" && method === "POST") {
       return jsonResponse({ state: projectState(this.requiredSetup()) }, 201)
@@ -362,7 +454,7 @@ class FakeDeploymentCloud {
         status: "verified",
         packageId: body?.packageId,
         packageDigest: body?.packageDigest,
-        packageVersion: 3,
+        packageVersion: 4,
         createdAt: timestamp,
         updatedAt: timestamp,
       } }, 201, { "x-request-id": "release-request" })
@@ -390,6 +482,13 @@ class FakeDeploymentCloud {
         },
         environment: environment(this.mode),
       }, 202, { "x-request-id": "promotion-request" })
+    }
+    if (url.pathname === "/publication-deployments/deployment-1/local-backend" && method === "POST") {
+      if (!this.localBackendAvailable) {
+        return jsonResponse({ error: { message: "local backend unavailable" } }, 503)
+      }
+      this.localBackendUpdates.push(body as unknown as (typeof this.localBackendUpdates)[number])
+      return jsonResponse({ deployment: { id: "deployment-1" } })
     }
     return jsonResponse({ error: { message: `unexpected ${method} ${url.pathname}` } }, 500)
   }
@@ -528,7 +627,7 @@ function environment(mode: "local_runtime" | "hosted_container") {
     desiredRevision: 1,
     observedRevision: 0,
     operationalDeploymentId: "deployment-1",
-    publicUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/deployments/demo",
+    publicUrl: "https://staging.chariox.com/deployments/demo",
     createdAt: timestamp,
     updatedAt: timestamp,
   }
@@ -592,9 +691,9 @@ function jsonResponse(value: unknown, status = 200, headers?: HeadersInit): Resp
 }
 
 const profile: RelayCloudProfile = {
-  apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+  apiUrl: "https://staging.chariox.com",
   email: "user@example.test",
-  relayUrl: "wss://relay.scalingo.test",
+  relayUrl: "wss://relay.chariox.test",
   accountId: "account-1",
   userId: "user-1",
   accountSlug: "account",

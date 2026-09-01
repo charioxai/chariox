@@ -5,7 +5,9 @@
 
 use super::*;
 
+mod materialization;
 mod package;
+mod reconfiguration;
 
 use package::{
     workflow_publication_package_archive_base64, workflow_publication_package_digest,
@@ -160,30 +162,42 @@ impl KernelRuntimeOwnedState {
             &request.target_session_id,
             &request.target_publication_ref,
         )?;
-        let target_session = self.workflow_session(&request.target_session_id)?;
-        if request.source_session_id != request.target_session_id {
-            let source_session = self.workflow_session(&request.source_session_id)?;
-            if let Err(error) = self
+        let target_session = if request.source_session_id != request.target_session_id {
+            let persist_result = self
                 .durable_state_store
-                .persist_workflow_runtime_sessions_transition(
-                    &[source_session, target_session.clone()],
-                    "workflow_event_binding_transferred",
-                )
-            {
-                let mut sessions = self.session_store.write();
-                sessions.restore_session(source_before);
-                if let Some(target_before) = target_before {
-                    sessions.restore_session(target_before);
+                .with_workflow_runtime_transition_lock(|| {
+                    let source_session = self.workflow_session(&request.source_session_id)?;
+                    let target_session = self.workflow_session(&request.target_session_id)?;
+                    self.durable_state_store
+                        .persist_workflow_runtime_sessions_transition(
+                            &[source_session, target_session.clone()],
+                            "workflow_event_binding_transferred",
+                        )?;
+                    Ok(target_session)
+                });
+            match persist_result {
+                Ok(target_session) => target_session,
+                Err(error) => {
+                    let mut sessions = self.session_store.write();
+                    sessions.restore_session(source_before);
+                    if let Some(target_before) = target_before {
+                        sessions.restore_session(target_before);
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
-        } else if let Err(error) = self.persist_workflow_runtime_session(
-            &request.source_session_id,
-            "workflow_event_binding_transferred",
-        ) {
-            self.session_store.write().restore_session(source_before);
-            return Err(error);
-        }
+        } else {
+            match self.persist_workflow_runtime_session(
+                &request.source_session_id,
+                "workflow_event_binding_transferred",
+            ) {
+                Ok(target_session) => target_session,
+                Err(error) => {
+                    self.session_store.write().restore_session(source_before);
+                    return Err(error);
+                }
+            }
+        };
         Ok(LocalDaemonResponse::WorkflowEventBindingTransferred {
             binding,
             session: target_session,
@@ -380,10 +394,23 @@ impl KernelRuntimeOwnedState {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let current_agents = self
+            .agent_store
+            .read()
+            .list_agents()
+            .into_iter()
+            .filter(|agent| agent.session_id() == request.session_id)
+            .collect::<Vec<_>>();
+        let extension_requirements =
+            crate::workflow_publication_requirements::capture_workflow_publication_requirements(
+                &snapshot.workflow,
+                &current_agents,
+            )?;
         let package_files = workflow_publication_package_files(
             &publication,
             &snapshot,
             &event_bindings,
+            &extension_requirements,
             request.kernel_url.as_deref(),
             request.agent_app.as_ref(),
             request.agent_app_assets_dir.as_deref(),
@@ -473,6 +500,13 @@ impl KernelRuntimeOwnedState {
         request: crate::local::MaterializeWorkflowPublicationRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let runtime_key = materialization::normalized_runtime_key(request.runtime_key.as_deref())?;
+        // A retry must not race the first creation into a second session. This
+        // lock also serializes the existing independent instance provisioning.
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if request.snapshot.schema_version != 1 {
             return Err(DaemonError::LocalTransport {
                 operation: "materialize workflow publication",
@@ -496,6 +530,17 @@ impl KernelRuntimeOwnedState {
                 message: "workflow snapshot is missing source_session".to_string(),
             });
         };
+        if let Some(key) = runtime_key.as_deref() {
+            if let Some(restored) = self.workflow_resume_publication_materialization(
+                key,
+                &request.publication_id,
+                &source_snapshot_digest,
+                &source_snapshot,
+                caller_user_id,
+            )? {
+                return Ok(restored);
+            }
+        }
         let workflow_id = request.snapshot.workflow.id().to_string();
         if let Some(endpoint) = request.snapshot.endpoint.as_ref() {
             if !request
@@ -669,7 +714,7 @@ impl KernelRuntimeOwnedState {
             request.snapshot.queues,
             request.snapshot.schedules,
         )?;
-        let publication = crate::session::WorkflowPublicationDefinition::new_immutable(
+        let mut publication = crate::session::WorkflowPublicationDefinition::new_immutable(
             request.publication_id.clone(),
             session_id.clone(),
             workflow_id.clone(),
@@ -692,12 +737,36 @@ impl KernelRuntimeOwnedState {
             None,
             caller_user_id.to_string(),
         );
+        if let Some(key) = runtime_key {
+            publication.set_runtime_materialization(
+                crate::session::WorkflowPublicationRuntimeMaterialization {
+                    key,
+                    agent_id_map: agent_id_map.clone(),
+                },
+            );
+        }
         self.session_store.write().restore_workflow_publication(
             &session_id,
             publication,
             Some(source_snapshot),
         )?;
-        let session = self.workflow_session(&session_id)?;
+        let session = self.session_snapshot_without_projection_update(&session_id)?;
+        // Workflow hot-state writes do not create durable sessions or agents.
+        // Commit their creation together before accepting the materialization;
+        // a retry after a crash can then recover the same runtime identity.
+        if let Err(error) = self.durable_state_store.append_event(
+            "workflow.publication.materialized",
+            Some(session_id.clone()),
+            serde_json::json!({ "session": &session }),
+        ) {
+            self.agent_store.remove_session_agents(&session_id);
+            let _ = self
+                .session_store
+                .write()
+                .delete_session_with_project_cleanup(&session_id);
+            self.session_projection.remove(&session_id);
+            return Err(error);
+        }
         Ok(LocalDaemonResponse::WorkflowPublicationMaterialized {
             publication_id: request.publication_id,
             session,

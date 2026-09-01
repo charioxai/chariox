@@ -783,6 +783,7 @@ async fn workflow_design_ops_preserve_agent_ownership_and_mutation_authority_inn
                 id: "endpoint-user-2".to_string(),
                 entry_node_id: "node-first".to_string(),
                 alias: Some("user-two-entry".to_string()),
+                max_instances: None,
             },
             position: None,
         },

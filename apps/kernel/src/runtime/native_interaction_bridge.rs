@@ -101,12 +101,14 @@ fn remote_native_interaction_response_timeout(
 pub(crate) fn install_provider_native_interaction_bridge(
     state: KernelRuntimeState,
     provider_store: &ProviderProcessServiceStore,
-) {
-    if let Ok(handle) = Handle::try_current() {
-        provider_store.set_native_interaction_bridge(Arc::new(
-            RuntimeStateNativeInteractionBridge { handle, state },
-        ));
-    }
+) -> Option<Arc<dyn ProviderNativeInteractionBridge>> {
+    let handle = Handle::try_current().ok()?;
+    let bridge: Arc<dyn ProviderNativeInteractionBridge> =
+        Arc::new(RuntimeStateNativeInteractionBridge { handle, state });
+    // The router owns this bridge. A strong reference in the provider store
+    // would retain the runtime, which itself owns that same provider store.
+    provider_store.set_native_interaction_bridge(bridge.clone());
+    Some(bridge)
 }
 
 pub(crate) async fn execute_native_provider_interaction_request(
@@ -229,5 +231,27 @@ mod tests {
             remote_native_interaction_response_timeout(&interaction(None), 42_000),
             Duration::from_secs(42)
         );
+    }
+
+    #[tokio::test]
+    async fn native_interaction_bridge_releases_runtime_after_last_router_drops() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let app = Arc::new(tokio::sync::Mutex::new(
+            crate::app::DaemonApp::bootstrap(config.clone()).unwrap(),
+        ));
+        let weak_app = Arc::downgrade(&app);
+        let router =
+            crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(app, 1);
+        let clone = router.clone();
+        assert!(crate::app::DaemonApp::bootstrap(config.clone()).is_err());
+        drop(router);
+        assert!(weak_app.upgrade().is_some());
+        assert!(crate::app::DaemonApp::bootstrap(config.clone()).is_err());
+        drop(clone);
+        assert!(
+            weak_app.upgrade().is_none(),
+            "permission bridge must not retain its own runtime"
+        );
+        assert!(crate::app::DaemonApp::bootstrap(config).is_ok());
     }
 }

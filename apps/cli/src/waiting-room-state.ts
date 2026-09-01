@@ -38,6 +38,13 @@ import {
   normalizeWaitingRoomProjectSelectionId,
 } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import {
+  managedProviderAccountIsTransferable,
+  normalizeWaitingRoomManagedDraft,
+  waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectRepositoryOptions,
+} from "./waiting-room-managed-environments.js"
+import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -62,6 +69,15 @@ export function createWaitingRoomState(
       workspaceLiveSyncMode: "off",
       selectedMachineRef: "local",
       selectedKernelRef: "local",
+      managedKernelContext: "empty",
+      managedDevelopmentMode: "empty",
+      managedRepositoryIndex: 0,
+      managedProviderAccountSource: "selected_account",
+      managedProviderAccountIndex: 0,
+      managedGitCredentialSource: "none",
+      managedAutoStopPreset: "idle_15m",
+      managedCustomMinimumRuntimeSeconds: 0,
+      managedCustomIdleDelaySeconds: 900,
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
@@ -98,11 +114,14 @@ export function normalizeWaitingRoomState(
   const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
+    projectSelectionId: state.projectSelectionId,
+    developmentMode: state.managedDevelopmentMode,
+    repositorySelection: state.managedRepositorySelection,
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
   })
   const providerId = normalizeBackendProvider(state.providerId)
-  const providerAccounts = (remote.providerAccounts ?? []).filter((profile) => profile.provider === providerId)
+  const providerAccounts = providerAccountsForProvider(remote.providerAccounts, providerId)
   const accountProfileId = providerAccounts.some((profile) => profile.profile_id === state.accountProfileId)
     ? state.accountProfileId ?? "default"
     : providerAccounts.find((profile) => profile.is_default)?.profile_id
@@ -115,7 +134,16 @@ export function normalizeWaitingRoomState(
     state.sliceDisplayMode,
     slices,
   )
-  const focus = (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
+  const configuresManaged = waitingRoomConfiguresNewManagedMachine(placement.selectedMachineRef)
+  const configuresSliceDevelopment = !configuresManaged
+    && Boolean(sliceSelection.sliceSelectionId && sliceSelection.sliceSelectionId !== "none")
+  const sliceDevelopmentFocus = state.focus === "managed-development"
+    || state.focus === "managed-repositories"
+  const focus = (state.focus.startsWith("managed-")
+    && !configuresManaged
+    && !(configuresSliceDevelopment && sliceDevelopmentFocus))
+    ? sliceDevelopmentFocus ? "slice" : "launch-machine"
+    : (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
     ? "new"
     : previewSessions.length === 0 && state.focus === "session"
       ? "join-sessions"
@@ -136,7 +164,7 @@ export function normalizeWaitingRoomState(
         : state.focus === "slice-display"
           ? "slice"
           : state.focus
-  return {
+  const normalized = normalizeWaitingRoomManagedDraft({
     ...state,
     focus,
     providerId,
@@ -171,7 +199,19 @@ export function normalizeWaitingRoomState(
     executionMode: waitingRoomExecutionMode(state),
     permissionLevel: waitingRoomPermissionLevel(state),
     themeId: normalizeThemeName(state.themeId, themeRegistry),
+  }, remote)
+  const selectedRepositoryTargetExists = normalized.managedDevelopmentMode === "current_project"
+    && waitingRoomProjectRepositoryOptions(normalized, remote).length > 1
+  if (normalized.focus === "managed-repositories" && !selectedRepositoryTargetExists) {
+    return { ...normalized, focus: "managed-development" }
   }
+  if (normalized.focus === "managed-provider-account") {
+    const focusedProviderAccount = remote.providerAccounts?.[normalized.managedProviderAccountIndex ?? 0]
+    if (!focusedProviderAccount || !managedProviderAccountIsTransferable(focusedProviderAccount)) {
+      return { ...normalized, focus: "managed-provider-accounts" }
+    }
+  }
+  return normalized
 }
 
 export function waitingRoomExecutionMode(

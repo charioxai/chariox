@@ -42,12 +42,16 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        if !self.owned.publication_activation.is_active() {
+            return;
+        }
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
             self,
         )
         .await;
+        self.retry_due_provider_launch_failures(now_ms).await;
         if self.claim_provider_process_gc(now_ms) {
             if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
                 crate::logging::warn_with_fields(
@@ -244,6 +248,10 @@ impl KernelRuntimeState {
         self.owned.runtime_projection_changes.sequence()
     }
 
+    pub(crate) fn record_waiting_room_change(&self) {
+        self.owned.runtime_projection_changes.record_change();
+    }
+
     pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
         self.owned
             .runtime_projection_changes
@@ -333,15 +341,16 @@ impl KernelRuntimeState {
         idle_interval_ms: u64,
         now_ms: u64,
     ) -> u64 {
-        let next_output_due_at_ms = [
+        let next_runtime_due_at_ms = [
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
+            self.owned.provider_launch_failure_retries.next_due_at_ms(),
         ]
         .into_iter()
         .flatten()
         .min();
         transport_runtime_pump_interval_for_state(
-            next_output_due_at_ms,
+            next_runtime_due_at_ms,
             self.owned
                 .session_store
                 .read()
@@ -445,20 +454,17 @@ impl KernelRuntimeState {
 }
 
 fn transport_runtime_pump_interval_for_state(
-    next_structured_output_poll_due_at_ms: Option<u64>,
+    next_runtime_due_at_ms: Option<u64>,
     next_watchdog_run_at_ms: Option<u64>,
     now_ms: u64,
     minimum_interval_ms: u64,
     idle_interval_ms: u64,
 ) -> u64 {
     let fallback_interval_ms = idle_interval_ms;
-    let next_due_at_ms = [
-        next_structured_output_poll_due_at_ms,
-        next_watchdog_run_at_ms,
-    ]
-    .into_iter()
-    .flatten()
-    .min();
+    let next_due_at_ms = [next_runtime_due_at_ms, next_watchdog_run_at_ms]
+        .into_iter()
+        .flatten()
+        .min();
     let Some(next_due_at_ms) = next_due_at_ms else {
         return fallback_interval_ms;
     };

@@ -58,7 +58,7 @@ fn metaagent_and_workflow_tasks_share_one_serial_task_lane() {
 }
 
 #[test]
-fn workflow_prompt_can_be_enqueued_while_a_workflow_run_is_active() {
+fn workflow_prompt_can_dequeue_while_another_workflow_run_is_active() {
     let mut service = SessionService::new(&test_config());
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -113,10 +113,11 @@ fn workflow_prompt_can_be_enqueued_while_a_workflow_run_is_active() {
         )
         .expect("prompt should queue while a run is active");
     assert_eq!(queued.prompt(), Some("later"));
-    assert!(service
+    let dequeued = service
         .dequeue_next_workflow_prompt(session.id())
         .expect("queue should be readable")
-        .is_none());
+        .expect("another workflow run must not block queue admission");
+    assert_eq!(dequeued.id(), queued.id());
 }
 
 #[test]

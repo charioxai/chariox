@@ -507,6 +507,9 @@ mod tests {
         let _guard = crate::env_lock::lock();
         let workspace = temp_root("workspace");
         let codex_home = temp_root("codex-home");
+        let unique_suffix = format!("{}-{}", std::process::id(), crate::session::unix_epoch_ms());
+        let mcp_name = format!("dedupe-docs-{unique_suffix}");
+        let skill_name = format!("dedupe-qa-{unique_suffix}");
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(&codex_home).unwrap();
@@ -514,39 +517,37 @@ mod tests {
 
         fs::write(
             codex_home.join("config.toml"),
-            r#"
-[mcp_servers.docs]
-command = "codex-docs"
-"#,
+            format!("[mcp_servers.{mcp_name}]\ncommand = \"codex-docs\"\n"),
         )
         .unwrap();
-        let codex_skill = workspace.join(".codex").join("skills").join("qa");
+        let codex_skill = workspace.join(".codex").join("skills").join(&skill_name);
         fs::create_dir_all(&codex_skill).unwrap();
         fs::write(
             codex_skill.join("SKILL.md"),
-            "---\nname: qa\ndescription: Codex QA\n---\nUse Codex QA.\n",
+            format!("---\nname: {skill_name}\ndescription: Codex QA\n---\nUse Codex QA.\n"),
         )
         .unwrap();
 
-        std::thread::sleep(Duration::from_millis(10));
+        // Some supported filesystems expose modification times at one-second
+        // granularity. Keep the provider recency contract deterministic there.
+        std::thread::sleep(Duration::from_millis(1_100));
         fs::write(
             workspace.join(".mcp.json"),
-            r#"
-{
-  "mcpServers": {
-    "docs": {
-      "command": "claude-docs"
-    }
-  }
-}
-"#,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": {
+                    (mcp_name.clone()): {
+                        "command": "claude-docs"
+                    }
+                }
+            }))
+            .unwrap(),
         )
         .unwrap();
-        let claude_skill = workspace.join(".claude").join("skills").join("qa");
+        let claude_skill = workspace.join(".claude").join("skills").join(&skill_name);
         fs::create_dir_all(&claude_skill).unwrap();
         fs::write(
             claude_skill.join("SKILL.md"),
-            "---\nname: qa\ndescription: Claude QA\n---\nUse Claude QA.\n",
+            format!("---\nname: {skill_name}\ndescription: Claude QA\n---\nUse Claude QA.\n"),
         )
         .unwrap();
 
@@ -565,16 +566,16 @@ command = "codex-docs"
         };
         assert!(report.summary.imported >= 2);
         assert!(report.summary.deduped >= 2);
-        assert!(report.mcps.iter().any(|entry| entry.name == "docs"
+        assert!(report.mcps.iter().any(|entry| entry.name == mcp_name
             && entry.provider == "claude"
             && entry.action == "imported"));
-        assert!(report.mcps.iter().any(|entry| entry.name == "docs"
+        assert!(report.mcps.iter().any(|entry| entry.name == mcp_name
             && entry.provider == "codex"
             && entry.action == "deduped"));
-        assert!(report.skills.iter().any(|entry| entry.name == "qa"
+        assert!(report.skills.iter().any(|entry| entry.name == skill_name
             && entry.provider == "claude"
             && entry.action == "imported"));
-        assert!(report.skills.iter().any(|entry| entry.name == "qa"
+        assert!(report.skills.iter().any(|entry| entry.name == skill_name
             && entry.provider == "codex"
             && entry.action == "deduped"));
 

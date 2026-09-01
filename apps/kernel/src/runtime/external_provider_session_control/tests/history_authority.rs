@@ -381,6 +381,134 @@ fn chariox_owned_agent_message_with_provider_attachment_suffix_is_not_imported_a
 }
 
 #[test]
+fn claude_internal_task_notification_stays_with_active_chariox_prompt() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let active_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "run the background check",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), active_prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start");
+    };
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-owned".to_string(),
+        "claude".to_string(),
+        "thread-owned".to_string(),
+    );
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import,
+            ),
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("task-notification-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "<task-notification><task-id>sleep-1</task-id><status>completed</status></task-notification>".to_string(),
+                    observed_at_ms: Some(100),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "BACKGROUND_CHECK_OK".to_string(),
+                    observed_at_ms: Some(110),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1:completed".to_string()),
+                    role: ObservedExternalProviderTurnRole::Status,
+                    text: "claude message completed\n{\"stop_reason\":\"end_turn\"}".to_string(),
+                    observed_at_ms: Some(120),
+                },
+            ],
+        },
+    )
+    .expect("internal continuation should reconcile");
+
+    assert_eq!(outcome.changed_count, 0);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert!(
+        entries.is_empty(),
+        "provider-internal continuation must not duplicate managed output"
+    );
+}
+
+#[test]
+fn claude_task_notification_without_active_chariox_prompt_remains_external() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-external".to_string(),
+        "claude".to_string(),
+        "thread-external".to_string(),
+    );
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import,
+            ),
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("task-notification-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "<task-notification><task-id>sleep-1</task-id><status>completed</status></task-notification>".to_string(),
+                    observed_at_ms: Some(100),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "BACKGROUND_CHECK_OK".to_string(),
+                    observed_at_ms: Some(110),
+                },
+            ],
+        },
+    )
+    .expect("external native continuation should import");
+
+    assert_eq!(outcome.changed_count, 2);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 2);
+    assert!(entries
+        .iter()
+        .all(SessionHistoryEntry::is_external_provider_observed));
+}
+
+#[test]
 fn observed_external_history_batch_emits_one_refresh_after_all_entries_persist() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

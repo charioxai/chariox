@@ -43,6 +43,10 @@ impl KernelRuntimeState {
                     Some(false),
                 )
                 .await?;
+                self.invalidate_workflow_copies_after_source_agent_change(
+                    agent.session_id(),
+                    agent.id(),
+                )?;
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -72,6 +76,10 @@ impl KernelRuntimeState {
                     Some(false),
                 )
                 .await?;
+                self.invalidate_workflow_copies_after_source_agent_change(
+                    agent.session_id(),
+                    agent.id(),
+                )?;
                 Ok(agent)
             }
         }
@@ -191,6 +199,10 @@ impl KernelRuntimeState {
                     Some(true),
                 )
                 .await?;
+                self.invalidate_workflow_copies_after_source_agent_change(
+                    agent.session_id(),
+                    agent.id(),
+                )?;
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -219,6 +231,10 @@ impl KernelRuntimeState {
                     Some(true),
                 )
                 .await?;
+                self.invalidate_workflow_copies_after_source_agent_change(
+                    agent.session_id(),
+                    agent.id(),
+                )?;
                 Ok(agent)
             }
         }
@@ -267,6 +283,7 @@ impl KernelRuntimeState {
                 name,
             })
             .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
         Ok(agent)
     }
 
@@ -297,6 +314,7 @@ impl KernelRuntimeState {
                 name: name.to_string(),
             })
             .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
         Ok(agent)
     }
 
@@ -321,6 +339,7 @@ impl KernelRuntimeState {
         )?;
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
         Ok(agent)
     }
 
@@ -344,6 +363,7 @@ impl KernelRuntimeState {
         )?;
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
         Ok(agent)
     }
 
@@ -890,6 +910,7 @@ impl KernelRuntimeState {
                 permission_level_override,
             )?;
         }
+        self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }
 
@@ -980,7 +1001,27 @@ impl KernelRuntimeState {
         }
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
+        self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
+    }
+
+    fn invalidate_workflow_copies_after_source_agent_change(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let affected_workflows = self
+            .owned
+            .session_store
+            .write()
+            .invalidate_workflow_runtime_instances_for_agent_change(session_id, agent_id)?;
+        if affected_workflows.is_empty() {
+            return Ok(());
+        }
+        self.owned
+            .persist_workflow_runtime_session(session_id, "workflow_source_agent_changed")?;
+        self.owned
+            .workflow_cleanup_runtime_instances_exclusive(session_id)
     }
 
     pub(crate) async fn alias_agent(
@@ -990,8 +1031,11 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         alias: Option<String>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned
-            .alias_agent(session_id, agent_id, caller_user_id, alias)
+        let agent = self
+            .owned
+            .alias_agent(session_id, agent_id, caller_user_id, alias)?;
+        self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
+        Ok(agent)
     }
 
     pub(crate) async fn update_agent_substitutes(

@@ -13,6 +13,27 @@ const PROFILE_ID: &str = "claude-deployment-profile";
 const TARGET_VERSION: u64 = 7;
 const AUTHORIZATION_URL: &str = "https://claude.com/oauth/authorize?state=opaque-provider-state";
 
+fn run_credential_enrollment_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(64 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("credential enrollment test runtime should build")
+                .block_on(test());
+        })
+        .expect("credential enrollment test thread should spawn")
+        .join()
+        .expect("credential enrollment test thread should not panic");
+}
+
 struct EnrollmentTestEnv {
     app: Arc<Mutex<DaemonApp>>,
     local_router: Arc<CommandRouter>,
@@ -270,9 +291,12 @@ async fn resolve_cancel(env: &EnrollmentTestEnv, interaction_id: &str, command_i
     .expect("cancel should resolve the interaction");
 }
 
-#[tokio::test]
-async fn credential_enrollment_projects_to_two_clients_and_first_reply_wins() {
-    Box::pin(run_two_client_credential_enrollment_scenario()).await;
+#[test]
+fn credential_enrollment_projects_to_two_clients_and_first_reply_wins() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-two-clients",
+        run_two_client_credential_enrollment_scenario,
+    );
 }
 
 async fn run_two_client_credential_enrollment_scenario() {
@@ -387,9 +411,12 @@ async fn run_two_client_credential_enrollment_scenario() {
     );
 }
 
-#[tokio::test]
-async fn credential_enrollment_cancel_and_timeout_return_no_callback() {
-    Box::pin(run_credential_enrollment_cancel_and_timeout_scenario()).await;
+#[test]
+fn credential_enrollment_cancel_and_timeout_return_no_callback() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-cancel-and-timeout",
+        run_credential_enrollment_cancel_and_timeout_scenario,
+    );
 }
 
 async fn run_credential_enrollment_cancel_and_timeout_scenario() {
@@ -450,9 +477,12 @@ async fn run_credential_enrollment_cancel_and_timeout_scenario() {
         .is_empty());
 }
 
-#[tokio::test]
-async fn matching_credential_service_can_cancel_only_its_own_interaction() {
-    Box::pin(run_matching_credential_service_cancel_scenario()).await;
+#[test]
+fn matching_credential_service_can_cancel_only_its_own_interaction() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-matching-service-cancel",
+        run_matching_credential_service_cancel_scenario,
+    );
 }
 
 async fn run_matching_credential_service_cancel_scenario() {
@@ -556,9 +586,12 @@ async fn run_matching_credential_service_cancel_scenario() {
         .is_empty());
 }
 
-#[tokio::test]
-async fn credential_enrollment_rejects_unverified_and_wrong_service_subject() {
-    Box::pin(run_credential_service_subject_rejection_scenario()).await;
+#[test]
+fn credential_enrollment_rejects_unverified_and_wrong_service_subject() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-service-subject-rejection",
+        run_credential_service_subject_rejection_scenario,
+    );
 }
 
 async fn run_credential_service_subject_rejection_scenario() {
@@ -611,8 +644,15 @@ async fn run_credential_service_subject_rejection_scenario() {
         .is_ok());
 }
 
-#[tokio::test]
-async fn credential_enrollment_service_identity_cannot_invoke_other_kernel_requests() {
+#[test]
+fn credential_enrollment_service_identity_cannot_invoke_other_kernel_requests() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-service-identity-scope",
+        credential_enrollment_service_identity_cannot_invoke_other_kernel_requests_inner,
+    );
+}
+
+async fn credential_enrollment_service_identity_cannot_invoke_other_kernel_requests_inner() {
     let env = EnrollmentTestEnv::new();
     let enrollment_id = "enrollment-service-scope";
     let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
@@ -626,8 +666,15 @@ async fn credential_enrollment_service_identity_cannot_invoke_other_kernel_reque
         .contains("hosted service identity is not authorized"));
 }
 
-#[tokio::test]
-async fn credential_enrollment_arm_requires_attached_focused_target() {
+#[test]
+fn credential_enrollment_arm_requires_attached_focused_target() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-arm-target",
+        credential_enrollment_arm_requires_attached_focused_target_inner,
+    );
+}
+
+async fn credential_enrollment_arm_requires_attached_focused_target_inner() {
     let env = EnrollmentTestEnv::new();
     let enrollment_id = "enrollment-arm-target";
 
@@ -674,9 +721,12 @@ async fn credential_enrollment_arm_requires_attached_focused_target() {
     env.arm(enrollment_id).await;
 }
 
-#[tokio::test]
-async fn credential_enrollment_rearm_retries_only_the_exact_pending_route() {
-    Box::pin(run_credential_enrollment_rearm_scenario()).await;
+#[test]
+fn credential_enrollment_rearm_retries_only_the_exact_pending_route() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-rearm",
+        run_credential_enrollment_rearm_scenario,
+    );
 }
 
 async fn run_credential_enrollment_rearm_scenario() {
@@ -778,8 +828,15 @@ async fn run_credential_enrollment_rearm_scenario() {
     .is_err());
 }
 
-#[tokio::test]
-async fn busy_interaction_consumes_arm_and_replay_fails_closed() {
+#[test]
+fn busy_interaction_consumes_arm_and_replay_fails_closed() {
+    run_credential_enrollment_large_stack_test(
+        "credential-enrollment-busy-interaction",
+        busy_interaction_consumes_arm_and_replay_fails_closed_inner,
+    );
+}
+
+async fn busy_interaction_consumes_arm_and_replay_fails_closed_inner() {
     let env = EnrollmentTestEnv::new();
     let busy_interaction = RuntimeInteraction::new(
         "existing-busy-interaction",

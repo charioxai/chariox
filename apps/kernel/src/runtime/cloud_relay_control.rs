@@ -1,7 +1,9 @@
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+use base64::Engine;
 use chariox_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
+pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 30 * 60_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,7 @@ pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) 
     }
     config.relay_url.as_deref() != Some(profile.relay_url.as_str())
         || config.relay_token.is_none()
+        || !cloud_relay_token_matches_runtime_key(config)
         || profile
             .token_expires_at_ms
             .is_none_or(|expires_at| expires_at <= now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
@@ -38,26 +41,60 @@ pub(crate) fn cloud_relay_runtime_token_is_fresh(
 ) -> bool {
     config.relay_url.as_deref() == Some(profile.relay_url.as_str())
         && config.relay_token.is_some()
+        && cloud_relay_token_matches_runtime_key(config)
         && profile
             .token_expires_at_ms
             .is_some_and(|expires_at| expires_at > now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
+}
+
+fn cloud_relay_token_matches_runtime_key(config: &DaemonConfig) -> bool {
+    let Some(token) = config.relay_token.as_deref() else {
+        return false;
+    };
+    let Some(thumbprint) = relay_token_payload(token).and_then(|claims| {
+        claims
+            .get("public_key_thumbprint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    }) else {
+        return false;
+    };
+    thumbprint == crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
+}
+
+pub(crate) fn relay_token_payload(token: &str) -> Option<serde_json::Value> {
+    if token.len() > 16_384 {
+        return None;
+    }
+    let mut segments = token.trim().split('.');
+    let header = segments.next()?;
+    let payload = segments.next()?;
+    let signature = segments.next()?;
+    if header.is_empty() || payload.is_empty() || signature.is_empty() || segments.next().is_some()
+    {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+pub(crate) fn relay_token_expiry_ms(token: &str) -> Option<u64> {
+    relay_token_payload(token)?
+        .get("exp")?
+        .as_u64()?
+        .checked_mul(1_000)
 }
 
 pub(crate) fn cloud_runtime_token_subject(
     config: &DaemonConfig,
     profile: &PersistedCloudRelayProfile,
 ) -> CloudRuntimeTokenSubject {
-    if let Some(machine_id) = profile.machine_id.clone() {
-        return CloudRuntimeTokenSubject {
-            subject: machine_id.clone(),
-            subject_kind: "machine",
-            machine_id: Some(machine_id),
-        };
-    }
     CloudRuntimeTokenSubject {
         subject: config.daemon_id.clone(),
         subject_kind: "kernel",
-        machine_id: None,
+        machine_id: profile.machine_id.clone(),
     }
 }
 
@@ -113,6 +150,8 @@ pub(crate) fn cloud_kernel_presence_body(
             "port": config.kernel_websocket_port,
             "relay_public_key": config.relay_public_key,
             "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "managed_context_source_protocol_version":
+                crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION,
             "kernel_started_at_ms": registration.map(|registration| registration.kernel_started_at_ms),
             "available_providers": registration
                 .map(|registration| registration.available_providers.clone())
@@ -130,10 +169,6 @@ pub(crate) fn cloud_kernel_presence_body(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use crate::config::CharioxUserConfig;
-
     use super::*;
 
     fn profile() -> PersistedCloudRelayProfile {
@@ -158,44 +193,36 @@ mod tests {
     }
 
     fn config(profile: Option<PersistedCloudRelayProfile>) -> DaemonConfig {
-        DaemonConfig {
-            user_config_path: PathBuf::from("user.toml"),
-            user_config: CharioxUserConfig::default(),
-            daemon_id: "kernel-1".to_string(),
-            host_machine_id: "host-1".to_string(),
-            host_machine_alias: None,
-            os_name: "test-os".to_string(),
-            daemon_alias: Some("dev kernel".to_string()),
-            relay_url: Some("wss://relay.test".to_string()),
-            relay_token: Some("relay-token".to_string()),
-            cloud_relay: profile,
-            relay_public_key: "public".to_string(),
-            relay_private_key: "private".to_string(),
-            relay_heartbeat_ms: 1_000,
-            relay_request_timeout_ms: 2_000,
-            accept_remote_leases: true,
-            event_delivery_url: None,
-            event_delivery_token: None,
-            event_delivery_environment_id: "kernel-1".to_string(),
-            event_registry_url: None,
-            event_generator_management_targets: std::collections::BTreeMap::new(),
-            os_user: "tester".to_string(),
-            local_socket_path: PathBuf::from("kernel.sock"),
-            kernel_websocket_host: "127.0.0.1".to_string(),
-            kernel_websocket_port: 43118,
-            kernel_websocket_queue_capacity: 128,
-            kernel_websocket_write_delay_ms: 0,
-            runtime_mcp_host: "127.0.0.1".to_string(),
-            runtime_mcp_port: 43119,
-            session_history_root: PathBuf::from("history"),
-            session_history_read_delay_ms: 0,
-            operational_history_read_delay_ms: 0,
-            provider_catalog_read_delay_ms: 0,
-            provider_process_list_delay_ms: 0,
-            provider_process_idle_ttl_ms: 300_000,
-            provider_process_orphan_ttl_ms: 30_000,
-            provider_runtime_init_delay_ms: 0,
-        }
+        let mut config = DaemonConfig::new("kernel-1", "host-1", "tester");
+        config.daemon_alias = Some("dev kernel".to_string());
+        config.relay_url = Some("wss://relay.test".to_string());
+        config.relay_token = Some(bound_token("public"));
+        config.cloud_relay = profile;
+        config.relay_public_key = "public".to_string();
+        config.relay_private_key = "private".to_string();
+        config.relay_heartbeat_ms = 1_000;
+        config.relay_request_timeout_ms = 2_000;
+        config
+    }
+
+    fn bound_token(public_key: &str) -> String {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({
+                "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(public_key),
+                "exp": 300,
+            })
+            .to_string(),
+        );
+        format!("header.{payload}.signature")
+    }
+
+    #[test]
+    fn relay_token_payload_requires_exactly_three_nonempty_bounded_segments() {
+        let token = bound_token("public");
+        assert_eq!(relay_token_expiry_ms(&token), Some(300_000));
+        assert!(relay_token_payload(&format!("{token}.extra")).is_none());
+        assert!(relay_token_payload("header..signature").is_none());
+        assert!(relay_token_payload(&"x".repeat(16_385)).is_none());
     }
 
     #[test]
@@ -224,15 +251,22 @@ mod tests {
             &fresh,
             100_000
         ));
+
+        let mut wrong_key = config(Some(fresh.clone()));
+        wrong_key.relay_token = Some(bound_token("different-public-key"));
+        assert!(cloud_relay_token_refresh_due(&wrong_key, 100_000));
+        assert!(!cloud_relay_runtime_token_is_fresh(
+            &wrong_key, &fresh, 100_000
+        ));
     }
 
     #[test]
-    fn runtime_token_subject_prefers_machine_identity() {
+    fn runtime_token_subject_registers_the_kernel_and_binds_its_machine() {
         let machine_profile = profile();
         let subject =
             cloud_runtime_token_subject(&config(Some(machine_profile.clone())), &machine_profile);
-        assert_eq!(subject.subject, "machine-1");
-        assert_eq!(subject.subject_kind, "machine");
+        assert_eq!(subject.subject, "kernel-1");
+        assert_eq!(subject.subject_kind, "kernel");
         assert_eq!(subject.machine_id.as_deref(), Some("machine-1"));
 
         let mut kernel_profile = profile();
@@ -257,6 +291,10 @@ mod tests {
         assert_eq!(
             body["metadata"]["local_daemon_protocol_version"],
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            body["metadata"]["managed_context_source_protocol_version"],
+            crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION
         );
         assert_eq!(
             body["metadata"]["kernel_started_at_ms"],

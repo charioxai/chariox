@@ -139,6 +139,13 @@
     ]
   },
   {
+    "id": "account",
+    "label": "/account",
+    "description": "Change the active provider account",
+    "value": "/account ",
+    "surfaces": ["session", "waiting_room"]
+  },
+  {
     "id": "model",
     "label": "/model",
     "description": "Change the active model",

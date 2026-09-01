@@ -30,6 +30,22 @@ test("project selector offers Default, same-workspace named projects, then New",
   )
 })
 
+test("project selector offers a named Project from a supporting Workspace", () => {
+  const multiRepo = {
+    ...project("multi", "Chariox", "named", "/chariox", 400),
+    workspace_ids: ["/chariox", "/chariox-cloud"],
+  }
+
+  assert.deepEqual(
+    waitingRoomProjectOptions([multiRepo], "/chariox-cloud").map(({ id, label }) => ({ id, label })),
+    [
+      { id: "default", label: "Default" },
+      { id: "existing:multi", label: "Chariox" },
+      { id: "new", label: "New" },
+    ],
+  )
+})
+
 test("project selector cycles and serializes all launch policies", () => {
   const projects = [project("named", "Frontend", "named", "/repo", 100)]
   const existing = existingProjectSelectionId("named")

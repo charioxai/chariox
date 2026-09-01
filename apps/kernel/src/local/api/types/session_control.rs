@@ -215,6 +215,12 @@ pub struct RenameProjectRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateProjectWorkspacesRequest {
+    pub project_id: String,
+    pub workspace_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchiveProjectRequest {
     pub project_id: String,
 }

@@ -240,6 +240,18 @@ impl<'a> WorkflowCodeValidator<'a> {
                 "endpoint.entry_node",
                 Some(endpoint.handle.clone()),
             );
+            if endpoint.max_instances.is_some_and(|max_instances| {
+                !(1..=crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES).contains(&max_instances)
+            }) {
+                self.error(
+                    "invalid_endpoint_max_instances",
+                    format!(
+                        "endpoint max_instances must be between 1 and {}",
+                        crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES
+                    ),
+                    Some(endpoint.handle.clone()),
+                );
+            }
         }
         self.validate_endpoint_aliases(definition);
         self.validate_canvas_layout(definition);

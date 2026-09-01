@@ -85,6 +85,8 @@ impl DaemonConfig {
         Self {
             user_config_path,
             user_config,
+            publication_control_state_root: env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR")
+                .map(PathBuf::from),
             local_socket_path: env::var_os("CHARIOX_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
@@ -105,7 +107,7 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(43120),
-            session_history_root: env::var_os("CHARIOX_SESSION_HISTORY_DIR")
+            session_history_root_default: env::var_os("CHARIOX_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
             session_history_read_delay_ms: env::var("CHARIOX_SESSION_HISTORY_READ_DELAY_MS")
@@ -156,6 +158,20 @@ impl DaemonConfig {
                 persisted_config
                     .clone()
                     .and_then(|config| config.relay_token)
+            }),
+            managed_slice_relay_recovery_token: persisted_config
+                .as_ref()
+                .and_then(|config| config.managed_slice_relay_recovery_token.clone()),
+            managed_slice_relay_owner_public_key: env::var(
+                "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY",
+            )
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                persisted_config
+                    .as_ref()
+                    .and_then(|config| config.managed_slice_relay_owner_public_key.clone())
             }),
             cloud_relay: if env_relay_configured {
                 env_cloud_relay

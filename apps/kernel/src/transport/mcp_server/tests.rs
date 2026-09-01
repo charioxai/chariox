@@ -207,7 +207,7 @@ async fn mcp_resource_and_prompt_discovery_return_empty_lists() {
 }
 
 #[tokio::test]
-async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
+async fn mcp_http_workflow_token_lists_tools_and_acknowledges_active_turn() {
     let mut config = DaemonConfig::for_tests();
     config.user_config.providers.workspace_live_sync.mode =
         crate::config::WorkspaceLiveSyncMode::Tracked;
@@ -275,12 +275,56 @@ async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
 
     let app = Arc::new(Mutex::new(app));
     let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
-    let response = handle_json_rpc_value(
+    let tools_list = handle_json_rpc_value(
         router.clone(),
         &auth_token,
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await
+    .expect("authenticated tools/list should succeed");
+    assert_eq!(tools_list.status(), StatusCode::OK);
+    let tools_body = tools_list
+        .into_body()
+        .collect()
+        .await
+        .expect("authenticated tools list body should collect")
+        .to_bytes();
+    let tools_value: Value =
+        serde_json::from_slice(&tools_body).expect("authenticated tools list should be json");
+    let tool_names = tools_value["result"]["tools"]
+        .as_array()
+        .expect("authenticated tools should be an array")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for expected in [
+        "ack_workflow_turn",
+        "validate_workflow_handoff",
+        "workflow_console_read",
+        "workflow_console_write",
+        "workflow_console_clear",
+    ] {
+        assert!(
+            tool_names.contains(expected),
+            "workflow token should discover `{expected}`"
+        );
+    }
+    assert!(
+        !tool_names.contains("chariox.slice_screenshot"),
+        "ordinary workflow tokens must not discover slice-only capabilities"
+    );
+
+    let response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
             "method": "tools/call",
             "params": {
                 "name": "ack_workflow_turn",

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 mod claude;
 mod claude_runtime;
+pub(crate) use claude_runtime::usage::claude_status_line_usage_snapshot;
 mod codex;
 mod codex_client;
 mod codex_runtime;
@@ -9,6 +10,7 @@ mod command_catalog;
 mod executable_resolution;
 mod external_observation;
 mod launch_contract;
+mod managed_isolation;
 mod mcp_proxy;
 mod opencode;
 mod opencode_binding;
@@ -24,12 +26,17 @@ mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
+pub(crate) use claude::ensure_claude_native_hidden_context_fits;
+pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
-pub(crate) use codex::{ensure_codex_account_endpoint, invalidate_codex_account_endpoint};
+pub(crate) use codex::{
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    shutdown_codex_account_endpoints,
+};
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
@@ -53,10 +60,20 @@ pub use launch_contract::{
     LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
     RuntimeMcpBinding,
 };
+#[cfg(test)]
+pub(crate) use managed_isolation::MANAGED_PROVIDER_ISOLATION_ENV;
+pub(crate) use managed_isolation::{
+    apply_managed_provider_isolation, command_from_provider_launch,
+    managed_isolated_utility_command, managed_provider_control_env_remove,
+    managed_provider_isolation_required,
+};
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
 };
-pub(crate) use opencode::{ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint};
+pub(crate) use opencode::{
+    ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
+    shutdown_opencode_account_endpoints,
+};
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
@@ -67,7 +84,9 @@ pub use opencode_client::{
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
-    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
+    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
+    classify_provider_terminal_failure_text, provider_retry_status,
+    PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
@@ -148,8 +167,7 @@ pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun)
 pub(crate) fn provider_run_waits_for_workflow_publication_completion(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "codex"
-        || (run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run))
+    matches!(run.adapter_key(), "codex" | "claude")
 }
 
 pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
@@ -317,14 +335,22 @@ mod tests {
     fn workflow_publication_completion_wait_is_provider_policy() {
         let structured_claude = provider_run("claude", "claude");
         let headless_claude = provider_run("claude", "claude-headless");
+        let native_claude = provider_run_with_client_interface(
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
         let codex = provider_run("codex", "codex");
         let opencode = provider_run("opencode", "opencode");
 
         assert!(provider_run_waits_for_workflow_publication_completion(
             &structured_claude
         ));
-        assert!(!provider_run_waits_for_workflow_publication_completion(
+        assert!(provider_run_waits_for_workflow_publication_completion(
             &headless_claude
+        ));
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &native_claude
         ));
         assert!(provider_run_waits_for_workflow_publication_completion(
             &codex

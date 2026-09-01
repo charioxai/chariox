@@ -33,6 +33,40 @@ generate_kernel_local_auth_token() {
   node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))'
 }
 
+prepare_publication_control_state() {
+  if [[ -z "${CHARIOX_PUBLICATION_CONTROL_STATE_DIR+x}" ]]; then
+    return
+  fi
+  if [[ "$CHARIOX_PUBLICATION_CONTROL_STATE_DIR" != /var/lib/chariox/publication-control ]]; then
+    echo "publication control state must use the dedicated mount /var/lib/chariox/publication-control" >&2
+    return 70
+  fi
+  if [[ -z "${CHARIOX_DAEMON_ID:-}" || -z "${CHARIOX_MACHINE_ID:-}" || -z "${CHARIOX_PUBLICATION_RUNTIME_KEY:-}" || -z "${CHARIOX_PUBLICATION_RUNTIME_WORKSPACE:-}" ]]; then
+    echo "publication control state requires stable kernel, machine, runtime key and workspace identities" >&2
+    return 70
+  fi
+  node -e '
+    const fs = require("node:fs")
+    const [root, uid, gid] = process.argv.slice(1)
+    const parent = "/var/lib/chariox"
+    const parentStat = fs.statSync(parent)
+    if (fs.realpathSync(parent) !== parent || !parentStat.isDirectory()
+        || parentStat.uid !== 0 || (parentStat.mode & 0o022) !== 0) {
+      throw new Error("publication control state parent must be an immutable root-owned directory")
+    }
+    try { fs.mkdirSync(root, { mode: 0o700 }) }
+    catch (error) { if (error.code !== "EEXIST") throw error }
+    if (fs.realpathSync(root) !== root || fs.lstatSync(root).isSymbolicLink()) {
+      throw new Error("publication control state must not traverse a symlink")
+    }
+    const fd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try {
+      fs.fchownSync(fd, Number(uid), Number(gid))
+      fs.fchmodSync(fd, 0o700)
+    } finally { fs.closeSync(fd) }
+  ' "$CHARIOX_PUBLICATION_CONTROL_STATE_DIR" "$(id -u chariox)" "$(id -g chariox)"
+}
+
 prepare_capability_directories() {
   if [[ "$(id -u)" -ne 0 ]]; then
     echo "publication standalone mode must start as root to provision capabilities" >&2
@@ -214,6 +248,8 @@ launch_kernel_as_chariox() {
       CHARIOX_SESSION_HISTORY_READ_DELAY_MS \
       CHARIOX_WORKSPACE_DIR \
       CHARIOX_PUBLICATION_RUNTIME_STATE_DIR \
+      CHARIOX_PUBLICATION_CONTROL_STATE_DIR \
+      CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS \
       CHARIOX_PUBLICATION_RUNTIME_ROOT \
       CHARIOX_PUBLICATION_PACKAGE \
       CHARIOX_PUBLICATION_CONFIG \
@@ -256,7 +292,8 @@ launch_kernel_as_chariox() {
   export HOME=/home/chariox
   export USER=chariox
   export LOGNAME=chariox
-  export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+  # Include the immutable image toolchain, never the caller's inherited PATH.
+  export PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
   export CHARIOX_KERNEL_HOST="${CHARIOX_KERNEL_HOST:-127.0.0.1}"
   export CHARIOX_KERNEL_PORT="${CHARIOX_KERNEL_PORT:-43118}"
   export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -351,6 +388,60 @@ import_provider_credentials() {
   import_credential_profile "${CHARIOX_PROVIDER_CREDENTIALS_DIR:-/home/chariox/.provider-credentials}"
 }
 
+materialize_credential_bindings() {
+  local source_root="${CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT:-}"
+  local bindings_root="${CHARIOX_CREDENTIAL_BINDINGS_ROOT:-}"
+  if [[ -z "$source_root" ]]; then
+    return
+  fi
+  if [[ -z "$bindings_root" || "$bindings_root" != "$HOME/.credential-bindings" ]]; then
+    echo "publication credential bindings destination is invalid" >&2
+    return 70
+  fi
+  if [[ -L "$source_root" || ! -d "$source_root" ]]; then
+    echo "publication credential bindings source must be a regular directory" >&2
+    return 70
+  fi
+  if [[ -L "$bindings_root" ]]; then
+    echo "publication credential bindings root must not be a symlink: $bindings_root" >&2
+    return 70
+  fi
+  mkdir -p "$bindings_root"
+  shopt -s dotglob nullglob
+  local existing=("$bindings_root"/*)
+  if (( ${#existing[@]} > 0 )); then
+    echo "publication credential bindings destination must be empty" >&2
+    return 70
+  fi
+  local count=0
+  local source_profile
+  for source_profile in "$source_root"/*; do
+    local name="${source_profile##*/}"
+    if [[ ! "$name" =~ ^[0-9]{3,}$ ]]; then
+      echo "publication credential binding source name is invalid" >&2
+      return 70
+    fi
+    if [[ -L "$source_profile" || ! -d "$source_profile" ]]; then
+      echo "publication credential binding source must be a regular directory" >&2
+      return 70
+    fi
+    local unsafe_path
+    unsafe_path="$(first_unsafe_tree_path "$source_profile")"
+    if [[ -n "$unsafe_path" ]]; then
+      echo "publication credential binding source contains an unsafe path: $unsafe_path" >&2
+      return 70
+    fi
+    count=$((count + 1))
+    if (( count > 18 )); then
+      echo "publication has too many credential bindings" >&2
+      return 70
+    fi
+    cp -a -- "$source_profile" "$bindings_root/$name"
+  done
+  shopt -u dotglob nullglob
+  chmod -R go-rwx "$bindings_root"
+}
+
 import_credential_bindings() {
   local bindings_root="${CHARIOX_CREDENTIAL_BINDINGS_ROOT:-}"
   if [[ -z "$bindings_root" ]]; then
@@ -367,14 +458,60 @@ import_credential_bindings() {
   local profile_dir
   for profile_dir in "$bindings_root"/*; do
     if [[ -d "$profile_dir" ]]; then
-      import_credential_profile "$profile_dir"
+      if should_import_credential_binding_to_home "$profile_dir"; then
+        import_credential_profile "$profile_dir"
+      else
+        local decision_status=$?
+        if [[ "$decision_status" -ne 1 ]]; then
+          return "$decision_status"
+        fi
+      fi
     fi
   done
   shopt -u nullglob
 }
 
+should_import_credential_binding_to_home() {
+  local profile_dir="$1"
+  node -e '
+    const fs = require("node:fs")
+    const path = require("node:path")
+    const profileDir = process.argv[1]
+    const configured = process.env.CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS
+    let identity
+    try {
+      identity = JSON.parse(fs.readFileSync(path.join(profileDir, "profile.json"), "utf8"))
+    } catch {
+      if (!configured) process.exit(0)
+      process.exit(70)
+    }
+    if (identity.kind !== "provider") process.exit(1)
+    if (!configured) process.exit(0)
+    let manifest
+    try {
+      manifest = JSON.parse(configured)
+    } catch {
+      process.exit(70)
+    }
+    const provider = String(identity.provider || "").toLowerCase()
+    const profileId = String(identity.profileId || "")
+    const selected = (Array.isArray(manifest.accounts) ? manifest.accounts : [])
+      .filter((account) => String(account.provider || "").toLowerCase() === provider)
+    const selectedIds = new Set(selected.map((account) => String(account.account_profile || "")))
+    const defaults = Array.isArray(manifest.defaults) ? manifest.defaults : []
+    const isDefault = defaults.some((account) => (
+      String(account.provider || "").toLowerCase() === provider
+      && String(account.account_profile || "") === profileId
+    ))
+    if (selectedIds.size > 1 && selectedIds.has(profileId) && !isDefault) process.exit(1)
+    process.exit(0)
+  ' "$profile_dir"
+}
+
+prepare_publication_control_state
 validate_credential_destination
 import_provider_credentials
+materialize_credential_bindings
 import_credential_bindings
 if [[ "$(id -u)" -eq 0 ]]; then
   chown chariox:chariox "$HOME"
@@ -392,7 +529,8 @@ chown -R chariox:chariox \
   "$HOME/.claude" \
   "$HOME/.claude.json" \
   "$HOME/.config" \
-  "$HOME/.local" 2>/dev/null || true
+  "$HOME/.local" \
+  "$HOME/.credential-bindings" 2>/dev/null || true
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R chariox:chariox "$CHARIOX_WORKSPACE_DIR"
 fi
@@ -477,6 +615,7 @@ gateway() {
       CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID \
       CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN \
       CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID \
+      CHARIOX_PUBLICATION_RUNTIME_KEY \
       CHARIOX_PROVIDER_DEV_STUB \
       CHARIOX_CODEX_BIN \
       CHARIOX_CLAUDE_BIN \
@@ -487,7 +626,7 @@ gateway() {
   export HOME="$CHARIOX_GATEWAY_HOME"
   export USER=chariox-gateway
   export LOGNAME=chariox-gateway
-  export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+  export PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
   export HOST="${HOST:-0.0.0.0}"
   export PORT="${PORT:-3000}"
   export CHARIOX_KERNEL_HOST="${CHARIOX_KERNEL_HOST:-127.0.0.1}"

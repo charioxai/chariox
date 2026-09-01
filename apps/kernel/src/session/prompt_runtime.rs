@@ -202,6 +202,32 @@ impl PromptRuntimeState {
         removed
     }
 
+    pub(in crate::session) fn remove_active_prompts_by_workflow_runs(
+        &mut self,
+        workflow_run_ids: &std::collections::BTreeSet<String>,
+        focused_agent_id: Option<&str>,
+    ) -> usize {
+        let mut removed = 0;
+        let agent_ids = self.prompt_states.keys().cloned().collect::<Vec<_>>();
+        for agent_id in agent_ids {
+            let remove = self
+                .prompt_states
+                .get(&agent_id)
+                .and_then(AgentPromptState::active_prompt)
+                .and_then(PromptQueueItem::workflow_run_id)
+                .is_some_and(|workflow_run_id| workflow_run_ids.contains(workflow_run_id));
+            if remove {
+                if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
+                    prompt_state.active_prompt.take();
+                    removed += 1;
+                }
+            }
+            self.drop_empty_prompt_state(&agent_id);
+        }
+        self.refresh_after_mutation(focused_agent_id);
+        removed
+    }
+
     #[cfg(test)]
     pub(in crate::session) fn peek_next_queued_prompt(
         &self,
@@ -434,6 +460,102 @@ mod tests {
         assert!(runtime.active_prompt().is_none());
         assert!(runtime.queued_prompts().is_empty());
         assert!(runtime.has_any_active_prompt());
+    }
+
+    #[test]
+    fn shared_agent_queue_keeps_cross_workflow_fifo_order() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.submit_prompt(
+            prompt("prompt-alpha", "agent-shared", PromptStatus::Queued)
+                .with_workflow_context("run-alpha", "node-run-alpha"),
+            None,
+        );
+        runtime.submit_prompt(
+            prompt("prompt-beta", "agent-shared", PromptStatus::Queued)
+                .with_workflow_context("run-beta", "node-run-beta"),
+            None,
+        );
+        runtime.submit_prompt(
+            prompt("prompt-gamma", "agent-shared", PromptStatus::Queued)
+                .with_workflow_context("run-gamma", "node-run-gamma"),
+            None,
+        );
+
+        assert_eq!(
+            runtime
+                .active_prompt_for_agent("agent-shared")
+                .and_then(PromptQueueItem::workflow_run_id),
+            Some("run-alpha"),
+            "the first workflow owns the shared agent"
+        );
+        let queue = runtime
+            .queued_prompts_for_agent("agent-shared")
+            .expect("later workflows should queue on the shared agent");
+        assert_eq!(
+            queue
+                .iter()
+                .map(|item| item.workflow_run_id())
+                .collect::<Vec<_>>(),
+            vec![Some("run-beta"), Some("run-gamma")],
+            "queued workflows must keep submission order behind the busy agent"
+        );
+
+        let promoted = runtime.pop_next_queued_prompt("agent-shared", None);
+        assert_eq!(
+            promoted.as_ref().and_then(|item| item.workflow_run_id()),
+            Some("run-beta")
+        );
+        let promoted = runtime.pop_next_queued_prompt("agent-shared", None);
+        assert_eq!(
+            promoted.as_ref().and_then(|item| item.workflow_run_id()),
+            Some("run-gamma")
+        );
+        assert!(
+            runtime
+                .queued_prompts_for_agent("agent-shared")
+                .is_none_or(std::collections::VecDeque::is_empty),
+            "draining every queued workflow should leave no pending work"
+        );
+    }
+
+    #[test]
+    fn removing_a_workflow_run_keeps_other_workflows_queued_work() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.submit_prompt(
+            prompt("prompt-plain", "agent-shared", PromptStatus::Queued),
+            None,
+        );
+        runtime.submit_prompt(
+            prompt("prompt-alpha", "agent-shared", PromptStatus::Queued)
+                .with_workflow_context("run-alpha", "node-run-alpha"),
+            None,
+        );
+        runtime.submit_prompt(
+            prompt("prompt-beta", "agent-shared", PromptStatus::Queued)
+                .with_workflow_context("run-beta", "node-run-beta"),
+            None,
+        );
+
+        let removed = runtime.remove_queued_prompts_by_workflow_run("run-alpha", None);
+
+        assert_eq!(removed, 1);
+        assert_eq!(
+            runtime
+                .active_prompt_for_agent("agent-shared")
+                .map(PromptQueueItem::id),
+            Some("prompt-plain"),
+            "removing one workflow's queued work must not touch other turns"
+        );
+        let queue = runtime
+            .queued_prompts_for_agent("agent-shared")
+            .expect("other workflow work must survive");
+        assert_eq!(
+            queue
+                .iter()
+                .map(|item| item.workflow_run_id())
+                .collect::<Vec<_>>(),
+            vec![Some("run-beta")]
+        );
     }
 
     #[test]

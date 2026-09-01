@@ -69,6 +69,23 @@ export function createWorkflowTopologyController(deps: WorkflowTopologyControlle
     return { endpoint: workflowEndpoint(updatedWorkflow, endpoint.id), workflow: updatedWorkflow, session: payload.session }
   }
 
+  const setWorkflowEndpointMaxInstances = async (
+    workflowRef: string,
+    endpointRef: string,
+    maxInstances: number,
+  ) => {
+    const workflow = await resolveWorkflow(workflowRef)
+    const endpoint = resolveWorkflowEndpoint(workflow, endpointRef)
+    const payload = await deps.applyWorkflowDesignOp({
+      kind: "endpoint_update",
+      workflow_id: workflow.id,
+      endpoint_id: endpoint.id,
+      patch: { max_instances: maxInstances },
+    })
+    const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+    return { endpoint: workflowEndpoint(updatedWorkflow, endpoint.id), workflow: updatedWorkflow, session: payload.session }
+  }
+
   const removeWorkflowEndpoint = async (
     workflowRef: string,
     endpointRef: string,
@@ -218,6 +235,7 @@ export function createWorkflowTopologyController(deps: WorkflowTopologyControlle
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
     removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,

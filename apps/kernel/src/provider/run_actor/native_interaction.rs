@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::error::DaemonError;
 use crate::session::RuntimeInteraction;
@@ -20,7 +20,7 @@ pub(crate) struct ProviderNativeInteractionResolution {
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderNativeInteractionBridgeStore {
-    inner: Arc<Mutex<Option<Arc<dyn ProviderNativeInteractionBridge>>>>,
+    inner: Arc<Mutex<Option<Weak<dyn ProviderNativeInteractionBridge>>>>,
 }
 
 impl ProviderNativeInteractionBridgeStore {
@@ -28,13 +28,15 @@ impl ProviderNativeInteractionBridgeStore {
         self.inner
             .lock()
             .expect("provider native interaction bridge mutex poisoned")
-            .clone()
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
 
     pub(crate) fn set(&self, bridge: Arc<dyn ProviderNativeInteractionBridge>) {
         *self
             .inner
             .lock()
-            .expect("provider native interaction bridge mutex poisoned") = Some(bridge);
+            .expect("provider native interaction bridge mutex poisoned") =
+            Some(Arc::downgrade(&bridge));
     }
 }

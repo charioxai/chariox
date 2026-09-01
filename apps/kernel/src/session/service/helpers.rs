@@ -78,7 +78,10 @@ pub(super) fn collect_ready_workflow_dispatches(
         let node_run = WorkflowNodeRun::new(
             next_workflow_node_run_id(next_workflow_node_run_number),
             target_node.id().to_string(),
-            target_node.agent_id().to_string(),
+            workflow_run
+                .runtime_agent_id_for_node(target_node.id())
+                .unwrap_or_else(|| target_node.agent_id())
+                .to_string(),
             next_workflow_node_iteration_index(workflow_run, target_node.id()),
             WorkflowNodeRunStatus::Ready,
         );
@@ -478,11 +481,7 @@ impl SessionService {
     }
 
     pub(super) fn next_workflow_run_id(&mut self) -> String {
-        self.next_workflow_run_number = self.next_workflow_run_number.wrapping_add(1);
-        format!(
-            "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_run_number.rotate_left(3)
-        )
+        format!("{:032x}", rand::random::<u128>())
     }
 
     pub(super) fn next_workflow_node_run_id(&mut self) -> String {

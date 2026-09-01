@@ -1,12 +1,16 @@
 import type { CliDialogOverlayMode } from "./cli-dialog-overlay.js"
 
 export type CliDialogOverlayOpenState = {
+  managedMachineOpen?: boolean
   hotkeysOpen: boolean
   terminalPairingOpen: boolean
   sessionBrowserOpen: boolean
 }
 
 export function resolveCliDialogOverlayMode(state: CliDialogOverlayOpenState): CliDialogOverlayMode {
+  if (state.managedMachineOpen) {
+    return "managed-machine"
+  }
   if (state.sessionBrowserOpen) {
     return "session-browser"
   }

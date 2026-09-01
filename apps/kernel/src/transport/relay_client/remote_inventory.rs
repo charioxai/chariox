@@ -2,6 +2,7 @@
 
 use std::future::Future;
 
+use crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
@@ -80,19 +81,26 @@ pub(crate) async fn refresh_remote_inventory_projection(
     config_projection: DaemonConfigProjectionStore,
     projection: RemoteRelayInventoryProjectionStore,
 ) -> Result<(), DaemonError> {
-    let mut config = config_projection.snapshot();
-    if config.relay_url.is_none() || config.relay_token.is_none() {
+    let mut runtime_config = config_projection.snapshot();
+    if runtime_config.relay_url.is_none() || runtime_config.relay_token.is_none() {
         projection.clear();
         return Ok(());
     }
-    config.relay_request_timeout_ms = config
+    runtime_config.relay_request_timeout_ms = runtime_config
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let live_machines = relay_discovery::list_live_machines(&config).await?;
+    let mut discovery_config = runtime_config.clone();
+    if let Some(profile) = runtime_config.cloud_relay.as_ref() {
+        let token =
+            issue_cloud_relay_inventory_discovery_token(profile, &runtime_config.daemon_id).await?;
+        discovery_config.relay_token = Some(token.token);
+    }
+
+    let live_machines = relay_discovery::list_live_machines(&discovery_config).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
-        &config.host_machine_id,
+        &runtime_config.host_machine_id,
     );
     let (_, previous_kernels) = projection.snapshot();
     let known_kernel_ids = previous_kernels
@@ -105,9 +113,10 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .filter(|machine| machine.online && machine.kernel_count > 0)
     {
         let kernels =
-            relay_discovery::list_live_kernels_for_machine(&config, &machine.machine_id).await?;
+            relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine.machine_id)
+                .await?;
         remote_kernels
-            .extend(validate_live_relay_kernels(&config, &known_kernel_ids, kernels).await);
+            .extend(validate_live_relay_kernels(&runtime_config, &known_kernel_ids, kernels).await);
     }
     for machine in &mut remote_machines {
         machine.kernel_count = remote_kernels
@@ -133,7 +142,8 @@ async fn validate_live_relay_kernels(
         if kernel.kernel_id == config.daemon_id {
             continue;
         }
-        if !known_kernel_ids.contains(&kernel.kernel_id) {
+        let is_known = known_kernel_ids.contains(&kernel.kernel_id);
+        if !requires_peer_probe(is_known, config.cloud_relay.is_some()) {
             validated.push(kernel);
             continue;
         }
@@ -157,6 +167,13 @@ async fn validate_live_relay_kernels(
         }
     }
     validated
+}
+
+fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
+    // Hosted inventory is already freshness-filtered by the relay. A second
+    // lookup inside the temporary peer probe would incorrectly reuse the
+    // daemon token for client metadata discovery.
+    is_known && !is_hosted
 }
 
 #[cfg(test)]
@@ -197,5 +214,13 @@ mod tests {
         .await;
 
         assert_eq!(result, RemoteInventoryRefreshResult::TimedOut);
+    }
+
+    #[test]
+    fn hosted_known_kernels_use_fresh_relay_inventory_without_a_peer_probe() {
+        assert!(!requires_peer_probe(true, true));
+        assert!(requires_peer_probe(true, false));
+        assert!(!requires_peer_probe(false, true));
+        assert!(!requires_peer_probe(false, false));
     }
 }

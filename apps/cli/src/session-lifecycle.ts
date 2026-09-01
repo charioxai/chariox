@@ -36,6 +36,7 @@ type SessionLifecycleDeps = {
   connectedStatus: string
   waitingRoomState: () => WaitingRoomState
   attachmentState: () => RuntimeAttachment | null
+  sessionState: () => RuntimeSession
   deriveDetachedCliTransitionState: (options: {
     cliOptions: CliOptions
     waitingRoomState: WaitingRoomState
@@ -209,6 +210,27 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setAttachmentState(null)
   }
 
+  const rollbackAttachedSession = async (
+    sessionId: string,
+    message = "Managed session launch was cancelled.",
+  ) => {
+    const attachment = deps.attachmentState()
+    if (attachment?.session_id !== sessionId || deps.sessionState().id !== sessionId) {
+      return false
+    }
+    let detachError: unknown
+    try {
+      await deps.detachAttachment(attachment.id)
+    } catch (error) {
+      detachError = error
+    }
+    if (deps.attachmentState()?.id === attachment.id && deps.sessionState().id === sessionId) {
+      await transitionToNoSession(message)
+    }
+    if (detachError) throw detachError
+    return true
+  }
+
   const attachBinding = async (
     session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
     createdSession: boolean,
@@ -267,6 +289,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
+      let postHydrationStatusLine: string | null = null
       const providerSettlement = await settleAttachProviderRun(
         attachedSession,
         launch,
@@ -340,6 +363,13 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
               agent_id: providerSettlement.targetAgent?.id ?? null,
               worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
             })
+          } else if (providerSettlement.reason === "credential_vault_locked") {
+            deps.logWarning?.("skipping attach-time provider launch because the credential vault is locked", {
+              session_id: session.id,
+              agent_id: providerSettlement.targetAgent?.id ?? null,
+            })
+            postHydrationStatusLine = "Chariox vault locked. Run /credential vault manage."
+            deps.setStatusLine(postHydrationStatusLine)
           }
           deps.setProviderRunState(null)
           break
@@ -384,6 +414,9 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
 
       applyAttachedState(hydratedSession, attachment, createdSession)
+      if (postHydrationStatusLine) {
+        deps.setStatusLine(postHydrationStatusLine)
+      }
 
       await refreshAttachedSessionRow(hydratedSession)
 
@@ -414,6 +447,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   return {
     transitionToNoSession,
     detachCurrentAttachment,
+    rollbackAttachedSession,
     attachBinding,
   }
 }

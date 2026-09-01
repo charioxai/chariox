@@ -5,7 +5,10 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(
+            CreateSessionRequest::new("workspace-1", "worktree-1")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -163,7 +166,10 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(
+            CreateSessionRequest::new("workspace-1", "worktree-1")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

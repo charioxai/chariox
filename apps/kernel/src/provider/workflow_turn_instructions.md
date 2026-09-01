@@ -26,6 +26,7 @@ Do not ask the user which workflow runtime tool to call, whether to use an MCP t
 
 At the end of this workflow turn, return exactly one fenced ```json block with this shape:
 {"summary":"human-facing summary","output":{"message":"explicit downstream handoff message"}}
+The fenced block MUST parse as strict JSON. Never put literal line breaks inside a JSON string; use JSON arrays or objects for multiline structured content, or escape each line break as `\n`. Prefer compact output over a long prose document.
 Do not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.
 
 If a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements.

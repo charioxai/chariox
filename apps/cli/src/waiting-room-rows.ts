@@ -52,6 +52,10 @@ export function waitingRoomRows(
     waitingRoomSliceTitleWidth(remote),
     ...terminalTitles.map((title) => Math.max(0, title.length)),
     "Add New Terminal".length,
+    "Provider accounts source".length,
+    "Git credentials source".length,
+    "Selected repositories".length,
+    ...(remote.providerAccounts ?? []).map((profile) => profile.label.length),
     ...projects.map((project) => project.name.length),
   )
   const rows: WaitingRoomRow[] = waitingRoomStartRows(state, choice, {
