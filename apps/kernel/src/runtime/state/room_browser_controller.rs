@@ -1,5 +1,6 @@
+use crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION;
 use crate::runtime::browser_controller_process::{
-    BrowserControllerProcessStore, CONTROLLER_RESTARTED_BEFORE_OPERATION,
+    BrowserControllerProcessFailure, BrowserControllerProcessStore,
 };
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
@@ -199,20 +200,24 @@ async fn execute_local(
     command: Command,
 ) -> Result<Response, DaemonError> {
     let session_id = session_id.to_string();
-    let recovery_processes = processes.clone();
     let result = tokio::task::spawn_blocking(move || match command {
-        Command::CancelAction { execution_id } => Ok(Response::CancellationRequested {
-            accepted: processes.cancel_browser_action(&session_id, &execution_id),
-        }),
+        Command::CancelAction { execution_id } => {
+            Ok::<_, BrowserControllerProcessFailure>(Response::CancellationRequested {
+                accepted: processes.cancel_browser_action(&session_id, &execution_id),
+            })
+        }
         Command::Acquire => processes
             .acquire(&session_id)
-            .map(|snapshot| Response::Process { snapshot }),
+            .map(|snapshot| Response::Process { snapshot })
+            .map_err(BrowserControllerProcessFailure::from),
         Command::Release => processes
             .release(&session_id)
-            .map(|snapshot| Response::Process { snapshot }),
+            .map(|snapshot| Response::Process { snapshot })
+            .map_err(BrowserControllerProcessFailure::from),
         Command::Reconcile { viewport } => processes
             .reconcile_browser(&session_id, &viewport)
-            .map(|reconciliation| Response::Reconciled { reconciliation }),
+            .map(|reconciliation| Response::Reconciled { reconciliation })
+            .map_err(BrowserControllerProcessFailure::from),
         Command::Snapshot {
             target_id,
             document_id,
@@ -306,14 +311,13 @@ async fn execute_local(
     .await
     .map_err(|error| controller_route_error(&error.to_string()))?;
     match result {
-        Err(message) if message == CONTROLLER_RESTARTED_BEFORE_OPERATION => {
-            let process = recovery_processes
-                .snapshot()
-                .map_err(|error| controller_route_error(&error))?
-                .ok_or_else(|| controller_route_error(&message))?;
+        Ok(response) => Ok(response),
+        Err(BrowserControllerProcessFailure::RecoveryRequired { process }) => {
             Ok(Response::RecoveryRequired { process })
         }
-        result => result.map_err(|message| controller_route_error(&message)),
+        Err(BrowserControllerProcessFailure::Failed { message }) => {
+            Err(controller_route_error(&message))
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use crate::transport::room_browser_controller::RoomBrowserControllerResult as Re
 
 const COMPLETED_BROWSER_ACTION_LIMIT: usize = 256;
 type ExecutionKey = (String, String);
-type ExecutionOutcome = Result<Response, String>;
+type ExecutionOutcome = Result<Response, BrowserControllerProcessFailure>;
 
 #[derive(Default)]
 pub(super) struct CancellationSignal {
@@ -139,7 +139,7 @@ impl BrowserActionExecutions {
         session_id: &str,
         execution_id: &str,
         fingerprint: [u8; 32],
-    ) -> Result<ExecutionAdmission, String> {
+    ) -> Result<ExecutionAdmission, BrowserControllerProcessFailure> {
         if execution_id.len() != 32 || !execution_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("browser action requires a 128-bit execution identity".into());
         }
@@ -187,7 +187,7 @@ impl BrowserActionExecutions {
         session_id: &str,
         execution_id: &str,
         fingerprint: [u8; 32],
-    ) -> Result<RecoveryAdmission, String> {
+    ) -> Result<RecoveryAdmission, BrowserControllerProcessFailure> {
         if execution_id.len() != 32 || !execution_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("browser action recovery requires a 128-bit execution identity".into());
         }
@@ -283,12 +283,15 @@ impl BrowserControllerProcessStore {
         node_ref: &str,
         action: &BrowserLocatorAction,
         timeout_ms: u64,
-    ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, String>
-    {
+    ) -> Result<
+        crate::transport::room_browser_controller::RoomBrowserControllerResult,
+        BrowserControllerProcessFailure,
+    > {
         let Some(ownership) = &self.ownership else {
             return Ok(Response::Action { result: None });
         };
-        let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)?;
+        let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)
+            .map_err(BrowserControllerProcessFailure::from)?;
         let active = match self
             .executions
             .register(session_id, execution_id, fingerprint)?
@@ -330,8 +333,9 @@ impl BrowserControllerProcessStore {
         node_ref: &str,
         action: &BrowserLocatorAction,
         timeout_ms: u64,
-    ) -> Result<Response, String> {
-        let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)?;
+    ) -> Result<Response, BrowserControllerProcessFailure> {
+        let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)
+            .map_err(BrowserControllerProcessFailure::from)?;
         match self
             .executions
             .recover(session_id, execution_id, fingerprint)?
@@ -385,7 +389,11 @@ mod tests {
             Ok(_) => panic!("changed request must not reuse an execution identity"),
             Err(error) => error,
         };
-        assert!(error.contains("different request"));
+        assert!(matches!(
+            error,
+            BrowserControllerProcessFailure::Failed { message }
+                if message.contains("different request")
+        ));
         assert!(matches!(
             executions
                 .recover("room", "00000000000000000000000000000001", fingerprint)
@@ -441,7 +449,11 @@ mod tests {
             Ok(_) => panic!("unknown recovery must not start an execution"),
             Err(error) => error,
         };
-        assert!(error.contains("proof is unavailable"));
+        assert!(matches!(
+            error,
+            BrowserControllerProcessFailure::Failed { message }
+                if message.contains("proof is unavailable")
+        ));
         assert!(executions.state.lock().unwrap().active.is_empty());
     }
 }

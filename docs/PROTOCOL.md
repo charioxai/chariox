@@ -744,10 +744,13 @@ this forwarding contract.
 Relay peer v29 adds `recovery_required` to the physical Room controller
 response. When a worker discovers that its controller restarted before an
 operation, it returns the new controller process generation instead of only an
-error string. The home finishes an admitted mutation as failed, starts
-controller recovery, invalidates every old element reference, reconciles the
-kernel-owned Tab registry, and restores Browser and Browser Controller health
-before returning the retry error. The failed mutation is never replayed. A
+error string. The worker derives this response from typed supervisor recovery
+state, not from error-message equality. The home explicitly fails every running
+browser Action with `process_lost` before it attempts reconciliation, including
+when it has already observed the controller generation. It then invalidates
+every old element reference, reconciles the kernel-owned Tab registry, and
+restores Browser and Browser Controller health before returning the retry
+error. The failed mutation is never replayed. A
 caller must rediscover elements before retrying, and repeating the old opaque
 reference fails locally as stale. Stable Tabs and existing input ownership are
 preserved when reconciliation can prove their physical identities. This is a
