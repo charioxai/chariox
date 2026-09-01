@@ -174,6 +174,7 @@ async function run() {
     name: runId,
     backend: "local_docker",
     displayMode: "headed",
+    displayBackend: "selkies",
     workspaceMount: repoRoot,
     workerKernelRef: `${runId}-worker`,
     base: "clean",
@@ -933,10 +934,19 @@ async function portIsAvailable(port) {
 }
 
 async function terminateChild(child) {
-  if (!child || child.exitCode != null) return
-  signalChild(child, "SIGTERM")
+  if (!child) return
+  if (child.killProcessGroup) {
+    signalProcessGroup(child.pid, "SIGTERM")
+    await waitForChildExit(child, 5_000)
+    if (await waitForProcessGroupExit(child.pid, 500)) return
+    signalProcessGroup(child.pid, "SIGKILL")
+    await waitForProcessGroupExit(child.pid, 1_000)
+    return
+  }
+  if (child.exitCode != null) return
+  child.kill("SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  signalChild(child, "SIGKILL")
+  child.kill("SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
@@ -957,16 +967,31 @@ function waitForChildExit(child, timeoutMs) {
   })
 }
 
-function signalChild(child, signal) {
-  if (child.killProcessGroup) {
-    try {
-      process.kill(-child.pid, signal)
-      return
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error
-    }
+async function waitForProcessGroupExit(processGroupId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!processGroupExists(processGroupId)) return true
+    await sleep(50)
   }
-  child.kill(signal)
+  return !processGroupExists(processGroupId)
+}
+
+function processGroupExists(processGroupId) {
+  try {
+    process.kill(-processGroupId, 0)
+    return true
+  } catch (error) {
+    if (error?.code === "ESRCH") return false
+    throw error
+  }
+}
+
+function signalProcessGroup(processGroupId, signal) {
+  try {
+    process.kill(-processGroupId, signal)
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error
+  }
 }
 
 async function waitFor(operation, timeoutMs, message) {
