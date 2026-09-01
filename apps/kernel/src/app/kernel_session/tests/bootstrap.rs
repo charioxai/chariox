@@ -207,7 +207,10 @@ fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
         target.slice_id,
         format!("publication:{session_id}:{publication_id}")
     );
-    assert_eq!(target.local_base_url, "http://127.0.0.1:43100/");
+    assert_eq!(
+        target.kind.local_base_url(),
+        Some("http://127.0.0.1:43100/")
+    );
     assert_eq!(target.expires_at_ms, expires_at_ms);
     assert_eq!(
         target.capabilities,

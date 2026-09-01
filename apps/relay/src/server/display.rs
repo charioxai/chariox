@@ -27,6 +27,7 @@ const DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT: Option<Duration> = None;
 const DISPLAY_MAX_HEADER_BYTES: usize = 16 * 1024;
 const DISPLAY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DISPLAY_STREAM_QUEUE_CAPACITY: usize = 128;
+const ENCRYPTED_DISPLAY_STREAM_QUEUE_CAPACITY: usize = 16;
 
 pub(crate) async fn is_display_http_request(stream: &TcpStream) -> bool {
     let mut buffer = [0_u8; 512];
@@ -69,6 +70,7 @@ pub(crate) async fn handle_display_connection(
         DisplayTunnelLookup::Active {
             daemon_key,
             daemon_sender,
+            capabilities,
         } => {
             let Some(daemon_sender) = daemon_sender else {
                 write_response(&mut stream, 502, "display tunnel daemon is disconnected").await?;
@@ -78,7 +80,7 @@ pub(crate) async fn handle_display_connection(
                 "display-stream-{}",
                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
             );
-            let (event_tx, event_rx) = mpsc::channel(DISPLAY_STREAM_QUEUE_CAPACITY);
+            let (event_tx, event_rx) = mpsc::channel(display_stream_queue_capacity(&capabilities));
             {
                 let mut guard = registry.write().await;
                 guard.insert_pending_display_stream(stream_id.clone(), daemon_key, event_tx);
@@ -101,6 +103,17 @@ pub(crate) async fn handle_display_connection(
         }
     }
     Ok(())
+}
+
+fn display_stream_queue_capacity(capabilities: &[String]) -> usize {
+    if capabilities
+        .iter()
+        .any(|capability| capability == "encrypted")
+    {
+        ENCRYPTED_DISPLAY_STREAM_QUEUE_CAPACITY
+    } else {
+        DISPLAY_STREAM_QUEUE_CAPACITY
+    }
 }
 
 struct DisplayHttpRequest {
@@ -328,11 +341,20 @@ async fn receive_display_websocket_event(
 
 #[cfg(test)]
 mod websocket_idle_policy_tests {
-    use super::DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT;
+    use super::{display_stream_queue_capacity, DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT};
 
     #[test]
     fn display_websocket_stays_open_until_an_explicit_close() {
         assert_eq!(DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT, None);
+    }
+
+    #[test]
+    fn encrypted_display_stream_uses_the_end_to_end_queue_bound() {
+        assert_eq!(
+            display_stream_queue_capacity(&["view".to_string(), "encrypted".to_string()]),
+            16
+        );
+        assert_eq!(display_stream_queue_capacity(&["view".to_string()]), 128);
     }
 }
 

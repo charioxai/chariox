@@ -11,10 +11,10 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier};
-use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayMetadataQuery};
+use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
-    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry,
+    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry, RelaySender,
 };
 
 mod support;
@@ -31,6 +31,62 @@ const RELAY_CONNECTION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RELAY_PONG_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
+
+async fn try_forward_display_stream_event(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    daemon_sender: &RelaySender,
+    daemon_key: &DaemonKey,
+    stream_id: &str,
+    event: DisplayStreamEvent,
+) {
+    let sender = registry
+        .read()
+        .await
+        .display_stream_sender_for_daemon(stream_id, daemon_key);
+    let Some(sender) = sender else {
+        return;
+    };
+    if sender.try_send(event).is_ok() {
+        return;
+    }
+    registry
+        .write()
+        .await
+        .remove_pending_display_stream(stream_id);
+    let _ = send_envelope(
+        daemon_sender,
+        &RelayEnvelope::DaemonDisplayTunnelClientClose {
+            stream_id: stream_id.to_string(),
+            error: Some(relay_error(
+                "display_stream_backpressure",
+                "display viewer stopped accepting encrypted stream packets",
+                true,
+            )),
+        },
+    );
+}
+
+async fn close_display_stream_from_daemon(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    daemon_key: &DaemonKey,
+    stream_id: &str,
+    error: Option<RelayError>,
+) {
+    let sender = {
+        let mut guard = registry.write().await;
+        let sender = guard.display_stream_sender_for_daemon(stream_id, daemon_key);
+        guard.remove_pending_display_stream(stream_id);
+        sender
+    };
+    let Some(sender) = sender else {
+        return;
+    };
+    // A full queue cannot accept the terminal event. Removing the registry's
+    // sender and dropping this last clone closes the channel after its queued
+    // frames drain, so the viewer still observes termination without blocking
+    // the daemon read lane.
+    let _ = sender.try_send(DisplayStreamEvent::Close { error });
+}
 
 pub(crate) async fn handle_connection(
     stream: TcpStream,
@@ -740,21 +796,17 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let sender = {
-                                let guard = registry.read().await;
-                                guard.display_stream_sender_for_daemon(
-                                    &response.stream_id,
-                                    &current_daemon_key,
-                                )
-                            };
-                            if let Some(sender) = sender {
-                                let _ = sender
-                                    .send(DisplayStreamEvent::ResponseStart {
-                                        status: response.status,
-                                        headers: response.headers,
-                                    })
-                                    .await;
-                            }
+                            try_forward_display_stream_event(
+                                &registry,
+                                &outgoing_tx,
+                                &current_daemon_key,
+                                &response.stream_id,
+                                DisplayStreamEvent::ResponseStart {
+                                    status: response.status,
+                                    headers: response.headers,
+                                },
+                            )
+                            .await;
                         }
                         RelayEnvelope::DaemonDisplayTunnelChunk { chunk } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
@@ -764,21 +816,17 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let sender = {
-                                let guard = registry.read().await;
-                                guard.display_stream_sender_for_daemon(
-                                    &chunk.stream_id,
-                                    &current_daemon_key,
-                                )
-                            };
-                            if let Some(sender) = sender {
-                                let _ = sender
-                                    .send(DisplayStreamEvent::Chunk {
-                                        data: chunk.data,
-                                        message_kind: chunk.message_kind,
-                                    })
-                                    .await;
-                            }
+                            try_forward_display_stream_event(
+                                &registry,
+                                &outgoing_tx,
+                                &current_daemon_key,
+                                &chunk.stream_id,
+                                DisplayStreamEvent::Chunk {
+                                    data: chunk.data,
+                                    message_kind: chunk.message_kind,
+                                },
+                            )
+                            .await;
                         }
                         RelayEnvelope::DaemonDisplayTunnelClose { stream_id, error } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
@@ -788,19 +836,13 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let sender = {
-                                let mut guard = registry.write().await;
-                                let sender = guard
-                                    .display_stream_sender_for_daemon(
-                                        &stream_id,
-                                        &current_daemon_key,
-                                    );
-                                guard.remove_pending_display_stream(&stream_id);
-                                sender
-                            };
-                            if let Some(sender) = sender {
-                                let _ = sender.send(DisplayStreamEvent::Close { error }).await;
-                            }
+                            close_display_stream_from_daemon(
+                                &registry,
+                                &current_daemon_key,
+                                &stream_id,
+                                error,
+                            )
+                            .await;
                         }
                         RelayEnvelope::DaemonEvent {
                             subscription_id,

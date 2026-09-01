@@ -208,6 +208,12 @@ pub struct SliceDisplayEndpoint {
     pub expires_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

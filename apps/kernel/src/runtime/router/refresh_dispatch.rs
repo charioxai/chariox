@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{command_caller_user_id, KernelCommand, KernelCommandPriority};
+use crate::runtime::command::{KernelCommand, KernelCommandPriority};
 use crate::runtime::history_executor::execute_history_request;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
@@ -101,12 +101,11 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
             | LocalDaemonRequest::CreateSliceBackup(_)) => {
-                let caller_user_id = command_caller_user_id(&command);
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
-                    &caller_user_id,
+                    &command.caller,
                     request,
                 )
                 .await

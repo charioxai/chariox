@@ -34,7 +34,7 @@ test("Room Environment placement uses shared requests", () => {
 })
 
 test("Room Environment state request matches protocol 290", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 292)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 293)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -134,7 +134,7 @@ test("Room Environment state request matches protocol 290", () => {
 })
 
 test("Room Environment event replay request matches protocol 290", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 292)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 293)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",

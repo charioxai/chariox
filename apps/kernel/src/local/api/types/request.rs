@@ -137,7 +137,7 @@ pub enum LocalDaemonRequest {
     ImportSliceProviderAuth(ImportSliceProviderAuthRequest),
     RemoveSliceProviderAuth(RemoveSliceProviderAuthRequest),
     StartSliceProviderLogin(StartSliceProviderLoginRequest),
-    GetSliceDisplayEndpoint(SliceRefRequest),
+    GetSliceDisplayEndpoint(GetSliceDisplayEndpointRequest),
     GetSliceLogs(GetSliceLogsRequest),
     ListSliceAudit(ListSliceAuditRequest),
     SaveSliceState(SliceStateSaveRequest),

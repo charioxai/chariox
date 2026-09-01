@@ -25,6 +25,88 @@ fn outgoing_queue_capacity_override_is_positive_and_defaults_safely() {
     );
 }
 
+#[tokio::test]
+async fn saturated_display_viewer_is_closed_without_blocking_the_daemon_lane() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-1");
+    let (display_tx, _display_rx) = mpsc::channel(1);
+    display_tx
+        .try_send(DisplayStreamEvent::Chunk {
+            data: "first".to_string(),
+            message_kind: Some("binary".to_string()),
+        })
+        .expect("first display packet should fill the queue");
+    registry.write().await.insert_pending_display_stream(
+        "stream-1".to_string(),
+        daemon_key.clone(),
+        display_tx,
+    );
+    let (daemon_tx, mut daemon_rx) = mpsc::channel(2);
+
+    try_forward_display_stream_event(
+        &registry,
+        &daemon_tx,
+        &daemon_key,
+        "stream-1",
+        DisplayStreamEvent::Chunk {
+            data: "second".to_string(),
+            message_kind: Some("binary".to_string()),
+        },
+    )
+    .await;
+
+    assert!(registry
+        .read()
+        .await
+        .display_stream_sender_for_daemon("stream-1", &daemon_key)
+        .is_none());
+    let message = daemon_rx
+        .recv()
+        .await
+        .expect("daemon should receive a bounded backpressure close");
+    let Message::Text(text) = message else {
+        panic!("expected a relay text envelope");
+    };
+    assert!(matches!(
+        serde_json::from_str::<RelayEnvelope>(&text).expect("close envelope should decode"),
+        RelayEnvelope::DaemonDisplayTunnelClientClose {
+            stream_id,
+            error: Some(error),
+        } if stream_id == "stream-1" && error.code == "display_stream_backpressure"
+    ));
+}
+
+#[tokio::test]
+async fn saturated_display_viewer_observes_channel_close_after_daemon_terminal_event() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-1");
+    let (display_tx, mut display_rx) = mpsc::channel(1);
+    display_tx
+        .try_send(DisplayStreamEvent::Chunk {
+            data: "last-frame".to_string(),
+            message_kind: Some("binary".to_string()),
+        })
+        .expect("last display packet should fill the queue");
+    registry.write().await.insert_pending_display_stream(
+        "stream-1".to_string(),
+        daemon_key.clone(),
+        display_tx,
+    );
+
+    close_display_stream_from_daemon(&registry, &daemon_key, "stream-1", None).await;
+
+    assert!(matches!(
+        display_rx.recv().await,
+        Some(DisplayStreamEvent::Chunk { data, .. }) if data == "last-frame"
+    ));
+    assert!(display_rx.recv().await.is_none());
+    assert!(registry
+        .read()
+        .await
+        .display_stream_sender_for_daemon("stream-1", &daemon_key)
+        .is_none());
+}
+
 fn peer_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }

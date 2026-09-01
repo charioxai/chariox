@@ -62,4 +62,6 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 292;
+/// Version 293 admits an authenticated Room viewer to one encrypted,
+/// single-use Selkies display stream through the Room's bound worker.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 293;

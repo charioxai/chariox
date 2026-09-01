@@ -231,6 +231,9 @@ export type SliceDisplayEndpoint = {
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null
   capabilities?: string[]
+  stream_protocol?: string | null
+  stream_id?: string | null
+  peer_public_key?: string | null
 }
 
 export type PairedClientRecord = {

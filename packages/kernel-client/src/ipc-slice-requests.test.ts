@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createSliceRequest } from "./ipc-slice-requests.js"
+import { createSliceRequest, getSliceDisplayEndpointRequest } from "./ipc-slice-requests.js"
+import type { SliceDisplayEndpoint } from "./kernel-types-cloud.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("slice creation forwards an explicit display backend on the shared client path", () => {
   const request = createSliceRequest({ name: "desktop", displayMode: "headed", displayBackend: "selkies" })
@@ -10,4 +12,39 @@ test("slice creation forwards an explicit display backend on the shared client p
 
 test("legacy slice creation does not add a backend field", () => {
   assert.equal(Object.hasOwn(createSliceRequest({ name: "legacy" }).CreateSlice, "display_backend"), false)
+})
+
+test("Room display admission sends the attachment and viewer identity in protocol 293", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 293)
+  assert.deepEqual(
+    getSliceDisplayEndpointRequest("slice-1", {
+      sessionId: "room-1",
+      attachmentId: "attachment-1",
+      viewerPublicKey: "viewer-public-key",
+    }),
+    {
+      GetSliceDisplayEndpoint: {
+        slice_ref: "slice-1",
+        session_id: "room-1",
+        attachment_id: "attachment-1",
+        viewer_public_key: "viewer-public-key",
+      },
+    },
+  )
+})
+
+test("Room display endpoint exposes the encrypted stream metadata", () => {
+  const endpoint: SliceDisplayEndpoint = {
+    slice_id: "slice-1",
+    kind: "selkies",
+    url: "wss://relay.example.test/display/display-1/stream",
+    access: "tunnel",
+    capabilities: ["encrypted", "single_use"],
+    stream_protocol: "chariox-display-v1",
+    stream_id: "display-1",
+    peer_public_key: "worker-public-key",
+  }
+  assert.equal(endpoint.stream_protocol, "chariox-display-v1")
+  assert.equal(endpoint.stream_id, "display-1")
+  assert.equal(endpoint.peer_public_key, "worker-public-key")
 })

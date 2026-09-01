@@ -41,6 +41,17 @@ pub struct SliceRefRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSliceDisplayEndpointRequest {
+    pub slice_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer_public_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceStateSaveRequest {
     pub slice_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

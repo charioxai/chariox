@@ -98,6 +98,34 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::OpenRoomDisplay {
+            session_id,
+            slice_id,
+            viewer_public_key,
+        } => {
+            match router
+                .relay_open_room_display(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    viewer_public_key,
+                )
+                .await
+            {
+                Ok(endpoint) => RelayPeerResponse::RoomDisplayOpened {
+                    session_id,
+                    slice_id,
+                    endpoint,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
         RelayPeerRequest::CreateExecutionLease {
             home_kernel_id,
