@@ -43,8 +43,9 @@ const children = []
 const resources = []
 let client = null
 let observerClient = null
+let localAutomation = null
 let remoteAutomation = null
-let remoteTuiOutput = ""
+const tuiOutput = { local: "", remote: "" }
 let remoteTuiHome = null
 let fixture = null
 let slice = null
@@ -157,6 +158,14 @@ async function run() {
     30_000,
   )
   assert.equal(attachedRemoteTui.session?.id, sessionId)
+  localAutomation = await startLocalTui({ tempRoot, kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel` })
+  const attachedLocalTui = await waitForAutomationSnapshot(
+    localAutomation,
+    (snapshot) => snapshot.session?.id === sessionId,
+    "direct local TUI session",
+    30_000,
+  )
+  assert.equal(attachedLocalTui.session?.id, sessionId)
 
   const createSliceResponse = await withTimeout(client.send(requests.createSliceRequest({
     name: runId,
@@ -193,7 +202,20 @@ async function run() {
     desktop_pixel_height: 800,
   })), "RoomEnvironmentUpdated").environment
   assert.equal(environment.lifecycle, "ready")
-  const readyRemoteTui = await waitForRemoteNotice(/^Room screen: ready · tab Room pointer drill — /)
+  const [readyLocalTui, readyRemoteTui] = await Promise.all([
+    waitForLocalNotice(/^Room screen: ready · tab Room pointer drill — /),
+    waitForRemoteNotice(/^Room screen: ready · tab Room pointer drill — /),
+  ])
+  const localStatusSnapshot = await localAutomation.send(
+    "submit_prompt",
+    { prompt: "/room status" },
+    20_000,
+  )
+  const localStatusNotice = automationNoticeTexts(localStatusSnapshot)
+    .findLast((notice) => notice.startsWith(`Room environment ${environment.environment_id}\n`))
+  assert.ok(localStatusNotice, "local TUI did not render the authoritative Room status")
+  assert.match(localStatusNotice, /lifecycle=ready /)
+  assert.match(localStatusNotice, /tab=.+ Room pointer drill — http:\/\/host\.docker\.internal:/)
   const remoteScreenshot = await captureScreenshotFromRemoteTui(tempRoot)
   const activityNotices = []
   const daemonActivities = []
@@ -219,9 +241,15 @@ async function run() {
   assert.equal(desktopOwner?.actor_id, "user:local")
   assert.equal(await activityController.synchronize(), true)
   assert.ok(activityNotices.includes("Room input: Local user controls desktop"))
-  await waitForRemoteNotice(/^Room input: Local user controls desktop$/)
+  await Promise.all([
+    waitForLocalNotice(/^Room input: Local user controls desktop$/),
+    waitForRemoteNotice(/^Room input: Local user controls desktop$/),
+  ])
 
   const noticesBeforePointers = activityNotices.length
+  const localNoticesBeforePointers = automationNoticeTexts(
+    await localAutomation.send("snapshot"),
+  ).length
   const remoteNoticesBeforePointers = automationNoticeTexts(
     await remoteAutomation.send("snapshot"),
   ).length
@@ -241,6 +269,14 @@ async function run() {
     `pointer movement leaked into TUI notices: ${noticesAfterPointers.join(" | ")}`,
   )
   await sleep(600)
+  const localNoticesAfterPointers = automationNoticeTexts(
+    await localAutomation.send("snapshot"),
+  ).slice(localNoticesBeforePointers)
+  assert.equal(
+    localNoticesAfterPointers.some((notice) => /pointer/i.test(notice)),
+    false,
+    `pointer movement leaked into local TUI notices: ${localNoticesAfterPointers.join(" | ")}`,
+  )
   const remoteNoticesAfterPointers = automationNoticeTexts(
     await remoteAutomation.send("snapshot"),
   ).slice(remoteNoticesBeforePointers)
@@ -261,7 +297,10 @@ async function run() {
   assert.equal(actionState(click.environment, click.action_id), "completed")
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), /^Room action: Local user · computer pointer_click · completed$/)
-  await waitForRemoteNotice(/^Room action: Local user · computer pointer_click · completed$/)
+  await Promise.all([
+    waitForLocalNotice(/^Room action: Local user · computer pointer_click · completed$/),
+    waitForRemoteNotice(/^Room action: Local user · computer pointer_click · completed$/),
+  ])
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
 
@@ -289,7 +328,10 @@ async function run() {
   ).environment
   assert.equal(await activityController.synchronize(), true)
   assert.equal(activityNotices.at(-1), "Room input: available")
-  const releasedRemoteTui = await waitForRemoteNotice(/^Room input: available$/)
+  const [releasedLocalTui, releasedRemoteTui] = await Promise.all([
+    waitForLocalNotice(/^Room input: available$/),
+    waitForRemoteNotice(/^Room input: available$/),
+  ])
   const observed = unwrap(
     await observerClient.send(requests.getRoomEnvironmentStateRequest(sessionId)),
     "RoomEnvironmentState",
@@ -302,10 +344,10 @@ async function run() {
   assert.ok(observed.event_cursor >= released.event_cursor)
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v2",
+    schema: "chariox.room_environment.pointer_click_drill.v3",
     status: "passed",
     startedAt,
-    topology: "local kernel and headed Docker worker, same-host relay, relay-attached remote TUI",
+    topology: "local kernel and headed Docker worker, direct local TUI and relay-attached remote TUI",
     sessionId,
     sliceId: slice.id,
     environmentId: retry.environment.environment_id,
@@ -320,12 +362,20 @@ async function run() {
       "idempotent retry returned the original Action without a second click",
       "TUI activity projected lifecycle, focused tab, takeover, and terminal Action outcome",
       "pointer movement produced no pointer-derived TUI notices",
+      "direct local and relay-attached remote TUIs simultaneously projected one authoritative Room",
+      "direct local TUI rendered the current lifecycle, tab title, and URL from kernel state",
       "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
       "relay-attached remote TUI captured the real headed display and verified its PNG digest locally",
       "TUI projected input release and a second protocol client observed the same or newer authoritative state",
     ],
     activityNotices,
     daemonActivities,
+    localTui: {
+      sessionId: releasedLocalTui.session?.id,
+      notices: automationNoticeTexts(releasedLocalTui),
+      readyNoticeCount: automationNoticeTexts(readyLocalTui).length,
+      status: localStatusNotice,
+    },
     remoteTui: {
       sessionId: releasedRemoteTui.session?.id,
       notices: automationNoticeTexts(releasedRemoteTui),
@@ -369,43 +419,63 @@ async function resolveRuntimeBinary(name) {
 }
 
 async function startRemoteTui({ tempRoot }) {
-  const automationSocket = path.join(tempRoot, "remote-tui.sock")
-  const remoteTuiArgs = [
+  const env = remoteTuiEnvironment(tempRoot)
+  for (const name of directDaemonEnvironmentNames) assert.equal(name in env, false)
+  return await startTui({
+    kind: "remote",
+    tempRoot,
+    env,
+    connectionArgs: [
+      "--relay-url", `ws://127.0.0.1:${relayPort}`,
+      "--relay-token", relayToken,
+      "--target-daemon-id", homeDaemonId,
+    ],
+  })
+}
+
+async function startLocalTui({ tempRoot, kernelUrl }) {
+  return await startTui({
+    kind: "local",
+    tempRoot,
+    env: isolatedTuiEnvironment(tempRoot, "local"),
+    connectionArgs: ["--kernel-url", kernelUrl],
+  })
+}
+
+async function startTui({ kind, tempRoot, env, connectionArgs }) {
+  const automationSocket = path.join(tempRoot, `${kind}-tui.sock`)
+  const args = [
     "-q",
     "/dev/null",
     "bun",
     path.join(repoRoot, "apps", "cli", "dist", "index.js"),
-    "--relay-url", `ws://127.0.0.1:${relayPort}`,
-    "--relay-token", relayToken,
-    "--target-daemon-id", homeDaemonId,
+    ...connectionArgs,
     "--automation-socket", automationSocket,
     "--session", sessionId,
     "--workspace", repoRoot,
     "--worktree", repoRoot,
     "--provider", "dev-stub",
-    "--model", "room-activity-remote-tui-drill",
-    "--client-id", `${runId}-remote-tui`,
+    "--model", `room-activity-${kind}-tui-drill`,
+    "--client-id", `${runId}-${kind}-tui`,
   ]
-  const remoteEnv = remoteTuiEnvironment(tempRoot)
-  for (const name of directDaemonEnvironmentNames) assert.equal(name in remoteEnv, false)
-  const remoteTui = spawn("script", remoteTuiArgs, {
+  const tui = spawn("script", args, {
     cwd: repoRoot,
-    env: remoteEnv,
+    env,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   })
-  remoteTui.killProcessGroup = true
-  children.push(remoteTui)
-  remoteTui.stdout.on("data", (chunk) => {
-    remoteTuiOutput = `${remoteTuiOutput}${chunk}`.slice(-16_000)
+  tui.killProcessGroup = true
+  children.push(tui)
+  tui.stdout.on("data", (chunk) => {
+    tuiOutput[kind] = `${tuiOutput[kind]}${chunk}`.slice(-16_000)
   })
-  remoteTui.stderr.on("data", (chunk) => {
-    remoteTuiOutput = `${remoteTuiOutput}${chunk}`.slice(-16_000)
+  tui.stderr.on("data", (chunk) => {
+    tuiOutput[kind] = `${tuiOutput[kind]}${chunk}`.slice(-16_000)
   })
   const startupFailure = new Promise((resolve) => {
-    remoteTui.once("error", resolve)
-    remoteTui.once("exit", (code, signal) => {
-      resolve(new Error(`remote TUI exited during startup: code=${code ?? "none"} signal=${signal ?? "none"}`))
+    tui.once("error", resolve)
+    tui.once("exit", (code, signal) => {
+      resolve(new Error(`${kind} TUI exited during startup: code=${code ?? "none"} signal=${signal ?? "none"}`))
     })
   })
   const startup = await Promise.race([
@@ -413,7 +483,7 @@ async function startRemoteTui({ tempRoot }) {
     startupFailure,
   ])
   if (startup) {
-    throw new Error(`${startup.message}\nremote TUI output:\n${remoteTuiOutput.slice(-4_000)}`)
+    throw new Error(`${startup.message}\n${kind} TUI output:\n${tuiOutput[kind].slice(-4_000)}`)
   }
   const automation = await createAutomationClient(automationSocket)
   await automation.send("ping")
@@ -421,7 +491,7 @@ async function startRemoteTui({ tempRoot }) {
 }
 
 function remoteTuiEnvironment(tempRoot) {
-  const env = { ...process.env }
+  const env = isolatedTuiEnvironment(tempRoot, "remote")
   for (const name of directDaemonEnvironmentNames) {
     delete env[name]
   }
@@ -429,10 +499,17 @@ function remoteTuiEnvironment(tempRoot) {
   return {
     ...env,
     HOME: remoteTuiHome,
-    CHARIOX_HOME: path.join(tempRoot, "remote-tui-home"),
-    XDG_CONFIG_HOME: path.join(tempRoot, "remote-tui-xdg-config"),
-    XDG_STATE_HOME: path.join(tempRoot, "remote-tui-xdg-state"),
-    XDG_CACHE_HOME: path.join(tempRoot, "remote-tui-xdg-cache"),
+  }
+}
+
+function isolatedTuiEnvironment(tempRoot, kind) {
+  return {
+    ...process.env,
+    HOME: path.join(tempRoot, `${kind}-tui-os-home`),
+    CHARIOX_HOME: path.join(tempRoot, `${kind}-tui-home`),
+    XDG_CONFIG_HOME: path.join(tempRoot, `${kind}-tui-xdg-config`),
+    XDG_STATE_HOME: path.join(tempRoot, `${kind}-tui-xdg-state`),
+    XDG_CACHE_HOME: path.join(tempRoot, `${kind}-tui-xdg-cache`),
   }
 }
 
@@ -534,10 +611,18 @@ async function screenshot(name) {
 }
 
 async function waitForRemoteNotice(pattern, timeoutMs = 20_000) {
+  return await waitForTuiNotice(remoteAutomation, "remote", pattern, timeoutMs)
+}
+
+async function waitForLocalNotice(pattern, timeoutMs = 20_000) {
+  return await waitForTuiNotice(localAutomation, "local", pattern, timeoutMs)
+}
+
+async function waitForTuiNotice(automation, kind, pattern, timeoutMs) {
   return await waitForAutomationSnapshot(
-    remoteAutomation,
+    automation,
     (snapshot) => automationNoticeTexts(snapshot).some((notice) => pattern.test(notice)),
-    `remote TUI notice ${pattern}`,
+    `${kind} TUI notice ${pattern}`,
     timeoutMs,
   )
 }
@@ -711,6 +796,7 @@ async function cleanup() {
   await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   await client?.close?.()
   await observerClient?.close?.()
+  localAutomation?.close()
   remoteAutomation?.close()
   await closeFixtureServer()
   for (const child of children.toReversed()) await terminateChild(child)
@@ -745,7 +831,7 @@ async function cleanup() {
   if (failure) {
     await writeFile(
       path.join(evidenceRoot, "failure.txt"),
-      `${failure?.stack ?? String(failure)}\n\nremote TUI output:\n${remoteTuiOutput}\n`,
+      `${failure?.stack ?? String(failure)}\n\nlocal TUI output:\n${tuiOutput.local}\n\nremote TUI output:\n${tuiOutput.remote}\n`,
     )
   }
 }
