@@ -130,11 +130,14 @@ impl SessionRuntimeStore {
             )
             .await
         {
-            Ok(agent) => self
-                .state
-                .session_snapshot(&session_id)
-                .await
-                .map(|session| LocalDaemonResponse::AgentAliased { agent, session }),
+            Ok(agent) => match self.reconcile_room_environment_actors_if_started(&session_id) {
+                Ok(()) => self
+                    .state
+                    .session_snapshot(&session_id)
+                    .await
+                    .map(|session| LocalDaemonResponse::AgentAliased { agent, session }),
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
@@ -323,10 +326,14 @@ impl SessionRuntimeStore {
                         )
                         .await;
                 }
-                self.state
-                    .session_snapshot(&session_id)
-                    .await
-                    .map(|_| LocalDaemonResponse::AgentSpawned { agent })
+                match self.reconcile_room_environment_actors_if_started(&session_id) {
+                    Ok(()) => self
+                        .state
+                        .session_snapshot(&session_id)
+                        .await
+                        .map(|_| LocalDaemonResponse::AgentSpawned { agent }),
+                    Err(error) => Err(error),
+                }
             }
             Err(error) => Err(error),
         };
@@ -517,6 +524,9 @@ impl SessionRuntimeStore {
                 )
                 .await;
         }
+        if let Err(error) = self.reconcile_room_environment_actors_if_started(&request.session_id) {
+            return self.with_session_projection_action_result(Err(error)).await;
+        }
         self.with_session_projection_action_result(Ok(LocalDaemonResponse::AgentsSpawned {
             agents,
         }))
@@ -547,14 +557,20 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self.state.fork_agent(request, caller_user_id).await.map(
-            |(source_agent_id, agent, provider_run, session)| LocalDaemonResponse::AgentForked {
-                source_agent_id,
-                agent,
-                provider_run,
-                session,
-            },
-        );
+        let result = match self.state.fork_agent(request, caller_user_id).await {
+            Ok((source_agent_id, agent, provider_run, session)) => {
+                match self.reconcile_room_environment_actors_if_started(session.id()) {
+                    Ok(()) => Ok(LocalDaemonResponse::AgentForked {
+                        source_agent_id,
+                        agent,
+                        provider_run,
+                        session,
+                    }),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
         self.with_session_projection_action_result(result).await
     }
 
@@ -584,10 +600,14 @@ impl SessionRuntimeStore {
                         )
                         .await;
                 }
-                self.state
-                    .session_snapshot(&session_id)
-                    .await
-                    .map(|_| LocalDaemonResponse::AgentDestroyed { agent })
+                match self.reconcile_room_environment_actors_if_started(&session_id) {
+                    Ok(()) => self
+                        .state
+                        .session_snapshot(&session_id)
+                        .await
+                        .map(|_| LocalDaemonResponse::AgentDestroyed { agent }),
+                    Err(error) => Err(error),
+                }
             }
             Err(error) => Err(error),
         };

@@ -95,4 +95,17 @@ impl SessionService {
             viewport,
         )
     }
+
+    pub(crate) fn reconcile_room_environment_actors(
+        &mut self,
+        session_id: &str,
+        actors: Vec<EnvironmentActor>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.reconcile_actors(session_id, actors)
+    }
 }

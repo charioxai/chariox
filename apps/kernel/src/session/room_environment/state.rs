@@ -171,6 +171,32 @@ impl RoomEnvironment {
         Ok(())
     }
 
+    pub fn reconcile_actors(
+        &mut self,
+        actors: Vec<EnvironmentActor>,
+    ) -> Result<(), EnvironmentError> {
+        let mut reconciled = self.actors.clone();
+        for actor in reconciled.values_mut() {
+            actor.presence = EnvironmentActorPresence::Disconnected;
+        }
+        for mut actor in actors {
+            if let Some(existing) = reconciled.get(&actor.actor_id) {
+                if existing.kind != actor.kind {
+                    return Err(EnvironmentError::ActorKindConflict {
+                        actor_id: actor.actor_id,
+                    });
+                }
+            }
+            actor.presence = EnvironmentActorPresence::Present;
+            reconciled.insert(actor.actor_id.clone(), actor);
+        }
+        if reconciled != self.actors {
+            self.actors = reconciled;
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        Ok(())
+    }
+
     pub fn set_actor_presence(
         &mut self,
         actor_id: &str,

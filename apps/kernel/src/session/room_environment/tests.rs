@@ -751,6 +751,42 @@ fn actor_reconnect_preserves_identity_and_cannot_change_actor_kind() {
 }
 
 #[test]
+fn actor_reconciliation_preserves_history_and_emits_only_for_changes() {
+    let mut environment = ready_environment();
+    let human = EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Miguel");
+    let agent = EnvironmentActor::new("agent-1", EnvironmentActorKind::Agent, "Mara");
+
+    environment
+        .reconcile_actors(vec![human.clone(), agent.clone()])
+        .unwrap();
+    let reconciled_cursor = environment.snapshot().event_cursor;
+    environment
+        .reconcile_actors(vec![human.clone(), agent])
+        .unwrap();
+    assert_eq!(environment.snapshot().event_cursor, reconciled_cursor);
+
+    environment.reconcile_actors(vec![human]).unwrap();
+    let actors = environment.snapshot().actors;
+    assert_eq!(actors.len(), 2);
+    assert_eq!(
+        actors
+            .iter()
+            .find(|actor| actor.actor_id == "user-1")
+            .unwrap()
+            .presence,
+        EnvironmentActorPresence::Present
+    );
+    assert_eq!(
+        actors
+            .iter()
+            .find(|actor| actor.actor_id == "agent-1")
+            .unwrap()
+            .presence,
+        EnvironmentActorPresence::Disconnected
+    );
+}
+
+#[test]
 fn component_health_projects_safe_diagnostic_codes() {
     let mut environment = ready_environment();
     environment.update_component_health(

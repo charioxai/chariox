@@ -197,7 +197,9 @@ impl SessionRuntimeCommandExecutor {
                 self.store.update_session_config(request).await
             }
             LocalDaemonRequest::StartRoomEnvironment(request) => {
-                self.store.start_room_environment(request).await
+                self.store
+                    .start_room_environment(request, caller_user_id)
+                    .await
             }
             LocalDaemonRequest::StopRoomEnvironment(request) => {
                 self.store.stop_room_environment(request).await
