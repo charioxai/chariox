@@ -297,7 +297,14 @@ async function main() {
 
   const startedAt = new Date().toISOString()
   const runId = startedAt.replace(/[:.]/g, "-")
-  const evidenceRoot = path.join(os.homedir(), ".codex", "evidence", "browser-computer-use", "m1", runId)
+  const evidenceRoot = path.join(
+    os.homedir(),
+    ".codex",
+    "evidence",
+    "browser-computer-use",
+    "room-environment-m1",
+    runId,
+  )
   const stateRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-room-environment-m1-"))
   await mkdir(evidenceRoot, { recursive: true })
 
@@ -535,7 +542,7 @@ async function main() {
       workerKernelId: advertisedWorker.kernel_id,
       eventCursor: nextCursor,
       assertions,
-      artifacts: ["relay.log", "home-kernel.log", "worker-kernel.log", "cleanup.json"],
+      artifacts: ["report.json", "relay.log", "home-kernel.log", "worker-kernel.log", "cleanup.json"],
       resources,
       cleanup: { stateRootRemoved: false, listenersReleased: false },
     }
@@ -568,7 +575,7 @@ async function main() {
       provider: "dev-stub",
       sessionId,
       assertions,
-      artifacts: ["relay.log", "home-kernel.log", "worker-kernel.log", "cleanup.json"],
+      artifacts: ["report.json", "relay.log", "home-kernel.log", "worker-kernel.log", "cleanup.json"],
       resources,
       cleanup: { stateRootRemoved: false, listenersReleased: false },
     }

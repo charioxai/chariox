@@ -190,7 +190,7 @@ CARGO_TARGET_DIR=/absolute/shared/cargo-target \
   pnpm --filter @chariox/cli run room-environment:m1-drill
 ```
 
-Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
+Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/room-environment-m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
 
 ## Hosted Cloud Relay Drill
 
