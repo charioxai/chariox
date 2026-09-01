@@ -152,10 +152,12 @@ impl EnvironmentActionLedger {
         let Some(action_id) = self.idempotency_actions.get(idempotency_key) else {
             return Ok(None);
         };
-        let original = self
-            .requests
-            .get(action_id)
-            .expect("idempotency index must reference an Action request");
+        let original =
+            self.requests
+                .get(action_id)
+                .ok_or_else(|| EnvironmentError::UnknownAction {
+                    action_id: action_id.clone(),
+                })?;
         if !original.matches_idempotent_operation(request) {
             return Err(EnvironmentError::IdempotencyConflict {
                 idempotency_key: idempotency_key.clone(),
@@ -169,7 +171,9 @@ impl EnvironmentActionLedger {
                     .get(action_id)
                     .and_then(|sequence| self.history_records.get(sequence))
             })
-            .expect("idempotency index must reference Action history");
+            .ok_or_else(|| EnvironmentError::UnknownAction {
+                action_id: action_id.clone(),
+            })?;
         Ok(Some(ActionAdmission::Existing {
             action_id: action_id.clone(),
             state: action.state,
@@ -742,8 +746,14 @@ impl EnvironmentActionLedger {
             if action.state != EnvironmentActionState::Queued
                 || action.targets.iter().any(|target| {
                     self.reservations.contains_key(target)
-                        || self.input_owners.contains_key(target)
-                        || self.pending_takeovers.contains_key(target)
+                        || self
+                            .input_owners
+                            .get(target)
+                            .is_some_and(|actor_id| actor_id != &action.actor_id)
+                        || self
+                            .pending_takeovers
+                            .get(target)
+                            .is_some_and(|actor_id| actor_id != &action.actor_id)
                 })
             {
                 continue;
@@ -817,4 +827,56 @@ fn validate_target(tabs: &TabRegistry, target: &InputTarget) -> Result<(), Envir
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod invariant_tests {
+    use super::*;
+
+    #[test]
+    fn stale_idempotency_index_fails_closed_when_action_history_is_unavailable() {
+        let mut ledger = EnvironmentActionLedger::new(0, 8);
+        let actors = BTreeMap::from([(
+            "agent-1".to_string(),
+            EnvironmentActor::new("agent-1", EnvironmentActorKind::Agent, "Mara"),
+        )]);
+        let tabs = TabRegistry::new();
+        let request =
+            EnvironmentActionRequest::computer_mutation("agent-1", 1, "pointer_click", None)
+                .with_idempotency_key("pointer-click-1");
+        let action_id = match ledger
+            .submit(
+                request.clone(),
+                EnvironmentLifecycle::Ready,
+                1,
+                &actors,
+                &tabs,
+            )
+            .expect("initial Action should be admitted")
+        {
+            ActionAdmission::Accepted { action_id } => action_id,
+            other => panic!("unexpected Action admission: {other:?}"),
+        };
+        ledger
+            .finish(&action_id, EnvironmentActionTerminal::Completed)
+            .expect("initial Action should complete");
+        ledger.compact_terminal_actions();
+        let sequence = ledger
+            .history_action_sequences
+            .get(&action_id)
+            .copied()
+            .expect("Action history index should be retained");
+        ledger.history_records.remove(&sequence);
+
+        assert_eq!(
+            ledger.existing(&request),
+            Err(EnvironmentError::UnknownAction {
+                action_id: action_id.clone(),
+            })
+        );
+        assert_eq!(
+            ledger.existing(&request),
+            Err(EnvironmentError::UnknownAction { action_id })
+        );
+    }
 }

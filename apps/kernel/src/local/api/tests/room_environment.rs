@@ -514,6 +514,215 @@ fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
 }
 
 #[test]
+fn queued_human_pointer_click_promotes_after_agent_action_finishes_outside_room_lane() {
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-queued-human-pointer-click-test-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("slice-screen.sh");
+    let log = root.join("pointer-click.log");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_POINTER_CLICK_LOG\"\n",
+    )
+    .expect("screen helper should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("screen helper should be executable");
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    std::env::set_var("CHARIOX_POINTER_CLICK_LOG", &log);
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS", "5000");
+
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-queued-pointer-click",
+                "worktree-environment-queued-pointer-click",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+        app.session_state_store()
+            .reconcile_room_environment_controller_tabs(
+                session.id(),
+                vec![crate::session::EnvironmentTabObservation {
+                    runtime_target_id: "target-a".to_string(),
+                    document_id: "loader-a".to_string(),
+                    url: "https://example.test".to_string(),
+                    title: "Example".to_string(),
+                }],
+                Some("target-a"),
+            )
+            .expect("focused Room tab should be reconciled");
+    });
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                RequestRoomEnvironmentInputTakeoverRequest {
+                    session_id: session.id().to_string(),
+                    target: crate::session::InputTarget::Desktop,
+                },
+            ),
+        )
+        .expect("owner should take desktop input");
+
+    let environment = harness.runtime_state();
+    let snapshot = environment
+        .room_environment_snapshot(session.id())
+        .expect("Room Environment should exist");
+    let tab_id = snapshot
+        .focused_tab_id
+        .clone()
+        .expect("Room should have a focused tab");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+    let (release_blocker_tx, release_blocker_rx) = tokio::sync::oneshot::channel();
+    let (blocker_finished_tx, blocker_finished_rx) = tokio::sync::oneshot::channel();
+    let blocker_environment = environment.clone();
+    let blocker_session_id = session_id.clone();
+    let blocker = harness.spawn_test_task(async move {
+        let result = blocker_environment
+            .execute_browser_mutation_as_agent(
+                &blocker_session_id,
+                &agent_id,
+                &tab_id,
+                1,
+                "blocking-agent-click",
+                None,
+                async move {
+                    blocker_started_tx.send(()).ok();
+                    release_blocker_rx
+                        .await
+                        .expect("blocking agent Action should release");
+                    Ok::<_, DaemonError>(())
+                },
+            )
+            .await;
+        blocker_finished_tx.send(()).ok();
+        result
+    });
+    harness.block_on_test_task(async {
+        blocker_started_rx
+            .await
+            .expect("blocking agent Action should start")
+    });
+
+    let watcher_environment = environment.clone();
+    let watcher_session_id = session_id.clone();
+    let watcher = harness.spawn_test_task(async move {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let snapshot = watcher_environment
+                .room_environment_snapshot(&watcher_session_id)
+                .expect("Room Environment should remain available");
+            if snapshot.actions.iter().any(|action| {
+                action.actor_id == "user:owner-1"
+                    && action.state == crate::session::EnvironmentActionState::Queued
+            }) {
+                release_blocker_tx
+                    .send(())
+                    .expect("blocking agent Action should receive release");
+                tokio::time::timeout(std::time::Duration::from_millis(500), blocker_finished_rx)
+                    .await
+                    .expect("blocking agent Action should finish outside the Room command lane")
+                    .expect("blocking agent Action completion should be observed");
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "human Action should enter the Room queue before its wait timeout"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session_id.clone(),
+                runtime_generation: snapshot.runtime_generation,
+                viewport_revision: snapshot.viewport.revision,
+                idempotency_key: "queued-pointer-click-1".to_string(),
+                action: RoomEnvironmentHumanAction::PointerClick {
+                    x: 320,
+                    y: 180,
+                    button: RoomEnvironmentPointerButton::Left,
+                    click_count: 1,
+                },
+            }),
+        )
+        .expect("queued human pointer click should execute after the agent Action finishes");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "queued human Action should promote promptly rather than reaching its five-second timeout"
+    );
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert_eq!(
+        environment
+            .actions
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .map(|action| action.state),
+        Some(crate::session::EnvironmentActionState::Completed)
+    );
+    harness.block_on_test_task(async {
+        watcher.await.expect("queue watcher should join");
+        blocker
+            .await
+            .expect("blocking task should join")
+            .expect("blocking agent Action should complete");
+    });
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("physical click should be logged"),
+        "pointer-click 320 180 left 1\n"
+    );
+
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_POINTER_CLICK_LOG");
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+    std::fs::remove_dir_all(&root).expect("test root should be removed");
+}
+
+#[test]
 fn room_environment_reconciles_human_and_agent_presence() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
