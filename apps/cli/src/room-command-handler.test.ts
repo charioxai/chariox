@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { RoomEnvironmentSnapshot } from "@chariox/kernel-client/kernel-types"
+import type { RoomEnvironmentAction, RoomEnvironmentSnapshot } from "@chariox/kernel-client/kernel-types"
 
 import { parseSlashCommand } from "./commands.js"
 import { handleRoomSlashCommand } from "./room-command-handler.js"
@@ -34,6 +34,108 @@ test("/room status reads and renders the attached Room environment", async () =>
     "input=desktop:Mara",
     "last_action=none",
   ].join("\n")])
+})
+
+test("/room actions renders bounded browser and computer history with a continuation cursor", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room actions")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {
+        RoomEnvironmentActionHistoryListed: {
+          page: {
+            actions: [
+              roomAction({
+                action_id: "action-42",
+                sequence: 42,
+                mode: "browser",
+                kind: "navigate",
+                targets: [{ kind: "browser_tab", id: "tab-1" }],
+                submitted_at_ms: 1_788_300_000_042,
+              }),
+              roomAction({
+                action_id: "action-41",
+                sequence: 41,
+                actor_id: "user:miguel",
+                state: "failed",
+                outcome: { status: "failed", code: "controller_failure" },
+                submitted_at_ms: 1_788_300_000_041,
+              }),
+            ],
+            next_before_sequence: 41,
+          },
+        },
+      } as TResponse
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.deepEqual(requests, [{
+    ListRoomEnvironmentActionHistory: {
+      session_id: "session-1",
+      before_sequence: null,
+      limit: 20,
+    },
+  }])
+  assert.deepEqual(notices, [[
+    "Room actions (2)",
+    "#42 action-42 actor=agent:agent-1 browser:navigate target=tab:tab-1 state=completed submitted_at_ms=1788300000042",
+    "#41 action-41 actor=user:miguel computer:pointer_click target=desktop state=failed(controller_failure) submitted_at_ms=1788300000041",
+    "next_before=41",
+  ].join("\n")])
+})
+
+test("/room actions accepts explicit pagination and rejects unsafe bounds", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const flashes: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {
+        RoomEnvironmentActionHistoryListed: {
+          page: { actions: [], next_before_sequence: null },
+        },
+      } as TResponse
+    },
+    appendNotice: (notice: string) => notices.push(notice),
+    flashFooter: (message: string) => flashes.push(message),
+  }
+  const valid = parseSlashCommand("/room actions 5 42")
+  const invalid = [
+    "/room actions 0",
+    "/room actions 101",
+    "/room actions five",
+    "/room actions 5 0",
+    "/room actions 5 42 extra",
+  ].map(parseSlashCommand)
+  assert.equal(valid?.kind, "room")
+  assert.ok(invalid.every((command) => command?.kind === "room"))
+
+  await handleRoomSlashCommand(deps, valid)
+  for (const command of invalid) {
+    assert.equal(command?.kind, "room")
+    await handleRoomSlashCommand(deps, command)
+  }
+
+  assert.deepEqual(requests, [{
+    ListRoomEnvironmentActionHistory: {
+      session_id: "session-1",
+      before_sequence: 42,
+      limit: 5,
+    },
+  }])
+  assert.deepEqual(notices, ["Room actions: none"])
+  assert.deepEqual(flashes, Array(5).fill("usage: /room actions [LIMIT] [BEFORE_SEQUENCE]"))
 })
 
 test("/room start uses the portable default viewport and renders the authoritative result", async () => {
@@ -166,7 +268,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
@@ -661,5 +763,25 @@ function roomEnvironment(): RoomEnvironmentSnapshot {
     input_ownership: [{ target: { kind: "desktop" }, actor_id: "agent:agent-1" }],
     pending_input_takeovers: [],
     event_cursor: 4,
+  }
+}
+
+function roomAction(overrides: Partial<RoomEnvironmentAction> = {}): RoomEnvironmentAction {
+  return {
+    action_id: "action-1",
+    sequence: 1,
+    idempotency_key: null,
+    actor_id: "agent:agent-1",
+    runtime_generation: 2,
+    mode: "computer",
+    kind: "pointer_click",
+    targets: [{ kind: "desktop" }],
+    state: "completed",
+    cancellation_requested: false,
+    submitted_at_ms: 1_788_300_000_001,
+    started_at_ms: 1_788_300_000_002,
+    finished_at_ms: 1_788_300_000_003,
+    outcome: { status: "completed" },
+    ...overrides,
   }
 }
