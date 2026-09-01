@@ -235,7 +235,10 @@ fn serve_ready_connection(
         .to_string()
     } else if capability_request {
         assert!(request.contains("\"sessionToken\":\"cloud-session-token\""));
-        assert!(request.contains("\"generatorId\":\"dev.chariox.dummy\""));
+        assert!(
+            !request.contains("\"generatorId\":"),
+            "the path-bound generator ID must not be duplicated into the strict Cloud request body"
+        );
         assert!(request.contains("\"version\":\"1.0.0\""));
         assert!(request.contains(&format!(
             "\"manifestDigest\":\"{}\"",

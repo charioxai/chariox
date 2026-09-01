@@ -124,7 +124,6 @@ pub(crate) async fn issue_event_generator_management_capability(
         ("accountId", profile.account_id.as_str()),
         ("realmId", profile.realm_id.as_str()),
         ("kernelId", kernel_id),
-        ("generatorId", generator_id),
         ("version", version),
         ("manifestDigest", manifest_digest),
         ("managementUrl", management_url),
