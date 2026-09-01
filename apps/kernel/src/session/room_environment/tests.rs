@@ -892,6 +892,121 @@ fn human_takeover_promotes_the_new_owners_queued_action() {
 }
 
 #[test]
+fn human_takeover_cancels_another_humans_queued_action() {
+    let mut environment = ready_environment_with_agent();
+    for actor_id in ["user-1", "user-2"] {
+        environment
+            .register_actor(EnvironmentActor::new(
+                actor_id,
+                EnvironmentActorKind::Human,
+                actor_id,
+            ))
+            .unwrap();
+    }
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let agent_action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "fill", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+    let other_human_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "user-2", 1, "click", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+
+    assert_eq!(
+        environment
+            .request_takeover("user-1", InputTarget::BrowserTab(tab_id.clone()))
+            .unwrap(),
+        TakeoverOutcome::CancellationRequired {
+            action_ids: vec![agent_action_id.clone()],
+        }
+    );
+    environment
+        .finish_action(&agent_action_id, EnvironmentActionTerminal::Cancelled)
+        .unwrap();
+
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot.input_ownership,
+        vec![InputOwnership {
+            target: InputTarget::BrowserTab(tab_id),
+            actor_id: "user-1".to_string(),
+        }]
+    );
+    let other_human_action = snapshot
+        .actions
+        .iter()
+        .find(|action| action.action_id == other_human_action_id)
+        .unwrap();
+    assert_eq!(other_human_action.state, EnvironmentActionState::Cancelled);
+    assert_eq!(
+        other_human_action.outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::HumanTakeover,
+        })
+    );
+}
+
+#[test]
+fn explicit_cancellation_keeps_precedence_over_a_later_takeover() {
+    let mut environment = ready_environment_with_agent();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "user-1",
+            EnvironmentActorKind::Human,
+            "Miguel",
+        ))
+        .unwrap();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "fill", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+
+    assert_eq!(
+        environment.cancel_action("agent-1", &action_id).unwrap(),
+        ActionCancellationOutcome::CancellationRequested
+    );
+    assert_eq!(
+        environment
+            .request_takeover("user-1", InputTarget::BrowserTab(tab_id))
+            .unwrap(),
+        TakeoverOutcome::CancellationRequired {
+            action_ids: vec![action_id.clone()],
+        }
+    );
+    environment
+        .finish_action(&action_id, EnvironmentActionTerminal::Cancelled)
+        .unwrap();
+
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .unwrap()
+            .outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::Requested,
+        })
+    );
+}
+
+#[test]
 fn desktop_owner_exclusively_controls_viewport_updates() {
     let mut environment = ready_environment_with_agent();
     environment

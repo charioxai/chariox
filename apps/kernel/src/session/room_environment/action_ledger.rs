@@ -482,7 +482,8 @@ impl EnvironmentActionLedger {
                 cancellation_requested_action_ids,
             });
         }
-        let cancelled_action_ids = self.cancel_queued_agent_actions(&target, actors);
+        let cancelled_action_ids =
+            self.cancel_queued_actions_displaced_by_takeover(&target, actor_id);
         let action_ids = self.blocking_action_ids(&target, actors);
         let cancellation_requested_action_ids = self.request_action_cancellation(&action_ids);
         let outcome = if action_ids.is_empty() {
@@ -579,10 +580,10 @@ impl EnvironmentActionLedger {
             .collect()
     }
 
-    fn cancel_queued_agent_actions(
+    fn cancel_queued_actions_displaced_by_takeover(
         &mut self,
         target: &InputTarget,
-        actors: &BTreeMap<String, EnvironmentActor>,
+        takeover_actor_id: &str,
     ) -> Vec<String> {
         let action_ids: Vec<_> = self
             .order
@@ -591,9 +592,7 @@ impl EnvironmentActionLedger {
             .filter(|action| {
                 action.state == EnvironmentActionState::Queued
                     && action.targets.contains(target)
-                    && actors
-                        .get(&action.actor_id)
-                        .is_some_and(|actor| actor.kind == EnvironmentActorKind::Agent)
+                    && action.actor_id != takeover_actor_id
             })
             .map(|action| action.action_id.clone())
             .collect();
@@ -623,10 +622,9 @@ impl EnvironmentActionLedger {
                 action.cancellation_requested = true;
                 changed_action_ids.push(action_id.clone());
             }
-            self.cancellation_reasons.insert(
-                action_id.clone(),
-                EnvironmentActionCancellationReason::HumanTakeover,
-            );
+            self.cancellation_reasons
+                .entry(action_id.clone())
+                .or_insert(EnvironmentActionCancellationReason::HumanTakeover);
             self.sync_history_action(action_id);
         }
         changed_action_ids
