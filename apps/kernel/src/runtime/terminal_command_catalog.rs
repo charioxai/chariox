@@ -239,6 +239,7 @@ mod tests {
                 "/room start ",
                 "/room stop",
                 "/room retry",
+                "/room reconnect",
                 "/room takeover ",
                 "/room release ",
                 "/room cancel ",

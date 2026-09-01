@@ -197,6 +197,17 @@
         ]
       },
       {
+        "id": "room-reconnect",
+        "label": "reconnect",
+        "description": "Reconnect this TUI to the Room event stream and resume from its last received event",
+        "value": "/room reconnect",
+        "searchAliases": [
+          "reconnect room",
+          "resume events",
+          "recover terminal"
+        ]
+      },
+      {
         "id": "room-takeover",
         "label": "takeover",
         "description": "Request authenticated human input ownership; defaults to desktop or append tab TAB_ID",
