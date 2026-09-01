@@ -17,6 +17,12 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("Room Environment `{operation}` failed with `{code}`: {message}")]
+    RoomEnvironment {
+        operation: &'static str,
+        code: &'static str,
+        message: String,
+    },
     #[error("session `{session_id}` was not found")]
     SessionNotFound { session_id: String },
     #[error("session alias `{alias}` is invalid: {message}")]

@@ -196,6 +196,15 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::UpdateSessionConfig(request) => {
                 self.store.update_session_config(request).await
             }
+            LocalDaemonRequest::StartRoomEnvironment(request) => {
+                self.store.start_room_environment(request).await
+            }
+            LocalDaemonRequest::StopRoomEnvironment(request) => {
+                self.store.stop_room_environment(request).await
+            }
+            LocalDaemonRequest::RetryRoomEnvironment(request) => {
+                self.store.retry_room_environment(request).await
+            }
             LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
                 self.store.create_agent_prompt_schedule(request).await
             }

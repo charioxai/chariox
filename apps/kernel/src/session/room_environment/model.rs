@@ -209,3 +209,29 @@ pub enum EnvironmentError {
         actor_id: String,
     },
 }
+
+impl EnvironmentError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidViewport => "environment_invalid_viewport",
+            Self::EnvironmentAlreadyExists { .. } => "environment_already_exists",
+            Self::EnvironmentNotFound { .. } => "environment_not_found",
+            Self::RoomNotFound { .. } => "room_not_found",
+            Self::InvalidLifecycleTransition { .. } => "environment_invalid_lifecycle_transition",
+            Self::StaleRuntimeGeneration { .. } => "environment_stale_runtime_generation",
+            Self::UnknownTab { .. } => "environment_unknown_tab",
+            Self::StaleDocumentRevision { .. } => "environment_stale_document_revision",
+            Self::UnknownActor { .. } => "environment_unknown_actor",
+            Self::StaleViewportRevision { .. } => "environment_stale_viewport_revision",
+            Self::EnvironmentNotReady { .. } => "environment_not_ready",
+            Self::UnknownAction { .. } => "environment_unknown_action",
+            Self::HumanActorRequired { .. } => "environment_human_actor_required",
+            Self::InputOwnedByAnotherActor { .. } => "environment_input_owned",
+            Self::InputNotOwned { .. } => "environment_input_not_owned",
+            Self::InvalidEventCapacity => "environment_invalid_event_capacity",
+            Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",
+            Self::ActionAlreadyTerminal { .. } => "environment_action_terminal",
+            Self::ActorKindConflict { .. } => "environment_actor_kind_conflict",
+        }
+    }
+}

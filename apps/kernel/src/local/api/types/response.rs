@@ -39,6 +39,7 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentUpdated { environment: crate::session::RoomEnvironmentSnapshot, },
     MetaagentTaskUpdated {
         session: RuntimeSession,
         #[serde(default, skip_serializing_if = "Option::is_none")]

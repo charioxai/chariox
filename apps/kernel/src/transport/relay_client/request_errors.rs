@@ -19,6 +19,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::NoActiveProviderRun { .. } => {
             relay_error("no_active_provider_run", &error.to_string(), false)
         }
+        DaemonError::RoomEnvironment { code, .. } => relay_error(code, &error.to_string(), false),
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -56,6 +57,9 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
+        LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
+        LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
@@ -95,7 +99,10 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::GetRoomEnvironmentStateRequest;
+    use crate::local::{
+        GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest,
+        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+    };
 
     #[test]
     fn room_environment_state_uses_the_shared_relay_request_path() {
@@ -104,5 +111,67 @@ mod tests {
         });
 
         assert_eq!(relay_request_kind(&request), "environment.state.get");
+    }
+
+    #[test]
+    fn room_environment_start_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+            session_id: "session-1".to_string(),
+            viewport: RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.start");
+    }
+
+    #[test]
+    fn room_environment_stop_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.stop");
+    }
+
+    #[test]
+    fn room_environment_retry_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.retry");
+    }
+
+    #[test]
+    fn room_environment_control_errors_keep_stable_relay_codes() {
+        let error = DaemonError::RoomEnvironment {
+            operation: "environment.start",
+            code: "environment_invalid_lifecycle_transition",
+            message: "invalid transition: detail may contain colons".to_string(),
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
+        assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn room_environment_read_errors_keep_structured_relay_codes() {
+        for code in ["environment_not_found", "environment_state_unavailable"] {
+            let error = DaemonError::RoomEnvironment {
+                operation: "environment.state.get",
+                code,
+                message: "read failure: detail may contain colons".to_string(),
+            };
+
+            let relay_error = map_relay_error(&error);
+            assert_eq!(relay_error.code, code);
+            assert!(!relay_error.retryable);
+        }
     }
 }

@@ -213,6 +213,39 @@ impl SessionStateStore {
         self.read().room_environment_snapshot(session_id)
     }
 
+    pub(crate) fn start_room_environment(
+        &self,
+        session_id: &str,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().start_room_environment(session_id, viewport)
+    }
+
+    pub(crate) fn stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().stop_room_environment(session_id)
+    }
+
+    pub(crate) fn retry_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().retry_room_environment(session_id)
+    }
+
+    // The managed controller adapter reports lifecycle completion in Milestone 2.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn transition_room_environment(
+        &self,
+        session_id: &str,
+        lifecycle: super::EnvironmentLifecycle,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .transition_room_environment(session_id, lifecycle)
+    }
+
     pub(crate) fn replace_publication_runtime_workflows(
         &self,
         session_id: &str,

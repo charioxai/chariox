@@ -351,13 +351,15 @@ fn room_environment_read_error(error: EnvironmentError) -> DaemonError {
         EnvironmentError::RoomNotFound { session_id } => {
             DaemonError::SessionNotFound { session_id }
         }
-        EnvironmentError::EnvironmentNotFound { session_id } => DaemonError::LocalTransport {
+        EnvironmentError::EnvironmentNotFound { session_id } => DaemonError::RoomEnvironment {
             operation: "environment.state.get",
-            message: format!("environment_not_found: Room `{session_id}` has no Environment"),
+            code: "environment_not_found",
+            message: format!("Room `{session_id}` has no Environment"),
         },
-        other => DaemonError::LocalTransport {
+        other => DaemonError::RoomEnvironment {
             operation: "environment.state.get",
-            message: format!("environment_state_unavailable: {other:?}"),
+            code: "environment_state_unavailable",
+            message: format!("{other:?}"),
         },
     }
 }

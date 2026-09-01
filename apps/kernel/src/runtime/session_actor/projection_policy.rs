@@ -258,6 +258,9 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
         LocalDaemonRequest::CreateAgentPromptSchedule(request) => &request.session_id,
         LocalDaemonRequest::CancelAgentPromptSchedule(request) => &request.session_id,
+        LocalDaemonRequest::StartRoomEnvironment(request) => &request.session_id,
+        LocalDaemonRequest::StopRoomEnvironment(request) => &request.session_id,
+        LocalDaemonRequest::RetryRoomEnvironment(request) => &request.session_id,
         LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
     };
