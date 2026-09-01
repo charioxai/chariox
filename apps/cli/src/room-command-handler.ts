@@ -2,6 +2,7 @@ import {
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentSliceRequest,
   getRoomEnvironmentStateRequest,
+  listRoomEnvironmentActionHistoryRequest,
   releaseRoomEnvironmentInputRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
@@ -14,6 +15,7 @@ import type {
   RoomEnvironmentAction,
   RoomEnvironmentActionCancellationOutcome,
   RoomEnvironmentActionCancellationUpdatedResponse,
+  RoomEnvironmentActionHistoryResponse,
   RoomEnvironmentInputReleasedResponse,
   RoomEnvironmentInputTarget,
   RoomEnvironmentSliceResponse,
@@ -65,13 +67,14 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "start", "stop", "retry", "reconnect", "view", "screenshot", "takeover", "release", "cancel", "save"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "takeover", "release", "cancel", "save"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
   let startViewport: RoomEnvironmentViewportRequest | undefined
   let inputTarget: RoomEnvironmentInputTarget | undefined
   let actionId: string | undefined
+  let actionHistory: { limit: number; beforeSequence: number | null } | undefined
   let saveMode: "restart_agents" | "shutdown" | undefined
   if (subcommand === "start") {
     const parsedViewport = parseStartViewport(command.args.slice(1))
@@ -93,6 +96,13 @@ export async function handleRoomSlashCommand(
       return
     }
     actionId = command.args[1]
+  } else if (subcommand === "actions") {
+    const parsedHistory = parseActionHistoryArgs(command.args.slice(1))
+    if (typeof parsedHistory === "string") {
+      deps.flashFooter(parsedHistory, "error")
+      return
+    }
+    actionHistory = parsedHistory
   } else if (subcommand === "save") {
     if (command.args.length !== 2 || !command.args[1] || !["restart", "shutdown"].includes(command.args[1])) {
       deps.flashFooter(roomSaveUsage(), "error")
@@ -175,6 +185,21 @@ export async function handleRoomSlashCommand(
       throw new Error("Room Environment state response is malformed")
     }
     deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentState.environment))
+    return
+  }
+  if (subcommand === "actions") {
+    if (!actionHistory) throw new Error("Room Environment action history arguments are missing")
+    const response = await deps.send<RoomEnvironmentActionHistoryResponse>(
+      listRoomEnvironmentActionHistoryRequest(
+        sessionId,
+        actionHistory.beforeSequence,
+        actionHistory.limit,
+      ),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentActionHistoryListed" in response)) {
+      throw new Error("Room Environment action history response is malformed")
+    }
+    deps.appendNotice(formatRoomEnvironmentActionHistory(response.RoomEnvironmentActionHistoryListed.page))
     return
   }
 
@@ -265,6 +290,19 @@ function parseInputTarget(args: string[]): RoomEnvironmentInputTarget | string {
   return roomInputUsage()
 }
 
+function parseActionHistoryArgs(
+  args: string[],
+): { limit: number; beforeSequence: number | null } | string {
+  if (args.length > 2) return roomActionsUsage()
+  const limit = Number(args[0] ?? "20")
+  const beforeSequence = args[1] == null ? null : Number(args[1])
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return roomActionsUsage()
+  if (beforeSequence != null && (!Number.isSafeInteger(beforeSequence) || beforeSequence < 1)) {
+    return roomActionsUsage()
+  }
+  return { limit, beforeSequence }
+}
+
 function parseStartViewport(args: string[]): RoomEnvironmentViewportRequest | string {
   if (args.length > 2) return roomStartUsage()
   const dimensions = args[0] ?? "1280x800"
@@ -291,7 +329,11 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+}
+
+function roomActionsUsage(): string {
+  return "usage: /room actions [LIMIT] [BEFORE_SEQUENCE]"
 }
 
 function roomStartUsage(): string {
@@ -345,6 +387,37 @@ export function formatRoomEnvironmentStatus(environment: RoomEnvironmentSnapshot
     `input=${input}`,
     `last_action=${formatLastAction(environment)}`,
   ].join("\n")
+}
+
+function formatRoomEnvironmentActionHistory(
+  page: RoomEnvironmentActionHistoryResponse["RoomEnvironmentActionHistoryListed"]["page"],
+): string {
+  if (page.actions.length === 0) return "Room actions: none"
+  const lines = page.actions.map((action) => {
+    const targets = action.targets.map((target) => (
+      target.kind === "desktop" ? "desktop" : `tab:${target.id}`
+    )).join(",") || "none"
+    return [
+      `#${action.sequence}`,
+      action.action_id,
+      `actor=${action.actor_id}`,
+      `${action.mode}:${action.kind}`,
+      `target=${targets}`,
+      `state=${formatHistoryActionState(action)}`,
+      `submitted_at_ms=${action.submitted_at_ms}`,
+    ].join(" ")
+  })
+  return [
+    `Room actions (${page.actions.length})`,
+    ...lines,
+    `next_before=${page.next_before_sequence ?? "none"}`,
+  ].join("\n")
+}
+
+function formatHistoryActionState(action: RoomEnvironmentAction): string {
+  if (action.outcome?.status === "failed") return `failed(${action.outcome.code})`
+  if (action.outcome?.status === "cancelled") return `cancelled(${action.outcome.reason})`
+  return action.state
 }
 
 function formatHealth(health: RoomEnvironmentSnapshot["health"][number]): string {
