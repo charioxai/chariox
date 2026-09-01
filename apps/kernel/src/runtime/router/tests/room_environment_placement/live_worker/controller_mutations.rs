@@ -97,15 +97,31 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     ] {
         assert!(specs.iter().any(|spec| spec.name == name), "missing {name}");
     }
-    let denied_desktop = dispatch_json(
+    let desktop_target = json!({"kind":"desktop"});
+    let desktop_takeover = dispatch_json(
         &fixture.home,
         json!({"RequestRoomEnvironmentInputTakeover":{
-            "session_id":fixture.rooms[0],"target":{"kind":"desktop"}
+            "session_id":fixture.rooms[0],"target":desktop_target
         }}),
     )
     .await
-    .expect_err("a ready browser must not make the starting desktop available");
-    assert!(denied_desktop.to_string().contains("environment_not_ready"));
+    .expect("a running headed slice makes its desktop available");
+    assert!(
+        desktop_takeover["RoomEnvironmentTakeoverUpdated"]["environment"]["input_ownership"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|owner| owner["target"] == desktop_target
+                && owner["actor_id"].as_str().unwrap().starts_with("user:"))
+    );
+    dispatch_json(
+        &fixture.home,
+        json!({"ReleaseRoomEnvironmentInput":{
+            "session_id":fixture.rooms[0],"target":desktop_target
+        }}),
+    )
+    .await
+    .expect("release desktop ownership before checking browser ownership");
     let target = json!({"kind":"browser_tab","id":status["tab_id"]});
     let takeover = dispatch_json(
         &fixture.home,

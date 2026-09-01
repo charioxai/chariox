@@ -1853,6 +1853,54 @@ fn idempotency_survives_generation_change_without_repeating_work() {
 }
 
 #[test]
+fn physical_input_idempotency_survives_a_changed_focused_tab() {
+    let mut environment = ready_environment_with_agent();
+    let first_tab = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let second_tab = environment
+        .register_or_reconcile_tab("target-b", "https://b.test", "B")
+        .unwrap();
+    let request = EnvironmentActionRequest::computer_mutation(
+        "agent-1",
+        1,
+        "pointer_click",
+        Some(&first_tab),
+    )
+    .with_idempotency_key("pointer-click-1")
+    .with_arguments(EnvironmentActionArguments::PointerClick {
+        x: 20,
+        y: 30,
+        button: EnvironmentPointerButton::Left,
+        click_count: 1,
+        viewport_revision: 1,
+    });
+    let action_id = accepted_action_id(environment.submit_action(request).unwrap());
+
+    let retry = EnvironmentActionRequest::computer_mutation(
+        "agent-1",
+        1,
+        "pointer_click",
+        Some(&second_tab),
+    )
+    .with_idempotency_key("pointer-click-1")
+    .with_arguments(EnvironmentActionArguments::PointerClick {
+        x: 20,
+        y: 30,
+        button: EnvironmentPointerButton::Left,
+        click_count: 1,
+        viewport_revision: 1,
+    });
+    assert_eq!(
+        environment.submit_action(retry).unwrap(),
+        ActionAdmission::Existing {
+            action_id,
+            state: EnvironmentActionState::Running,
+        }
+    );
+}
+
+#[test]
 fn actor_reconnect_preserves_identity_and_cannot_change_actor_kind() {
     let mut environment = ready_environment();
     environment

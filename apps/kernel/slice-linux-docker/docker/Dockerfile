@@ -90,6 +90,7 @@ RUN mkdir -p /opt/chariox-source/apps /opt/chariox-slice/bin /opt/chariox-slice/
 
 COPY --chown=slice:slice apps/kernel /opt/chariox-source/apps/kernel
 COPY --chown=slice:slice apps/relay /opt/chariox-source/apps/relay
+COPY --chown=slice:slice packages/event-protocol /opt/chariox-source/packages/event-protocol
 COPY --chown=slice:slice examples/workflow-code /opt/chariox-source/examples/workflow-code
 
 USER slice
@@ -105,6 +106,7 @@ RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGE
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs /opt/chariox-slice/browser-controller-permissions.mjs

@@ -149,6 +149,60 @@ fn linux_docker_headed_browser_trusts_the_local_terminal_origin() {
 }
 
 #[test]
+fn linux_docker_pointer_click_preserves_desktop_focus_and_button() {
+    let root = test_root("slice-pointer-click");
+    let bin = root.join("bin");
+    let home = root.join("home");
+    std::fs::create_dir_all(&bin).expect("stub bin should be created");
+    std::fs::create_dir_all(&home).expect("stub home should be created");
+    let write_executable = |name: &str, contents: &str| {
+        let path = bin.join(name);
+        std::fs::write(&path, contents).expect("stub should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("stub should be executable");
+        }
+    };
+    write_executable("xdpyinfo", "#!/bin/sh\nexit 0\n");
+    write_executable("pgrep", "#!/bin/sh\nprintf '1 process\\n'\n");
+    write_executable("timeout", "#!/bin/sh\nshift\nexec \"$@\"\n");
+    write_executable(
+        "xdotool",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\n",
+    );
+    let xdotool_log = root.join("xdotool.log");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new("bash")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
+        )
+        .args(["pointer-click", "320", "180", "right", "2"])
+        .env("PATH", path)
+        .env("HOME", &home)
+        .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
+        .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
+        .output()
+        .expect("pointer helper should run");
+
+    assert!(
+        output.status.success(),
+        "pointer helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&xdotool_log).expect("xdotool call should be logged"),
+        "mousemove 320 180 click --repeat 2 --delay 80 3\n"
+    );
+    std::fs::remove_dir_all(root).expect("test root should be removed");
+}
+
+#[test]
 fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_workers() {
     let script = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))

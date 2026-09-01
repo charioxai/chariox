@@ -225,6 +225,11 @@ impl SessionRuntimeCommandExecutor {
                     .release_room_environment_input(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => {
+                self.store
+                    .submit_room_environment_action(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
                 self.store
                     .cancel_room_environment_action(request, caller_user_id)

@@ -47,6 +47,16 @@ export type RoomEnvironmentInputTarget =
   | { kind: "desktop" }
   | { kind: "browser_tab"; id: string }
 
+export type RoomEnvironmentActionArguments =
+  | {
+      kind: "pointer_click"
+      x: number
+      y: number
+      button: "left" | "middle" | "right"
+      click_count: 1 | 2
+      viewport_revision: number
+    }
+
 export type RoomEnvironmentAction = {
   action_id: string
   sequence: number
@@ -55,6 +65,7 @@ export type RoomEnvironmentAction = {
   runtime_generation: number
   mode: "browser" | "computer"
   kind: string
+  arguments?: RoomEnvironmentActionArguments
   targets: RoomEnvironmentInputTarget[]
   state: "queued" | "running" | "completed" | "failed" | "cancelled"
   cancellation_requested: boolean

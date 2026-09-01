@@ -415,6 +415,13 @@ impl RoomEnvironment {
         Ok(admission)
     }
 
+    pub(crate) fn existing_action(
+        &self,
+        request: &EnvironmentActionRequest,
+    ) -> Result<Option<ActionAdmission>, EnvironmentError> {
+        self.action_ledger.existing(request)
+    }
+
     pub(crate) fn begin_browser_controller_recovery(&mut self) {
         self.browser_controller_recovering = true;
         self.element_references.clear();

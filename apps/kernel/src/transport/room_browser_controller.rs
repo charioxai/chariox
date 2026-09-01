@@ -5,6 +5,25 @@ use crate::runtime::browser_controller_process::{
 };
 use crate::session::CanonicalViewport;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RoomComputerPointerButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum RoomComputerInputAction {
+    PointerClick {
+        x: u32,
+        y: u32,
+        button: RoomComputerPointerButton,
+        click_count: u8,
+    },
+}
+
 /// Physical controller operations only. The home retains Room/tab authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -73,6 +92,15 @@ pub(crate) enum RoomBrowserControllerCommand {
     CancelAction {
         execution_id: String,
     },
+    ComputerInput {
+        action_id: String,
+        actor_id: String,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        desktop_pixel_width: u32,
+        desktop_pixel_height: u32,
+        action: RoomComputerInputAction,
+    },
     Release,
 }
 
@@ -90,6 +118,9 @@ pub(crate) enum RoomBrowserControllerResult {
     },
     Action {
         result: Option<crate::runtime::browser_controller_action::BrowserControllerActionResult>,
+    },
+    ComputerInputApplied {
+        action_id: String,
     },
     Snapshot {
         snapshot: Option<

@@ -62,6 +62,6 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 293 admits an authenticated Room viewer to one encrypted,
-/// single-use Selkies display stream through the Room's bound worker.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 293;
+/// Version 294 submits an authenticated human Environment Action without
+/// accepting a client-supplied Actor identity.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 294;

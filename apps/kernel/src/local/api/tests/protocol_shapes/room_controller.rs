@@ -5,11 +5,14 @@ use crate::transport::relay_peer::{
     RELAY_PEER_PROTOCOL_VERSION,
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
+use crate::transport::room_browser_controller::{
+    RoomComputerInputAction, RoomComputerPointerButton,
+};
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 30);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 31);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -50,6 +53,32 @@ fn room_controller_protocol_shapes_are_versioned() {
                 execution_id: "11111111111111111111111111111111".into(),
             },
             serde_json::json!({"kind":"cancel_action","execution_id":"11111111111111111111111111111111"}),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-7".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::PointerClick {
+                    x: 320,
+                    y: 180,
+                    button: RoomComputerPointerButton::Right,
+                    click_count: 2,
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input",
+                "action_id":"action-7",
+                "actor_id":"user:owner-1",
+                "runtime_generation":4,
+                "viewport_revision":9,
+                "desktop_pixel_width":1280,
+                "desktop_pixel_height":800,
+                "action":{"kind":"pointer_click","x":320,"y":180,"button":"right","click_count":2}
+            }),
         ),
         (
             RoomBrowserControllerCommand::Snapshot {
@@ -196,6 +225,7 @@ fn room_controller_protocol_shapes_are_versioned() {
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "action_kind":"click","dialog_opened":false,"attempts":2,"elapsed_ms":50
         }}),
+        serde_json::json!({"kind":"computer_input_applied","action_id":"action-7"}),
         serde_json::json!({"kind":"snapshot","snapshot":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "snapshot_revision":2,"accessibility_nodes":[],"dom_documents":[],"shadow_roots":[],

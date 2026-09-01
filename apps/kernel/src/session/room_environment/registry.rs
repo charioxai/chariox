@@ -295,6 +295,19 @@ impl RoomEnvironmentRegistry {
         Ok((admission, environment.snapshot()))
     }
 
+    pub(crate) fn existing_action(
+        &self,
+        session_id: &str,
+        request: &EnvironmentActionRequest,
+    ) -> Result<Option<ActionAdmission>, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .existing_action(request)
+    }
+
     pub(crate) fn finish_action(
         &mut self,
         session_id: &str,

@@ -279,6 +279,19 @@ impl SessionService {
         self.room_environments.submit_action(session_id, request)
     }
 
+    pub(crate) fn existing_room_environment_action(
+        &self,
+        session_id: &str,
+        request: &EnvironmentActionRequest,
+    ) -> Result<Option<ActionAdmission>, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.existing_action(session_id, request)
+    }
+
     pub(crate) fn finish_room_environment_action(
         &mut self,
         session_id: &str,

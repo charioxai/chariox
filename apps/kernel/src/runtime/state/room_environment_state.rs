@@ -242,6 +242,16 @@ impl KernelRuntimeState {
             .submit_room_environment_action(session_id, request)
     }
 
+    pub(crate) fn existing_room_environment_action(
+        &self,
+        session_id: &str,
+        request: &EnvironmentActionRequest,
+    ) -> Result<Option<ActionAdmission>, EnvironmentError> {
+        self.owned
+            .session_store
+            .existing_room_environment_action(session_id, request)
+    }
+
     pub(crate) fn finish_room_environment_action(
         &self,
         session_id: &str,

@@ -6,6 +6,7 @@ use tokio::time::{timeout, Duration};
 
 mod batch;
 mod cleanup;
+mod computer_input;
 mod controller;
 mod controller_cancellation;
 mod controller_compatibility;

@@ -176,6 +176,9 @@ screen_missing_components() {
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     missing+=("chromium")
   fi
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    return 0
+  fi
   printf '%s\n' "${missing[@]}"
 }
 
@@ -189,6 +192,9 @@ tool_blocking_missing_components() {
   fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     missing+=("chromium")
+  fi
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    return 0
   fi
   printf '%s\n' "${missing[@]}"
 }
@@ -366,6 +372,26 @@ double_click() {
   require_screen_available
   focus_chromium
   run_xdotool mousemove "$1" "$2" click --repeat 2 --delay 80 1
+}
+
+pointer_click() {
+  require_screen_available
+  local x="$1"
+  local y="$2"
+  local button_name="$3"
+  local click_count="$4"
+  local button
+  case "$button_name" in
+    left) button=1 ;;
+    middle) button=2 ;;
+    right) button=3 ;;
+    *) printf 'pointer button must be left, middle, or right\n' >&2; return 2 ;;
+  esac
+  case "$click_count" in
+    1|2) ;;
+    *) printf 'pointer click count must be 1 or 2\n' >&2; return 2 ;;
+  esac
+  run_xdotool mousemove "$x" "$y" click --repeat "$click_count" --delay 80 "$button"
 }
 
 drag() {
@@ -642,6 +668,7 @@ case "${1:-status}" in
   screenshot) shift; screenshot "$@" ;;
   click) shift; click "$@" ;;
   double-click|double_click) shift; double_click "$@" ;;
+  pointer-click|pointer_click) shift; pointer_click "$@" ;;
   drag) shift; drag "$@" ;;
   move|move_mouse) shift; move_mouse "$@" ;;
   scroll) shift; scroll "$@" ;;
@@ -668,7 +695,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

@@ -9,7 +9,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -68,6 +68,7 @@ fn room_environment_state_shape_is_versioned() {
                     runtime_generation: 1,
                     mode: EnvironmentMode::Browser,
                     kind: "click".to_string(),
+                    arguments: None,
                     targets: vec![
                         InputTarget::Desktop,
                         InputTarget::BrowserTab("tab-1".to_string()),
@@ -87,6 +88,7 @@ fn room_environment_state_shape_is_versioned() {
                     runtime_generation: 1,
                     mode: EnvironmentMode::Browser,
                     kind: "second-click".to_string(),
+                    arguments: None,
                     targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
                     state: EnvironmentActionState::Queued,
                     cancellation_requested: false,
@@ -266,7 +268,7 @@ fn room_environment_state_shape_is_versioned() {
 
 #[test]
 fn room_environment_event_replay_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
         session_id: "session-1".to_string(),
@@ -376,7 +378,7 @@ fn room_environment_event_replay_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_history_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
         ListRoomEnvironmentActionHistoryRequest {
@@ -412,6 +414,7 @@ fn room_environment_action_history_shape_is_versioned() {
                 runtime_generation: 2,
                 mode: EnvironmentMode::Computer,
                 kind: "key-chord".to_string(),
+                arguments: None,
                 targets: vec![InputTarget::Desktop],
                 state: EnvironmentActionState::Completed,
                 cancellation_requested: false,
@@ -459,7 +462,7 @@ fn room_environment_action_history_shape_is_versioned() {
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -545,7 +548,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -568,7 +571,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -591,7 +594,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -631,7 +634,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -713,7 +716,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
@@ -771,7 +774,7 @@ fn room_environment_input_release_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_cancellation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
 
     let request =
         LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
@@ -822,6 +825,113 @@ fn room_environment_action_cancellation_shape_is_versioned() {
     assert_eq!(
         serde_json::from_value::<LocalDaemonResponse>(response_value)
             .expect("Action cancellation response should decode"),
+        response
+    );
+}
+
+#[test]
+fn room_environment_action_submission_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+
+    let request =
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+            session_id: "session-1".to_string(),
+            runtime_generation: 4,
+            viewport_revision: 9,
+            idempotency_key: "input-1".to_string(),
+            action: RoomEnvironmentHumanAction::PointerClick {
+                x: 320,
+                y: 180,
+                button: RoomEnvironmentPointerButton::Left,
+                click_count: 1,
+            },
+        });
+    let request_value = serde_json::json!({
+        "SubmitRoomEnvironmentAction": {
+            "session_id": "session-1",
+            "runtime_generation": 4,
+            "viewport_revision": 9,
+            "idempotency_key": "input-1",
+            "action": {
+                "kind": "pointer_click",
+                "x": 320,
+                "y": 180,
+                "button": "left",
+                "click_count": 1
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("Action submission request should encode"),
+        request_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(request_value)
+            .expect("Action submission request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id: "action-7".to_string(),
+        environment: RoomEnvironmentSnapshot {
+            session_id: "session-1".to_string(),
+            environment_id: "environment-session-1".to_string(),
+            runtime_generation: 4,
+            lifecycle: EnvironmentLifecycle::Ready,
+            health: Vec::new(),
+            viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                .expect("viewport should be valid"),
+            actors: Vec::new(),
+            tabs: Vec::new(),
+            focused_tab_id: None,
+            actions: vec![EnvironmentAction {
+                action_id: "action-7".to_string(),
+                sequence: 7,
+                idempotency_key: Some("input-1".to_string()),
+                actor_id: "user:owner-1".to_string(),
+                runtime_generation: 4,
+                mode: EnvironmentMode::Computer,
+                kind: "pointer_click".to_string(),
+                arguments: Some(crate::session::EnvironmentActionArguments::PointerClick {
+                    x: 320,
+                    y: 180,
+                    button: crate::session::EnvironmentPointerButton::Left,
+                    click_count: 1,
+                    viewport_revision: 9,
+                }),
+                targets: vec![InputTarget::Desktop],
+                state: EnvironmentActionState::Completed,
+                cancellation_requested: false,
+                submitted_at_ms: 100,
+                started_at_ms: Some(101),
+                finished_at_ms: Some(102),
+                outcome: Some(crate::session::EnvironmentActionOutcome::Completed),
+            }],
+            input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
+            event_cursor: 5,
+        },
+    };
+    let response_value =
+        serde_json::to_value(&response).expect("Action submission response should encode");
+    assert_eq!(
+        response_value.pointer("/RoomEnvironmentActionSubmitted/action_id"),
+        Some(&serde_json::json!("action-7"))
+    );
+    assert_eq!(
+        response_value.pointer("/RoomEnvironmentActionSubmitted/environment/actions/0/arguments"),
+        Some(&serde_json::json!({
+            "kind": "pointer_click",
+            "x": 320,
+            "y": 180,
+            "button": "left",
+            "click_count": 1,
+            "viewport_revision": 9,
+        }))
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(response_value)
+            .expect("Action submission response should decode"),
         response
     );
 }
