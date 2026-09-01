@@ -17,9 +17,9 @@ runtime_source_revision() {
     cd "$REPO_ROOT"
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       git ls-files --cached --others --exclude-standard \
-        apps/kernel apps/relay examples/workflow-code
+        apps/kernel apps/relay packages/event-protocol examples/workflow-code
     else
-      find apps/kernel apps/relay examples/workflow-code -type f \
+      find apps/kernel apps/relay packages/event-protocol examples/workflow-code -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
         | LC_ALL=C sort
@@ -269,6 +269,8 @@ refresh_slice_support_files() {
     || log "browser controller actions module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" \
     || log "browser controller CDP module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
+    || log "browser controller compatibility module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || log "browser controller events module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
@@ -339,10 +341,35 @@ image_runtime_compatible() {
     && "$image_runtime_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]
 }
 
+docker_target_arch() {
+  local architecture
+  architecture="$(docker info --format '{{.Architecture}}' 2>/dev/null || true)"
+  case "$architecture" in
+    amd64|x86_64) printf 'amd64\n' ;;
+    arm64|aarch64) printf 'arm64\n' ;;
+    *) fail "unsupported Docker server architecture: ${architecture:-unknown}" ;;
+  esac
+}
+
+docker_build() {
+  if docker buildx version >/dev/null 2>&1; then
+    docker buildx build --load "$@"
+    return
+  fi
+  if command -v docker-buildx >/dev/null 2>&1; then
+    docker-buildx build --load "$@"
+    return
+  fi
+  fail "Docker Buildx is required to build the slice runtime image"
+}
+
 build_standard_runtime_image() {
   local image="$1"
+  local target_arch
+  target_arch="$(docker_target_arch)"
   log "building $image"
-  docker build \
+  docker_build \
+    --build-arg "TARGETARCH=$target_arch" \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
@@ -398,9 +425,12 @@ build_image() {
 
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
     ensure_runtime_base_image
+    local target_arch
+    target_arch="$(docker_target_arch)"
     log "building $SLICE_IMAGE"
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
-    docker build \
+    docker_build \
+      --build-arg "TARGETARCH=$target_arch" \
       --build-arg "CHARIOX_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
       --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
       --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
@@ -495,7 +525,10 @@ ensure_container() {
       docker_create_args+=(-v "$SLICE_WORKSPACE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")
     fi
     if [[ -n "$SLICE_DOCKER_MEMORY" ]]; then
-      docker_create_args+=(--memory "$SLICE_DOCKER_MEMORY")
+      docker_create_args+=(
+        --memory "$SLICE_DOCKER_MEMORY"
+        --memory-swap "$SLICE_DOCKER_MEMORY"
+      )
     fi
     if [[ -n "$SLICE_DOCKER_CPUS" ]]; then
       docker_create_args+=(--cpus "$SLICE_DOCKER_CPUS")

@@ -12,6 +12,7 @@ mod slice_browser;
 use slice_browser::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
+const ROOM_POINTER_CLICK_TIMEOUT_MS: u64 = 5_000;
 const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 
 impl KernelRuntimeState {
@@ -467,19 +468,20 @@ struct SliceScreenCommandOutput {
 async fn run_slice_screen_command(
     args: Vec<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner(args, None).await
+    run_slice_screen_command_inner(args, None, None).await
 }
 
 async fn run_slice_screen_command_with_stdin(
     args: Vec<String>,
     stdin: String,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner(args, Some(stdin)).await
+    run_slice_screen_command_inner(args, Some(stdin), None).await
 }
 
 async fn run_slice_screen_command_inner(
     args: Vec<String>,
     stdin: Option<String>,
+    timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
@@ -532,10 +534,9 @@ async fn run_slice_screen_command_inner(
             })?;
         let stdout_reader = std::thread::spawn(move || read_child_output(stdout));
         let stderr_reader = std::thread::spawn(move || read_child_output(stderr));
+        let timeout_ms = timeout_override_ms.unwrap_or_else(slice_screen_command_timeout_ms);
         let status = match child
-            .wait_timeout(std::time::Duration::from_millis(
-                slice_screen_command_timeout_ms(),
-            ))
+            .wait_timeout(std::time::Duration::from_millis(timeout_ms))
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to wait for `{tool_path}`: {error}"),
@@ -548,10 +549,7 @@ async fn run_slice_screen_command_inner(
                 let _ = stderr_reader.join();
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
-                    message: format!(
-                        "slice screen command timed out after {}ms",
-                        slice_screen_command_timeout_ms()
-                    ),
+                    message: format!("slice screen command timed out after {timeout_ms}ms"),
                 });
             }
         };
@@ -583,6 +581,63 @@ async fn run_slice_screen_command_inner(
         operation: "run_slice_screen_command",
         message: error.to_string(),
     })?
+}
+
+pub(crate) async fn run_room_pointer_click(
+    x: u32,
+    y: u32,
+    button: crate::transport::room_browser_controller::RoomComputerPointerButton,
+    click_count: u8,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || x >= desktop_pixel_width
+        || y >= desktop_pixel_height
+    {
+        return Err(room_pointer_click_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    if !matches!(click_count, 1 | 2) {
+        return Err(room_pointer_click_error("environment_invalid_click_count"));
+    }
+    let button = match button {
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Left => "left",
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Middle => "middle",
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Right => "right",
+    };
+    let output = run_slice_screen_command_inner(
+        vec![
+            "pointer-click".to_string(),
+            x.to_string(),
+            y.to_string(),
+            button.to_string(),
+            click_count.to_string(),
+        ],
+        None,
+        Some(ROOM_POINTER_CLICK_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_pointer_click_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+fn room_pointer_click_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "environment.action.execute",
+        message: message.to_string(),
+    }
 }
 
 fn slice_screen_command_timeout_ms() -> u64 {

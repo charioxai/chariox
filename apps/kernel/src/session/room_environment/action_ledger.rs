@@ -142,6 +142,40 @@ impl EnvironmentActionLedger {
         self.input_owners.get(target).map(String::as_str)
     }
 
+    pub(crate) fn existing(
+        &self,
+        request: &EnvironmentActionRequest,
+    ) -> Result<Option<ActionAdmission>, EnvironmentError> {
+        let Some(idempotency_key) = request.idempotency_key.as_ref() else {
+            return Ok(None);
+        };
+        let Some(action_id) = self.idempotency_actions.get(idempotency_key) else {
+            return Ok(None);
+        };
+        let original = self
+            .requests
+            .get(action_id)
+            .expect("idempotency index must reference an Action request");
+        if !original.matches_idempotent_operation(request) {
+            return Err(EnvironmentError::IdempotencyConflict {
+                idempotency_key: idempotency_key.clone(),
+            });
+        }
+        let action = self
+            .actions
+            .get(action_id)
+            .or_else(|| {
+                self.history_action_sequences
+                    .get(action_id)
+                    .and_then(|sequence| self.history_records.get(sequence))
+            })
+            .expect("idempotency index must reference Action history");
+        Ok(Some(ActionAdmission::Existing {
+            action_id: action_id.clone(),
+            state: action.state,
+        }))
+    }
+
     pub(crate) fn submit(
         &mut self,
         request: EnvironmentActionRequest,
@@ -158,31 +192,8 @@ impl EnvironmentActionLedger {
                 actor_id: request.actor_id,
             });
         }
-        if let Some(idempotency_key) = request.idempotency_key.as_ref() {
-            if let Some(action_id) = self.idempotency_actions.get(idempotency_key) {
-                let original = self
-                    .requests
-                    .get(action_id)
-                    .expect("idempotency index must reference an action request");
-                if !original.matches_idempotent_operation(&request) {
-                    return Err(EnvironmentError::IdempotencyConflict {
-                        idempotency_key: idempotency_key.clone(),
-                    });
-                }
-                let action = self
-                    .actions
-                    .get(action_id)
-                    .or_else(|| {
-                        self.history_action_sequences
-                            .get(action_id)
-                            .and_then(|sequence| self.history_records.get(sequence))
-                    })
-                    .expect("idempotency index must reference Action history");
-                return Ok(ActionAdmission::Existing {
-                    action_id: action_id.clone(),
-                    state: action.state,
-                });
-            }
+        if let Some(existing) = self.existing(&request)? {
+            return Ok(existing);
         }
         if request.runtime_generation != runtime_generation {
             return Err(EnvironmentError::StaleRuntimeGeneration {

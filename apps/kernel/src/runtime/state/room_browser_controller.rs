@@ -29,7 +29,10 @@ impl KernelRuntimeState {
     ) -> Result<Response, DaemonError> {
         let admitted_mutation_command = matches!(
             &command,
-            Command::Action { .. } | Command::Dialog { .. } | Command::Navigate { .. }
+            Command::Action { .. }
+                | Command::Dialog { .. }
+                | Command::Navigate { .. }
+                | Command::ComputerInput { .. }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
@@ -101,24 +104,7 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        let recovery = match &command {
-            Command::Action {
-                execution_id,
-                target_id,
-                document_id,
-                node_ref,
-                action,
-                timeout_ms,
-            } => Some(Command::RecoverAction {
-                execution_id: execution_id.clone(),
-                target_id: target_id.clone(),
-                document_id: document_id.clone(),
-                node_ref: node_ref.clone(),
-                action: action.clone(),
-                timeout_ms: *timeout_ms,
-            }),
-            _ => None,
-        };
+        let recovery = receipt_recovery_command(&command);
         let request = |command| RelayPeerRequest::RoomBrowserController {
             session_id: session_id.to_string(),
             slice_id: slice.id.clone(),
@@ -179,7 +165,9 @@ impl KernelRuntimeState {
         if !permitted {
             return Err(controller_route_error("browser_controller_scope_denied: peer or Room does not match the provisioned slice binding"));
         }
-        if !self.browser_controller_process_enabled() {
+        if !matches!(&command, Command::ComputerInput { .. })
+            && !self.browser_controller_process_enabled()
+        {
             return Err(controller_route_error(
                 "browser_controller_unavailable: slice has no configured controller",
             ));
@@ -193,11 +181,73 @@ impl KernelRuntimeState {
     }
 }
 
+fn receipt_recovery_command(command: &Command) -> Option<Command> {
+    match command {
+        Command::Action {
+            execution_id,
+            target_id,
+            document_id,
+            node_ref,
+            action,
+            timeout_ms,
+        } => Some(Command::RecoverAction {
+            execution_id: execution_id.clone(),
+            target_id: target_id.clone(),
+            document_id: document_id.clone(),
+            node_ref: node_ref.clone(),
+            action: action.clone(),
+            timeout_ms: *timeout_ms,
+        }),
+        _ => None,
+    }
+}
+
 async fn execute_local(
     processes: BrowserControllerProcessStore,
     session_id: &str,
     command: Command,
 ) -> Result<Response, DaemonError> {
+    let command = match command {
+        Command::ComputerInput {
+            action_id,
+            actor_id,
+            runtime_generation,
+            viewport_revision,
+            desktop_pixel_width,
+            desktop_pixel_height,
+            action,
+        } => {
+            if action_id.trim().is_empty()
+                || actor_id.trim().is_empty()
+                || runtime_generation == 0
+                || viewport_revision == 0
+            {
+                return Err(controller_route_error(
+                    "environment_input_invalid_authority_context",
+                ));
+            }
+            match action {
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
+                    x,
+                    y,
+                    button,
+                    click_count,
+                } => {
+                    super::tool_dispatch::run_room_pointer_click(
+                        x,
+                        y,
+                        button,
+                        click_count,
+                        desktop_pixel_width,
+                        desktop_pixel_height,
+                    )
+                    .await?;
+                }
+            }
+            return Ok(Response::ComputerInputApplied { action_id });
+        }
+        command => command,
+    };
     let session_id = session_id.to_string();
     let recovery_processes = processes.clone();
     let result = tokio::task::spawn_blocking(move || match command {
@@ -302,6 +352,9 @@ async fn execute_local(
             &action,
             timeout_ms,
         ),
+        Command::ComputerInput { .. } => {
+            unreachable!("Computer input executes before the blocking controller path")
+        }
     })
     .await
     .map_err(|error| controller_route_error(&error.to_string()))?;
@@ -321,5 +374,32 @@ pub(super) fn controller_route_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "browser_controller.route",
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn physical_computer_input_has_no_transport_replay_command() {
+        let command = Command::ComputerInput {
+            action_id: "action-1".to_string(),
+            actor_id: "user:owner-1".to_string(),
+            runtime_generation: 1,
+            viewport_revision: 1,
+            desktop_pixel_width: 1280,
+            desktop_pixel_height: 800,
+            action:
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
+                    x: 20,
+                    y: 30,
+                    button:
+                        crate::transport::room_browser_controller::RoomComputerPointerButton::Left,
+                    click_count: 1,
+                },
+        };
+
+        assert_eq!(receipt_recovery_command(&command), None);
     }
 }

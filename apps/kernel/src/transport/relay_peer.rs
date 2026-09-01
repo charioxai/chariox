@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 30 lets the home ask its bound worker to admit one encrypted,
-/// single-use Room display stream without making the relay an authority.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 30;
+/// Version 31 carries one kernel-admitted human Computer input action to the
+/// Room's bound worker without granting input authority to the relay.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 31;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {

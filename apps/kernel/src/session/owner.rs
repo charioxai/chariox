@@ -382,6 +382,15 @@ impl SessionStateStore {
             .submit_room_environment_action(session_id, request)
     }
 
+    pub(crate) fn existing_room_environment_action(
+        &self,
+        session_id: &str,
+        request: &super::EnvironmentActionRequest,
+    ) -> Result<Option<super::ActionAdmission>, EnvironmentError> {
+        self.read()
+            .existing_room_environment_action(session_id, request)
+    }
+
     pub(crate) fn finish_room_environment_action(
         &self,
         session_id: &str,

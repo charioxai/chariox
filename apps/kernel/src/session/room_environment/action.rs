@@ -103,6 +103,7 @@ pub enum EnvironmentActionCancellationReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentActionRequest {
     pub(crate) idempotency_key: Option<String>,
+    pub(crate) operation_fingerprint: Option<String>,
     pub(crate) actor_id: String,
     pub(crate) runtime_generation: u64,
     pub(crate) mode: EnvironmentMode,
@@ -123,6 +124,7 @@ impl EnvironmentActionRequest {
         let tab_id = tab_id.into();
         Self {
             idempotency_key: None,
+            operation_fingerprint: None,
             actor_id: actor_id.into(),
             runtime_generation,
             mode: EnvironmentMode::Browser,
@@ -163,6 +165,7 @@ impl EnvironmentActionRequest {
         }
         Self {
             idempotency_key: None,
+            operation_fingerprint: None,
             actor_id: actor_id.into(),
             runtime_generation,
             mode: EnvironmentMode::Computer,
@@ -178,18 +181,28 @@ impl EnvironmentActionRequest {
         self
     }
 
+    pub(crate) fn with_operation_fingerprint(
+        mut self,
+        operation_fingerprint: impl Into<String>,
+    ) -> Self {
+        self.operation_fingerprint = Some(operation_fingerprint.into());
+        self
+    }
+
     pub(crate) fn matches_idempotent_operation(&self, other: &Self) -> bool {
         self.idempotency_key == other.idempotency_key
+            && self.operation_fingerprint == other.operation_fingerprint
             && self.actor_id == other.actor_id
             && self.mode == other.mode
             && self.kind == other.kind
             && self.mutates == other.mutates
-            && self.targets == other.targets
-            && self
-                .tab_preconditions
-                .iter()
-                .map(|(tab_id, _)| tab_id)
-                .eq(other.tab_preconditions.iter().map(|(tab_id, _)| tab_id))
+            && (self.operation_fingerprint.is_some()
+                || (self.targets == other.targets
+                    && self
+                        .tab_preconditions
+                        .iter()
+                        .map(|(tab_id, _)| tab_id)
+                        .eq(other.tab_preconditions.iter().map(|(tab_id, _)| tab_id))))
     }
 }
 

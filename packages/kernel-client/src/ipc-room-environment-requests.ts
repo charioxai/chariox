@@ -119,3 +119,29 @@ export function cancelRoomEnvironmentActionRequest(sessionId: string, actionId: 
     },
   }
 }
+
+export type RoomEnvironmentHumanAction = {
+  readonly kind: "pointer_click"
+  readonly x: number
+  readonly y: number
+  readonly button: "left" | "middle" | "right"
+  readonly click_count: 1 | 2
+}
+
+export function submitRoomEnvironmentActionRequest(
+  sessionId: string,
+  runtimeGeneration: number,
+  viewportRevision: number,
+  idempotencyKey: string,
+  action: RoomEnvironmentHumanAction,
+) {
+  return {
+    SubmitRoomEnvironmentAction: {
+      session_id: sessionId,
+      runtime_generation: runtimeGeneration,
+      viewport_revision: viewportRevision,
+      idempotency_key: idempotencyKey,
+      action,
+    },
+  }
+}

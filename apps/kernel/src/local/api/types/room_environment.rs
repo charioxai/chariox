@@ -88,3 +88,31 @@ pub struct CancelRoomEnvironmentActionRequest {
     pub session_id: String,
     pub action_id: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomEnvironmentPointerButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RoomEnvironmentHumanAction {
+    PointerClick {
+        x: u32,
+        y: u32,
+        button: RoomEnvironmentPointerButton,
+        click_count: u8,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmitRoomEnvironmentActionRequest {
+    pub session_id: String,
+    pub runtime_generation: u64,
+    pub viewport_revision: u64,
+    pub idempotency_key: String,
+    pub action: RoomEnvironmentHumanAction,
+}

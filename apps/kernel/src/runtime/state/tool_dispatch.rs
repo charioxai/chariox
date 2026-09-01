@@ -25,6 +25,7 @@ mod remote_extension_control_plane;
 mod script;
 mod skill_package_response;
 mod slice;
+pub(super) use slice::run_room_pointer_click;
 mod worker_home_credential_client;
 mod worker_home_extension_client;
 mod worker_home_room_browser_client;

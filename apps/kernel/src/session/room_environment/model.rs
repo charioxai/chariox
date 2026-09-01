@@ -236,6 +236,19 @@ pub enum EnvironmentError {
     InputNotOwned {
         target: InputTarget,
     },
+    InputTakeoverRequired {
+        actor_id: String,
+    },
+    PointerOutOfBounds {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+    InvalidClickCount {
+        click_count: u8,
+    },
+    InvalidIdempotencyKey,
     InvalidEventCapacity,
     IdempotencyConflict {
         idempotency_key: String,
@@ -279,6 +292,10 @@ impl EnvironmentError {
             Self::HumanActorRequired { .. } => "environment_human_actor_required",
             Self::InputOwnedByAnotherActor { .. } => "environment_input_owned",
             Self::InputNotOwned { .. } => "environment_input_not_owned",
+            Self::InputTakeoverRequired { .. } => "environment_input_takeover_required",
+            Self::PointerOutOfBounds { .. } => "environment_pointer_out_of_bounds",
+            Self::InvalidClickCount { .. } => "environment_invalid_click_count",
+            Self::InvalidIdempotencyKey => "environment_invalid_idempotency_key",
             Self::InvalidEventCapacity => "environment_invalid_event_capacity",
             Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",
             Self::ActionAlreadyTerminal { .. } => "environment_action_terminal",

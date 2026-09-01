@@ -110,14 +110,17 @@ impl KernelRuntimeState {
             .reconcile_browser_controller_environment(session_id)
             .await
         {
-            Ok(_) => self
-                .update_room_environment_component_health(
-                    session_id,
-                    EnvironmentComponent::Browser,
-                    EnvironmentComponentHealthState::Ready,
-                    None,
-                )
-                .map_err(|error| environment_runtime_error(operation, error)),
+            Ok(_) => {
+                let environment = self
+                    .update_room_environment_component_health(
+                        session_id,
+                        EnvironmentComponent::Browser,
+                        EnvironmentComponentHealthState::Ready,
+                        None,
+                    )
+                    .map_err(|error| environment_runtime_error(operation, error))?;
+                self.complete_bound_slice_computer_start(session_id, environment, operation)
+            }
             Err(error) => {
                 let _ = self.update_room_environment_component_health(
                     session_id,
@@ -129,6 +132,46 @@ impl KernelRuntimeState {
                 Err(error)
             }
         }
+    }
+
+    fn complete_bound_slice_computer_start(
+        &self,
+        session_id: &str,
+        environment: RoomEnvironmentSnapshot,
+        operation: &'static str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let Some(slice) = self.owned.slice_store.environment_slice(session_id) else {
+            return Ok(environment);
+        };
+        if slice.status != crate::slice::SliceStatus::Running
+            || slice.display_mode != crate::slice::SliceDisplayMode::Headed
+        {
+            return Ok(environment);
+        }
+        // A headed slice is not published as running until its provisioner has
+        // started and health-checked both the desktop and selected streamer,
+        // then discovered the worker kernel. Controller reconciliation above
+        // proves that this is still the bound worker for the Room.
+        self.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::Desktop,
+            EnvironmentComponentHealthState::Ready,
+            None,
+        )
+        .map_err(|error| environment_runtime_error(operation, error))?;
+        let environment = self
+            .update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::Streamer,
+                EnvironmentComponentHealthState::Ready,
+                None,
+            )
+            .map_err(|error| environment_runtime_error(operation, error))?;
+        if environment.lifecycle == EnvironmentLifecycle::Ready {
+            return Ok(environment);
+        }
+        self.transition_room_environment(session_id, EnvironmentLifecycle::Ready)
+            .map_err(|error| environment_runtime_error(operation, error))
     }
 
     pub(crate) async fn reconcile_browser_controller_environment(

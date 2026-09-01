@@ -151,6 +151,18 @@ pub(super) async fn controller_scenario(private_relay: bool) {
 async fn check_slice_controller(fixture: &mut LiveWorker) {
     let worker_mcp_placement = fixture.placement();
     fixture.create_slice().await;
+    fixture
+        .home
+        .app
+        .lock()
+        .await
+        .slices()
+        .set_status(
+            "desktop",
+            crate::slice::SliceStatus::Running,
+            crate::session::unix_epoch_ms(),
+        )
+        .expect("live worker fixture slice should be running");
     let room = &fixture.rooms[0];
     let original = dispatch_json(
         &fixture.home,
@@ -170,6 +182,18 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
         .await
         .expect("start bound Room browser without an execution lease");
     let environment = &first["RoomEnvironmentUpdated"]["environment"];
+    assert_eq!(
+        environment["lifecycle"], "ready",
+        "a running headed Room slice must make Browser and Computer modes ready"
+    );
+    for component in ["browser_controller", "browser", "desktop", "streamer"] {
+        assert!(
+            environment["health"].as_array().is_some_and(|health| health
+                .iter()
+                .any(|entry| entry["component"] == component && entry["state"] == "ready")),
+            "{component} must be ready after the bound headed slice starts: {environment}"
+        );
+    }
     assert_eq!(
         environment["tabs"][0]["url"], "https://worker.test/",
         "Room tabs must come from its bound worker controller, not an empty home store"
