@@ -21,7 +21,7 @@ pub(super) fn forward_streamable_http_mcp_request(
     let mut request = agent
         .post(url)
         .set("Content-Type", "application/json")
-        .set("Accept", "application/json");
+        .set("Accept", "application/json, text/event-stream");
     for (key, value) in http_headers {
         if !reserved_header(key) {
             request = request.set(key, value);

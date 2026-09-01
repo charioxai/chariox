@@ -336,6 +336,7 @@ mod tests {
             assert!(request.starts_with("POST /mcp HTTP/1.1\r\n"));
             assert!(request.contains("Authorization: Bearer secret-token\r\n"));
             assert!(request.contains("X-Test: yes\r\n"));
+            assert!(request.contains("Accept: application/json, text/event-stream\r\n"));
             assert!(request.contains(r#""method":"tools/list""#));
 
             let body = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
