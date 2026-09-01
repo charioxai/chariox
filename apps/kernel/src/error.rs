@@ -19,6 +19,10 @@ pub enum DaemonError {
     },
     #[error("browser controller action was cancelled (controller fenced: {controller_fenced})")]
     BrowserControllerActionCancelled { controller_fenced: bool },
+    #[error(
+        "browser controller restarted at generation {runtime_generation} before the operation"
+    )]
+    BrowserControllerRecoveryRequired { runtime_generation: u64 },
     #[error("internal invariant `{operation}` failed: {message}")]
     InternalInvariant {
         operation: &'static str,

@@ -814,6 +814,6 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "02d3ae210be5673d3e46e9f654608c5a7c4cf59f49094aaabf8e8333c7bd4ffc"
+        "71b4c77bc70a304f233ba9cdd9380b5cd4f6629b7f3219066382e82474117bf1"
     );
 }

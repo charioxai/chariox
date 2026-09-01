@@ -13,6 +13,7 @@ mod controller_events;
 mod controller_integrations;
 mod controller_mutations;
 mod controller_observations;
+mod controller_recovery;
 mod controller_response_loss;
 mod controller_worker_mcp;
 mod lease_release;

@@ -1,4 +1,7 @@
-use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
+use crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION;
+use crate::runtime::browser_controller_process::{
+    BrowserControllerProcessFailure, BrowserControllerProcessStore,
+};
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand as Command, RoomBrowserControllerResult as Response,
 };
@@ -25,7 +28,16 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
-        let Some(slice) = self.owned.slice_store.environment_slice(session_id) else {
+        let admitted_mutation_command = matches!(
+            &command,
+            Command::Action { .. } | Command::Dialog { .. } | Command::Navigate { .. }
+        );
+        let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
+            // Keep the relay client's large future off callers' async stacks. Local
+            // controller operations stay allocation-free; only the remote boundary
+            // owns this boxed transport future.
+            Box::pin(self.route_room_browser_controller_command(session_id, slice, command)).await?
+        } else {
             if self
                 .owned
                 .config_projection
@@ -37,17 +49,31 @@ impl KernelRuntimeState {
                     "browser_controller_scope_denied: provisioned slice controller requires the home Room relay path",
                 ));
             }
-            return execute_local(
+            execute_local(
                 self.owned.browser_controller_processes.clone(),
                 session_id,
                 command,
             )
-            .await;
+            .await?
         };
-        // Keep the relay client's large future off callers' async stacks. Local
-        // controller operations stay allocation-free; only the remote boundary
-        // owns this boxed transport future.
-        Box::pin(self.route_room_browser_controller_command(session_id, slice, command)).await
+        match response {
+            Response::RecoveryRequired { process } if admitted_mutation_command => {
+                Err(DaemonError::BrowserControllerRecoveryRequired {
+                    runtime_generation: process.runtime_generation,
+                })
+            }
+            Response::RecoveryRequired { process } => {
+                Box::pin(self.recover_browser_controller_after_restart(
+                    session_id,
+                    process.runtime_generation,
+                ))
+                .await?;
+                Err(controller_route_error(
+                    CONTROLLER_RESTARTED_BEFORE_OPERATION,
+                ))
+            }
+            response => Ok(response),
+        }
     }
 
     async fn route_room_browser_controller_command(
@@ -174,19 +200,24 @@ async fn execute_local(
     command: Command,
 ) -> Result<Response, DaemonError> {
     let session_id = session_id.to_string();
-    tokio::task::spawn_blocking(move || match command {
-        Command::CancelAction { execution_id } => Ok(Response::CancellationRequested {
-            accepted: processes.cancel_browser_action(&session_id, &execution_id),
-        }),
+    let result = tokio::task::spawn_blocking(move || match command {
+        Command::CancelAction { execution_id } => {
+            Ok::<_, BrowserControllerProcessFailure>(Response::CancellationRequested {
+                accepted: processes.cancel_browser_action(&session_id, &execution_id),
+            })
+        }
         Command::Acquire => processes
             .acquire(&session_id)
-            .map(|snapshot| Response::Process { snapshot }),
+            .map(|snapshot| Response::Process { snapshot })
+            .map_err(BrowserControllerProcessFailure::from),
         Command::Release => processes
             .release(&session_id)
-            .map(|snapshot| Response::Process { snapshot }),
+            .map(|snapshot| Response::Process { snapshot })
+            .map_err(BrowserControllerProcessFailure::from),
         Command::Reconcile { viewport } => processes
             .reconcile_browser(&session_id, &viewport)
-            .map(|reconciliation| Response::Reconciled { reconciliation }),
+            .map(|reconciliation| Response::Reconciled { reconciliation })
+            .map_err(BrowserControllerProcessFailure::from),
         Command::Snapshot {
             target_id,
             document_id,
@@ -278,8 +309,16 @@ async fn execute_local(
         ),
     })
     .await
-    .map_err(|error| controller_route_error(&error.to_string()))?
-    .map_err(|message| controller_route_error(&message))
+    .map_err(|error| controller_route_error(&error.to_string()))?;
+    match result {
+        Ok(response) => Ok(response),
+        Err(BrowserControllerProcessFailure::RecoveryRequired { process }) => {
+            Ok(Response::RecoveryRequired { process })
+        }
+        Err(BrowserControllerProcessFailure::Failed { message }) => {
+            Err(controller_route_error(&message))
+        }
+    }
 }
 
 pub(super) fn controller_route_error(message: &str) -> DaemonError {

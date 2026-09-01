@@ -33,6 +33,8 @@ const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
 const CONTROLLER_SCRIPT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_SCRIPT";
 const CONTROLLER_NODE_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_NODE";
 const CONTROLLER_COMMAND_TIMEOUT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_COMMAND_TIMEOUT_MS";
+pub(crate) const CONTROLLER_RESTARTED_BEFORE_OPERATION: &str =
+    "browser controller restarted before the operation; reconcile and retry with fresh references";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +60,36 @@ pub(crate) struct BrowserControllerProcessSnapshot {
     pub(crate) diagnostic_code: Option<String>,
     pub(crate) runtime_generation: u64,
     pub(crate) restart_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BrowserControllerProcessFailure {
+    RecoveryRequired {
+        process: BrowserControllerProcessSnapshot,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+impl BrowserControllerProcessFailure {
+    fn failed(message: impl Into<String>) -> Self {
+        Self::Failed {
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for BrowserControllerProcessFailure {
+    fn from(message: String) -> Self {
+        Self::failed(message)
+    }
+}
+
+impl From<&str> for BrowserControllerProcessFailure {
+    fn from(message: &str) -> Self {
+        Self::failed(message)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -851,6 +883,7 @@ fn kill_child(child: &mut Child) {
 pub(crate) struct BrowserControllerProcessSupervisor<B> {
     backend: B,
     snapshot: BrowserControllerProcessSnapshot,
+    recovery_pending: bool,
 }
 
 type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend>;
@@ -918,8 +951,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         session_id: &str,
         target_id: &str,
         document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerStructuredSnapshot, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .capture_browser_snapshot(target_id, document_id)
     }
@@ -932,8 +966,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         node_ref: &str,
         action: &BrowserLocatorAction,
         timeout_ms: u64,
-    ) -> Result<BrowserControllerActionResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerActionResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
@@ -944,8 +979,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         target_id: &str,
         document_id: &str,
         url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerNavigationResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .navigate_browser(target_id, document_id, url)
     }
@@ -957,8 +993,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         document_id: &str,
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerCompatibilityWaitResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .wait_for_browser(target_id, document_id, wait, timeout_ms)
     }
@@ -969,8 +1006,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         target_id: &str,
         document_id: &str,
         action: &BrowserDialogAction,
-    ) -> Result<BrowserControllerDialogResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerDialogResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .handle_browser_dialog(target_id, document_id, action)
     }
@@ -980,8 +1018,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         session_id: &str,
         target_id: &str,
         document_id: &str,
-    ) -> Result<BrowserControllerDownloadsResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerDownloadsResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .configure_browser_downloads(target_id, document_id)
     }
@@ -993,8 +1032,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         document_id: &str,
         node_ref: &str,
         files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerUploadResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .upload_browser_files(target_id, document_id, node_ref, files)
     }
@@ -1006,8 +1046,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         document_id: &str,
         permission: BrowserPermissionName,
         setting: BrowserPermissionSetting,
-    ) -> Result<BrowserControllerPermissionResult, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerPermissionResult, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .set_browser_permission(target_id, document_id, permission, setting)
     }
@@ -1018,8 +1059,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         browser_generation: u64,
         cursor: u64,
         limit: u16,
-    ) -> Result<BrowserControllerEventBatch, String> {
-        self.require_lease(session_id)?;
+    ) -> Result<BrowserControllerEventBatch, BrowserControllerProcessFailure> {
+        self.require_lease(session_id)
+            .map_err(BrowserControllerProcessFailure::from)?;
         self.supervisor
             .poll_browser_events(browser_generation, cursor, limit)
     }
@@ -1135,13 +1177,13 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         target_id: &str,
         document_id: &str,
-    ) -> Result<Option<BrowserControllerStructuredSnapshot>, String> {
+    ) -> Result<Option<BrowserControllerStructuredSnapshot>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .capture_browser_snapshot(session_id, target_id, document_id)
             .map(Some)
@@ -1155,13 +1197,13 @@ impl BrowserControllerProcessStore {
         node_ref: &str,
         action: &BrowserLocatorAction,
         timeout_ms: u64,
-    ) -> Result<Option<BrowserControllerActionResult>, String> {
+    ) -> Result<Option<BrowserControllerActionResult>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .perform_browser_action(
                 session_id,
@@ -1180,13 +1222,13 @@ impl BrowserControllerProcessStore {
         target_id: &str,
         document_id: &str,
         url: &str,
-    ) -> Result<Option<BrowserControllerNavigationResult>, String> {
+    ) -> Result<Option<BrowserControllerNavigationResult>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .navigate_browser(session_id, target_id, document_id, url)
             .map(Some)
@@ -1199,13 +1241,14 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
-    ) -> Result<Option<BrowserControllerCompatibilityWaitResult>, String> {
+    ) -> Result<Option<BrowserControllerCompatibilityWaitResult>, BrowserControllerProcessFailure>
+    {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .wait_for_browser(session_id, target_id, document_id, wait, timeout_ms)
             .map(Some)
@@ -1217,13 +1260,13 @@ impl BrowserControllerProcessStore {
         target_id: &str,
         document_id: &str,
         action: &BrowserDialogAction,
-    ) -> Result<Option<BrowserControllerDialogResult>, String> {
+    ) -> Result<Option<BrowserControllerDialogResult>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .handle_browser_dialog(session_id, target_id, document_id, action)
             .map(Some)
@@ -1234,13 +1277,13 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         target_id: &str,
         document_id: &str,
-    ) -> Result<Option<BrowserControllerDownloadsResult>, String> {
+    ) -> Result<Option<BrowserControllerDownloadsResult>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .configure_browser_downloads(session_id, target_id, document_id)
             .map(Some)
@@ -1253,13 +1296,13 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         node_ref: &str,
         files: &BrowserUploadFiles,
-    ) -> Result<Option<BrowserControllerUploadResult>, String> {
+    ) -> Result<Option<BrowserControllerUploadResult>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .upload_browser_files(session_id, target_id, document_id, node_ref, files)
             .map(Some)
@@ -1272,13 +1315,13 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         permission: BrowserPermissionName,
         setting: BrowserPermissionSetting,
-    ) -> Result<Option<BrowserControllerPermissionResult>, String> {
+    ) -> Result<Option<BrowserControllerPermissionResult>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .set_browser_permission(session_id, target_id, document_id, permission, setting)
             .map(Some)
@@ -1290,13 +1333,13 @@ impl BrowserControllerProcessStore {
         browser_generation: u64,
         cursor: u64,
         limit: u16,
-    ) -> Result<Option<BrowserControllerEventBatch>, String> {
+    ) -> Result<Option<BrowserControllerEventBatch>, BrowserControllerProcessFailure> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        let mut ownership = ownership.lock().map_err(|_| {
+            BrowserControllerProcessFailure::from("browser controller supervisor lock poisoned")
+        })?;
         ownership
             .poll_browser_events(session_id, browser_generation, cursor, limit)
             .map(Some)
@@ -1324,6 +1367,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
                 runtime_generation: 1,
                 restart_count: 0,
             },
+            recovery_pending: false,
         }
     }
 
@@ -1344,6 +1388,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
                     BrowserControllerProcessState::Unhealthy
                         | BrowserControllerProcessState::Failed
                 ) =>
+            {
+                self.apply_health(health);
+                self.restart()?;
+                return Ok(&self.snapshot);
+            }
+            Ok(health)
+                if health.state == BrowserControllerProcessState::Stopped
+                    && self.snapshot.state != BrowserControllerProcessState::Stopped =>
             {
                 self.apply_health(health);
                 self.restart()?;
@@ -1377,6 +1429,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     ) -> Result<BrowserControllerReconciliation, String> {
         let process = self.ensure_started()?.clone();
         let browser = self.backend.reconcile_browser(viewport)?;
+        self.recovery_pending = false;
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
@@ -1384,10 +1437,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         &mut self,
         target_id: &str,
         document_id: &str,
-    ) -> Result<BrowserControllerStructuredSnapshot, String> {
+    ) -> Result<BrowserControllerStructuredSnapshot, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .capture_browser_snapshot(target_id, document_id)
+            .map_err(Into::into)
     }
 
     fn perform_browser_action(
@@ -1397,10 +1451,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         node_ref: &str,
         action: &BrowserLocatorAction,
         timeout_ms: u64,
-    ) -> Result<BrowserControllerActionResult, String> {
+    ) -> Result<BrowserControllerActionResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
+            .map_err(Into::into)
     }
 
     fn navigate_browser(
@@ -1408,9 +1463,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         target_id: &str,
         document_id: &str,
         url: &str,
-    ) -> Result<BrowserControllerNavigationResult, String> {
+    ) -> Result<BrowserControllerNavigationResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
-        self.backend.navigate_browser(target_id, document_id, url)
+        self.backend
+            .navigate_browser(target_id, document_id, url)
+            .map_err(Into::into)
     }
 
     fn wait_for_browser(
@@ -1419,10 +1476,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         document_id: &str,
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
-    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
+    ) -> Result<BrowserControllerCompatibilityWaitResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .wait_for_browser(target_id, document_id, wait, timeout_ms)
+            .map_err(Into::into)
     }
 
     fn handle_browser_dialog(
@@ -1430,20 +1488,22 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         target_id: &str,
         document_id: &str,
         action: &BrowserDialogAction,
-    ) -> Result<BrowserControllerDialogResult, String> {
+    ) -> Result<BrowserControllerDialogResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .handle_browser_dialog(target_id, document_id, action)
+            .map_err(Into::into)
     }
 
     fn configure_browser_downloads(
         &mut self,
         target_id: &str,
         document_id: &str,
-    ) -> Result<BrowserControllerDownloadsResult, String> {
+    ) -> Result<BrowserControllerDownloadsResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .configure_browser_downloads(target_id, document_id)
+            .map_err(Into::into)
     }
 
     fn upload_browser_files(
@@ -1452,10 +1512,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         document_id: &str,
         node_ref: &str,
         files: &BrowserUploadFiles,
-    ) -> Result<BrowserControllerUploadResult, String> {
+    ) -> Result<BrowserControllerUploadResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .upload_browser_files(target_id, document_id, node_ref, files)
+            .map_err(Into::into)
     }
 
     fn set_browser_permission(
@@ -1464,10 +1525,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         document_id: &str,
         permission: BrowserPermissionName,
         setting: BrowserPermissionSetting,
-    ) -> Result<BrowserControllerPermissionResult, String> {
+    ) -> Result<BrowserControllerPermissionResult, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .set_browser_permission(target_id, document_id, permission, setting)
+            .map_err(Into::into)
     }
 
     fn poll_browser_events(
@@ -1475,22 +1537,32 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         browser_generation: u64,
         cursor: u64,
         limit: u16,
-    ) -> Result<BrowserControllerEventBatch, String> {
+    ) -> Result<BrowserControllerEventBatch, BrowserControllerProcessFailure> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .poll_browser_events(browser_generation, cursor, limit)
+            .map_err(Into::into)
     }
 
-    fn ensure_started_without_transparent_restart(&mut self) -> Result<(), String> {
+    fn ensure_started_without_transparent_restart(
+        &mut self,
+    ) -> Result<(), BrowserControllerProcessFailure> {
+        if self.recovery_pending {
+            return Err(self.recovery_required());
+        }
         let generation = self.snapshot.runtime_generation;
-        self.ensure_started()?;
-        if self.snapshot.runtime_generation != generation {
-            return Err(
-                "browser controller restarted before the operation; reconcile and retry with fresh references"
-                    .to_string(),
-            );
+        self.ensure_started()
+            .map_err(BrowserControllerProcessFailure::from)?;
+        if self.snapshot.runtime_generation != generation || self.recovery_pending {
+            return Err(self.recovery_required());
         }
         Ok(())
+    }
+
+    fn recovery_required(&self) -> BrowserControllerProcessFailure {
+        BrowserControllerProcessFailure::RecoveryRequired {
+            process: self.snapshot.clone(),
+        }
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -1521,6 +1593,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.backend.stop()?;
         self.snapshot.runtime_generation = self.snapshot.runtime_generation.saturating_add(1);
         self.snapshot.restart_count = self.snapshot.restart_count.saturating_add(1);
+        self.recovery_pending = true;
         self.snapshot.process_id = None;
         self.start()
     }
@@ -1547,11 +1620,15 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        BrowserControllerProcessBackend, BrowserControllerProcessHealth,
-        BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
-        BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
+        BrowserControllerProcessBackend, BrowserControllerProcessFailure,
+        BrowserControllerProcessHealth, BrowserControllerProcessOwnership,
+        BrowserControllerProcessSnapshot, BrowserControllerProcessState,
+        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
+        BrowserControllerProcessSupervisor, CONTROLLER_RESTARTED_BEFORE_OPERATION,
     };
-    use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
+    use crate::runtime::browser_controller_action::{
+        BrowserControllerActionResult, BrowserDialogAction, BrowserLocatorAction,
+    };
     use crate::session::CanonicalViewport;
 
     const HEALTHY_TEST_CONTROLLER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1560,6 +1637,7 @@ mod tests {
     struct FakeBackend {
         health: VecDeque<Result<BrowserControllerProcessHealth, String>>,
         starts: VecDeque<Result<BrowserControllerProcessHealth, String>>,
+        actions: VecDeque<Result<BrowserControllerActionResult, String>>,
         start_count: usize,
         stop_count: usize,
     }
@@ -1581,6 +1659,19 @@ mod tests {
         fn stop(&mut self) -> Result<(), String> {
             self.stop_count += 1;
             Ok(())
+        }
+
+        fn perform_browser_action(
+            &mut self,
+            _target_id: &str,
+            _document_id: &str,
+            _node_ref: &str,
+            _action: &BrowserLocatorAction,
+            _timeout_ms: u64,
+        ) -> Result<BrowserControllerActionResult, String> {
+            self.actions
+                .pop_front()
+                .expect("test must provide a browser Action result")
         }
     }
 
@@ -1679,10 +1770,129 @@ mod tests {
 
         assert_eq!(
             error,
-            "browser controller restarted before the operation; reconcile and retry with fresh references"
+            BrowserControllerProcessFailure::RecoveryRequired {
+                process: supervisor.snapshot().clone(),
+            },
         );
         assert_eq!(supervisor.snapshot().runtime_generation, 2);
         assert_eq!(supervisor.snapshot().restart_count, 1);
+
+        let repeated_error = supervisor
+            .perform_browser_action(
+                "target-a",
+                "loader-a",
+                "backend:103",
+                &BrowserLocatorAction::Click,
+                1_000,
+            )
+            .expect_err("the restarted controller stays fenced until reconciliation");
+
+        assert_eq!(repeated_error, error);
+        assert_eq!(supervisor.backend().start_count, 1);
+        assert_eq!(supervisor.backend().stop_count, 1);
+    }
+
+    #[test]
+    fn operation_failure_uses_recovery_state_instead_of_message_equality() {
+        let mut healthy_backend = FakeBackend::default();
+        for _ in 0..2 {
+            healthy_backend
+                .health
+                .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(42))));
+        }
+        healthy_backend
+            .actions
+            .push_back(Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string()));
+        let mut healthy = BrowserControllerProcessOwnership::new(healthy_backend);
+        healthy.acquire("room-a").expect("controller is acquired");
+        assert_eq!(
+            healthy.perform_browser_action(
+                "room-a",
+                "target-a",
+                "document-a",
+                "backend:1",
+                &BrowserLocatorAction::Click,
+                1_000,
+            ),
+            Err(BrowserControllerProcessFailure::Failed {
+                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
+            }),
+            "a backend message cannot invent recovery state",
+        );
+
+        let mut restarted_backend = FakeBackend::default();
+        restarted_backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(43))));
+        restarted_backend.health.push_back(Ok(health(
+            BrowserControllerProcessState::Unhealthy,
+            Some(43),
+        )));
+        restarted_backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(44))));
+        let mut restarted = BrowserControllerProcessOwnership::new(restarted_backend);
+        restarted.acquire("room-b").expect("controller is acquired");
+        assert_eq!(
+            restarted.perform_browser_action(
+                "room-b",
+                "target-b",
+                "document-b",
+                "backend:2",
+                &BrowserLocatorAction::Click,
+                1_000,
+            ),
+            Err(BrowserControllerProcessFailure::RecoveryRequired {
+                process: BrowserControllerProcessSnapshot {
+                    state: BrowserControllerProcessState::Ready,
+                    process_id: Some(44),
+                    diagnostic_code: None,
+                    runtime_generation: 2,
+                    restart_count: 1,
+                },
+            }),
+            "restart state is carried atomically with the operation failure",
+        );
+    }
+
+    #[test]
+    fn mutation_does_not_run_when_a_ready_controller_disappears() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Stopped, None)));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(43))));
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Stopped, None)));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(44))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+        supervisor.ensure_started().expect("controller starts");
+
+        let error = supervisor
+            .perform_browser_action(
+                "target-a",
+                "loader-a",
+                "backend:103",
+                &BrowserLocatorAction::Click,
+                1_000,
+            )
+            .expect_err("a disappeared ready controller requires reconciliation");
+
+        assert_eq!(
+            error,
+            BrowserControllerProcessFailure::RecoveryRequired {
+                process: supervisor.snapshot().clone(),
+            },
+        );
+        assert_eq!(supervisor.snapshot().runtime_generation, 2);
+        assert_eq!(supervisor.snapshot().restart_count, 1);
+        assert_eq!(supervisor.backend().start_count, 2);
+        assert_eq!(supervisor.backend().stop_count, 1);
     }
 
     #[test]

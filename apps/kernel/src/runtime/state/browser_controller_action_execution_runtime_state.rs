@@ -2,6 +2,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
+use crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION;
 use crate::session::{
     agent_environment_actor_id, ActionAdmission, EnvironmentActionRequest, EnvironmentActionState,
     EnvironmentActionTerminal, EnvironmentError,
@@ -105,6 +106,22 @@ impl KernelRuntimeState {
             }
             None => execution.await,
         };
+        let controller_restart_generation = match &result {
+            Err(DaemonError::BrowserControllerRecoveryRequired { runtime_generation }) => {
+                Some(*runtime_generation)
+            }
+            _ => None,
+        };
+        if let Some(runtime_generation) = controller_restart_generation {
+            self.begin_room_environment_browser_controller_recovery(session_id)
+                .map_err(action_environment_error)?;
+            self.recover_browser_controller_after_restart(session_id, runtime_generation)
+                .await?;
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.route",
+                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
+            });
+        }
         let controller_fenced = matches!(
             &result,
             Err(DaemonError::BrowserControllerActionCancelled {
@@ -239,6 +256,95 @@ mod tests {
         assert_eq!(
             request.targets,
             vec![crate::session::InputTarget::BrowserTab("tab-7".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_required_finalizes_action_when_generation_is_already_observed() {
+        let test_root = TestRoot::new("browser-action-recovery-finalization");
+        let test_root_path = test_root.path().to_string_lossy().into_owned();
+        let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                &test_root_path,
+                &test_root_path,
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("browser-agent"),
+            )
+            .expect("agent should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let runtime = runtime_state_from_test_app(app);
+        let viewport = crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800)
+            .expect("test viewport should be valid");
+        runtime
+            .owned
+            .session_store
+            .create_room_environment(&session_id, "environment-test", viewport.clone())
+            .expect("environment should be created");
+        runtime
+            .start_room_environment(&session_id, viewport)
+            .expect("environment should start");
+        runtime
+            .transition_room_environment(&session_id, crate::session::EnvironmentLifecycle::Ready)
+            .expect("environment should become ready");
+        runtime
+            .reconcile_room_environment_controller_tabs(
+                &session_id,
+                vec![crate::session::EnvironmentTabObservation {
+                    runtime_target_id: "target-a".to_string(),
+                    document_id: "loader-a".to_string(),
+                    url: "https://example.test".to_string(),
+                    title: "Example".to_string(),
+                }],
+                Some("target-a"),
+            )
+            .expect("test tab should be reconciled");
+        runtime
+            .owned
+            .browser_controller_generations
+            .lock()
+            .expect("generation lock should be available")
+            .insert(session_id.clone(), (7, true));
+
+        let error = runtime
+            .execute_browser_mutation_as_agent(
+                &session_id,
+                &agent_id,
+                "tab-1",
+                1,
+                "click",
+                None,
+                async {
+                    Err::<(), _>(DaemonError::BrowserControllerRecoveryRequired {
+                        runtime_generation: 7,
+                    })
+                },
+            )
+            .await
+            .expect_err("the interrupted mutation should report controller recovery");
+        assert!(
+            error
+                .to_string()
+                .contains("browser controller restarted before the operation"),
+            "{error}",
+        );
+
+        let environment = runtime
+            .room_environment_snapshot(&session_id)
+            .expect("environment snapshot should remain available");
+        assert_eq!(environment.actions.len(), 1);
+        assert_eq!(environment.actions[0].state, EnvironmentActionState::Failed,);
+        assert_eq!(
+            environment.actions[0].outcome,
+            Some(crate::session::EnvironmentActionOutcome::Failed {
+                code: crate::session::EnvironmentActionFailureCode::ProcessLost,
+            }),
         );
     }
 
