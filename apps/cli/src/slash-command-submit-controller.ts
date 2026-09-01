@@ -36,6 +36,7 @@ export type SlashCommandSubmitControllerDeps = {
   handleKernelCommand: (command: SlashCommand<"kernel">) => Promise<unknown> | unknown
   handleMachineCommand: (command: SlashCommand<"machine">) => Promise<unknown> | unknown
   handleSliceCommand: (command: SlashCommand<"slice">) => Promise<unknown> | unknown
+  handleRoomCommand: (command: SlashCommand<"room">) => Promise<unknown> | unknown
   handleRelayCommand: (command: SlashCommand<"relay">) => Promise<unknown> | unknown
   handleCloudCommand: (command: SlashCommand<"cloud">) => Promise<unknown> | unknown
   handleCollabCommand: (command: SlashCommand<"collab">) => Promise<unknown> | unknown
@@ -154,6 +155,7 @@ export function createSlashCommandSubmitController(
         onKernel: (command) => runWithFooterError(deps.handleKernelCommand, command),
         onMachine: (command) => runWithFooterError(deps.handleMachineCommand, command),
         onSlice: (command) => runWithFooterError(deps.handleSliceCommand, command),
+        onRoom: (command) => runWithFooterError(deps.handleRoomCommand, command),
         onRelay: (command) => runWithFooterError(deps.handleRelayCommand, command),
         onCloud: (command) => runWithFooterError(deps.handleCloudCommand, command),
         onCollab: (command) => runWithFooterError(deps.handleCollabCommand, command),

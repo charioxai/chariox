@@ -67,6 +67,7 @@ export type CliInputRoutingCompositionDeps = {
   handleKernelCommand: AnyFn
   handleMachineCommand: AnyFn
   handleSliceCommand: AnyFn
+  handleRoomCommand: AnyFn
   handleRelayCommand: AnyFn
   handleCloudCommand: AnyFn
   handleCollabCommand: AnyFn
@@ -230,6 +231,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleKernelCommand: deps.handleKernelCommand,
     handleMachineCommand: deps.handleMachineCommand,
     handleSliceCommand: deps.handleSliceCommand,
+    handleRoomCommand: deps.handleRoomCommand,
     handleRelayCommand: deps.handleRelayCommand,
     handleCloudCommand: deps.handleCloudCommand,
     handleCollabCommand: deps.handleCollabCommand,

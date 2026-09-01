@@ -136,6 +136,32 @@
     ]
   },
   {
+    "id": "room",
+    "label": "/room",
+    "description": "Inspect and control the current Room environment",
+    "value": "/room ",
+    "searchAliases": [
+      "room environment",
+      "shared browser",
+      "shared computer"
+    ],
+    "children": [
+      {
+        "id": "room-status",
+        "label": "status",
+        "description": "Show Room environment lifecycle, health, viewport, focused tab, actors, input ownership, and latest action",
+        "value": "/room status",
+        "searchAliases": [
+          "room environment",
+          "browser status",
+          "computer status",
+          "shared browser",
+          "input owner"
+        ]
+      }
+    ]
+  },
+  {
     "id": "agent",
     "label": "/agent",
     "description": "Manage agents in the current session",

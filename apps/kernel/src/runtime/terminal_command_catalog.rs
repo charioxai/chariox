@@ -206,6 +206,27 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_catalog_includes_room_environment_status() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+
+        let status = nodes
+            .into_iter()
+            .find(|node| node.id == "room-status")
+            .expect("Room environment status command should be present");
+        assert_eq!(status.value, "/room status");
+        assert_eq!(
+            status.execution_target,
+            TerminalCommandCatalogExecutionTarget::Kernel
+        );
+        assert_eq!(
+            status.surfaces,
+            vec![TerminalCommandCatalogSurface::Session]
+        );
+    }
+
+    #[test]
     fn terminal_command_catalog_explains_scheduled_prompt_syntax() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let wait_in = catalog
