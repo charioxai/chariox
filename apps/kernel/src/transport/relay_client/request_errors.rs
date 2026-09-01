@@ -7,6 +7,11 @@ use crate::local::LocalDaemonRequest;
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
+        DaemonError::AgentWorkerCleanup { source, .. } => {
+            let mut mapped = map_relay_error(source);
+            mapped.message = error.to_string();
+            mapped
+        }
         DaemonError::SessionNotFound { .. } => {
             relay_error("session_not_found", &error.to_string(), false)
         }
@@ -199,6 +204,43 @@ mod tests {
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
         assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn room_environment_cleanup_errors_preserve_cause_classification() {
+        for (source, code, retryable) in [
+            (
+                DaemonError::LocalTransport {
+                    operation: "connect relay",
+                    message: "offline".to_string(),
+                },
+                "transport_error",
+                true,
+            ),
+            (
+                DaemonError::ExecutionLeaseNotFound {
+                    lease_id: "lease-1".to_string(),
+                },
+                "execution_lease_not_found",
+                false,
+            ),
+        ] {
+            let error = DaemonError::AgentWorkerCleanup {
+                agent_id: "agent-1".to_string(),
+                source: Box::new(source),
+            };
+            let mapped = map_relay_error(&error);
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.retryable, retryable);
+            assert!(mapped.message.contains("agent retained"));
+        }
+        let invariant = DaemonError::InternalInvariant {
+            operation: "agent.spawn",
+            message: "slice admission target count mismatch".to_string(),
+        };
+        let mapped = map_relay_error(&invariant);
+        assert_eq!(mapped.code, "relay_request_failed");
+        assert!(!mapped.retryable);
     }
 
     #[test]

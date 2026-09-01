@@ -647,16 +647,19 @@ impl<'a> KernelSessionService<'a> {
         Ok(())
     }
 
-    pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
-        let agent = self.app.agents.get_agent(agent_id)?;
+    pub(crate) fn destroy_agent_worker_execution(
+        &mut self,
+        agent: &AgentInstance,
+    ) -> Result<(), DaemonError> {
         if let Some(remote) = agent.remote_execution().cloned() {
+            let relay_config = self.app.relay_config_for_remote_execution(&remote);
             let target = chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(remote.worker_kernel_id.clone()),
                 daemon_alias: None,
             };
             self.app.block_on_relay_future(
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &self.app.config,
+                    &relay_config,
                     target.clone(),
                     crate::transport::relay_peer::RelayPeerRequest::DestroyLeasedAgent {
                         leased_agent_id: remote.leased_agent_id.clone(),
@@ -665,7 +668,7 @@ impl<'a> KernelSessionService<'a> {
             )?;
             self.app.block_on_relay_future(
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &self.app.config,
+                    &relay_config,
                     target,
                     crate::transport::relay_peer::RelayPeerRequest::DestroyExecutionLease {
                         lease_id: remote.execution_lease_id.clone(),
@@ -673,6 +676,15 @@ impl<'a> KernelSessionService<'a> {
                 ),
             )?;
         }
+        Ok(())
+    }
+
+    // Legacy app-only fixtures use this adapter. Production deletion is owned
+    // by KernelRuntimeState so prompt/run state and slice attachments agree.
+    #[cfg(test)]
+    pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        let agent = self.app.agents.get_agent(agent_id)?;
+        self.destroy_agent_worker_execution(&agent)?;
         let session_id = agent.session_id().to_string();
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();

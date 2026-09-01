@@ -18,11 +18,18 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
-        let _slice_guards = self.guard_slice_execution(
+        let slice_admission = self.guard_slice_execution(
             None,
             [(slice_ref.as_deref(), kernel_ref.as_deref())],
             "session.create",
         )?;
+        let [slice_ref] = slice_admission.slice_ids.as_slice() else {
+            return Err(DaemonError::InternalInvariant {
+                operation: "session.create",
+                message: "slice admission target count mismatch".to_string(),
+            });
+        };
+        let slice_ref = slice_ref.clone();
         if slice_ref.is_none() && kernel_ref.is_none() {
             request = prepare_local_session_worktree_placement(request)?;
         }
@@ -379,51 +386,7 @@ impl KernelRuntimeState {
         .await
     }
 
-    pub(crate) async fn spawn_agents(
-        &self,
-        mut requests: Vec<crate::agent::CreateAgentRequest>,
-        caller_user_id: &str,
-    ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
-        for request in &mut requests {
-            self.normalize_local_kernel_ref(request);
-        }
-        if requests.iter().all(|request| request.kernel_ref.is_none()) {
-            let mut prepared_requests = Vec::with_capacity(requests.len());
-            for request in requests {
-                prepared_requests.push(self.prepare_local_agent_worktree_placement(request)?);
-            }
-            return self.owned.spawn_agents(prepared_requests);
-        }
-
-        let mut ordered_agents = vec![None; requests.len()];
-        let mut local_requests = Vec::new();
-        let mut local_indices = Vec::new();
-        for (index, request) in requests.into_iter().enumerate() {
-            if request.kernel_ref.is_none() {
-                local_requests.push(self.prepare_local_agent_worktree_placement(request)?);
-                local_indices.push(index);
-            } else {
-                ordered_agents[index] = Some(self.spawn_agent(request).await?);
-            }
-        }
-        if !local_requests.is_empty() {
-            let local_agents = self.owned.spawn_agents(local_requests)?;
-            for (index, agent) in local_indices.into_iter().zip(local_agents.into_iter()) {
-                ordered_agents[index] = Some(agent);
-            }
-        }
-        let agents = ordered_agents
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .expect("every batch spawn slot should be populated");
-        if let Some(last_agent) = agents.last() {
-            self.owned
-                .focus_agent(last_agent.session_id(), last_agent.id(), caller_user_id)?;
-        }
-        Ok(agents)
-    }
-
-    fn normalize_local_kernel_ref(&self, request: &mut crate::agent::CreateAgentRequest) {
+    pub(super) fn normalize_local_kernel_ref(&self, request: &mut crate::agent::CreateAgentRequest) {
         let Some(kernel_ref) = request.kernel_ref.as_deref() else {
             return;
         };
@@ -433,7 +396,7 @@ impl KernelRuntimeState {
         }
     }
 
-    fn prepare_local_agent_worktree_placement(
+    pub(super) fn prepare_local_agent_worktree_placement(
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
@@ -641,17 +604,19 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        let destroyed = if agent.remote_execution().is_none() {
-            self.owned.destroy_agent(agent_id, caller_user_id)?
-        } else {
-            let destroyed = self
-                .with_app_side_effect(|app| {
-                    crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
-                })
-                .await?;
-            self.owned.destroy_agent(agent_id, caller_user_id)?;
-            destroyed
-        };
+        if agent.remote_execution().is_some() {
+            self.with_app_side_effect(|app| {
+                crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
+            })
+            .await
+            .map_err(|error| DaemonError::AgentWorkerCleanup {
+                agent_id: agent_id.to_string(),
+                source: Box::new(error),
+            })?;
+        }
+        // The app and runtime share the agent store. Delete once, after worker
+        // cleanup, through the owner that also clears prompt and run state.
+        let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
@@ -664,10 +629,8 @@ impl KernelRuntimeState {
                 serde_json::json!({ "slice": &slice }),
             )?;
         }
-        if agent.remote_execution().is_none() {
-            self.append_agent_durable_event("agent.deleted", &destroyed, None)
-                .await?;
-        }
+        self.append_agent_durable_event("agent.deleted", &destroyed, None)
+            .await?;
         Ok(destroyed)
     }
 

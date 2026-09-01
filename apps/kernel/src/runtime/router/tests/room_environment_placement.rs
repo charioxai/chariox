@@ -2,6 +2,7 @@ use super::*;
 use serde_json::{json, Value};
 
 mod execution;
+mod live_worker;
 
 fn run_test<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
     std::thread::Builder::new()
@@ -33,6 +34,7 @@ impl TestState {
             .unwrap()
             .to_path_buf();
         config.local_socket_path = root.join("kernel.sock");
+        config.user_config_path = root.join("config.toml");
         config.session_history_root = root.join("history");
         config.user_config.history.operational.path =
             Some(root.join("history.db").display().to_string());

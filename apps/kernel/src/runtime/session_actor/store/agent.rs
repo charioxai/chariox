@@ -193,7 +193,7 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let _slice_guards = match self.state.guard_slice_execution(
+        let slice_admission = match self.state.guard_slice_execution(
             Some(&request.session_id),
             [(request.slice_ref.as_deref(), request.kernel_ref.as_deref())],
             "agent.spawn",
@@ -259,8 +259,18 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
-        let slice_ref_for_agent = request.slice_ref.clone();
-        let slice_kernel_ref = match request.slice_ref {
+        let slice_ref_for_agent = match slice_admission.slice_ids.as_slice() {
+            [slice_ref] => slice_ref.clone(),
+            _ => {
+                return self
+                    .with_session_projection_action_result(Err(DaemonError::InternalInvariant {
+                        operation: "agent.spawn",
+                        message: "slice admission target count mismatch".to_string(),
+                    }))
+                    .await;
+            }
+        };
+        let slice_kernel_ref = match slice_ref_for_agent.as_deref() {
             Some(slice_ref) => {
                 let session = match self.state.session_snapshot(&request.session_id).await {
                     Ok(session) => session,
@@ -274,7 +284,7 @@ impl SessionRuntimeStore {
                 let scope_result = self
                     .state
                     .ensure_slice_worktree_scope(
-                        &slice_ref,
+                        slice_ref,
                         session.workspace_id(),
                         requested_worktree_id,
                     )
@@ -282,7 +292,7 @@ impl SessionRuntimeStore {
                 if let Err(error) = scope_result {
                     return self.with_session_projection_action_result(Err(error)).await;
                 }
-                match self.state.resolve_slice_worker_kernel_ref(&slice_ref).await {
+                match self.state.resolve_slice_worker_kernel_ref(slice_ref).await {
                     Ok(kernel_ref) => Some(kernel_ref),
                     Err(error) => {
                         return self.with_session_projection_action_result(Err(error)).await;
@@ -291,9 +301,7 @@ impl SessionRuntimeStore {
             }
             None => None,
         };
-        let create_request = if let Some(kernel_ref) = request.kernel_ref {
-            create_request.with_kernel(kernel_ref)
-        } else if let Some(kernel_ref) = slice_kernel_ref {
+        let create_request = if let Some(kernel_ref) = slice_kernel_ref.or(request.kernel_ref) {
             create_request.with_kernel(kernel_ref)
         } else {
             create_request
@@ -376,7 +384,7 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let _slice_guards = match self.state.guard_slice_execution(
+        let slice_admission = match self.state.guard_slice_execution(
             Some(&request.session_id),
             request
                 .agents
@@ -397,10 +405,20 @@ impl SessionRuntimeStore {
         let workspace_id = session.workspace_id().to_string();
         let default_worktree_id = session.worktree_id().to_string();
 
+        if slice_admission.slice_ids.len() != request.agents.len() {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::InternalInvariant {
+                    operation: "agents.spawn",
+                    message: "slice admission target count mismatch".to_string(),
+                }))
+                .await;
+        }
         let mut slice_kernel_refs = HashMap::<String, String>::new();
         let mut create_requests = Vec::with_capacity(request.agents.len());
         let mut slice_refs_for_agents = Vec::with_capacity(request.agents.len());
-        for item in request.agents {
+        for (item, slice_ref_for_agent) in
+            request.agents.into_iter().zip(&slice_admission.slice_ids)
+        {
             if item.metaagent {
                 return self
                     .with_session_projection_action_result(Err(DaemonError::LocalTransport {
@@ -414,8 +432,8 @@ impl SessionRuntimeStore {
             let execution_mode = item.execution_mode.or(default_execution_mode);
             let permission_level = item.permission_level.or(default_permission_level);
             let requested_worktree_for_scope = item.worktree_id.clone();
-            let slice_ref_for_agent = item.slice_ref.clone();
-            let slice_kernel_ref = match item.slice_ref {
+            let slice_ref_for_agent = slice_ref_for_agent.clone();
+            let slice_kernel_ref = match slice_ref_for_agent.clone() {
                 Some(slice_ref) => {
                     let requested_worktree_id = requested_worktree_for_scope
                         .as_deref()
@@ -483,7 +501,7 @@ impl SessionRuntimeStore {
             if let Some(worktree_id) = item.worktree_id {
                 create_request = create_request.with_worktree(worktree_id);
             }
-            if let Some(kernel_ref) = item.kernel_ref.or(slice_kernel_ref) {
+            if let Some(kernel_ref) = slice_kernel_ref.or(item.kernel_ref) {
                 create_request = create_request.with_kernel(kernel_ref);
             }
             if let Some(placement) = item.worktree_placement {
@@ -494,11 +512,21 @@ impl SessionRuntimeStore {
         }
         let agents = match self
             .state
-            .spawn_agents(create_requests, &caller_user_id)
+            .spawn_agents(create_requests, &caller_user_id, &slice_refs_for_agents)
             .await
         {
             Ok(agents) => agents,
-            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+            Err(error) => {
+                // A worker-backed failure may have created and then rolled back
+                // agents. Publish the recovered state even though the request failed.
+                let projection = self
+                    .state
+                    .session_snapshot(&request.session_id)
+                    .await
+                    .ok()
+                    .map(SessionProjectionAction::Update);
+                return (Err(error), projection);
+            }
         };
         let slice_attachments = agents
             .iter()

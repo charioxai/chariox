@@ -17,6 +17,17 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("internal invariant `{operation}` failed: {message}")]
+    InternalInvariant {
+        operation: &'static str,
+        message: String,
+    },
+    #[error("worker cleanup failed for `{agent_id}`; agent retained. Resolve the reported failure and retry cleanup: {source}")]
+    AgentWorkerCleanup {
+        agent_id: String,
+        #[source]
+        source: Box<DaemonError>,
+    },
     #[error("session `{session_id}` was not found")]
     SessionNotFound { session_id: String },
     #[error("session alias `{alias}` is invalid: {message}")]
