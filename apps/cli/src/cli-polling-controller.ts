@@ -42,6 +42,7 @@ type CliPollingControllerDeps = {
   queueTerminalOutputRecords: (records: TerminalOutputRecord[]) => void
   pumpTerminalOutput: (sessionId: string, attachmentId: string) => Promise<TerminalOutputRecord[]>
   pollRuntimeNotices: (sessionId: string, attachmentId: string) => Promise<RuntimeNoticeRecord[]>
+  synchronizeRoomEnvironmentActivity: () => Promise<unknown>
   appendNotice: (message: string) => void
   getSessionState: (sessionId: string) => Promise<RuntimeSession>
   getWorkspaceLiveSyncStatus?: (sessionId: string) => Promise<WorkspaceLiveSyncStatus>
@@ -213,9 +214,21 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
     })
   }
 
+  const pollRoomEnvironmentActivity = async () => {
+    await runPollingLoop({
+      ...commonOptions,
+      operation: "polling Room environment activity",
+      intervalMs: 200,
+      task: async () => {
+        await deps.synchronizeRoomEnvironmentActivity()
+      },
+    })
+  }
+
   return {
     pollOutput,
     pollNotices,
     pollSessionState,
+    pollRoomEnvironmentActivity,
   }
 }
