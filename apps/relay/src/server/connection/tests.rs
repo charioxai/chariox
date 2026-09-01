@@ -76,6 +76,37 @@ async fn saturated_display_viewer_is_closed_without_blocking_the_daemon_lane() {
     ));
 }
 
+#[tokio::test]
+async fn saturated_display_viewer_observes_channel_close_after_daemon_terminal_event() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-1");
+    let (display_tx, mut display_rx) = mpsc::channel(1);
+    display_tx
+        .try_send(DisplayStreamEvent::Chunk {
+            data: "last-frame".to_string(),
+            message_kind: Some("binary".to_string()),
+        })
+        .expect("last display packet should fill the queue");
+    registry.write().await.insert_pending_display_stream(
+        "stream-1".to_string(),
+        daemon_key.clone(),
+        display_tx,
+    );
+
+    close_display_stream_from_daemon(&registry, &daemon_key, "stream-1", None).await;
+
+    assert!(matches!(
+        display_rx.recv().await,
+        Some(DisplayStreamEvent::Chunk { data, .. }) if data == "last-frame"
+    ));
+    assert!(display_rx.recv().await.is_none());
+    assert!(registry
+        .read()
+        .await
+        .display_stream_sender_for_daemon("stream-1", &daemon_key)
+        .is_none());
+}
+
 fn peer_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }

@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier};
-use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayMetadataQuery};
+use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
     PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry, RelaySender,
@@ -64,6 +64,28 @@ async fn try_forward_display_stream_event(
             )),
         },
     );
+}
+
+async fn close_display_stream_from_daemon(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    daemon_key: &DaemonKey,
+    stream_id: &str,
+    error: Option<RelayError>,
+) {
+    let sender = {
+        let mut guard = registry.write().await;
+        let sender = guard.display_stream_sender_for_daemon(stream_id, daemon_key);
+        guard.remove_pending_display_stream(stream_id);
+        sender
+    };
+    let Some(sender) = sender else {
+        return;
+    };
+    // A full queue cannot accept the terminal event. Removing the registry's
+    // sender and dropping this last clone closes the channel after its queued
+    // frames drain, so the viewer still observes termination without blocking
+    // the daemon read lane.
+    let _ = sender.try_send(DisplayStreamEvent::Close { error });
 }
 
 pub(crate) async fn handle_connection(
@@ -814,19 +836,13 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let sender = {
-                                let mut guard = registry.write().await;
-                                let sender = guard
-                                    .display_stream_sender_for_daemon(
-                                        &stream_id,
-                                        &current_daemon_key,
-                                    );
-                                guard.remove_pending_display_stream(&stream_id);
-                                sender
-                            };
-                            if let Some(sender) = sender {
-                                let _ = sender.try_send(DisplayStreamEvent::Close { error });
-                            }
+                            close_display_stream_from_daemon(
+                                &registry,
+                                &current_daemon_key,
+                                &stream_id,
+                                error,
+                            )
+                            .await;
                         }
                         RelayEnvelope::DaemonEvent {
                             subscription_id,
