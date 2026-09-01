@@ -500,6 +500,68 @@ mod tests {
     }
 
     #[test]
+    fn streamable_http_proxy_bypasses_bracketed_ipv6_loopback() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+
+        let proxy = streamable_http::configured_proxy_for_url("http://[::1]:43120/mcp")
+            .expect("IPv6 loopback should bypass malformed proxy configuration");
+        assert!(proxy.is_none());
+    }
+
+    #[test]
+    fn streamable_http_proxy_matches_bracketed_ipv6_no_proxy_host() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+        std::env::set_var("NO_PROXY", "::1");
+
+        let proxy = streamable_http::configured_proxy_for_url("http://[::1]:43120/mcp")
+            .expect("NO_PROXY should match a bracketed IPv6 URL host");
+        assert!(proxy.is_none());
+    }
+
+    #[test]
     fn streamable_https_proxy_prefers_https_proxy_configuration() {
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[

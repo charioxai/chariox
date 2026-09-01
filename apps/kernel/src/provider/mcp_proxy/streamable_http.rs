@@ -90,6 +90,7 @@ pub(super) fn configured_proxy_for_url(url: &str) -> Result<Option<ureq::Proxy>,
             operation: "mcp.proxy.http.proxy",
             message: "MCP HTTP URL does not contain a host".to_string(),
         })?;
+    let host = normalized_proxy_host(host);
     let port = parsed.port_or_known_default();
     if is_loopback_host(host) || no_proxy_matches(host, port) {
         return Ok(None);
@@ -130,6 +131,13 @@ fn is_loopback_host(host: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
+fn normalized_proxy_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+        .trim_end_matches('.')
+}
+
 fn no_proxy_matches(host: &str, port: Option<u16>) -> bool {
     let no_proxy = std::env::var("NO_PROXY")
         .ok()
@@ -147,11 +155,7 @@ fn no_proxy_matches(host: &str, port: Option<u16>) -> bool {
         if entry_host.is_empty() || entry_port.is_some_and(|entry_port| Some(entry_port) != port) {
             return false;
         }
-        let entry_host = entry_host
-            .trim_start_matches('.')
-            .trim_end_matches('.')
-            .trim_matches(['[', ']']);
-        let host = host.trim_end_matches('.');
+        let entry_host = normalized_proxy_host(entry_host.trim_start_matches('.'));
         host.eq_ignore_ascii_case(entry_host)
             || host
                 .to_ascii_lowercase()
