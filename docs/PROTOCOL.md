@@ -712,14 +712,32 @@ cursor resume, caller isolation, and controller cleanup. Existing clients'
 minimum versions remain unchanged because the public local-daemon request shape
 does not change.
 
+The Room runtime MCP publishes the controller-backed browser integration tools
+under both their stable `chariox.*` names and the existing unqualified provider
+aliases. `slice_browser_status` returns the controller's
+`browser_generation`; agents pass that generation with a bounded cursor and
+limit to `slice_browser_events`. A replay gap is an explicit unsuccessful tool
+result whose structured payload still carries `replay_gap`, `next_cursor`, and
+the current generation so the caller can refresh state instead of guessing.
+`slice_browser_downloads` and `slice_browser_permission` act on the focused
+stable Room Tab. `slice_browser_upload` accepts an opaque element reference and
+one through twenty bounded absolute paths inside the slice. Upload paths remain
+out of Debug output, relay diagnostics, and tool results. These tools are
+advertised to an authenticated home agent only when its Room has a bound
+long-running controller route. They have no one-shot helper fallback. This MCP
+adapter adds no local-daemon or relay serialization, so protocol v290 and relay
+peer v26 remain current. The encrypted home-to-worker drill invokes every tool
+through the authenticated runtime MCP route and verifies stable Tab projection,
+physical controller effects, path redaction, cursor resume, and cleanup.
+
 Cancellation during other operations and physical input-device reset after a
 mid-sequence controller loss still require further resiliency validation; this
 is not full cancellation acceptance for every Browser and Computer operation.
 
-Navigation, public event/file/permission tool adapters, worker-agent MCP forwarding, and
-secure viewers still require the remaining routing work before product enablement.
-Existing clients' minimum
-versions remain unchanged because their public request shapes have not changed.
+The remaining one-shot compatibility audit, worker-agent MCP forwarding, and
+secure viewers still require work before product enablement. Existing clients'
+minimum versions remain unchanged because their public request shapes have not
+changed.
 
 The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgentToRemote` paths reject known slices reserved for another Room with `environment_slice_access_denied`. Slice names/IDs and known worker aliases/IDs share the check. Admission also rejects shared worker identities, including collisions discovered after binding, for direct slice references as well as worker lookups. Admission holds a slice operation guard so a competing bind or lifecycle operation cannot race it; a failure releases the guard. An unassigned slice with an unambiguous worker keeps legacy behavior. This adds no serialized request/response fields and does not replace worker-side authorization or viewer-token validation.
 

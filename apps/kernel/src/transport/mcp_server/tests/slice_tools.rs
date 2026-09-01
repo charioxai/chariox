@@ -151,6 +151,21 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_dialog"));
+    for name in [
+        "chariox.slice_browser_events",
+        "slice_browser_events",
+        "chariox.slice_browser_downloads",
+        "slice_browser_downloads",
+        "chariox.slice_browser_upload",
+        "slice_browser_upload",
+        "chariox.slice_browser_permission",
+        "slice_browser_permission",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == name),
+            "missing MCP browser tool {name}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -368,6 +383,22 @@ while IFS= read -r request; do
       printf 'dialog-%s\n' "$action" >> '{}'
       printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action":"%s"}}}}\n' "$id" "$action"
       ;;
+    *'"method":"browser.downloads.configure"'*)
+      printf 'downloads\n' >> '{}'
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","enabled":true}}}}\n' "$id"
+      ;;
+    *'"method":"browser.upload"'*)
+      printf 'upload\n' >> '{}'
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","file_count":1,"total_bytes":12}}}}\n' "$id"
+      ;;
+    *'"method":"browser.permission"'*)
+      printf 'permission-denied\n' >> '{}'
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","permission":"clipboard-read-write","setting":"denied"}}}}\n' "$id"
+      ;;
+    *'"method":"browser.events.poll"'*)
+      printf 'events\n' >> '{}'
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"events":[{{"event_id":2,"browser_generation":1,"kind":"console","target_id":"target-a","document_id":"loader-a","data":{{"console_type":"log","argument_count":1}}}},{{"event_id":3,"browser_generation":1,"kind":"browser_connected","target_id":null,"document_id":null,"data":{{}}}}],"next_cursor":3,"replay_gap":false}}}}\n' "$id"
+      ;;
     *'"method":"browser.navigate"'*)
       printf 'navigate\n' >> '{}'
       document=loader-b
@@ -387,6 +418,10 @@ while IFS= read -r request; do
 done
 "#,
         controller_pid.display(),
+        controller_log.display(),
+        controller_log.display(),
+        controller_log.display(),
+        controller_log.display(),
         controller_log.display(),
         controller_log.display(),
         controller_log.display(),
@@ -528,6 +563,10 @@ done
         session_id
     );
     assert_eq!(value["result"]["structuredContent"]["tab_id"], "tab-1");
+    assert_eq!(
+        value["result"]["structuredContent"]["browser_generation"],
+        1
+    );
     assert_eq!(
         value["result"]["structuredContent"]["url"],
         "https://example.test/dashboard"
@@ -896,6 +935,95 @@ done
         dialog_value["result"]["structuredContent"]["actor_id"],
         crate::session::agent_environment_actor_id(&agent_id)
     );
+    let upload_path = fixture.root.join("agent-upload.txt");
+    std::fs::write(&upload_path, b"agent upload").expect("upload fixture should be written");
+    let mut controller_tool_values = std::collections::BTreeMap::new();
+    for (id, name, arguments) in [
+        (13, "slice_browser_downloads", serde_json::json!({})),
+        (
+            14,
+            "slice_browser_upload",
+            serde_json::json!({
+                "field_id": field_id,
+                "files": [upload_path]
+            }),
+        ),
+        (
+            15,
+            "slice_browser_permission",
+            serde_json::json!({"permission": "clipboard-read-write", "setting": "denied"}),
+        ),
+        (
+            16,
+            "slice_browser_events",
+            serde_json::json!({"browser_generation": 1, "cursor": 1, "limit": 20}),
+        ),
+    ] {
+        let tool_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}
+            }),
+        )
+        .await
+        .expect("controller-native browser tool should return an MCP response");
+        let tool_body = tool_response
+            .into_body()
+            .collect()
+            .await
+            .expect("controller-native browser response body should collect")
+            .to_bytes();
+        let tool_value: Value =
+            serde_json::from_slice(&tool_body).expect("controller-native browser response JSON");
+        assert_eq!(tool_value["result"]["isError"], false, "{tool_value:#}");
+        assert_eq!(
+            tool_value["result"]["structuredContent"]["source"],
+            "browser_controller"
+        );
+        assert_eq!(
+            tool_value["result"]["structuredContent"]["agent_id"],
+            agent_id
+        );
+        controller_tool_values.insert(name, tool_value);
+    }
+    assert_eq!(
+        controller_tool_values["slice_browser_downloads"]["result"]["structuredContent"]["enabled"],
+        true
+    );
+    assert_eq!(
+        controller_tool_values["slice_browser_upload"]["result"]["structuredContent"]["file_count"],
+        1
+    );
+    assert_eq!(
+        controller_tool_values["slice_browser_upload"]["result"]["structuredContent"]
+            ["total_bytes"],
+        12
+    );
+    assert!(
+        !controller_tool_values["slice_browser_upload"]
+            .to_string()
+            .contains("agent-upload.txt"),
+        "upload paths must not escape through MCP results"
+    );
+    assert_eq!(
+        controller_tool_values["slice_browser_permission"]["result"]["structuredContent"]
+            ["permission"],
+        "clipboard-read-write"
+    );
+    assert_eq!(
+        controller_tool_values["slice_browser_events"]["result"]["structuredContent"]["events"][0]
+            ["tab_id"],
+        "tab-1"
+    );
+    assert_eq!(
+        controller_tool_values["slice_browser_events"]["result"]["structuredContent"]
+            ["next_cursor"],
+        3
+    );
     for (id, name, arguments, expected_kind) in [
         (
             10,
@@ -978,7 +1106,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

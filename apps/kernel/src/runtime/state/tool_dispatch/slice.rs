@@ -380,6 +380,89 @@ impl KernelRuntimeState {
                 let output = run_slice_screen_command(command_args).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
+            crate::transport::runtime_tools::SLICE_BROWSER_EVENTS_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserEventsArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_events",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_events",
+                        message: "browser events require the long-running Room browser controller"
+                            .to_string(),
+                    });
+                }
+                return self
+                    .controller_browser_events_tool_result(provider_run, &slice_id, agent_id, args)
+                    .await;
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_DOWNLOADS_TOOL => {
+                serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserDownloadsArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_downloads",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_downloads",
+                        message:
+                            "browser downloads require the long-running Room browser controller"
+                                .to_string(),
+                    });
+                }
+                return self
+                    .controller_browser_downloads_tool_result(provider_run, &slice_id, agent_id)
+                    .await;
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_UPLOAD_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserUploadArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_upload",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_upload",
+                        message: "browser uploads require the long-running Room browser controller"
+                            .to_string(),
+                    });
+                }
+                return self
+                    .controller_browser_upload_tool_result(provider_run, &slice_id, agent_id, args)
+                    .await;
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_PERMISSION_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserPermissionArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_permission",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_permission",
+                        message:
+                            "browser permissions require the long-running Room browser controller"
+                                .to_string(),
+                    });
+                }
+                return self
+                    .controller_browser_permission_tool_result(
+                        provider_run,
+                        &slice_id,
+                        agent_id,
+                        args,
+                    )
+                    .await;
+            }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
                 if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self

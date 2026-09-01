@@ -265,6 +265,106 @@ pub(super) fn controller_browser_dialog_tool_result(
     }
 }
 
+pub(super) fn controller_browser_events_tool_result(
+    slice_id: &str,
+    agent_id: &str,
+    session_id: &str,
+    batch: crate::runtime::browser_controller_event::RoomBrowserEventBatch,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let events = batch
+        .events
+        .into_iter()
+        .map(|event| {
+            serde_json::json!({
+                "event_id": event.event_id,
+                "kind": event.kind,
+                "tab_id": event.tab_id,
+                "document_id": event.document_id,
+                "data": event.data,
+            })
+        })
+        .collect::<Vec<_>>();
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: !batch.replay_gap,
+        payload: serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "browser_generation": batch.browser_generation,
+            "events": events,
+            "next_cursor": batch.next_cursor,
+            "replay_gap": batch.replay_gap,
+        }),
+    }
+}
+
+pub(super) fn controller_browser_downloads_tool_result(
+    slice_id: &str,
+    agent_id: &str,
+    result: crate::runtime::browser_controller_file_transfer::RoomBrowserDownloadsResult,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: result.enabled,
+        payload: serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "session_id": result.session_id,
+            "environment_id": result.environment_id,
+            "runtime_generation": result.runtime_generation,
+            "tab_id": result.tab_id,
+            "document_revision": result.document_revision,
+            "enabled": result.enabled,
+        }),
+    }
+}
+
+pub(super) fn controller_browser_upload_tool_result(
+    slice_id: &str,
+    agent_id: &str,
+    result: crate::runtime::browser_controller_file_transfer::RoomBrowserUploadResult,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "session_id": result.session_id,
+            "environment_id": result.environment_id,
+            "runtime_generation": result.runtime_generation,
+            "tab_id": result.tab_id,
+            "document_revision": result.document_revision,
+            "field_id": result.element_ref,
+            "file_count": result.file_count,
+            "total_bytes": result.total_bytes,
+        }),
+    }
+}
+
+pub(super) fn controller_browser_permission_tool_result(
+    slice_id: &str,
+    agent_id: &str,
+    result: crate::runtime::browser_controller_permission::RoomBrowserPermissionResult,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "session_id": result.session_id,
+            "environment_id": result.environment_id,
+            "runtime_generation": result.runtime_generation,
+            "tab_id": result.tab_id,
+            "document_revision": result.document_revision,
+            "permission": result.permission,
+            "setting": result.setting,
+        }),
+    }
+}
+
 pub(super) fn controller_browser_document_text(snapshot: &RoomBrowserStructuredSnapshot) -> String {
     let mut text = String::new();
     let mut seen = BTreeSet::new();

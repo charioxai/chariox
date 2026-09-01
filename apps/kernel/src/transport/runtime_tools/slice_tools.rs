@@ -170,6 +170,63 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: SLICE_BROWSER_EVENTS_TOOL.to_string(),
+            description: "Poll the bounded, sanitized Room browser event stream. Use browser_generation from slice_browser_status and resume with next_cursor.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["browser_generation"],
+                "properties": {
+                    "browser_generation": {"type": "integer", "minimum": 1},
+                    "cursor": {"type": "integer", "minimum": 0, "default": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_DOWNLOADS_TOOL.to_string(),
+            description: "Enable downloads for the focused Room browser tab. Download paths remain private to the slice.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_UPLOAD_TOOL.to_string(),
+            description: "Upload bounded files from configured slice roots through an opaque field_id returned by slice_browser_status or slice_browser_find.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["field_id", "files"],
+                "properties": {
+                    "field_id": {"type": "string", "minLength": 1},
+                    "files": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_PERMISSION_TOOL.to_string(),
+            description: "Set a closed-list browser permission decision for the focused Room browser origin.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["permission", "setting"],
+                "properties": {
+                    "permission": {
+                        "type": "string",
+                        "enum": ["camera", "clipboard-read-write", "clipboard-sanitized-write", "display-capture", "geolocation", "local-fonts", "microphone", "midi", "midi-sysex", "notifications"]
+                    },
+                    "setting": {"type": "string", "enum": ["granted", "denied", "prompt"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: SLICE_BROWSER_TEXT_TOOL.to_string(),
             description: "Return the current slice browser document body text.".to_string(),
             input_schema: serde_json::json!({
@@ -240,6 +297,10 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
         SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
         SLICE_BROWSER_DIALOG_TOOL => SLICE_BROWSER_DIALOG_TOOL_ALIAS,
+        SLICE_BROWSER_EVENTS_TOOL => SLICE_BROWSER_EVENTS_TOOL_ALIAS,
+        SLICE_BROWSER_DOWNLOADS_TOOL => SLICE_BROWSER_DOWNLOADS_TOOL_ALIAS,
+        SLICE_BROWSER_UPLOAD_TOOL => SLICE_BROWSER_UPLOAD_TOOL_ALIAS,
+        SLICE_BROWSER_PERMISSION_TOOL => SLICE_BROWSER_PERMISSION_TOOL_ALIAS,
         SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
         SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS,
         SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL => SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS,
@@ -323,6 +384,26 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_slice_browser_dialog"
         | "mcp__chariox__slice_browser_dialog"
         | "mcp__chariox__chariox_slice_browser_dialog" => Some(SLICE_BROWSER_DIALOG_TOOL),
+        SLICE_BROWSER_EVENTS_TOOL
+        | SLICE_BROWSER_EVENTS_TOOL_ALIAS
+        | "chariox_slice_browser_events"
+        | "mcp__chariox__slice_browser_events"
+        | "mcp__chariox__chariox_slice_browser_events" => Some(SLICE_BROWSER_EVENTS_TOOL),
+        SLICE_BROWSER_DOWNLOADS_TOOL
+        | SLICE_BROWSER_DOWNLOADS_TOOL_ALIAS
+        | "chariox_slice_browser_downloads"
+        | "mcp__chariox__slice_browser_downloads"
+        | "mcp__chariox__chariox_slice_browser_downloads" => Some(SLICE_BROWSER_DOWNLOADS_TOOL),
+        SLICE_BROWSER_UPLOAD_TOOL
+        | SLICE_BROWSER_UPLOAD_TOOL_ALIAS
+        | "chariox_slice_browser_upload"
+        | "mcp__chariox__slice_browser_upload"
+        | "mcp__chariox__chariox_slice_browser_upload" => Some(SLICE_BROWSER_UPLOAD_TOOL),
+        SLICE_BROWSER_PERMISSION_TOOL
+        | SLICE_BROWSER_PERMISSION_TOOL_ALIAS
+        | "chariox_slice_browser_permission"
+        | "mcp__chariox__slice_browser_permission"
+        | "mcp__chariox__chariox_slice_browser_permission" => Some(SLICE_BROWSER_PERMISSION_TOOL),
         SLICE_BROWSER_TEXT_TOOL
         | SLICE_BROWSER_TEXT_TOOL_ALIAS
         | "chariox_slice_browser_text"

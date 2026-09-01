@@ -356,6 +356,40 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_DIALOG_TOOL_ALIAS));
+        for name in [
+            "chariox.slice_browser_events",
+            "slice_browser_events",
+            "chariox.slice_browser_downloads",
+            "slice_browser_downloads",
+            "chariox.slice_browser_upload",
+            "slice_browser_upload",
+            "chariox.slice_browser_permission",
+            "slice_browser_permission",
+        ] {
+            assert!(
+                specs.iter().any(|spec| spec.name == name),
+                "missing runtime browser tool {name}"
+            );
+        }
+        let permission = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_BROWSER_PERMISSION_TOOL)
+            .expect("browser permission tool spec");
+        assert_eq!(
+            permission.input_schema["properties"]["permission"]["enum"],
+            serde_json::json!([
+                "camera",
+                "clipboard-read-write",
+                "clipboard-sanitized-write",
+                "display-capture",
+                "geolocation",
+                "local-fonts",
+                "microphone",
+                "midi",
+                "midi-sysex",
+                "notifications"
+            ])
+        );
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_TEXT_TOOL));
@@ -394,6 +428,32 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
+    }
+
+    #[test]
+    fn controller_browser_tool_arguments_are_closed_bounded_and_path_redacted() {
+        let events: SliceBrowserEventsArgs = serde_json::from_value(serde_json::json!({
+            "browser_generation": 7
+        }))
+        .expect("minimal event poll arguments");
+        assert_eq!(events.cursor, 0);
+        assert_eq!(events.limit, 100);
+        assert!(
+            serde_json::from_value::<SliceBrowserEventsArgs>(serde_json::json!({
+                "browser_generation": 7,
+                "unexpected": true
+            }))
+            .is_err()
+        );
+
+        let upload: SliceBrowserUploadArgs = serde_json::from_value(serde_json::json!({
+            "field_id": "element-1",
+            "files": ["/private/must-not-appear.txt"]
+        }))
+        .expect("bounded upload arguments");
+        let debug = format!("{upload:?}");
+        assert!(debug.contains("file_count"));
+        assert!(!debug.contains("must-not-appear"));
     }
 
     #[test]
@@ -463,6 +523,22 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_slice_tool_name("mcp__chariox__slice_browser_dialog"),
             Some(SLICE_BROWSER_DIALOG_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_events"),
+            Some("chariox.slice_browser_events")
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_browser_downloads"),
+            Some("chariox.slice_browser_downloads")
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_upload"),
+            Some("chariox.slice_browser_upload")
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_browser_permission"),
+            Some("chariox.slice_browser_permission")
         );
         assert_eq!(canonical_slice_tool_name("unknown"), None);
     }

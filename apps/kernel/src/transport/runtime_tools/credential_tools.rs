@@ -234,6 +234,44 @@ pub struct SliceBrowserDialogArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserEventsArgs {
+    pub browser_generation: u64,
+    #[serde(default)]
+    pub cursor: u64,
+    #[serde(default = "default_browser_event_limit")]
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserDownloadsArgs {}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserUploadArgs {
+    pub field_id: String,
+    pub files: Vec<std::path::PathBuf>,
+}
+
+impl std::fmt::Debug for SliceBrowserUploadArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SliceBrowserUploadArgs")
+            .field("field_id", &self.field_id)
+            .field("file_count", &self.files.len())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserPermissionArgs {
+    pub permission: String,
+    pub setting: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceBrowserWaitForTextArgs {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,6 +305,10 @@ fn default_generated_secret_length() -> usize {
 
 fn default_generated_secret_symbols() -> bool {
     true
+}
+
+fn default_browser_event_limit() -> u16 {
+    100
 }
 
 fn default_http_method() -> String {

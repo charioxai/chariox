@@ -60,6 +60,20 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .runtime_tool_specs_for_auth_token(token)
         .iter()
         .any(|spec| spec.name == "slice_browser_dialog"));
+    for name in [
+        "slice_browser_events",
+        "slice_browser_downloads",
+        "slice_browser_upload",
+        "slice_browser_permission",
+    ] {
+        assert!(
+            runtime
+                .runtime_tool_specs_for_auth_token(token)
+                .iter()
+                .any(|spec| spec.name == name),
+            "bound Room runtime MCP omitted {name}"
+        );
+    }
     let clicked = runtime
         .perform_browser_environment_locator_action_as_agent(
             room,
@@ -95,31 +109,42 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     assert_eq!(dialog.payload["browser"]["action"], "accept");
 
     let downloads = runtime
-        .configure_browser_environment_downloads(room, tab_id)
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_downloads", json!({}))
         .await
-        .expect("download configuration reaches the bound worker controller");
-    assert!(downloads.enabled);
+        .expect("runtime MCP download configuration reaches the bound worker controller");
+    assert!(downloads.ok, "{:?}", downloads.payload);
+    assert_eq!(downloads.payload["enabled"], true);
+    assert_eq!(downloads.payload["tab_id"], tab_id);
 
     let upload_path = fixture._worker_state.root.join("relay-upload.txt");
     std::fs::write(&upload_path, b"relay upload").expect("write bounded upload fixture");
     let upload = runtime
-        .upload_browser_environment_files(room, &upload_field, vec![upload_path.clone()])
-        .await
-        .expect("file upload reaches the bound worker controller");
-    assert_eq!(upload.file_count, 1);
-    assert_eq!(upload.total_bytes, 12);
-
-    let permission = runtime
-        .set_browser_environment_permission(
-            room,
-            tab_id,
-            crate::runtime::browser_controller_permission::BrowserPermissionName::Geolocation,
-            crate::runtime::browser_controller_permission::BrowserPermissionSetting::Denied,
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_upload",
+            json!({"field_id": upload_field, "files": [upload_path.clone()]}),
         )
         .await
-        .expect("permission decision reaches the bound worker controller");
-    assert_eq!(permission.permission, "geolocation");
-    assert_eq!(permission.setting, "denied");
+        .expect("runtime MCP file upload reaches the bound worker controller");
+    assert!(upload.ok, "{:?}", upload.payload);
+    assert_eq!(upload.payload["file_count"], 1);
+    assert_eq!(upload.payload["total_bytes"], 12);
+    assert!(
+        !upload.payload.to_string().contains("relay-upload.txt"),
+        "upload paths must not return through runtime MCP"
+    );
+
+    let permission = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_permission",
+            json!({"permission": "geolocation", "setting": "denied"}),
+        )
+        .await
+        .expect("runtime MCP permission decision reaches the bound worker controller");
+    assert!(permission.ok, "{:?}", permission.payload);
+    assert_eq!(permission.payload["permission"], "geolocation");
+    assert_eq!(permission.payload["setting"], "denied");
 
     let physical = std::fs::read_to_string(fixture._worker_state.root.join("chromium-state.json"))
         .expect("worker browser state");

@@ -4,7 +4,10 @@
 
 Validate from the Chariox Cloud web terminal View tab that a slice-backed agent can discover and use Chariox runtime MCP tools to operate the slice browser and screen on behalf of the user.
 
-The drills must be run from the web terminal View tab, with the slice screen, prompt area, and agent pane/traces visible. Evidence screenshots must be saved under `./.artifacts`.
+The drills must be run from the web terminal View tab, with the slice screen,
+prompt area, and agent pane or traces visible. Store screenshots under
+`/Users/miguel/.codex/evidence/browser-computer-use/m21-view-runtime-mcp/`, never
+inside a repository.
 
 ## Runtime MCP Surfaces Under Test
 
@@ -20,7 +23,15 @@ The drills must be run from the web terminal View tab, with the slice screen, pr
 - `slice_browser_fill`
 - `slice_browser_click`
 - `slice_browser_submit`
+- `slice_browser_dialog`
+- `slice_browser_events`
+- `slice_browser_downloads`
+- `slice_browser_upload`
+- `slice_browser_permission`
 - `slice_browser_text`
+- `slice_browser_wait_for_text`
+- `slice_browser_wait_for_selector`
+- `slice_browser_wait_for_idle`
 - `paste_secret_to_slice`
 
 ## Drill 1: Browser And Screen Discovery
@@ -46,9 +57,9 @@ Expected tool usage:
 
 Required screenshots:
 
-- `./.artifacts/m21-drill1-view-tab-start.png`
-- `./.artifacts/m21-drill1-agent-tool-traces.png`
-- `./.artifacts/m21-drill1-gmail-visible.png`
+- `m21-drill1-view-tab-start.png`
+- `m21-drill1-agent-tool-traces.png`
+- `m21-drill1-gmail-visible.png`
 
 Pass criteria:
 
@@ -82,9 +93,9 @@ Expected tool usage:
 
 Required screenshots:
 
-- `./.artifacts/m21-drill2-compose-trace.png`
-- `./.artifacts/m21-drill2-email-sent.png`
-- `./.artifacts/m21-drill2-agent-pane-final.png`
+- `m21-drill2-compose-trace.png`
+- `m21-drill2-email-sent.png`
+- `m21-drill2-agent-pane-final.png`
 
 Pass criteria:
 
@@ -112,8 +123,8 @@ Expected tool usage:
 
 Required screenshots:
 
-- `./.artifacts/m21-drill3-secret-redacted.png`
-- `./.artifacts/m21-drill3-agent-trace-redaction.png`
+- `m21-drill3-secret-redacted.png`
+- `m21-drill3-agent-trace-redaction.png`
 
 Pass criteria:
 
@@ -145,6 +156,6 @@ At the end, produce a short evaluation report covering:
 
 ## Cleanup
 
-- Keep screenshots in `./.artifacts`.
+- Keep screenshots in the external evidence directory named above.
 - Do not destroy the slice unless explicitly instructed.
 - Clean up temporary local test pages or files created only for the optional secret drill.

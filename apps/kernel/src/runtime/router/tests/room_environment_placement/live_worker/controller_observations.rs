@@ -4,10 +4,13 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     let runtime = &fixture.home.runtime_state;
     let specs = runtime.runtime_tool_specs_for_auth_token(token);
     for name in [
+        "slice_open_url",
         "slice_browser_status",
         "slice_browser_find",
         "slice_browser_text",
         "slice_browser_wait_for_text",
+        "slice_browser_wait_for_selector",
+        "slice_browser_wait_for_idle",
     ] {
         assert!(specs.iter().any(|spec| spec.name == name), "missing {name}");
     }
