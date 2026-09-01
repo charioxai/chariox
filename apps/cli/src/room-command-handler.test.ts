@@ -36,6 +36,140 @@ test("/room status reads and renders the attached Room environment", async () =>
   ].join("\n")])
 })
 
+test("/room start uses the portable default viewport and renders the authoritative result", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room start")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {
+        RoomEnvironmentUpdated: {
+          environment: { ...roomEnvironment(), lifecycle: "starting" },
+        },
+      } as TResponse
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.deepEqual(requests, [{
+    StartRoomEnvironment: {
+      session_id: "session-1",
+      viewport: {
+        css_width: 1280,
+        css_height: 800,
+        device_scale_factor: 1,
+        desktop_pixel_width: 1280,
+        desktop_pixel_height: 800,
+      },
+    },
+  }])
+  assert.match(notices[0] ?? "", /^Room environment environment-1\nlifecycle=starting/)
+})
+
+test("/room start accepts an explicit CSS viewport and scale", async () => {
+  const requests: unknown[] = []
+  const command = parseSlashCommand("/room start 1440x900 2")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return { RoomEnvironmentUpdated: { environment: roomEnvironment() } } as TResponse
+    },
+    appendNotice: () => undefined,
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.deepEqual(requests, [{
+    StartRoomEnvironment: {
+      session_id: "session-1",
+      viewport: {
+        css_width: 1440,
+        css_height: 900,
+        device_scale_factor: 2,
+        desktop_pixel_width: 2880,
+        desktop_pixel_height: 1800,
+      },
+    },
+  }])
+})
+
+test("/room stop and retry use the existing kernel lifecycle requests", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      const lifecycle = Object.prototype.hasOwnProperty.call(request, "StopRoomEnvironment")
+        ? "stopped"
+        : "starting"
+      return {
+        RoomEnvironmentUpdated: {
+          environment: { ...roomEnvironment(), lifecycle },
+        },
+      } as TResponse
+    },
+    appendNotice: (notice: string) => notices.push(notice),
+    flashFooter: () => undefined,
+  }
+  const stop = parseSlashCommand("/room stop")
+  const retry = parseSlashCommand("/room retry")
+  assert.equal(stop?.kind, "room")
+  assert.equal(retry?.kind, "room")
+
+  await handleRoomSlashCommand(deps, stop)
+  await handleRoomSlashCommand(deps, retry)
+
+  assert.deepEqual(requests, [
+    { StopRoomEnvironment: { session_id: "session-1" } },
+    { RetryRoomEnvironment: { session_id: "session-1" } },
+  ])
+  assert.match(notices[0] ?? "", /^Room environment environment-1\nlifecycle=stopped/)
+  assert.match(notices[1] ?? "", /^Room environment environment-1\nlifecycle=starting/)
+})
+
+test("/room lifecycle commands reject invalid arguments without reaching the kernel", async () => {
+  const requests: unknown[] = []
+  const flashes: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {} as TResponse
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message: string) => flashes.push(message),
+  }
+  const invalidStart = parseSlashCommand("/room start wide")
+  const fractionalScale = parseSlashCommand("/room start 1280x800 1.5")
+  const invalidStop = parseSlashCommand("/room stop now")
+  assert.equal(invalidStart?.kind, "room")
+  assert.equal(fractionalScale?.kind, "room")
+  assert.equal(invalidStop?.kind, "room")
+
+  await handleRoomSlashCommand(deps, invalidStart)
+  await handleRoomSlashCommand(deps, fractionalScale)
+  await handleRoomSlashCommand(deps, invalidStop)
+
+  assert.deepEqual(requests, [])
+  assert.deepEqual(flashes, [
+    "usage: /room start [WIDTHxHEIGHT] [SCALE]",
+    "usage: /room start [WIDTHxHEIGHT] [SCALE]",
+    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry",
+  ])
+})
+
 function roomEnvironment(): RoomEnvironmentSnapshot {
   return {
     session_id: "session-1",

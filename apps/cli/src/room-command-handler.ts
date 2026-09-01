@@ -1,10 +1,15 @@
 import {
   getRoomEnvironmentStateRequest,
+  retryRoomEnvironmentRequest,
+  startRoomEnvironmentRequest,
+  stopRoomEnvironmentRequest,
+  type RoomEnvironmentViewportRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type {
   RoomEnvironmentAction,
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
+  RoomEnvironmentUpdatedResponse,
 } from "@chariox/kernel-client/kernel-types"
 
 import type { ParsedSlashCommand } from "./commands.js"
@@ -24,21 +29,85 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && subcommand !== "status" && subcommand !== "show") {
-    deps.flashFooter("usage: /room status", "error")
+  if (subcommand && !["status", "show", "start", "stop", "retry"].includes(subcommand)) {
+    deps.flashFooter(roomCommandUsage(), "error")
+    return
+  }
+  let startViewport: RoomEnvironmentViewportRequest | undefined
+  if (subcommand === "start") {
+    const parsedViewport = parseStartViewport(command.args.slice(1))
+    if (typeof parsedViewport === "string") {
+      deps.flashFooter(parsedViewport, "error")
+      return
+    }
+    startViewport = parsedViewport
+  } else if (command.args.length > 1) {
+    deps.flashFooter(roomCommandUsage(), "error")
     return
   }
   if (!deps.isAttached()) {
     deps.flashFooter("must be attached to a Room to inspect its environment", "error")
     return
   }
-  const response = await deps.send<RoomEnvironmentStateResponse>(
-    getRoomEnvironmentStateRequest(deps.sessionId()),
-  )
-  if (!response || typeof response !== "object" || !("RoomEnvironmentState" in response)) {
-    throw new Error("Room Environment state response is malformed")
+  const sessionId = deps.sessionId()
+  if (!subcommand || subcommand === "status" || subcommand === "show") {
+    const response = await deps.send<RoomEnvironmentStateResponse>(
+      getRoomEnvironmentStateRequest(sessionId),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentState" in response)) {
+      throw new Error("Room Environment state response is malformed")
+    }
+    deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentState.environment))
+    return
   }
-  deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentState.environment))
+
+  let request: unknown
+  if (subcommand === "start") {
+    if (!startViewport) throw new Error("Room Environment start viewport is missing")
+    request = startRoomEnvironmentRequest(sessionId, startViewport)
+  } else if (subcommand === "stop") {
+    request = stopRoomEnvironmentRequest(sessionId)
+  } else {
+    request = retryRoomEnvironmentRequest(sessionId)
+  }
+  const response = await deps.send<RoomEnvironmentUpdatedResponse>(request)
+  if (!response || typeof response !== "object" || !("RoomEnvironmentUpdated" in response)) {
+    throw new Error("Room Environment lifecycle response is malformed")
+  }
+  deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentUpdated.environment))
+}
+
+function parseStartViewport(args: string[]): RoomEnvironmentViewportRequest | string {
+  if (args.length > 2) return roomStartUsage()
+  const dimensions = args[0] ?? "1280x800"
+  const match = /^(\d+)x(\d+)$/i.exec(dimensions)
+  const scale = Number(args[1] ?? "1")
+  if (!match || !isU32(scale)) return roomStartUsage()
+  const cssWidth = Number(match[1])
+  const cssHeight = Number(match[2])
+  if (!isU32(cssWidth) || !isU32(cssHeight)) return roomStartUsage()
+  const desktopPixelWidth = cssWidth * scale
+  const desktopPixelHeight = cssHeight * scale
+  if (!isU32(desktopPixelWidth) || !isU32(desktopPixelHeight)) return roomStartUsage()
+  return {
+    css_width: cssWidth,
+    css_height: cssHeight,
+    device_scale_factor: scale,
+    desktop_pixel_width: desktopPixelWidth,
+    desktop_pixel_height: desktopPixelHeight,
+  }
+}
+
+function isU32(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff
+}
+
+function roomCommandUsage(): string {
+  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry"
+}
+
+function roomStartUsage(): string {
+  return "usage: /room start [WIDTHxHEIGHT] [SCALE]"
 }
 
 export function formatRoomEnvironmentStatus(environment: RoomEnvironmentSnapshot): string {
