@@ -286,6 +286,160 @@ impl KernelRuntimeState {
             slice_id, agent_id, result,
         ))
     }
+
+    pub(super) async fn controller_browser_events_tool_result(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserEventsArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if args.browser_generation == 0
+            || args.limit == 0
+            || args.limit > crate::runtime::browser_controller_event::MAX_BROWSER_EVENT_POLL_LIMIT
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_events",
+                message: "browser_generation must be positive and limit must be between 1 and 200"
+                    .to_string(),
+            });
+        }
+        ensure_controller_browser_environment(
+            self,
+            provider_run.session_id(),
+            "runtime_tool_slice_browser_events",
+        )
+        .await?;
+        let batch = self
+            .poll_browser_environment_events(
+                provider_run.session_id(),
+                args.browser_generation,
+                args.cursor,
+                args.limit,
+            )
+            .await?;
+        Ok(controller_browser_events_tool_result(
+            slice_id,
+            agent_id,
+            provider_run.session_id(),
+            batch,
+        ))
+    }
+
+    pub(super) async fn controller_browser_downloads_tool_result(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        slice_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let environment = ensure_controller_browser_environment(
+            self,
+            provider_run.session_id(),
+            "runtime_tool_slice_browser_downloads",
+        )
+        .await?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_downloads",
+                message: "the Room browser has no focused tab".to_string(),
+            })?;
+        let result = self
+            .configure_browser_environment_downloads(provider_run.session_id(), &tab_id)
+            .await?;
+        Ok(controller_browser_downloads_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_upload_tool_result(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserUploadArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        ensure_controller_browser_environment(
+            self,
+            provider_run.session_id(),
+            "runtime_tool_slice_browser_upload",
+        )
+        .await?;
+        let result = self
+            .upload_browser_environment_files(provider_run.session_id(), &args.field_id, args.files)
+            .await?;
+        Ok(controller_browser_upload_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_permission_tool_result(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserPermissionArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let permission = runtime_tool_browser_permission(&args.permission).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_permission",
+                message: "unsupported browser permission".to_string(),
+            }
+        })?;
+        let setting = serde_json::from_value::<
+            crate::runtime::browser_controller_permission::BrowserPermissionSetting,
+        >(serde_json::Value::String(args.setting))
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_browser_permission",
+            message: "unsupported browser permission setting".to_string(),
+        })?;
+        let environment = ensure_controller_browser_environment(
+            self,
+            provider_run.session_id(),
+            "runtime_tool_slice_browser_permission",
+        )
+        .await?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_permission",
+                message: "the Room browser has no focused tab".to_string(),
+            })?;
+        let result = self
+            .set_browser_environment_permission(
+                provider_run.session_id(),
+                &tab_id,
+                permission,
+                setting,
+            )
+            .await?;
+        Ok(controller_browser_permission_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+}
+
+fn runtime_tool_browser_permission(
+    value: &str,
+) -> Option<crate::runtime::browser_controller_permission::BrowserPermissionName> {
+    use crate::runtime::browser_controller_permission::BrowserPermissionName;
+    match value {
+        "camera" => Some(BrowserPermissionName::Camera),
+        "clipboard-read-write" | "clipboard_read_write" => {
+            Some(BrowserPermissionName::ClipboardReadWrite)
+        }
+        "clipboard-sanitized-write" | "clipboard_sanitized_write" => {
+            Some(BrowserPermissionName::ClipboardSanitizedWrite)
+        }
+        "display-capture" | "display_capture" => Some(BrowserPermissionName::DisplayCapture),
+        "geolocation" => Some(BrowserPermissionName::Geolocation),
+        "local-fonts" | "local_fonts" => Some(BrowserPermissionName::LocalFonts),
+        "microphone" => Some(BrowserPermissionName::Microphone),
+        "midi" => Some(BrowserPermissionName::Midi),
+        "midi-sysex" | "midi_sysex" => Some(BrowserPermissionName::MidiSysex),
+        "notifications" => Some(BrowserPermissionName::Notifications),
+        _ => None,
+    }
 }
 
 pub(super) async fn run_controller_browser_status_tool(
@@ -320,6 +474,9 @@ pub(super) async fn run_controller_browser_status_tool(
         .and_then(|url| url.host_str().map(str::to_string))
         .unwrap_or_default();
     let surfaces = controller_browser_status_surfaces(structured_snapshot.as_ref());
+    let browser_generation = structured_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.browser_generation);
     let browser = controller_browser_status_compatibility(url, &host, title, &surfaces);
     let payload = serde_json::json!({
         "source": "browser_controller",
@@ -328,6 +485,7 @@ pub(super) async fn run_controller_browser_status_tool(
         "session_id": session_id,
         "environment_id": environment.environment_id,
         "runtime_generation": environment.runtime_generation,
+        "browser_generation": browser_generation,
         "viewport": environment.viewport,
         "tab_id": focused.map(|tab| tab.tab_id.as_str()),
         "url": url,

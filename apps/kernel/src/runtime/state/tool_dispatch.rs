@@ -439,6 +439,10 @@ impl KernelRuntimeState {
                     | SLICE_BROWSER_FILL_TOOL
                     | SLICE_BROWSER_SUBMIT_TOOL
                     | SLICE_BROWSER_DIALOG_TOOL
+                    | SLICE_BROWSER_EVENTS_TOOL
+                    | SLICE_BROWSER_DOWNLOADS_TOOL
+                    | SLICE_BROWSER_UPLOAD_TOOL
+                    | SLICE_BROWSER_PERMISSION_TOOL
                     | SLICE_BROWSER_FIND_TOOL
                     | SLICE_BROWSER_TEXT_TOOL
                     | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
