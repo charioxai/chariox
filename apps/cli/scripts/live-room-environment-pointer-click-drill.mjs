@@ -11,6 +11,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
+import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
@@ -53,6 +55,7 @@ let sessionId = null
 let requests = null
 let failure = null
 let result = null
+let companionResult = null
 
 await mkdir(evidenceRoot, { recursive: true })
 
@@ -332,6 +335,12 @@ async function run() {
     waitForLocalNotice(/^Room input: available$/),
     waitForRemoteNotice(/^Room input: available$/),
   ])
+  companionResult = await runCompanionIfConfigured({
+    environment: released,
+    localNoticeCount: automationNoticeTexts(releasedLocalTui).length,
+    remoteNoticeCount: automationNoticeTexts(releasedRemoteTui).length,
+    activityController,
+  })
   const observed = unwrap(
     await observerClient.send(requests.getRoomEnvironmentStateRequest(sessionId)),
     "RoomEnvironmentState",
@@ -344,17 +353,19 @@ async function run() {
   assert.ok(observed.event_cursor >= released.event_cursor)
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v3",
+    schema: "chariox.room_environment.pointer_click_drill.v4",
     status: "passed",
     startedAt,
-    topology: "local kernel and headed Docker worker, direct local TUI and relay-attached remote TUI",
+    topology: companionResult
+      ? "local kernel and headed Docker worker, production Web client, direct local TUI, and relay-attached remote TUI"
+      : "local kernel and headed Docker worker, direct local TUI and relay-attached remote TUI",
     sessionId,
     sliceId: slice.id,
     environmentId: retry.environment.environment_id,
     actionId: click.action_id,
     actorId: desktopOwner.actor_id,
     idempotencyKey,
-    physicalEffect: "POINTER_CLICK_COUNT=1",
+    physicalEffect: companionResult?.physicalEffect ?? "POINTER_CLICK_COUNT=1",
     containerLimits: limits,
     assertions: [
       "public Room request completed one attributed Computer Action",
@@ -367,6 +378,12 @@ async function run() {
       "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
       "relay-attached remote TUI captured the real headed display and verified its PNG digest locally",
       "TUI projected input release and a second protocol client observed the same or newer authoritative state",
+      ...(companionResult ? [
+        "production Web client joined the same authoritative Room as both real TUIs",
+        "Web input produced one attributed Computer Action and the physical headed desktop effect",
+        "direct local and relay-attached remote TUIs projected the Web-originated Action",
+        "Web released desktop ownership after the Action",
+      ] : []),
     ],
     activityNotices,
     daemonActivities,
@@ -382,7 +399,62 @@ async function run() {
       readyNoticeCount: automationNoticeTexts(readyRemoteTui).length,
       screenshot: remoteScreenshot,
     },
+    ...(companionResult ? {
+      companion: {
+        status: companionResult.status,
+        client: companionResult.client,
+        actionId: companionResult.actionId,
+        actorId: companionResult.actorId,
+        screenshot: companionResult.screenshot,
+      },
+    } : {}),
   }
+}
+
+async function runCompanionIfConfigured({ environment, localNoticeCount, remoteNoticeCount, activityController }) {
+  const noticePattern = /^Room action: .+ · computer pointer_click · completed$/
+  return await runRoomEnvironmentCompanion({
+    env: process.env,
+    ready: {
+      kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken,
+      daemonId: homeDaemonId,
+      machineId: `${runId}-machine`,
+      sessionId,
+      sliceId: slice.id,
+      containerName,
+      environmentId: environment.environment_id,
+      runtimeGeneration: environment.runtime_generation,
+      viewportRevision: environment.viewport.revision,
+      evidenceRoot,
+    },
+    client,
+    observerClient,
+    requests,
+    activityController,
+    localNoticeCount,
+    remoteNoticeCount,
+    waitForPhysicalEffect: (physicalEffect) => waitForBrowserText(
+      physicalEffect,
+      20_000,
+      "Web companion click did not reach the physical browser",
+    ),
+    waitForLocalActionNotice: (startIndex) => waitForTuiNoticeAfter(
+      localAutomation,
+      "local",
+      noticePattern,
+      startIndex,
+      20_000,
+    ),
+    waitForRemoteActionNotice: (startIndex) => waitForTuiNoticeAfter(
+      remoteAutomation,
+      "remote",
+      noticePattern,
+      startIndex,
+      20_000,
+    ),
+  })
 }
 
 async function seedConfig(tempRoot) {
@@ -623,6 +695,15 @@ async function waitForTuiNotice(automation, kind, pattern, timeoutMs) {
     automation,
     (snapshot) => automationNoticeTexts(snapshot).some((notice) => pattern.test(notice)),
     `${kind} TUI notice ${pattern}`,
+    timeoutMs,
+  )
+}
+
+async function waitForTuiNoticeAfter(automation, kind, pattern, startIndex, timeoutMs) {
+  return await waitForAutomationSnapshot(
+    automation,
+    (snapshot) => automationNoticeTexts(snapshot).slice(startIndex).some((notice) => pattern.test(notice)),
+    `${kind} TUI notice after ${startIndex} ${pattern}`,
     timeoutMs,
   )
 }
