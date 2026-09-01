@@ -12,6 +12,7 @@ pub(super) fn forward_streamable_http_mcp_request(
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
 ) -> Result<serde_json::Value, DaemonError> {
+    let request_id = payload.get("id").cloned();
     let body = serde_json::to_vec(&payload).map_err(|error| DaemonError::LocalTransport {
         operation: "mcp.proxy.http.serialize",
         message: error.to_string(),
@@ -59,15 +60,65 @@ pub(super) fn forward_streamable_http_mcp_request(
             });
         }
     };
+    let content_type = response
+        .header("Content-Type")
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     let text = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "mcp.proxy.http.read",
             message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
         })?;
+    if content_type == "text/event-stream" {
+        return parse_sse_json_rpc_response(url, &text, request_id.as_ref());
+    }
     serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
         operation: "mcp.proxy.http.parse",
         message: format!("upstream `{url}` returned invalid JSON: {error}"),
+    })
+}
+
+fn parse_sse_json_rpc_response(
+    url: &str,
+    body: &str,
+    request_id: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, DaemonError> {
+    let mut data_lines = Vec::new();
+    for line in body.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if data_lines.is_empty() {
+                continue;
+            }
+            let data = data_lines.join("\n");
+            data_lines.clear();
+            let message = serde_json::from_str::<serde_json::Value>(&data).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "mcp.proxy.http.parse",
+                    message: format!("upstream `{url}` returned invalid SSE JSON: {error}"),
+                }
+            })?;
+            if request_id.is_none() || message.get("id") == request_id {
+                return Ok(message);
+            }
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.strip_prefix(' ').unwrap_or(data).to_string());
+        }
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "mcp.proxy.http.parse",
+        message: match request_id {
+            Some(request_id) => format!(
+                "upstream `{url}` SSE stream ended without JSON-RPC response id {request_id}"
+            ),
+            None => format!("upstream `{url}` SSE stream did not contain a JSON-RPC message"),
+        },
     })
 }
 

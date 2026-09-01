@@ -389,6 +389,66 @@ mod tests {
     }
 
     #[test]
+    fn streamable_http_proxy_parses_matching_sse_json_rpc_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("proxy should connect");
+            let request = read_http_request(&mut stream);
+            assert!(request.contains("Accept: application/json, text/event-stream\r\n"));
+
+            let body = concat!(
+                ": keepalive\n\n",
+                "event: message\n",
+                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",",
+                "\"params\":{\"level\":\"info\"}}\n\n",
+                "event: message\n",
+                "data: {\"jsonrpc\":\"2.0\",\n",
+                "data: \"id\":7,\"result\":{\"ok\":true}}\n\n",
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("response should write");
+        });
+
+        let config = CharioxMcpServerConfig {
+            name: "browser".to_string(),
+            transport: CharioxMcpTransportConfig::StreamableHttp {
+                url: format!("http://{address}/mcp"),
+                bearer_token_env_var: None,
+                bearer_token_credential: None,
+                http_headers: BTreeMap::new(),
+                credential_http_headers: BTreeMap::new(),
+                env_http_headers: BTreeMap::new(),
+            },
+            enabled: true,
+            required: false,
+            startup_timeout_sec: None,
+            tool_timeout_sec: Some(2),
+            enabled_tools: None,
+            disabled_tools: None,
+            tools: BTreeMap::new(),
+        };
+
+        let response = dispatch_provider_mcp_proxy_request(
+            "provider-run-http-sse-test",
+            "session-http-sse-test",
+            &config,
+            json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}),
+        )
+        .expect("proxy should parse matching SSE response");
+        assert_eq!(
+            response,
+            json!({"jsonrpc": "2.0", "id": 7, "result": {"ok": true}})
+        );
+        server.join().expect("test server should finish");
+    }
+
+    #[test]
     fn streamable_http_proxy_uses_configured_http_proxy_for_external_mcp() {
         let _environment_lock = crate::env_lock::lock();
         let _environment_restore = EnvironmentRestore::capture(&[
