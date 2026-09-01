@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import http from "node:http"
@@ -44,6 +45,7 @@ let client = null
 let observerClient = null
 let remoteAutomation = null
 let remoteTuiOutput = ""
+let remoteTuiHome = null
 let fixture = null
 let slice = null
 let sessionId = null
@@ -192,6 +194,7 @@ async function run() {
   })), "RoomEnvironmentUpdated").environment
   assert.equal(environment.lifecycle, "ready")
   const readyRemoteTui = await waitForRemoteNotice(/^Room screen: ready · tab Room pointer drill — /)
+  const remoteScreenshot = await captureScreenshotFromRemoteTui(tempRoot)
   const activityNotices = []
   const daemonActivities = []
   const activityController = createRoomEnvironmentActivityController({
@@ -299,7 +302,7 @@ async function run() {
   assert.ok(observed.event_cursor >= released.event_cursor)
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v1",
+    schema: "chariox.room_environment.pointer_click_drill.v2",
     status: "passed",
     startedAt,
     topology: "local kernel and headed Docker worker, same-host relay, relay-attached remote TUI",
@@ -318,6 +321,7 @@ async function run() {
       "TUI activity projected lifecycle, focused tab, takeover, and terminal Action outcome",
       "pointer movement produced no pointer-derived TUI notices",
       "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
+      "relay-attached remote TUI captured the real headed display and verified its PNG digest locally",
       "TUI projected input release and a second protocol client observed the same or newer authoritative state",
     ],
     activityNotices,
@@ -326,6 +330,7 @@ async function run() {
       sessionId: releasedRemoteTui.session?.id,
       notices: automationNoticeTexts(releasedRemoteTui),
       readyNoticeCount: automationNoticeTexts(readyRemoteTui).length,
+      screenshot: remoteScreenshot,
     },
   }
 }
@@ -420,12 +425,57 @@ function remoteTuiEnvironment(tempRoot) {
   for (const name of directDaemonEnvironmentNames) {
     delete env[name]
   }
+  remoteTuiHome = path.join(tempRoot, "remote-tui-os-home")
   return {
     ...env,
+    HOME: remoteTuiHome,
     CHARIOX_HOME: path.join(tempRoot, "remote-tui-home"),
     XDG_CONFIG_HOME: path.join(tempRoot, "remote-tui-xdg-config"),
     XDG_STATE_HOME: path.join(tempRoot, "remote-tui-xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "remote-tui-xdg-cache"),
+  }
+}
+
+async function captureScreenshotFromRemoteTui(tempRoot) {
+  const snapshot = await remoteAutomation.send(
+    "submit_prompt",
+    { prompt: "/room screenshot" },
+    60_000,
+  )
+  const notice = automationNoticeTexts(snapshot)
+    .findLast((message) => message.startsWith("Room Environment screenshot saved.\n"))
+  assert.ok(notice, "remote TUI did not report the saved Room screenshot")
+  const fields = Object.fromEntries(notice.split("\n").slice(1).map((line) => {
+    const separator = line.indexOf("=")
+    assert.ok(separator > 0, `malformed screenshot notice line: ${line}`)
+    return [line.slice(0, separator), line.slice(separator + 1)]
+  }))
+  const expectedRoot = path.join(remoteTuiHome, "Downloads", "Chariox")
+  assert.equal(path.dirname(fields.path), expectedRoot)
+  assert.match(fields.artifact, /^art_[0-9]+_[a-f0-9]{16}$/)
+  assert.match(fields.sha256, /^[a-f0-9]{64}$/)
+
+  const bytes = await readFile(fields.path)
+  assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+  assert.equal(bytes.subarray(12, 16).toString("ascii"), "IHDR")
+  const width = bytes.readUInt32BE(16)
+  const height = bytes.readUInt32BE(20)
+  assert.equal(width, 1280)
+  assert.equal(height, 800)
+  const sha256 = createHash("sha256").update(bytes).digest("hex")
+  assert.equal(sha256, fields.sha256)
+  const evidencePath = path.join(evidenceRoot, "remote-tui-room-screenshot.png")
+  await writeFile(evidencePath, bytes)
+  const relativeSourcePath = path.relative(tempRoot, fields.path)
+  assert.equal(relativeSourcePath.startsWith(".."), false)
+  assert.equal(path.isAbsolute(relativeSourcePath), false)
+  return {
+    artifactId: fields.artifact,
+    sha256,
+    sizeBytes: bytes.length,
+    width,
+    height,
+    evidencePath,
   }
 }
 
