@@ -87,6 +87,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libgbm1 \
     libpixman-1-0 \
     libpulse0 \
+    libseccomp-dev \
     libssl3=3.0.20-1~deb12u1 \
     libssl-dev \
     libva2 \
@@ -119,6 +120,18 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     zstd \
   && rm -rf /var/lib/apt/lists/*
 
+# Nested Docker cannot write an unprivileged uid_map on every host. The
+# setuid helper only sets up Bubblewrap's namespace and drops its caps
+# before the provider starts.
+RUN chmod 4755 /usr/bin/bwrap
+
+RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c,target=/tmp/managed-provider-seccomp.c \
+    mkdir -p /usr/local/libexec/chariox \
+  && cc -O2 -Wall -Wextra -Werror /tmp/managed-provider-seccomp.c -lseccomp -o /tmp/managed-provider-seccomp \
+  && /tmp/managed-provider-seccomp /usr/local/libexec/chariox/managed-provider-seccomp.bpf \
+  && chmod 0444 /usr/local/libexec/chariox/managed-provider-seccomp.bpf
+COPY --chmod=0555 apps/kernel/slice-linux-docker/docker/managed-provider-bwrap.sh /usr/local/libexec/chariox/managed-provider-bwrap
+
 RUN --mount=type=bind,from=selkies-build,source=/out,target=/tmp/selkies-package \
     --mount=type=bind,source=apps/kernel/slice-linux-docker/selkies-runtime.requirements.txt,target=/tmp/selkies-requirements.txt \
     python3 -m venv /opt/chariox-selkies \
@@ -138,7 +151,7 @@ COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
 WORKDIR /opt/chariox-toolchain
 COPY apps/kernel/slice-linux-docker/toolchain/package.json apps/kernel/slice-linux-docker/toolchain/package-lock.json ./
 RUN npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
-  && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.0" \
+  && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.5" \
   && test "$(node_modules/.bin/opencode --version)" = "1.18.23" \
   && test "$(node_modules/.bin/claude --version)" = "2.1.207 (Claude Code)" \
   && test "$(node_modules/.bin/pnpm --version)" = "11.22.0" \

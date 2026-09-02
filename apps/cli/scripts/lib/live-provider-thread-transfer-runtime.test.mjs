@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
 
 import {
@@ -14,6 +15,7 @@ import {
 } from "./live-provider-thread-transfer-provider-state.mjs"
 import {
   cleanupSliceModeProviderCredentials,
+  loadRawHistoryOutputText,
   normalizeProviderOutputText,
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
@@ -24,6 +26,44 @@ import {
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
 } from "./live-provider-thread-transfer-runtime.mjs"
+
+test("raw history fallback joins fragmented provider output from current SQLite layouts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-provider-history-test-"))
+  try {
+    for (const [name, databasePath] of [
+      ["local", path.join(root, "local", "history", "operational.db")],
+      ["slice", path.join(root, "slice", "home-kernel-storage", "operational-history.db")],
+    ]) {
+      const historyDir = path.join(root, name, "history")
+      await mkdir(historyDir, { recursive: true })
+      await mkdir(path.dirname(databasePath), { recursive: true })
+      const database = new DatabaseSync(databasePath)
+      database.exec(`
+        CREATE TABLE history_events (
+          sequence INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          session_id TEXT,
+          agent_id TEXT,
+          content TEXT
+        )
+      `)
+      const insert = database.prepare(
+        "INSERT INTO history_events(sequence, kind, session_id, agent_id, content) VALUES (?, ?, ?, ?, ?)",
+      )
+      insert.run(1, "provider_output", "session-1", "agent-1", "THREAD_")
+      insert.run(2, "provider_output", "session-1", "agent-1", "TRANSFER")
+      insert.run(3, "provider_output", "session-1", "agent-1", "_READY")
+      database.close()
+
+      assert.equal(
+        await loadRawHistoryOutputText({ historyDir, sessionId: "session-1", agentId: "agent-1" }),
+        "THREAD_TRANSFER_READY",
+      )
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("provider output marker matching removes ANSI without accepting subsequences", () => {
   const expected = "THREAD_TRANSFER_READY"

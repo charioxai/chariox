@@ -1072,6 +1072,33 @@ export async function loadRawHistoryOutputText({ historyDir, sessionId, agentId 
       if (text) fragments.push(text)
     }
   }
+  const operationalDatabases = [
+    path.join(historyDir, "operational.db"),
+    path.join(path.dirname(historyDir), "home-kernel-storage", "operational-history.db"),
+  ]
+  for (const operationalDatabase of operationalDatabases) {
+    if (!existsSync(operationalDatabase)) continue
+    let database
+    try {
+      const { DatabaseSync } = await import("node:sqlite")
+      database = new DatabaseSync(operationalDatabase, { readOnly: true })
+      const rows = database.prepare(`
+        SELECT content
+        FROM history_events
+        WHERE session_id = ?
+          AND kind <> 'user_prompt'
+          AND (agent_id IS NULL OR agent_id = ?)
+          AND content IS NOT NULL
+        ORDER BY sequence
+      `).all(sessionId, agentId)
+      fragments.push(...rows.map((row) => row.content).filter(Boolean))
+    } catch {
+      // The history API and legacy JSONL remain authoritative when SQLite is
+      // unavailable or an older operational schema is present.
+    } finally {
+      database?.close()
+    }
+  }
   return fragments.join("")
 }
 

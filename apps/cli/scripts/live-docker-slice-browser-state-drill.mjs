@@ -443,7 +443,7 @@ async function inspectState(label) {
     cat /etc/machine-id || true
     cat /var/lib/dbus/machine-id || true
     echo '--- chrome-profile'
-    find /home/slice/.config/chariox-slice-chromium -maxdepth 2 -type f 2>/dev/null | sed 's#^#/##' | head -80 || true
+    find /home/slice/.chariox/browser/chromium -maxdepth 2 -type f 2>/dev/null | sed 's#^#/##' | head -80 || true
     echo '--- mounts'
     mount | grep -E '/home/slice|/workspace' || true
   `

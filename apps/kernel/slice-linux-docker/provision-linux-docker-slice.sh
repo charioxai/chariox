@@ -106,7 +106,7 @@ SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
-SLICE_PROVIDER_HOME="/home/slice/provider-home"
+SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -596,8 +596,13 @@ ensure_container() {
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
       # system-path masks block that setup before bubblewrap can install the
       # narrower provider boundary. Managed hosts run this container in the
-      # dedicated rootless daemon; ordinary local slices must opt in.
+      # dedicated rootless daemon; ordinary local slices must opt in. These
+      # are Bubblewrap's documented setup capabilities; the provider receives
+      # none of them because the inner sandbox uses --cap-drop ALL.
       docker_create_args+=(
+        --cap-add SYS_ADMIN
+        --cap-add NET_ADMIN
+        --cap-add SYS_PTRACE
         --security-opt seccomp=unconfined
         --security-opt apparmor="$SLICE_APPARMOR_PROFILE"
         --security-opt systempaths=unconfined

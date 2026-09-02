@@ -345,6 +345,7 @@ impl DaemonApp {
                 ),
             });
         }
+        let mut materialized_account = None;
         if crate::provider::canonical_provider_family(agent.provider())
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
@@ -403,10 +404,8 @@ impl DaemonApp {
                 use_connected_relay,
             ) {
                 Ok(response)
-                    if remote_provider_account_response_matches(
-                        &response,
-                        &expected_account,
-                    ) => {
+                    if remote_provider_account_response_matches(&response, &expected_account) =>
+                {
                     if let Err(error) =
                         self.provider_account_profiles.update_materialization_status(
                             &account_owner_user_id,
@@ -424,9 +423,12 @@ impl DaemonApp {
                         cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                         return Err(error);
                     }
+                    materialized_account = Some(expected_account);
                 }
                 Ok(other) => {
-                    let _ = self.provider_account_profiles.update_materialization_status(
+                    let _ = self
+                        .provider_account_profiles
+                        .update_materialization_status(
                         &account_owner_user_id,
                         agent.provider(),
                         agent.provider_account_profile(),
@@ -436,9 +438,7 @@ impl DaemonApp {
                             state:
                                 crate::account_profile::ProviderAccountMaterializationState::Error,
                             observed_at_ms: crate::session::unix_epoch_ms(),
-                            last_error: Some(
-                                "worker rejected account materialization".to_string(),
-                            ),
+                            last_error: Some("worker rejected account materialization".to_string()),
                         },
                     );
                     cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
@@ -448,7 +448,9 @@ impl DaemonApp {
                     });
                 }
                 Err(error) => {
-                    let _ = self.provider_account_profiles.update_materialization_status(
+                    let _ = self
+                        .provider_account_profiles
+                        .update_materialization_status(
                         &account_owner_user_id,
                         agent.provider(),
                         agent.provider_account_profile(),
@@ -472,7 +474,10 @@ impl DaemonApp {
             RelayPeerRequest::SpawnLeasedAgent {
                 lease_id: lease.id.clone(),
                 provider: agent.provider().to_string(),
-                account_profile: agent.provider_account_profile().to_string(),
+                account_profile: worker_account_profile_for_spawn(
+                    agent.provider_account_profile(),
+                    materialized_account.as_ref(),
+                ),
                 model: agent.model().map(ToOwned::to_owned),
                 effort: agent.effort().map(ToOwned::to_owned),
                 execution_mode: Some(effective_config.mode),
@@ -1099,6 +1104,15 @@ fn remote_provider_account_response_matches(
     )
 }
 
+fn worker_account_profile_for_spawn(
+    requested_account_profile: &str,
+    materialized_account: Option<&crate::account_profile::ProviderAccountReplicaMetadata>,
+) -> String {
+    materialized_account
+        .map(|account| account.profile_id.clone())
+        .unwrap_or_else(|| requested_account_profile.to_string())
+}
+
 fn app_mcp_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     #[cfg(not(test))]
@@ -1184,6 +1198,23 @@ mod tests {
             },
             &expected,
         ));
+    }
+
+    #[test]
+    fn remote_agent_launch_uses_the_materialized_profile_id() {
+        let materialized = crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "user-home".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "codex-1-vfx4dshw".to_string(),
+            label: "Codex".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+            is_default: true,
+        };
+
+        assert_eq!(
+            super::worker_account_profile_for_spawn("default", Some(&materialized)),
+            "codex-1-vfx4dshw"
+        );
     }
 
     #[test]

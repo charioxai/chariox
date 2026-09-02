@@ -22,7 +22,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent_id: &str,
         adapter_key: &str,
         provider: &str,
-        account_profile: &str,
+        _account_profile: &str,
         model: &str,
         variant: Option<String>,
         structured_endpoint: Option<String>,
@@ -65,7 +65,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             leased_agent.backing_session_id.clone(),
             adapter_key,
             provider,
-            account_profile,
+            leased_agent.account_profile.clone(),
             model,
         )
         .with_agent_id(leased_agent.backing_agent_id.clone())
@@ -239,6 +239,61 @@ mod tests {
     use crate::config::DaemonConfig;
     use crate::mcp::CharioxMcpServerConfig;
     use crate::transport::relay_peer::RequiredRemoteMcp;
+
+    #[test]
+    fn leased_native_provider_launch_uses_the_leased_agent_account_profile() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let worktree = std::env::temp_dir().join(format!(
+            "chariox-native-provider-account-profile-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&worktree).expect("worktree should create");
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let lease = runtime
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "local-user",
+            )
+            .expect("lease should create");
+        let leased_agent = runtime
+            .create_leased_agent(
+                &lease.id,
+                "dev-stub",
+                "materialized-profile",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .expect("leased agent should create");
+
+        let request = runtime
+            .prepare_leased_native_provider_launch(
+                &leased_agent.id,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+                None,
+                None,
+                None,
+                Vec::new(),
+                Some(Vec::new()),
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("native launch request should prepare");
+
+        assert_eq!(request.account_profile, "materialized-profile");
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
 
     #[test]
     fn leased_native_provider_launch_preserves_required_mcp_set() {

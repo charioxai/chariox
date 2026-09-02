@@ -1590,6 +1590,7 @@ impl ProviderAccountProfileRegistry {
             Some(_) => true,
             None => false,
         };
+        let refresh_existing_replica = managed_context.is_none() && replace_existing_replica;
         let managed_root_exists = path_entry_exists(&managed_root)?;
         let adopt_interrupted_managed_publication = managed_context.is_some()
             && managed_root_exists
@@ -1617,7 +1618,9 @@ impl ProviderAccountProfileRegistry {
             ));
         }
 
-        let backup_root = (managed_root_exists && !adopt_interrupted_managed_publication)
+        let backup_root = (managed_root_exists
+            && !adopt_interrupted_managed_publication
+            && !refresh_existing_replica)
             .then(|| unique_sibling_path(&managed_root, "backup"));
         if let Some(backup_root) = &backup_root {
             if let Err(error) = fs::rename(&managed_root, backup_root) {
@@ -1625,7 +1628,22 @@ impl ProviderAccountProfileRegistry {
                 return Err(registry_io("materialize account profile")(error));
             }
         }
-        let publication_result = if adopt_interrupted_managed_publication {
+        let publication_result = if refresh_existing_replica {
+            (|| {
+                for (file, (_, contents)) in materialization.files.iter().zip(decoded_files.iter())
+                {
+                    let destination = materialization_destination(&locator, &file.relative_path)?;
+                    atomic_write_private(&destination, contents)?;
+                }
+                if let ProviderAccountLocator::Codex { codex_home } = &locator {
+                    enforce_codex_file_credentials(codex_home)?;
+                }
+                sync_private_tree(&managed_root)?;
+                fs::remove_dir_all(&staging_root)
+                    .map_err(registry_io("refresh materialized account profile"))?;
+                sync_directory(managed_parent)
+            })()
+        } else if adopt_interrupted_managed_publication {
             fs::remove_dir_all(&staging_root)
                 .map_err(registry_io("recover managed account profile publication"))
                 .and_then(|_| sync_private_tree(&managed_root))
@@ -1730,6 +1748,9 @@ impl ProviderAccountProfileRegistry {
                 ));
             }
             if managed_context.is_some() {
+                return Err(error);
+            }
+            if refresh_existing_replica {
                 return Err(error);
             }
             let failed_root = unique_sibling_path(&managed_root, "failed");
@@ -3842,6 +3863,51 @@ mod tests {
         assert!(target
             .materialize_replica("owner-b", &materialization)
             .is_err());
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn repeated_account_materialization_preserves_provider_runtime_state() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+        fs::create_dir_all(target_codex_home.join("sessions/2026/09/02")).unwrap();
+        let rollout = target_codex_home.join("sessions/2026/09/02/thread.jsonl");
+        fs::write(&rollout, "provider-owned runtime state").unwrap();
+
+        fs::write(
+            source_codex_home.join("auth.json"),
+            br#"{"token":"refreshed"}"#,
+        )
+        .unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        target.materialize_replica("owner-a", &refreshed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target_codex_home.join("auth.json")).unwrap(),
+            r#"{"token":"refreshed"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(rollout).unwrap(),
+            "provider-owned runtime state"
+        );
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
     }

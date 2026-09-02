@@ -23,6 +23,8 @@ const MAX_MANAGED_WORKSPACE_ROOTS: usize = 128;
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
+#[cfg(target_os = "linux")]
+const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
 #[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
 #[cfg(target_os = "linux")]
@@ -38,6 +40,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_SLICE_DOCKER_BROKER_FD",
     "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
     "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
     "CHARIOX_MANAGED_RELEASE_SIGNATURE",
     "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
 ];
@@ -154,7 +157,7 @@ pub(crate) fn apply_managed_provider_isolation(
 
     #[cfg(target_os = "linux")]
     {
-        validate_bubblewrap_binary()?;
+        let bubblewrap = managed_bubblewrap_binary()?;
         let provider_home = managed_provider_home()?;
         let workspace_roots = managed_workspace_roots(request)?;
         let working_directory = managed_working_directory(request, &workspace_roots)?;
@@ -210,7 +213,7 @@ pub(crate) fn apply_managed_provider_isolation(
         ]);
         args.append(&mut launch.pty_args);
 
-        launch.pty_program = Some(BWRAP_PATH.to_string());
+        launch.pty_program = Some(bubblewrap.display().to_string());
         launch.pty_args = args;
         // Provider-account utilities use the synthetic sandbox home, which
         // does not exist until bubblewrap assembles the namespace. Ordinary
@@ -404,13 +407,17 @@ pub(crate) fn command_from_provider_launch(
 }
 
 #[cfg(target_os = "linux")]
-fn validate_bubblewrap_binary() -> Result<(), DaemonError> {
+fn managed_bubblewrap_binary() -> Result<PathBuf, DaemonError> {
     use std::os::unix::fs::MetadataExt;
 
-    let path = Path::new(BWRAP_PATH);
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+    let path = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(BWRAP_PATH));
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
         isolation_error(format!(
-            "managed provider isolation needs {BWRAP_PATH}: {error}"
+            "managed provider isolation needs {}: {error}",
+            path.display()
         ))
     })?;
     if metadata.file_type().is_symlink()
@@ -420,10 +427,10 @@ fn validate_bubblewrap_binary() -> Result<(), DaemonError> {
         || metadata.mode() & 0o111 == 0
     {
         return Err(isolation_error(
-            "managed provider isolation needs a root-owned, non-writable executable /usr/bin/bwrap",
+            "managed provider isolation needs a root-owned, non-writable Bubblewrap launcher",
         ));
     }
-    Ok(())
+    Ok(path)
 }
 
 #[cfg(target_os = "linux")]
@@ -469,7 +476,6 @@ fn managed_namespace_args(
         "--unshare-ipc".to_string(),
         "--unshare-uts".to_string(),
         "--unshare-cgroup-try".to_string(),
-        "--disable-userns".to_string(),
         "--uid".to_string(),
         "0".to_string(),
         "--gid".to_string(),
