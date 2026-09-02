@@ -57,6 +57,7 @@ Do not merge protocol shape changes without the version bump and test update.
 - Hosted Cloud relay runtime should use the Caddy-fronted `wss://` relay URL for browser, kernel, remote TUI, and kernel-to-kernel remote-agent connections. Local and self-hosted relay setups may keep using `ws://`.
 - Use heartbeat freshness for relay target selection; stale targets must not be treated as online.
 - Preserve local/dev/self-host compatibility where practical, but fail loudly when hosted Cloud configuration violates the runtime architecture.
+- The independent reviewer services and state under `~/.chariox-reviewer` are shared infrastructure, not an unrelated-worktree cleanup target: do not kill, disable, restart, or prune them unless the reviewer itself is being repaired or the user explicitly asks to stop it.
 - Be lean, don't over engineer and delete all old/unnecessary code along the way.
 - Keep coordinators as wiring only; move policy, state mutation, rendering, transport I/O, and protocol adapters into named responsibility modules before a file becomes a mega-file.
 - Always clean up temporary drill artifacts, orphaned provider processes, and large build outputs you no longer need before handing work back.
