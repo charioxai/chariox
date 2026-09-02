@@ -625,6 +625,12 @@ async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_e
         LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
         other => panic!("unexpected workflow create response: {other:?}"),
     };
+    {
+        let app = app.lock().await;
+        app.sessions_mut()
+            .set_workflow_flush_agent_context_before_run(session.id(), workflow.id(), false)
+            .expect("event fixture should preserve the authenticated worker run");
+    }
     let add_node = LocalDaemonRequest::AddWorkflowNode(crate::local::AddWorkflowNodeRequest {
         session_id: session.id().to_string(),
         workflow_ref: workflow.id().to_string(),

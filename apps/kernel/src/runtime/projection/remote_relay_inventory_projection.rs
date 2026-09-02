@@ -28,6 +28,22 @@ impl RemoteRelayInventoryProjectionStore {
         (state.remote_machines.clone(), state.remote_kernels.clone())
     }
 
+    pub(crate) fn is_fresh(&self, now_ms: u64, stale_after_ms: u64) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.refreshed_at_ms != 0 && now_ms.saturating_sub(state.refreshed_at_ms) < stale_after_ms
+    }
+
+    #[cfg(test)]
+    fn refreshed_at_ms(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .refreshed_at_ms
+    }
+
     pub(crate) fn should_request_refresh(
         &self,
         now_ms: u64,
@@ -88,8 +104,6 @@ impl RemoteRelayInventoryProjectionStore {
                 .push(filter_remote_machine_product_providers(machine));
         }
         sort_remote_machines(&mut state.remote_machines);
-        state.refreshed_at_ms = unix_epoch_ms();
-        state.refresh_requested_at_ms = state.refreshed_at_ms;
     }
 
     pub(crate) fn remove_machine(&self, machine_id: &str) {
@@ -103,8 +117,6 @@ impl RemoteRelayInventoryProjectionStore {
         state
             .remote_kernels
             .retain(|kernel| kernel.machine_id != machine_id);
-        state.refreshed_at_ms = unix_epoch_ms();
-        state.refresh_requested_at_ms = state.refreshed_at_ms;
     }
 
     pub(crate) fn clear(&self) {
@@ -149,6 +161,7 @@ mod tests {
     #[test]
     fn remote_relay_inventory_projection_requests_refresh_when_empty_or_stale() {
         let projection = RemoteRelayInventoryProjectionStore::default();
+        assert!(!projection.is_fresh(10_000, 5_000));
         assert!(projection.should_request_refresh(10_000, 5_000, 1_000));
         assert!(
             !projection.should_request_refresh(10_500, 5_000, 1_000),
@@ -158,6 +171,16 @@ mod tests {
             projection.should_request_refresh(16_000, 5_000, 1_000),
             "stale empty projection should request another refresh after the cooldown"
         );
+    }
+
+    #[test]
+    fn remote_relay_inventory_projection_tracks_full_refresh_freshness() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(Vec::new(), Vec::new());
+        let now_ms = crate::session::unix_epoch_ms();
+
+        assert!(projection.is_fresh(now_ms, 5_000));
+        assert!(!projection.is_fresh(now_ms.saturating_add(5_000), 5_000));
     }
 
     #[test]
@@ -193,6 +216,7 @@ mod tests {
                 public_key: "public-key".to_string(),
             }],
         );
+        let refreshed_at_ms = projection.refreshed_at_ms();
 
         projection.update_machine(RemoteMachineRecord {
             machine_id: "machine-1".to_string(),
@@ -206,6 +230,8 @@ mod tests {
             available_providers: vec!["dev-stub".to_string()],
             provider_accounts: Vec::new(),
         });
+
+        assert_eq!(projection.refreshed_at_ms(), refreshed_at_ms);
 
         let (machines, kernels) = projection.snapshot();
         assert_eq!(machines.len(), 1);
@@ -250,9 +276,11 @@ mod tests {
                 public_key: "public-key".to_string(),
             }],
         );
+        let refreshed_at_ms = projection.refreshed_at_ms();
 
         projection.remove_machine("machine-1");
 
+        assert_eq!(projection.refreshed_at_ms(), refreshed_at_ms);
         let (machines, kernels) = projection.snapshot();
         assert!(machines.is_empty());
         assert!(kernels.is_empty());

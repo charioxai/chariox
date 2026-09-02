@@ -1,6 +1,15 @@
 use super::*;
 use crate::session::WorkflowPublicationInvocationEnvelope;
 
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowRuntimeInstanceProvisionCandidate {
+    pub(crate) workflow: WorkflowDefinition,
+    pub(crate) endpoint: WorkflowEndpointDefinition,
+    pub(crate) ordinal: u16,
+    pub(crate) primary: bool,
+    pub(crate) source_worktree_id: String,
+}
+
 impl SessionService {
     pub fn invoke_workflow_endpoint(
         &mut self,
@@ -33,6 +42,8 @@ impl SessionService {
             prompt,
             publication_invocation,
             None,
+            None,
+            None,
         )
     }
 
@@ -48,6 +59,28 @@ impl SessionService {
             queued_prompt.prompt().map(str::to_string),
             queued_prompt.publication_invocation().cloned(),
             Some(queued_prompt),
+            None,
+            None,
+        )
+    }
+
+    fn invoke_queued_workflow_endpoint_on_instance(
+        &mut self,
+        session_id: &str,
+        queued_prompt: &WorkflowQueuedPrompt,
+        runtime_instance: &crate::session::WorkflowEndpointRuntimeInstance,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        self.invoke_workflow_endpoint_with_context(
+            session_id,
+            queued_prompt.workflow_id(),
+            queued_prompt.endpoint_id(),
+            queued_prompt.prompt().map(str::to_string),
+            queued_prompt.publication_invocation().cloned(),
+            Some(queued_prompt),
+            Some(runtime_instance),
+            Some((workflow_run_id, workflow_node_run_id)),
         )
     }
 
@@ -59,6 +92,8 @@ impl SessionService {
         prompt: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
         queued_prompt: Option<&WorkflowQueuedPrompt>,
+        runtime_instance: Option<&crate::session::WorkflowEndpointRuntimeInstance>,
+        reserved_run_identity: Option<(&str, &str)>,
     ) -> Result<WorkflowRun, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
         let endpoint =
@@ -73,9 +108,14 @@ impl SessionService {
         })?;
 
         let node_run = WorkflowNodeRun::new(
-            self.next_workflow_node_run_id(),
+            reserved_run_identity
+                .map(|(_, node_run_id)| node_run_id.to_string())
+                .unwrap_or_else(|| self.next_workflow_node_run_id()),
             entry_node.id().to_string(),
-            entry_node.agent_id().to_string(),
+            runtime_instance
+                .and_then(|instance| instance.agent_id_for_node(entry_node.id()))
+                .unwrap_or_else(|| entry_node.agent_id())
+                .to_string(),
             1,
             WorkflowNodeRunStatus::Ready,
         );
@@ -96,7 +136,9 @@ impl SessionService {
             })
             .unwrap_or_default();
         let mut workflow_run = WorkflowRun::new(
-            self.next_workflow_run_id(),
+            reserved_run_identity
+                .map(|(run_id, _)| run_id.to_string())
+                .unwrap_or_else(|| self.next_workflow_run_id()),
             workflow.id().to_string(),
             endpoint.id().to_string(),
             entry_node.id().to_string(),
@@ -114,17 +156,55 @@ impl SessionService {
                         .publication_invocation()
                         .and_then(|invocation| invocation.queue_ref.clone())
                 }),
+            queued_prompt.map(|prompt| prompt.id().to_string()),
             queued_prompt
                 .map(WorkflowQueuedPrompt::created_at_ms)
                 .unwrap_or_else(|| workflow_run.created_at_ms()),
             queued_prompt.map(WorkflowQueuedPrompt::created_at_ms),
         );
+        if let Some(runtime_instance) = runtime_instance {
+            workflow_run.set_runtime_instance_context(
+                runtime_instance.id().to_string(),
+                queued_prompt
+                    .map(WorkflowQueuedPrompt::source)
+                    .unwrap_or(WorkflowQueuedPromptSource::Manual),
+                runtime_instance.node_agent_ids().clone(),
+            );
+        }
         let session =
             self.store
                 .get_mut(session_id)
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        if let (Some(runtime_instance), Some((reserved_run_id, _))) =
+            (runtime_instance, reserved_run_identity)
+        {
+            let reservation_is_current = session
+                .workflow_runtime_instance(runtime_instance.id())
+                .is_some_and(|instance| instance.active_run_id() == Some(reserved_run_id));
+            if !reservation_is_current {
+                return Err(DaemonError::LocalTransport {
+                    operation: "invoke workflow endpoint",
+                    message: format!(
+                        "workflow runtime instance `{}` lost run reservation `{reserved_run_id}`",
+                        runtime_instance.id()
+                    ),
+                });
+            }
+        }
+        if let Some(runtime_instance) = runtime_instance.filter(|_| reserved_run_identity.is_none())
+        {
+            session
+                .claim_workflow_runtime_instance(runtime_instance.id(), workflow_run.id())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "invoke workflow endpoint",
+                    message: format!(
+                        "workflow runtime instance `{}` was no longer idle",
+                        runtime_instance.id()
+                    ),
+                })?;
+        }
         Ok(session.create_workflow_run(workflow_run))
     }
 
@@ -314,16 +394,6 @@ impl SessionService {
             .collect())
     }
 
-    pub fn session_has_active_workflow_run(&self, session_id: &str) -> Result<bool, DaemonError> {
-        let session = self
-            .store
-            .get(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        Ok(session.has_active_workflow_run())
-    }
-
     pub fn mark_workflow_run_settling(
         &mut self,
         session_id: &str,
@@ -407,6 +477,7 @@ impl SessionService {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn enqueue_workflow_prompt_with_publication_invocation(
         &mut self,
         session_id: &str,
@@ -444,6 +515,7 @@ impl SessionService {
         Ok(session.enqueue_workflow_prompt(queued))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn enqueue_workflow_prompt_and_maybe_create_run(
         &mut self,
         session_id: &str,
@@ -577,7 +649,7 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        if session.has_active_session_task() {
+        if session.has_active_metaagent_task() {
             return Ok(None);
         }
         if let (Some(meta_task), Some(workflow_created_at_ms)) = (
@@ -593,6 +665,199 @@ impl SessionService {
         Ok(session.pop_next_workflow_queued_prompt())
     }
 
+    pub(crate) fn workflow_runtime_instance_provision_candidate(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<WorkflowRuntimeInstanceProvisionCandidate>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.reconcile_workflow_runtime_instances();
+        let mut queued = session
+            .workflow_queued_prompts()
+            .iter()
+            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter_map(|item| {
+                let queue = session.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
+                queue
+                    .enabled()
+                    .then_some((queue.priority(), item.created_at_ms(), item.clone()))
+            })
+            .collect::<Vec<_>>();
+        queued.sort_by_key(|(priority, created_at_ms, _)| {
+            (std::cmp::Reverse(*priority), *created_at_ms)
+        });
+        for (_, _, queued_prompt) in queued {
+            let Some(workflow) = session.workflow(queued_prompt.workflow_id()).cloned() else {
+                continue;
+            };
+            let Some(endpoint) = workflow.endpoint(queued_prompt.endpoint_id()).cloned() else {
+                continue;
+            };
+            if session
+                .idle_workflow_runtime_instance(workflow.id(), endpoint.id(), workflow.revision())
+                .is_some()
+            {
+                return Ok(None);
+            }
+            let count = session.current_workflow_runtime_instance_count(
+                workflow.id(),
+                endpoint.id(),
+                workflow.revision(),
+            );
+            if count >= endpoint.max_instances() as usize {
+                continue;
+            }
+            let ordinal =
+                session.next_workflow_runtime_instance_ordinal(workflow.id(), endpoint.id());
+            return Ok(Some(WorkflowRuntimeInstanceProvisionCandidate {
+                workflow,
+                endpoint,
+                ordinal,
+                primary: count == 0,
+                source_worktree_id: session.worktree_id().to_string(),
+            }));
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn ensure_primary_workflow_runtime_instance(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::WorkflowEndpointRuntimeInstance>, DaemonError> {
+        let Some(candidate) = self.workflow_runtime_instance_provision_candidate(session_id)?
+        else {
+            return Ok(None);
+        };
+        if !candidate.primary {
+            return Ok(None);
+        }
+        let node_agent_ids = candidate
+            .workflow
+            .nodes()
+            .iter()
+            .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let instance = crate::session::WorkflowEndpointRuntimeInstance::new(
+            format!("workflow-instance-{:032x}", rand::random::<u128>()),
+            candidate.workflow.id(),
+            candidate.endpoint.id(),
+            candidate.workflow.revision(),
+            candidate.ordinal,
+            true,
+            node_agent_ids,
+            candidate.source_worktree_id,
+        );
+        self.register_workflow_runtime_instance(session_id, instance)
+            .map(Some)
+    }
+
+    pub(crate) fn invalidate_workflow_runtime_instances_for_agent_change(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.invalidate_workflow_runtime_instances_for_agent_change(agent_id))
+    }
+
+    pub(crate) fn register_workflow_runtime_instance(
+        &mut self,
+        session_id: &str,
+        instance: crate::session::WorkflowEndpointRuntimeInstance,
+    ) -> Result<crate::session::WorkflowEndpointRuntimeInstance, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        if session.workflow_runtime_instance(instance.id()).is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "register workflow runtime instance",
+                message: format!("runtime instance `{}` already exists", instance.id()),
+            });
+        }
+        Ok(session.add_workflow_runtime_instance(instance))
+    }
+
+    pub(crate) fn remove_workflow_runtime_instance(
+        &mut self,
+        session_id: &str,
+        instance_id: &str,
+    ) -> Result<Option<crate::session::WorkflowEndpointRuntimeInstance>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.remove_workflow_runtime_instance(instance_id))
+    }
+
+    pub(crate) fn mark_workflow_runtime_instance_stale(
+        &mut self,
+        session_id: &str,
+        instance_id: &str,
+    ) -> Result<Option<crate::session::WorkflowEndpointRuntimeInstance>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.mark_workflow_runtime_instance_stale(instance_id))
+    }
+
+    pub(crate) fn release_workflow_runtime_instance_for_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<Option<crate::session::WorkflowEndpointRuntimeInstance>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.release_workflow_runtime_instance_for_run(workflow_run_id))
+    }
+
+    pub(crate) fn cleanup_ready_workflow_runtime_instances(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Vec<crate::session::WorkflowEndpointRuntimeInstance>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.reconcile_workflow_runtime_instances();
+        let missing_clone_ids = session
+            .workflow_runtime_instances()
+            .iter()
+            .filter(|instance| !instance.primary())
+            .filter(|instance| {
+                instance.status() == crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+            })
+            .filter(|instance| !std::path::Path::new(instance.worktree_id()).is_dir())
+            .map(|instance| instance.id().to_string())
+            .collect::<Vec<_>>();
+        for instance_id in missing_clone_ids {
+            session.mark_workflow_runtime_instance_stale(&instance_id);
+        }
+        Ok(session.cleanup_ready_workflow_runtime_instances())
+    }
+
     pub fn dequeue_next_workflow_prompt_and_create_run(
         &mut self,
         session_id: &str,
@@ -606,8 +871,34 @@ impl SessionService {
         DaemonError,
     > {
         loop {
-            let Some(queued_prompt) = self.dequeue_next_workflow_prompt(session_id)? else {
-                return Ok(None);
+            let workflow_run_id = self.next_workflow_run_id();
+            let workflow_node_run_id = self.next_workflow_node_run_id();
+            let (queued_prompt, runtime_instance) = {
+                let session =
+                    self.store
+                        .get_mut(session_id)
+                        .ok_or_else(|| DaemonError::SessionNotFound {
+                            session_id: session_id.to_string(),
+                        })?;
+                if session.has_active_metaagent_task() {
+                    return Ok(None);
+                }
+                if let (Some(meta_task), Some(workflow_created_at_ms)) = (
+                    session.queued_metaagent_tasks().front(),
+                    session.next_dispatchable_workflow_queued_prompt_created_at_ms(),
+                ) {
+                    if meta_task.created_at_ms() <= workflow_created_at_ms {
+                        return Ok(None);
+                    }
+                } else if !session.queued_metaagent_tasks().is_empty() {
+                    return Ok(None);
+                }
+                let Some(claimed) =
+                    session.pop_next_workflow_queued_prompt_with_idle_instance(&workflow_run_id)
+                else {
+                    return Ok(None);
+                };
+                claimed
             };
             if let Some(watchdog_id) = queued_prompt.watchdog_id() {
                 if !self.prepare_workflow_watchdog_queued_start(session_id, watchdog_id)? {
@@ -620,7 +911,27 @@ impl SessionService {
                 queued_prompt.workflow_id(),
                 queued_prompt.endpoint_id(),
             )?;
-            let workflow_run = self.invoke_queued_workflow_endpoint(session_id, &queued_prompt)?;
+            let workflow_run = match self.invoke_queued_workflow_endpoint_on_instance(
+                session_id,
+                &queued_prompt,
+                &runtime_instance,
+                &workflow_run_id,
+                &workflow_node_run_id,
+            ) {
+                Ok(workflow_run) => workflow_run,
+                Err(error) => {
+                    let session = self.store.get_mut(session_id).ok_or_else(|| {
+                        DaemonError::SessionNotFound {
+                            session_id: session_id.to_string(),
+                        }
+                    })?;
+                    let _ = session.release_workflow_runtime_instance_for_run(&workflow_run_id);
+                    let mut queued_prompt = queued_prompt;
+                    queued_prompt.mark_queued_for_retry();
+                    session.enqueue_workflow_prompt(queued_prompt);
+                    return Err(error);
+                }
+            };
             return Ok(Some((queued_prompt, workflow_run, workflow, endpoint)));
         }
     }

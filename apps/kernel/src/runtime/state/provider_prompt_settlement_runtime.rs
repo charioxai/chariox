@@ -351,11 +351,24 @@ impl KernelRuntimeState {
             })
             .map(|prompt| owned.workflow_event_capabilities_for_prompt(session_id, prompt))
             .transpose()?;
-        let defer_workflow_prompt_for_provider_switch =
+        let next_queued_workflow_requires_fresh_context = next_queued_prompt_candidate
+            .as_ref()
+            .filter(|prompt| {
+                crate::scheduler::runtime::is_workflow_prompt_attachment(
+                    prompt.source_attachment_id(),
+                )
+            })
+            .map(|prompt| {
+                owned.workflow_prompt_requires_fresh_provider_context(session_id, &agent_id, prompt)
+            })
+            .transpose()?
+            .unwrap_or(false);
+        let defer_queued_workflow_prompt =
             next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),
-                ) && (!provider_run.workflow_tools_enabled()
+                ) && (next_queued_workflow_requires_fresh_context
+                    || !provider_run.workflow_tools_enabled()
                     || next_queued_workflow_event_capabilities.is_some_and(
                         |(reply, context, actions)| {
                             provider_run.workflow_event_reply_enabled() != reply
@@ -364,7 +377,7 @@ impl KernelRuntimeState {
                         },
                     ))
             });
-        let next_queued_prompt = (!defer_workflow_prompt_for_provider_switch)
+        let next_queued_prompt = (!defer_queued_workflow_prompt)
             .then_some(next_queued_prompt_candidate)
             .flatten();
         // Removing the active prompt is not the end of workflow settlement: the
@@ -526,7 +539,7 @@ impl KernelRuntimeState {
                 .write()
                 .clear_workflow_run_settling(session_id, workflow_run_id)?;
         }
-        if defer_workflow_prompt_for_provider_switch {
+        if defer_queued_workflow_prompt {
             let session_id_for_queue = session_id.to_string();
             let agent_id_for_queue = agent_id.clone();
             match self
@@ -545,7 +558,7 @@ impl KernelRuntimeState {
                             .attachment_store
                             .list_session_attachment_ids(session_id),
                         format!(
-                            "Queued workflow prompt remained pending during provider capability switch: {error}"
+                            "Queued workflow prompt remained pending while preparing its provider context: {error}"
                         ),
                     );
                 }
@@ -593,6 +606,7 @@ impl KernelRuntimeState {
         let state = self.clone();
         let session_id_for_continuation = session_id.to_string();
         let agent_id_for_continuation = agent_id.clone();
+        let provider_run_id_for_continuation = provider_run_id.to_string();
         let continuation: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
             Box::pin(async move {
                 if let Err(error) = state
@@ -608,6 +622,20 @@ impl KernelRuntimeState {
                         serde_json::json!({
                             "session_id": session_id_for_continuation,
                             "agent_id": agent_id_for_continuation,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                if let Err(error) = state
+                    .owned
+                    .park_detached_idle_provider_run(&session_id_for_continuation)
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "failed to park detached provider after prompt completion",
+                        serde_json::json!({
+                            "session_id": session_id_for_continuation,
+                            "provider_run_id": provider_run_id_for_continuation,
                             "error": error.to_string(),
                         }),
                     );

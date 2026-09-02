@@ -501,7 +501,11 @@ impl CommandRouter {
                 display_backend: Default::default(),
                 workspace_id: Some(session.workspace_id().to_string()),
                 worktree_id: Some(worktree_id.clone()),
-                workspace_mount: Some(worktree_id),
+                workspace_mount: Some(worktree_id.clone()),
+                development: Some(
+                    self.runtime_state
+                        .slice_development_selection_for_session(session, &worktree_id)?,
+                ),
                 worker_kernel_ref: spawn.kernel_ref.clone(),
                 display_url: None,
                 provider_auth: Vec::new(),

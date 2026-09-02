@@ -1,7 +1,14 @@
 use super::*;
 
-#[tokio::test]
-async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
+#[test]
+fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
+    run_large_stack_async_test(
+        "metaagent-runtime-mcp-returns-session-overview-and-command-docs",
+        assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs,
+    );
+}
+
+async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
     let env = TestMetaRuntimeEnv::new("overview");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");

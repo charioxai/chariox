@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use chariox_relay::auth::RelaySubjectKind;
 use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayError};
 use serde::Deserialize;
 use serde_json::Value;
@@ -11,7 +10,6 @@ use serde_json::Value;
 use crate::local::LocalDaemonRequest;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
-use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::command_cache::{
     request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
 };
@@ -21,6 +19,7 @@ use crate::transport::kernel_protocol::{
 use crate::transport::relay_crypto;
 
 use super::request_errors::{relay_error, relay_request_kind};
+use super::sender_identity::validate_bound_service_sender;
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
@@ -174,36 +173,6 @@ pub(super) async fn handle_daemon_request(
     }
 }
 
-fn validate_bound_service_sender(
-    caller_identity: Option<&RelayCallerIdentity>,
-    encrypted_request: &EncryptedRelayPayload,
-) -> Result<(), RelayError> {
-    let Some(identity) =
-        caller_identity.filter(|identity| identity.subject_kind == RelaySubjectKind::Service)
-    else {
-        return Ok(());
-    };
-    if identity.expires_at_ms <= crate::session::unix_epoch_ms() {
-        return Err(relay_error(
-            "unauthorized",
-            "relay service identity has expired",
-            false,
-        ));
-    }
-    let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() else {
-        return Ok(());
-    };
-    let actual_thumbprint = public_key_thumbprint(&encrypted_request.sender_public_key);
-    if actual_thumbprint != expected_thumbprint {
-        return Err(relay_error(
-            "unauthorized",
-            "relay service sender key does not match its authenticated identity",
-            false,
-        ));
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 struct ParsedRelayClientRequest {
     command_id: Option<String>,
@@ -342,87 +311,8 @@ fn cached_relay_dispatch_outcome(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::LocalDaemonResponse;
-
-    fn caller_identity(
-        subject_kind: RelaySubjectKind,
-        public_key_thumbprint: Option<String>,
-    ) -> RelayCallerIdentity {
-        RelayCallerIdentity {
-            realm_id: "realm-1".to_string(),
-            subject: "caller-1".to_string(),
-            subject_kind,
-            expires_at_ms: u64::MAX,
-            token_id: Some("token-1".to_string()),
-            user_id: Some("user-1".to_string()),
-            public_key_thumbprint,
-        }
-    }
-
-    fn encrypted_request(sender_public_key: &str) -> EncryptedRelayPayload {
-        EncryptedRelayPayload {
-            sender_public_key: sender_public_key.to_string(),
-            nonce: "nonce".to_string(),
-            ciphertext: "ciphertext".to_string(),
-        }
-    }
-
-    #[test]
-    fn service_sender_key_must_match_bound_thumbprint() {
-        let request = encrypted_request("ephemeral-service-public-key");
-        let identity = caller_identity(
-            RelaySubjectKind::Service,
-            Some(public_key_thumbprint(&request.sender_public_key)),
-        );
-
-        assert!(validate_bound_service_sender(Some(&identity), &request).is_ok());
-    }
-
-    #[test]
-    fn mismatched_service_sender_key_is_rejected_before_dispatch() {
-        let identity = caller_identity(
-            RelaySubjectKind::Service,
-            Some(public_key_thumbprint("different-public-key")),
-        );
-        let error = validate_bound_service_sender(
-            Some(&identity),
-            &encrypted_request("ephemeral-service-public-key"),
-        )
-        .expect_err("a stolen service token must not act as an unbound bearer token");
-
-        assert_eq!(error.code, "unauthorized");
-        assert!(!error.retryable);
-    }
-
-    #[test]
-    fn expired_service_identity_is_rejected_before_dispatch() {
-        let mut identity = caller_identity(RelaySubjectKind::Service, None);
-        identity.expires_at_ms = 1;
-        let error = validate_bound_service_sender(
-            Some(&identity),
-            &encrypted_request("ephemeral-service-public-key"),
-        )
-        .expect_err("an authenticated socket must not outlive its service token");
-
-        assert_eq!(error.code, "unauthorized");
-        assert!(!error.retryable);
-    }
-
-    #[test]
-    fn ordinary_client_identity_is_not_subject_to_service_key_binding() {
-        let identity = caller_identity(
-            RelaySubjectKind::Client,
-            Some(public_key_thumbprint("paired-client-public-key")),
-        );
-
-        assert!(validate_bound_service_sender(
-            Some(&identity),
-            &encrypted_request("per-request-client-public-key"),
-        )
-        .is_ok());
-    }
 
     #[test]
     fn relay_client_response_projection_redacts_remote_relay_token() {

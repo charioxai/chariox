@@ -192,6 +192,18 @@ impl RestoredExternalProviderAttachmentState {
                     self.live_session_ids.insert(session.id().to_string());
                 }
             }
+            "workflow.publication.materialized" | "workflow.publication.reconfigured" => {
+                if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
+                    event,
+                    "session",
+                    "durable_state.scan_publication_materialization",
+                ) {
+                    self.live_session_ids.insert(session.id().to_string());
+                    for agent in session.agents() {
+                        self.restore_agent_if_session_live(agent.clone());
+                    }
+                }
+            }
             "sessions.updated" => {
                 if let Ok(sessions) = decode_durable_payload_field::<Vec<RuntimeSession>>(
                     event,
@@ -858,6 +870,29 @@ impl DaemonApp {
     }
 
     fn reconcile_restored_runtime_state_after_restart(&self) -> Result<(), DaemonError> {
+        let session_ids = self
+            .sessions
+            .read()
+            .store()
+            .list()
+            .into_iter()
+            .map(|session| session.id().to_string())
+            .collect::<Vec<_>>();
+        let mut repaired_session_focus_count = 0usize;
+        for session_id in session_ids {
+            if self
+                .agents
+                .repair_stale_session_focus(&session_id, &mut self.sessions.write())?
+            {
+                repaired_session_focus_count += 1;
+                crate::logging::info_with_fields(
+                    "durable_state.restore",
+                    "repaired stale focused agent after kernel restart",
+                    serde_json::json!({ "session_id": session_id }),
+                );
+            }
+        }
+
         let sessions = self.sessions.read().store().list();
         let mut reconciled_runtime_state = false;
         for mut session in sessions {
@@ -882,12 +917,13 @@ impl DaemonApp {
                     "recoverable_workflow_run_count": reconciliation.recoverable_workflow_run_count,
                     "repaired_workflow_prompt_count": reconciliation.repaired_workflow_prompt_count,
                     "removed_orphaned_workflow_prompt_count": reconciliation.removed_orphaned_workflow_prompt_count,
+                    "removed_terminal_workflow_prompt_count": reconciliation.removed_terminal_workflow_prompt_count,
                     "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
                 }),
             );
         }
-        if reconciled_runtime_state {
+        if reconciled_runtime_state || repaired_session_focus_count > 0 {
             self.save_durable_state_snapshot()?;
         }
         let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(
@@ -922,21 +958,24 @@ impl DaemonApp {
 
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
-        let sequence = self.durable_state.latest_event_sequence()?;
-        let payload = DurableKernelSnapshotPayload::capture(
-            &self.sessions,
-            &self.agents,
-            &self.slices,
-            &self.metaagent_events,
-        );
-        self.durable_state.save_snapshot(
-            sequence,
-            serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.encode_snapshot_payload",
-                message: error.to_string(),
-            })?,
-        )?;
-        Ok(())
+        self.durable_state
+            .with_workflow_runtime_transition_lock(|| {
+                let sequence = self.durable_state.latest_event_sequence()?;
+                let payload = DurableKernelSnapshotPayload::capture(
+                    &self.sessions,
+                    &self.agents,
+                    &self.slices,
+                    &self.metaagent_events,
+                );
+                self.durable_state.save_snapshot(
+                    sequence,
+                    serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.encode_snapshot_payload",
+                        message: error.to_string(),
+                    })?,
+                )?;
+                Ok(())
+            })
     }
 
     pub(crate) fn durable_snapshot_scheduler(&self) -> Option<DurableSnapshotScheduler> {
@@ -1044,6 +1083,33 @@ impl DaemonApp {
                 self.update_session_projection(session);
             }
             "workflow.runtime.updated" => {}
+            "workflow.publication.materialized" | "workflow.publication.reconfigured" => {
+                let session: RuntimeSession = decode_durable_payload_field(
+                    &event,
+                    "session",
+                    "durable_state.restore_publication_materialization",
+                )?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
+                for agent in session.agents() {
+                    if agent.session_id() != session.id()
+                        || agent.owner_user_id() != session.owner_user_id()
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "durable_state.restore_publication_materialization",
+                            message: "publication agent ownership does not match its session"
+                                .to_string(),
+                        });
+                    }
+                }
+                for agent in session.agents() {
+                    self.agents.restore_agent(agent.clone());
+                }
+                self.prompt_state_owner.restore_session_state(&session);
+                let session = self.restore_session_with_project_migration(session);
+                self.update_session_projection(session);
+            }
             "session.updated" => {
                 if durable_payload_entity_belongs_to_other_owner(
                     &event,
@@ -1633,6 +1699,7 @@ mod tests {
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: None,
+                    development: None,
                     worker_kernel_ref: None,
                     display_url: None,
                     provider_auth: Vec::new(),

@@ -86,7 +86,11 @@ impl KernelRuntimeOwnedState {
         mut session: crate::session::RuntimeSession,
     ) -> crate::session::RuntimeSession {
         self.project_session_runtime_view(&mut session);
-        self.session_projection.update(session.clone());
+        crate::runtime::projection::publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &session,
+        );
         session
     }
 
@@ -410,6 +414,7 @@ impl KernelRuntimeOwnedState {
             } else {
                 self.end_session(&session_id)?
             };
+        self.workflow_cleanup_deleted_session_runtime_artifacts(&ended)?;
         let (mut deleted, removed_project) = self
             .session_store
             .delete_session_with_project_cleanup(ended.id())?;

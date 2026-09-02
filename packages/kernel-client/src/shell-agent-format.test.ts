@@ -5,7 +5,42 @@ import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 import {
   formatAgentInspectSummary,
   formatAgentListSummary,
+  formatAgentSubstituteSummary,
 } from "./shell-agent-format.js"
+
+test("formatAgentSubstituteSummary shows the selected account via a public label", () => {
+  const agent = makeAgent({
+    id: "agent-1",
+    agent_ref: "agent-1",
+    active_substitute_index: 1,
+    substitutes: [
+      { provider: "codex", model: "gpt-5.4" },
+      { provider: "codex", model: "gpt-5.4", variant: "high", account_profile: "codex-work-internal" },
+    ],
+  })
+
+  const rendered = formatAgentSubstituteSummary(agent, (provider, accountProfile) =>
+    provider === "codex" && accountProfile === "codex-work-internal" ? "Work" : null)
+
+  assert.match(rendered, /- 0: codex\/gpt-5\.4\n/)
+  assert.match(rendered, /\* 1: codex\/gpt-5\.4\/high · account Work/)
+  assert.doesNotMatch(rendered, /codex-work-internal/)
+})
+
+test("formatAgentSubstituteSummary stays honest when account inventory is unavailable", () => {
+  const agent = makeAgent({
+    id: "agent-1",
+    agent_ref: "agent-1",
+    substitutes: [
+      { provider: "codex", model: "gpt-5.4", account_profile: "codex-work-internal" },
+    ],
+  })
+
+  const rendered = formatAgentSubstituteSummary(agent)
+
+  assert.match(rendered, /custom account/)
+  assert.doesNotMatch(rendered, /codex-work-internal/)
+})
 
 test("formatAgentListSummary uses projected idle activity over stale legacy worker state", () => {
   const remoteAgent = makeAgent({

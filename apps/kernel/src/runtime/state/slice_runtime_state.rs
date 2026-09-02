@@ -24,7 +24,23 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::CreateSliceRequest,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.validate_slice_development_selection(
+            request.development.as_ref(),
+            &request.backend,
+            request.workspace_id.as_deref(),
+            request.worktree_id.as_deref(),
+        )?;
         let config = self.owned.config_projection.snapshot();
+        let development_storage_parent = matches!(
+            request.development.as_ref(),
+            Some(
+                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+                    ..
+                }
+            )
+        )
+        .then(|| self.prepare_slice_development_storage_parent(&config))
+        .transpose()?;
         let from_saved_state = match request.from_saved_state.as_deref() {
             Some(state_ref) => Some(self.owned.slice_store.saved_state(state_ref)?),
             None if request.base == Some(crate::local::SliceCreateBase::Clean) => None,
@@ -34,7 +50,7 @@ impl KernelRuntimeState {
                 &request.os,
             )?,
         };
-        let slice = self.owned.slice_store.create(
+        let mut slice = self.owned.slice_store.create(
             &config.daemon_id,
             &config.host_machine_id,
             crate::slice::CreateSliceInput {
@@ -46,6 +62,7 @@ impl KernelRuntimeState {
                 workspace_id: request.workspace_id,
                 worktree_id: request.worktree_id,
                 workspace_mount: request.workspace_mount,
+                development: request.development,
                 worker_kernel_ref: request.worker_kernel_ref,
                 display_url: request.display_url,
                 provider_auth: Vec::new(),
@@ -53,6 +70,20 @@ impl KernelRuntimeState {
                 now_ms: crate::session::unix_epoch_ms(),
             },
         )?;
+        if let Some(storage_parent) = development_storage_parent {
+            let storage_root = storage_parent.join(&slice.id);
+            slice = self.owned.slice_store.set_development_storage_root(
+                &slice.id,
+                storage_root
+                    .to_str()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "slice.development.storage",
+                        message: "slice development storage path is not portable UTF-8".to_string(),
+                    })?
+                    .to_string(),
+                crate::session::unix_epoch_ms(),
+            )?;
+        }
         self.append_slice_durable_event("slice.created", &slice)?;
         self.record_slice_audit_event(&slice, "create", "completed", None, None)?;
         Ok(slice)
@@ -609,6 +640,20 @@ impl KernelRuntimeState {
         Ok(slice)
     }
 
+    pub(crate) fn claim_slice_starting_worker_identity(
+        &self,
+        slice_ref: &str,
+        worker_kernel_id: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.owned.slice_store.claim_starting_worker_identity(
+            slice_ref,
+            worker_kernel_id,
+            crate::session::unix_epoch_ms(),
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
     pub(crate) fn mark_slice_stopped(
         &self,
         slice_ref: &str,
@@ -796,7 +841,7 @@ impl KernelRuntimeState {
         Ok(backup)
     }
 
-    fn append_slice_durable_event(
+    pub(super) fn append_slice_durable_event(
         &self,
         kind: &'static str,
         slice: &crate::slice::SliceRecord,
@@ -970,6 +1015,7 @@ mod tests {
                     workspace_id: Some("workspace-1".to_string()),
                     worktree_id: Some("worktree-1".to_string()),
                     workspace_mount: None,
+                    development: None,
                     worker_kernel_ref: Some("worker-kernel-1".to_string()),
                     display_url: None,
                     provider_auth: Vec::new(),

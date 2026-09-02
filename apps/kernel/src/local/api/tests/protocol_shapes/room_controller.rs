@@ -12,7 +12,7 @@ use crate::transport::room_browser_controller::{
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 32);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 33);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -54,8 +54,8 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 296);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 32);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 297);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 33);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {

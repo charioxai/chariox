@@ -1,10 +1,16 @@
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import {
   getWorkflowRunRequest,
+  listQueuedWorkflowPromptsRequest,
+  listWorkflowPromptQueuesRequest,
   listWorkflowRunsRequest,
   listWorkflowWatchdogsRequest,
 } from "@chariox/kernel-client/ipc-requests"
-import type { WorkflowWatchdogDefinition } from "@chariox/kernel-client/kernel-types"
+import type {
+  WorkflowPromptQueueDefinition,
+  WorkflowQueuedPrompt,
+  WorkflowWatchdogDefinition,
+} from "@chariox/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
@@ -68,6 +74,7 @@ async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationCo
     const { latestRun, latestOutputRun, recentRuns } = await latestEndpointRunStatus(client, publication, watchdogs)
     return {
       runtime: { reachable: true },
+      queue_depth: await lookupPublicationQueueDepth(client, publication),
       watchdog_count: watchdogs.length,
       watchdogs,
       latest_run: latestRun ? visibleWorkflowRun(publication, latestRun) : null,
@@ -83,6 +90,7 @@ async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationCo
         reachable: false,
         error: error instanceof Error ? error.message : String(error),
       },
+      queue_depth: null,
       watchdog_count: null,
       watchdogs: [],
       latest_run: null,
@@ -92,6 +100,54 @@ async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationCo
   } finally {
     await client.close().catch(() => {})
   }
+}
+
+// Best-effort queue depth for this publication's workflow/endpoint/queue.
+// Counts only prompts still waiting to run (queued or dispatching). The lookup
+// is fail-safe: any transport or shape error yields null rather than failing the
+// whole status payload.
+export async function lookupPublicationQueueDepth(
+  client: Pick<LocalIpcClient, "send">,
+  publication: WorkflowPublicationConfig,
+): Promise<number | null> {
+  try {
+    const response = await client.send<Record<string, unknown>>(
+      listQueuedWorkflowPromptsRequest(publication.session_id),
+    )
+    const queueResponse = await client.send<Record<string, unknown>>(
+      listWorkflowPromptQueuesRequest(publication.session_id, publication.workflow_ref),
+    )
+    const prompts = (response.QueuedWorkflowPromptsListed as { queued_prompts?: WorkflowQueuedPrompt[] } | undefined)?.queued_prompts ?? []
+    const queues = (queueResponse.WorkflowPromptQueuesListed as { queues?: WorkflowPromptQueueDefinition[] } | undefined)?.queues ?? []
+    const queueRef = publication.queue_ref ?? "default"
+    const queue = queues.find((candidate) => candidate.id === queueRef || candidate.alias === queueRef)
+    return queue ? publicationQueueDepth(prompts, publication, queue.id) : null
+  } catch {
+    return null
+  }
+}
+
+export function publicationQueueDepth(
+  prompts: readonly WorkflowQueuedPrompt[],
+  publication: WorkflowPublicationConfig,
+  queueId: string,
+): number {
+  return prompts.filter((prompt) => isPendingPublicationQueuedPrompt(prompt, publication, queueId)).length
+}
+
+export function isPendingPublicationQueuedPrompt(
+  prompt: WorkflowQueuedPrompt,
+  publication: WorkflowPublicationConfig,
+  queueId: string,
+) {
+  if (prompt.status !== "queued" && prompt.status !== "dispatching") return false
+  if (prompt.workflow_id && prompt.workflow_id !== publication.workflow_ref) return false
+  if (prompt.endpoint_id && prompt.endpoint_id !== publication.endpoint_ref) return false
+  const queueRef = publication.queue_ref ?? "default"
+  const invocationQueueRef = prompt.publication_invocation?.queue_ref
+  return invocationQueueRef
+    ? invocationQueueRef === queueRef || invocationQueueRef === queueId
+    : prompt.queue_id === queueId
 }
 
 async function listEndpointWatchdogs(

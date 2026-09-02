@@ -10,6 +10,7 @@ use crate::local::{
 };
 use crate::runtime::cloud_api_client::{
     issue_cloud_runtime_token, post_cloud_json, CloudPairingTokenResponse,
+    CloudRuntimeTokenRequestOptions,
 };
 use crate::runtime::cloud_relay_profile_store::clear_cloud_profile_if_stale;
 use crate::runtime::invite_tokens::{
@@ -191,13 +192,15 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
             &profile,
             &terminal_id,
             "client",
-            Some(allowed_targets),
-            Some(terminal_id.clone()),
-            profile
-                .machine_credential
-                .as_ref()
-                .and(profile.machine_id.clone()),
-            None,
+            CloudRuntimeTokenRequestOptions {
+                allowed_targets: Some(allowed_targets),
+                client_id: Some(terminal_id.clone()),
+                machine_id: profile
+                    .machine_credential
+                    .as_ref()
+                    .and(profile.machine_id.clone()),
+                ..CloudRuntimeTokenRequestOptions::default()
+            },
         )
         .await
         {

@@ -18,6 +18,8 @@ import {
 } from "@chariox/kernel-client/session-browser-policy"
 import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import { waitingRoomManagedMachineDialogRows } from "./waiting-room-start-rows.js"
+import { createWaitingRoomManagedMachineDialogController } from "./waiting-room-managed-machine-dialog-controller.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -50,8 +52,13 @@ export type CliOverlayInteractionCompositionDeps = {
   setTerminalPairingQrLines: AnyFn
   sessionBrowserOpen: AnyFn
   setSessionBrowserOpen: AnyFn
+  managedMachineDialogOpen: AnyFn
+  setManagedMachineDialogOpen: AnyFn
   waitingRoomState: AnyFn
+  reconcileWaitingRoom: AnyFn
+  waitingRoomRemoteState: AnyFn
   providerCatalogState: AnyFn
+  themeRegistryState: AnyFn
   options: any
   flashFooter: AnyFn
   attachBinding: AnyFn
@@ -88,6 +95,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
       hotkeysOpen: deps.hotkeysOpen(),
       terminalPairingOpen: deps.terminalPairingOpen(),
       sessionBrowserOpen: deps.sessionBrowserOpen(),
+      managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
@@ -98,6 +106,13 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     setHotkeysOpen: deps.setHotkeysOpen,
     setTerminalPairingOpen: deps.setTerminalPairingOpen,
     setSessionBrowserOpen: deps.setSessionBrowserOpen,
+    setManagedMachineOpen: deps.setManagedMachineDialogOpen,
+    onManagedMachineClosed: () => {
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        focus: "launch-machine",
+      })
+    },
     setTerminalPairing: deps.setTerminalPairingState,
     setTerminalPairingQrLines: deps.setTerminalPairingQrLines,
     getSessionCount: () => sessionBrowserSessions().length,
@@ -117,6 +132,12 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         terminalPairing: deps.terminalPairingState(),
         terminalPairingQrLines: deps.terminalPairingQrLines(),
         hotkeySections: hotkeySections(),
+        managedMachineRows: mode === "managed-machine"
+          ? waitingRoomManagedMachineDialogRows(
+              deps.waitingRoomState(),
+              deps.waitingRoomRemoteState(),
+            )
+          : [],
       })
     },
     createTerminalPairingLink: () => createTerminalPairingLink(deps.client, "cli"),
@@ -147,6 +168,19 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     attachSession: (session, createNew, launch) => deps.attachBinding(session, createNew, launch),
     applyLifecycleAction: deps.applyWaitingRoomSessionLifecycleAction,
     formatError: deps.formatError,
+  })
+
+  const managedMachineDialogController = createWaitingRoomManagedMachineDialogController({
+    isOpen: deps.managedMachineDialogOpen,
+    state: deps.waitingRoomState,
+    sessions: deps.availableSessions,
+    catalog: deps.providerCatalogState,
+    remote: deps.waitingRoomRemoteState,
+    themeRegistry: deps.themeRegistryState,
+    setState: deps.reconcileWaitingRoom,
+    openOverlay: dialogOverlayController.openManagedMachine,
+    closeOverlay: dialogOverlayController.closeManagedMachine,
+    renderOverlay: dialogOverlayController.render,
   })
 
   const hotkeysToggleController = createHotkeysToggleController({
@@ -187,8 +221,10 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,
     handleSessionBrowserKey: sessionBrowserController.handleKey,
+    handleManagedMachineDialogKey: managedMachineDialogController.handleKey,
     openHotkeys: dialogOverlayController.openHotkeys,
     openSessionBrowserDialog: dialogOverlayController.openSessionBrowser,
+    openManagedMachineDialog: managedMachineDialogController.open,
     openTerminalPairingDialog: dialogOverlayController.openTerminalPairing,
     renderHotkeysOverlay,
   }

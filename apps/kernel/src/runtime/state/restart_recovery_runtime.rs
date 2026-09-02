@@ -28,41 +28,105 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) failed_reconciliations: usize,
 }
 
-enum UncertainLocalRecoveryOutcome {
+pub(super) enum UncertainLocalRecoveryOutcome {
     OriginalRedispatched,
     ContinuationDispatched,
     Preserved,
     TranscriptPending,
 }
 
+pub(super) enum CancelledLocalPromptRestartOutcome {
+    Finalized,
+    Recovered(UncertainLocalRecoveryOutcome),
+}
+
 type DurableRestartRecoveryTarget = (String, String, String);
+type DurableRestartDispatchTarget = (String, String, String, String);
+const TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH: u32 = 9;
+
+pub(crate) struct DurableRestartRecoveryTask(tokio::task::JoinHandle<()>);
+
+impl Drop for DurableRestartRecoveryTask {
+    fn drop(&mut self) {
+        // In particular, a publication which never activates must not retain
+        // its runtime and exclusive state lease after the listener stops.
+        self.0.abort();
+    }
+}
+
+fn should_rearm_unobserved_dispatches(
+    attempt: u32,
+    transcript_recovery_pending: usize,
+    pending_dispatch_targets: usize,
+) -> bool {
+    transcript_recovery_pending > 0
+        && pending_dispatch_targets > 0
+        && attempt >= TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH
+}
 
 impl KernelRuntimeState {
-    pub(crate) fn spawn_durable_restart_recovery(&self) {
+    pub(crate) fn spawn_durable_restart_recovery(&self) -> DurableRestartRecoveryTask {
         // Recovery belongs only to work that survived this kernel restart.
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
         let recovery_targets = self.durable_restart_recovery_targets();
+        let dispatch_targets = self.durable_restart_dispatch_targets(&recovery_targets);
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         crate::logging::info_with_fields(
             "durable_state.recovery",
             "captured durable restart recovery targets",
             serde_json::json!({
                 "active_prompt_targets": recovery_targets.len(),
+                "unobserved_dispatch_targets": dispatch_targets.len(),
                 "queued_publication_targets": queued_recovery_targets.len(),
             }),
         );
         let state = self.clone();
-        tokio::spawn(async move {
+        DurableRestartRecoveryTask(tokio::spawn(async move {
+            state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let mut attempt = 0_u32;
+            let mut pending_dispatch_targets = dispatch_targets;
             let summary = loop {
-                let summary = state
+                let mut summary = state
                     .recover_durable_runtime_after_restart_targets(
                         &recovery_targets,
                         &queued_recovery_targets,
                     )
                     .await;
+                if should_rearm_unobserved_dispatches(
+                    attempt,
+                    summary.transcript_recovery_pending,
+                    pending_dispatch_targets.len(),
+                ) {
+                    match state
+                        .rearm_unobserved_restart_recovery_dispatches(&mut pending_dispatch_targets)
+                    {
+                        Ok(rearmed) if rearmed > 0 => {
+                            crate::logging::warn_with_fields(
+                                "durable_state.recovery",
+                                "rearmed unobserved restart recovery dispatches",
+                                serde_json::json!({
+                                    "rearmed_prompt_count": rearmed,
+                                    "observation_attempts": attempt.saturating_add(1),
+                                }),
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            summary.failed_reconciliations =
+                                summary.failed_reconciliations.saturating_add(1);
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to durably rearm unobserved restart recovery dispatch",
+                                serde_json::json!({
+                                    "error": error.to_string(),
+                                    "observation_attempts": attempt.saturating_add(1),
+                                }),
+                            );
+                        }
+                    }
+                }
                 if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
                     || attempt >= 299
                 {
@@ -87,7 +151,58 @@ impl KernelRuntimeState {
                     "failed_reconciliations": summary.failed_reconciliations,
                 }),
             );
-        });
+        }))
+    }
+
+    fn rearm_unobserved_restart_recovery_dispatches(
+        &self,
+        dispatch_targets: &mut BTreeSet<DurableRestartDispatchTarget>,
+    ) -> Result<usize, DaemonError> {
+        let mut rearmed = 0;
+        let candidates = dispatch_targets.iter().cloned().collect::<Vec<_>>();
+        for (session_id, agent_id, prompt_id, operation_id) in candidates {
+            let transition = self.owned.compare_and_mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+            )?;
+            dispatch_targets.remove(&(session_id, agent_id, prompt_id, operation_id));
+            if transition.is_some() {
+                rearmed += 1;
+            }
+        }
+        Ok(rearmed)
+    }
+
+    fn durable_restart_dispatch_targets(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+    ) -> BTreeSet<DurableRestartDispatchTarget> {
+        recovery_targets
+            .iter()
+            .filter_map(|(session_id, agent_id, prompt_id)| {
+                let session = self.owned.session_store.get_session(session_id).ok()?;
+                let prompt = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)?;
+                if prompt.id() != prompt_id
+                    || prompt.durable_recovery_phase()
+                        != Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                {
+                    return None;
+                }
+                Some((
+                    session_id.clone(),
+                    agent_id.clone(),
+                    prompt_id.clone(),
+                    prompt.durable_recovery_operation_id()?.to_string(),
+                ))
+            })
+            .collect()
     }
 
     pub(crate) async fn recover_durable_runtime_after_restart(
@@ -161,6 +276,9 @@ impl KernelRuntimeState {
         queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
     ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
+        if !self.owned.publication_activation.is_active() {
+            return summary;
+        }
         let sessions = self.owned.session_store.list_all_sessions();
         // Publication work is autonomous and already durably admitted. Resume it before
         // transcript reconciliation for unrelated interactive sessions, which may require slow
@@ -259,10 +377,36 @@ impl KernelRuntimeState {
                 }
                 if prompt.status() == crate::session::PromptStatus::Cancelling {
                     match self
-                        .finalize_cancelled_local_prompt_after_restart(session.id(), agent_id)
+                        .finalize_cancelled_local_prompt_after_restart(
+                            session.id(),
+                            agent_id,
+                            &prompt,
+                        )
                         .await
                     {
-                        Ok(()) => summary.cancelled_local_prompts_finalized += 1,
+                        Ok(CancelledLocalPromptRestartOutcome::Finalized) => {
+                            summary.cancelled_local_prompts_finalized += 1;
+                        }
+                        Ok(CancelledLocalPromptRestartOutcome::Recovered(
+                            UncertainLocalRecoveryOutcome::OriginalRedispatched,
+                        )) => {
+                            summary.uncertain_original_redispatched += 1;
+                        }
+                        Ok(CancelledLocalPromptRestartOutcome::Recovered(
+                            UncertainLocalRecoveryOutcome::ContinuationDispatched,
+                        )) => {
+                            summary.provider_continuations_dispatched += 1;
+                        }
+                        Ok(CancelledLocalPromptRestartOutcome::Recovered(
+                            UncertainLocalRecoveryOutcome::Preserved,
+                        )) => {
+                            summary.uncertain_local_prompts_preserved += 1;
+                        }
+                        Ok(CancelledLocalPromptRestartOutcome::Recovered(
+                            UncertainLocalRecoveryOutcome::TranscriptPending,
+                        )) => {
+                            summary.transcript_recovery_pending += 1;
+                        }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
                             log_restart_recovery_failure(
@@ -439,17 +583,26 @@ impl KernelRuntimeState {
         let (event_reply_enabled, event_context_enabled, event_actions_enabled) = self
             .owned
             .workflow_event_capabilities_for_prompt(session_id, &prompt)?;
-        let provider_run_id = self.owned.workflow_ensure_provider_run(
+        let fresh_context = self
+            .owned
+            .workflow_prompt_requires_fresh_provider_context(session_id, agent_id, &prompt)?;
+        let (provider_run_id, retired_provider_run_id) = self.owned.workflow_ensure_provider_run(
             session_id,
             agent_id,
             event_reply_enabled,
             event_context_enabled,
             event_actions_enabled,
+            fresh_context,
+            prompt.workflow_node_run_id(),
         )?;
         let provider_run = self
             .owned
             .ensure_provider_run_in_session(session_id, &provider_run_id)?;
         let mut dispatches = WorkflowPromptDispatches::default();
+        if let Some(retired_provider_run_id) = retired_provider_run_id {
+            dispatches
+                .retire_provider_before_launch(provider_run_id.clone(), retired_provider_run_id);
+        }
         match provider_run.state() {
             crate::provider::ProviderRunState::Starting => {
                 dispatches.starting_provider_runs.push(provider_run_id);
@@ -477,16 +630,76 @@ impl KernelRuntimeState {
         Ok(Some(dispatches))
     }
 
-    async fn finalize_cancelled_local_prompt_after_restart(
+    pub(super) async fn finalize_cancelled_local_prompt_after_restart(
         &self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<(), DaemonError> {
-        let provider_run_id = self
-            .owned
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<CancelledLocalPromptRestartOutcome, DaemonError> {
+        let failed_delivery = prompt
+            .durable_delivery_provider_run_id()
+            .zip(prompt.durable_delivery_provider_session_id())
+            .filter(|_| prompt.durable_delivery_failure_pending())
+            .map(|(run_id, session_id)| (run_id.to_string(), session_id.to_string()));
+        if let Some((failed_provider_run_id, failed_provider_session_id)) = failed_delivery.as_ref()
+        {
+            let agent = self.owned.agent_store.get_agent(agent_id)?;
+            let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
+            match self.clear_provider_resume_state_for_identity(
+                session_id,
+                agent_id,
+                adapter_key,
+                failed_provider_session_id,
+                failed_provider_run_id,
+                "unresponsive_provider_resume_state_cleared_after_restart",
+            )? {
+                crate::agent::ProviderResumeClearOutcome::Cleared
+                | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {}
+                crate::agent::ProviderResumeClearOutcome::Superseded {
+                    current_provider_session_id,
+                } => {
+                    let restored = self
+                        .owned
+                        .restore_active_prompt_after_resume_superseded(
+                            session_id,
+                            agent_id,
+                            prompt.id(),
+                            failed_provider_run_id,
+                            failed_provider_session_id,
+                            &current_provider_session_id,
+                        )?
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "recover failed prompt delivery",
+                            message: format!(
+                                "prompt `{}` changed before superseding provider resume `{current_provider_session_id}` could be reconciled",
+                                prompt.id()
+                            ),
+                        })?;
+                    let outcome = self
+                        .reconcile_uncertain_local_prompt(
+                            session_id,
+                            &agent,
+                            &restored,
+                            crate::session::DurablePromptDeliveryPhase::Dispatching,
+                        )
+                        .await?;
+                    return Ok(CancelledLocalPromptRestartOutcome::Recovered(outcome));
+                }
+            }
+            self.retire_owned_provider_run_after_terminal_failure(
+                session_id,
+                failed_provider_run_id,
+            )
+            .await;
+        }
+        let provider_run_id = if failed_delivery.is_some() {
+            None
+        } else {
+            self.owned
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string())
+        };
         let cancellation = self
             .owned
             .finalize_local_prompt_cancellation_with_queued_advance(
@@ -507,7 +720,32 @@ impl KernelRuntimeState {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
         }
-        Ok(())
+        if failed_delivery.is_some()
+            && self
+                .owned
+                .prompt_state_owner
+                .peek_next_queued_prompt(
+                    &self.owned.session_store.get_session(session_id)?,
+                    agent_id,
+                )
+                .is_some()
+        {
+            let session_id_owned = session_id.to_string();
+            let agent_id_owned = agent_id.to_string();
+            let replacement_provider_run_id = self
+                .with_app_side_effect(move |app| {
+                    app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
+                })
+                .await?;
+            if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+                session_id,
+                agent_id,
+                &replacement_provider_run_id,
+            )? {
+                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            }
+        }
+        Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
 
     async fn redispatch_local_prompt(
@@ -549,9 +787,10 @@ impl KernelRuntimeState {
         prompt: &crate::session::PromptQueueItem,
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
     ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
+        let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
         if adapter_key == "dev-stub" {
-            self.redispatch_local_prompt(session_id, agent.id(), prompt)
+            self.redispatch_local_prompt(session_id, agent.id(), &prompt)
                 .await?;
             return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);
         }
@@ -562,12 +801,16 @@ impl KernelRuntimeState {
         }
         let existing_recovery_operation =
             prompt.durable_recovery_operation_id().map(str::to_string);
-        let prompt_text = prompt.prompt().to_string();
+        let session = self.owned.session_store.get_session(session_id).ok();
+        let workflow_rendered_prompt = session
+            .as_ref()
+            .and_then(|session| workflow_turn_rendered_prompt(session, &prompt));
+        let recovery_material =
+            restart_recovery_prompt_material(&prompt, workflow_rendered_prompt.as_deref());
+        let prompt_text = recovery_material.transcript_match_text.clone();
         let worktree_path = agent.worktree_id().map(str::to_string).or_else(|| {
-            self.owned
-                .session_store
-                .get_session(session_id)
-                .ok()
+            session
+                .as_ref()
                 .map(|session| session.worktree_id().to_string())
         });
         let mut matched = None;
@@ -594,30 +837,45 @@ impl KernelRuntimeState {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
-        let provider_session_id = prompt
+        let prompt_provider_session_id = prompt
             .durable_delivery_provider_session_id()
-            .map(str::to_string)
-            .or_else(|| {
-                agent
-                    .provider_resume_state()
-                    .provider_session_id(adapter_key)
-                    .map(str::to_string)
-            })
-            .or_else(|| {
-                matched
-                    .as_ref()
-                    .map(|matched| matched.provider_session_id.clone())
-            });
+            .map(str::to_string);
+        let agent_provider_session_id = agent
+            .provider_resume_state()
+            .provider_session_id(adapter_key)
+            .map(str::to_string);
+        let provider_session_id = preferred_restart_recovery_provider_session_id(
+            matched
+                .as_ref()
+                .map(|matched| matched.provider_session_id.as_str()),
+            prompt_provider_session_id.as_deref(),
+            agent_provider_session_id.as_deref(),
+            prompt.workflow_run_id().is_some(),
+        );
         let Some(provider_session_id) = provider_session_id else {
-            if delivery_phase == crate::session::DurablePromptDeliveryPhase::Dispatching
-                && existing_recovery_operation.is_none()
-            {
-                self.redispatch_local_prompt(session_id, agent.id(), prompt)
-                    .await?;
-                return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);
-            }
+            // Dispatching means the provider call may already have succeeded.
+            // Without a durable provider identity or transcript observation,
+            // replaying the original prompt could repeat external side effects.
+            // Accepted is the only phase known to be safe for raw redispatch.
             return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
         };
+        if prompt.durable_delivery_provider_session_id() != Some(provider_session_id.as_str()) {
+            let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() else {
+                // The newer provider session may be authoritative, but without the
+                // durable run identity we cannot safely rewrite the prompt's delivery
+                // record. Keep the recovery pending until transcript observation or
+                // durable state supplies enough identity to reconcile it.
+                return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
+            };
+            prompt = self.owned.mark_active_prompt_delivery(
+                session_id,
+                agent.id(),
+                prompt.id(),
+                delivery_phase,
+                Some(provider_run_id.to_string()),
+                Some(provider_session_id.clone()),
+            )?;
+        }
         if let Some(operation_id) = existing_recovery_operation.as_deref() {
             let operation_observed = matched
                 .as_ref()
@@ -683,7 +941,6 @@ impl KernelRuntimeState {
                     .provider_store
                     .run_uses_structured_prompt_io(&run)
             });
-        let continuation = provider_restart_continuation_prompt(&operation_id);
         let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
             provider_run_id,
@@ -691,9 +948,9 @@ impl KernelRuntimeState {
             prompt_id: prompt.id().to_string(),
             target_active_prompt_id: None,
             source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
-            prompt: continuation,
-            hidden_system_context: String::new(),
-            attachments: Vec::new(),
+            prompt: provider_restart_continuation_prompt(&operation_id),
+            hidden_system_context: recovery_material.hidden_system_context,
+            attachments: recovery_material.attachments,
             prompt_origin: crate::session::PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
@@ -742,26 +999,89 @@ impl KernelRuntimeState {
                 message: format!("provider `{adapter_key}` has no resumable session identity"),
             });
         }
-        let updated = self
-            .owned
-            .agent_store
-            .set_agent_runtime_profile_with_account_profile(
-                agent.id(),
-                agent.provider(),
-                agent.model().map(str::to_string),
-                agent.effort().map(str::to_string),
-                Some(agent.provider_account_profile().to_string()),
-                resume_state,
-            )?;
-        self.owned.durable_state_store.append_event(
-            "agent.runtime_profile_updated",
-            Some(updated.id().to_string()),
-            serde_json::json!({
-                "agent": &updated,
-                "reason": "provider_restart_transcript_reconciled",
-            }),
+        self.owned.agent_store.set_agent_runtime_profile_durably(
+            &self.owned.durable_state_store,
+            agent.id(),
+            agent.provider(),
+            agent.model().map(str::to_string),
+            agent.effort().map(str::to_string),
+            Some(agent.provider_account_profile().to_string()),
+            resume_state,
+            None,
+            Some("provider_restart_transcript_reconciled"),
         )?;
         Ok(())
+    }
+}
+
+fn preferred_restart_recovery_provider_session_id(
+    observed_session_id: Option<&str>,
+    dispatch_session_id: Option<&str>,
+    durable_agent_session_id: Option<&str>,
+    workflow_prompt: bool,
+) -> Option<String> {
+    if workflow_prompt {
+        observed_session_id.or(dispatch_session_id)
+    } else {
+        durable_agent_session_id
+            .or(dispatch_session_id)
+            .or(observed_session_id)
+    }
+    .map(str::to_string)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartRecoveryPromptMaterial {
+    transcript_match_text: String,
+    hidden_system_context: String,
+    attachments: Vec<crate::session::PromptAttachment>,
+}
+
+fn restart_recovery_prompt_material(
+    prompt: &crate::session::PromptQueueItem,
+    workflow_rendered_prompt: Option<&str>,
+) -> RestartRecoveryPromptMaterial {
+    let transcript_match_text = workflow_rendered_prompt
+        .unwrap_or_else(|| prompt.prompt())
+        .to_string();
+    let hidden_system_context = match workflow_rendered_prompt {
+        Some(rendered_prompt) => join_restart_recovery_context(
+            prompt.hidden_system_context(),
+            &format!(
+                "Authoritative durable workflow turn interrupted by a kernel restart:\n\n{rendered_prompt}"
+            ),
+        ),
+        None => prompt.hidden_system_context().to_string(),
+    };
+    RestartRecoveryPromptMaterial {
+        transcript_match_text,
+        hidden_system_context,
+        attachments: prompt.attachments().to_vec(),
+    }
+}
+
+fn workflow_turn_rendered_prompt(
+    session: &crate::session::RuntimeSession,
+    prompt: &crate::session::PromptQueueItem,
+) -> Option<String> {
+    let workflow_run_id = prompt.workflow_run_id()?;
+    let workflow_node_run_id = prompt.workflow_node_run_id()?;
+    session
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == workflow_run_id)?
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == workflow_node_run_id)?
+        .turn_envelope()?
+        .rendered_prompt()
+        .map(str::to_string)
+}
+
+fn join_restart_recovery_context(existing: &str, recovery: &str) -> String {
+    match existing.trim() {
+        "" => recovery.to_string(),
+        existing => format!("{existing}\n\n{recovery}"),
     }
 }
 
@@ -930,6 +1250,83 @@ mod tests {
             crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
         );
         (router.runtime_state(), session_id, agent_id, prompt_id)
+    }
+
+    #[test]
+    fn workflow_restart_recovery_never_uses_an_agent_level_session() {
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                None,
+                Some("prompt-session"),
+                Some("stale-agent-session"),
+                true,
+            ),
+            Some("prompt-session".to_string())
+        );
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                None,
+                None,
+                Some("stale-agent-session"),
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                Some("observed-session"),
+                Some("prompt-session"),
+                Some("stale-agent-session"),
+                true,
+            ),
+            Some("observed-session".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_restart_recovery_prefers_the_durable_agent_session() {
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                Some("observed-session"),
+                Some("dispatch-session"),
+                Some("acknowledged-agent-session"),
+                false,
+            ),
+            Some("acknowledged-agent-session".to_string())
+        );
+    }
+
+    #[test]
+    fn workflow_restart_recovery_preserves_durable_context_and_attachments() {
+        let attachment = crate::session::PromptAttachment::new(
+            "file:///tmp/review.patch",
+            "text/plain",
+            Some("review.patch".to_string()),
+        );
+        let prompt = PromptQueueItem::new(
+            "pending-workflow-recovery",
+            "workflow-run:test",
+            "agent-1",
+            "raw queued prompt",
+            PromptStatus::Running,
+        )
+        .with_hidden_system_context("existing hidden context")
+        .with_attachments(vec![attachment.clone()]);
+
+        let material =
+            restart_recovery_prompt_material(&prompt, Some("authoritative rendered workflow turn"));
+
+        assert_eq!(
+            material.transcript_match_text,
+            "authoritative rendered workflow turn"
+        );
+        assert!(material
+            .hidden_system_context
+            .starts_with("existing hidden context\n\n"));
+        assert!(material
+            .hidden_system_context
+            .contains("authoritative rendered workflow turn"));
+        assert_eq!(material.attachments, vec![attachment]);
     }
 
     fn runtime_with_queued_metaagent_task() -> (KernelRuntimeState, String, String) {
@@ -1285,6 +1682,522 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_delivery_intent_recovers_after_fresh_bootstrap_without_provider_run() {
+        let config = DaemonConfig::for_tests();
+        let worktree = std::env::current_dir().expect("test workspace should resolve");
+        let (session_id, agent_id, provider_run_id, prompt_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new(
+                    worktree.to_string_lossy(),
+                    worktree.to_string_lossy(),
+                ))
+                .expect("session should create");
+            let attachment = KernelSessionService::new(&mut app)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "attachment-fresh-bootstrap-failed-delivery",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            let updated_agent = app
+                .agents_mut()
+                .set_agent_runtime_profile_with_account_profile(
+                    agent.id(),
+                    "codex",
+                    Some("gpt-5.5".to_string()),
+                    None,
+                    Some("default".to_string()),
+                    crate::provider::ProviderResumeState::from_codex_thread_id(
+                        "codex-thread-failed-before-restart",
+                    ),
+                )
+                .expect("failed resume should seed");
+            app.durable_state_store()
+                .append_event(
+                    "agent.runtime_profile_updated",
+                    Some(updated_agent.id().to_string()),
+                    serde_json::json!({
+                        "agent": &updated_agent,
+                        "reason": "test_failed_delivery_resume_seeded",
+                    }),
+                )
+                .expect("failed resume should persist");
+            let request =
+                LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5")
+                    .with_agent_id(agent.id())
+                    .with_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+                        "codex-thread-failed-before-restart",
+                    ));
+            let mut provider_run = crate::provider::RuntimeProviderRun::new(
+                "provider-run-failed-before-restart",
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::External,
+                    process_label: "test-codex".to_string(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: Default::default(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: None,
+                    structured_endpoint: Some("test-codex-runtime".to_string()),
+                },
+            );
+            provider_run.mark_running();
+            app.providers_mut()
+                .insert_run_for_test(provider_run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
+                .expect("failed run should be active");
+            app.update_provider_run_projection(provider_run.clone());
+            let prompt = PromptQueueItem::new(
+                "prompt-failed-before-restart",
+                attachment.id(),
+                agent.id(),
+                "do not replay this failed delivery",
+                PromptStatus::Queued,
+            );
+            let prompt = match app
+                .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+                .expect("prompt should start")
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("prompt should start immediately")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some(provider_run.id().to_string()),
+                Some("codex-thread-failed-before-restart".to_string()),
+            )
+            .expect("dispatch identity should persist");
+            let session_id = session.id().to_string();
+            let agent_id = agent.id().to_string();
+            let provider_run_id = provider_run.id().to_string();
+            let prompt_id = prompt.id().to_string();
+            let app = Arc::new(Mutex::new(app));
+            let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+                app,
+                crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            );
+            let runtime = router.runtime_state();
+            let active_status = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should remain available")
+                .active_prompt_for_agent(&agent_id)
+                .expect("prompt should remain active")
+                .status();
+            runtime
+                .owned
+                .compare_and_mark_active_prompt_delivery_failure(
+                    &session_id,
+                    &agent_id,
+                    &prompt_id,
+                    &provider_run_id,
+                    "codex-thread-failed-before-restart",
+                    (active_status, PromptStatus::Cancelling),
+                )
+                .expect("failure intent should persist")
+                .expect("failure intent should match");
+            (session_id, agent_id, provider_run_id, prompt_id)
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        assert!(
+            app.providers().get_run(&provider_run_id).is_err(),
+            "process-local provider runs must not survive a fresh bootstrap",
+        );
+        assert_eq!(
+            app.sessions()
+                .get_session(&session_id)
+                .expect("session should restore")
+                .active_provider_run_id(),
+            None,
+        );
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime = router.runtime_state();
+        let restored_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should restore");
+        let restored_prompt = restored_session
+            .active_prompt_for_agent(&agent_id)
+            .expect("failure intent should restore")
+            .clone();
+        assert_eq!(restored_prompt.id(), prompt_id);
+        assert_eq!(restored_prompt.status(), PromptStatus::Cancelling);
+        assert!(restored_prompt.durable_delivery_failure_pending());
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.failed_reconciliations, 0);
+        assert_eq!(summary.cancelled_local_prompts_finalized, 1);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available")
+            .active_prompt_for_agent(&agent_id)
+            .is_none(),);
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .provider_resume_state()
+                .codex_thread_id(),
+            None,
+        );
+    }
+
+    async fn assert_restart_prefers_durable_agent_session_over_prompt_session(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        persist_provider_run_id: bool,
+    ) {
+        let config = DaemonConfig::for_tests();
+        let worktree = std::env::current_dir().expect("test workspace should resolve");
+        let (session_id, agent_id, prompt_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new(
+                    worktree.to_string_lossy(),
+                    worktree.to_string_lossy(),
+                ))
+                .expect("session should create");
+            let attachment = KernelSessionService::new(&mut app)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "attachment-structured-ack-crash-prefix",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            let updated_agent = app
+                .agents_mut()
+                .set_agent_runtime_profile_with_account_profile(
+                    agent.id(),
+                    "codex",
+                    Some("gpt-5.5".to_string()),
+                    None,
+                    Some("default".to_string()),
+                    crate::provider::ProviderResumeState::from_codex_thread_id(
+                        "codex-thread-acknowledged-s2",
+                    ),
+                )
+                .expect("acknowledged resume should seed");
+            app.durable_state_store()
+                .append_event(
+                    "agent.runtime_profile_updated",
+                    Some(updated_agent.id().to_string()),
+                    serde_json::json!({
+                        "agent": &updated_agent,
+                        "reason": "test_structured_ack_crash_prefix",
+                    }),
+                )
+                .expect("acknowledged resume should persist");
+            let mut prompt = PromptQueueItem::new(
+                "prompt-structured-ack-crash-prefix",
+                attachment.id(),
+                agent.id(),
+                "continue the acknowledged provider session",
+                PromptStatus::Queued,
+            );
+            let recovery_operation_id = prompt.begin_durable_recovery_operation();
+            assert!(prompt.mark_durable_recovery_phase(
+                &recovery_operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            ));
+            let prompt = match app
+                .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+                .expect("prompt should start")
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("prompt should start immediately")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                delivery_phase,
+                persist_provider_run_id
+                    .then(|| "provider-run-structured-ack-crash-prefix".to_string()),
+                Some("codex-thread-dispatch-s1".to_string()),
+            )
+            .expect("dispatch identity should persist");
+            (
+                session.id().to_string(),
+                agent.id().to_string(),
+                prompt.id().to_string(),
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_agent = app
+            .agents()
+            .get_agent(&agent_id)
+            .expect("agent should restore");
+        assert_eq!(
+            restored_agent.provider_resume_state().codex_thread_id(),
+            Some("codex-thread-acknowledged-s2"),
+        );
+        let restored_session = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should restore");
+        assert_eq!(
+            restored_session
+                .active_prompt_for_agent(&agent_id)
+                .expect("prompt should restore")
+                .durable_delivery_provider_session_id(),
+            Some("codex-thread-dispatch-s1"),
+        );
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime = router.runtime_state();
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.failed_reconciliations, 0);
+        assert_eq!(summary.transcript_recovery_pending, 1);
+        let restored_agent = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .expect("agent should remain available");
+        assert_eq!(
+            restored_agent.provider_resume_state().codex_thread_id(),
+            Some("codex-thread-acknowledged-s2"),
+            "restart recovery must not downgrade the durable acknowledgement to dispatch S1",
+        );
+        let restored_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let restored_prompt = restored_session
+            .active_prompt_for_agent(&agent_id)
+            .expect("uncertain prompt should remain active");
+        assert_eq!(restored_prompt.id(), prompt_id);
+        assert_eq!(
+            restored_prompt.durable_delivery_provider_session_id(),
+            if persist_provider_run_id {
+                Some("codex-thread-acknowledged-s2")
+            } else {
+                Some("codex-thread-dispatch-s1")
+            },
+            "the prompt may converge only when its durable provider run identifies the delivery",
+        );
+        assert_eq!(
+            restored_prompt.durable_delivery_phase(),
+            Some(delivery_phase),
+            "reconciling the session identity must preserve the established delivery phase",
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_ack_restart_prefers_durable_agent_session_over_dispatch_session() {
+        assert_restart_prefers_durable_agent_session_over_prompt_session(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn structured_output_restart_updates_delivered_prompt_to_durable_agent_session() {
+        assert_restart_prefers_durable_agent_session_over_prompt_session(
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn restart_session_mismatch_without_a_provider_run_remains_pending() {
+        assert_restart_prefers_durable_agent_session_over_prompt_session(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_preserves_superseding_resume_as_uncertain_delivery() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let worktree = std::env::current_dir().expect("test workspace should resolve");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                worktree.to_string_lossy(),
+                worktree.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-restart-superseded-resume",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let updated_agent = app
+            .agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "codex",
+                Some("current-model".to_string()),
+                None,
+                Some("default".to_string()),
+                crate::provider::ProviderResumeState::from_codex_thread_id("codex-thread-current"),
+            )
+            .expect("superseding resume should update");
+        app.durable_state_store()
+            .append_event(
+                "agent.runtime_profile_updated",
+                Some(updated_agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &updated_agent,
+                    "reason": "test_superseding_resume_seeded",
+                }),
+            )
+            .expect("superseding resume should persist");
+        let request =
+            LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5")
+                .with_agent_id(agent.id())
+                .with_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+                    "codex-thread-current",
+                ));
+        let mut provider_run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-restart-superseded-resume",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-codex-runtime".to_string()),
+            },
+        );
+        provider_run.mark_running();
+        app.providers_mut()
+            .insert_run_for_test(provider_run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
+            .expect("failed provider run should be active");
+        app.update_provider_run_projection(provider_run.clone());
+        let prompt = PromptQueueItem::new(
+            "prompt-restart-superseded-resume",
+            attachment.id(),
+            agent.id(),
+            "recover without replaying this prompt",
+            PromptStatus::Queued,
+        );
+        let prompt = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("prompt should start immediately")
+            }
+        };
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(provider_run.id().to_string()),
+            Some("codex-thread-failed".to_string()),
+        )
+        .expect("dispatch identity should persist");
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime = router.runtime_state();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("session should remain available"),
+                agent.id(),
+            )
+            .expect("prompt should remain active");
+        runtime
+            .owned
+            .compare_and_mark_active_prompt_delivery_failure(
+                session.id(),
+                agent.id(),
+                active.id(),
+                provider_run.id(),
+                "codex-thread-failed",
+                (active.status(), PromptStatus::Cancelling),
+            )
+            .expect("failure intent should persist")
+            .expect("failure intent should match the active prompt");
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.failed_reconciliations, 0);
+        assert_eq!(summary.cancelled_local_prompts_finalized, 0);
+        assert_eq!(summary.uncertain_local_prompts_preserved, 0);
+        assert_eq!(summary.provider_continuations_dispatched, 1);
+        let session_state = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_state, agent.id())
+            .expect("uncertain prompt should remain active");
+        assert_eq!(prompt.status(), PromptStatus::Dispatching);
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        );
+        assert_eq!(
+            prompt.durable_delivery_provider_session_id(),
+            Some("codex-thread-current"),
+        );
+        assert!(!prompt.durable_delivery_failure_pending());
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("superseded provider run should remain recoverable")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+    }
+
     #[test]
     fn recovery_operation_reuses_accepted_generation_and_advances_after_delivery() {
         let mut prompt = PromptQueueItem::new(
@@ -1309,6 +2222,305 @@ mod tests {
             prompt.durable_recovery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)
         );
+    }
+
+    #[test]
+    fn restart_recovery_rearms_only_on_the_tenth_pending_observation() {
+        assert!(!should_rearm_unobserved_dispatches(8, 1, 1));
+        assert!(should_rearm_unobserved_dispatches(9, 1, 1));
+        assert!(should_rearm_unobserved_dispatches(10, 1, 1));
+        assert!(!should_rearm_unobserved_dispatches(9, 0, 1));
+        assert!(!should_rearm_unobserved_dispatches(9, 1, 0));
+    }
+
+    #[test]
+    fn restart_recovery_rearms_unobserved_dispatch_with_the_same_operation() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("recovery operation should enter dispatching");
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("rearm should persist"),
+            1
+        );
+        assert!(dispatch_targets.is_empty(), "successful target must retire");
+
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain available");
+        assert_eq!(
+            prompt.durable_recovery_operation_id(),
+            Some(operation_id.as_str())
+        );
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+    }
+
+    #[test]
+    fn restart_recovery_does_not_rearm_an_operation_dispatched_after_startup() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+        assert!(dispatch_targets.is_empty());
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("startup recovery should dispatch");
+
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("empty startup target set should be a no-op"),
+            0
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain available");
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+    }
+
+    #[test]
+    fn restart_recovery_does_not_downgrade_a_delivered_operation() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("recovery operation should enter dispatching");
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+            )
+            .expect("delivery acknowledgement should win");
+
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("delivered acknowledgement should be a no-op"),
+            0
+        );
+        assert!(dispatch_targets.is_empty(), "delivered target must retire");
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain available");
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+    }
+
+    #[test]
+    fn restart_recovery_rolls_back_rearm_when_durable_append_fails() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("recovery operation should enter dispatching");
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+        let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
+        let connection = rusqlite::Connection::open(&durable_path)
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_restart_recovery_rearm
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'session.prompt_state.updated'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected restart recovery persistence failure');
+                 END;",
+            )
+            .expect("failure trigger should install");
+
+        let result = runtime.rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets);
+
+        connection
+            .execute_batch("DROP TRIGGER fail_restart_recovery_rearm;")
+            .expect("failure trigger should be removed");
+        assert!(result.is_err(), "failed persistence must propagate");
+        assert_eq!(
+            dispatch_targets.len(),
+            1,
+            "failed target must remain eligible for a later retry"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let owner_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("owner prompt should remain active");
+        let mirrored_prompt = session
+            .active_prompt_for_agent(&agent_id)
+            .expect("session mirror should remain active");
+        assert_eq!(
+            owner_prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert_eq!(
+            mirrored_prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+
+        let mut last_payload = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .expect("durable events should load")
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+                    && event.subject_id.as_deref() == Some(session_id.as_str())
+            })
+            .map(|event| {
+                serde_json::from_value::<
+                        crate::durable_prompt_state::DurablePromptStateEventPayload,
+                    >(event.payload)
+                    .expect("durable prompt payload should decode")
+            })
+            .expect("durable prompt event should exist");
+        last_payload.restore_private_states();
+        assert_eq!(
+            last_payload
+                .active_prompt
+                .as_ref()
+                .and_then(crate::session::PromptQueueItem::durable_recovery_phase),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+            "failed rearm must leave the durable operation undispatched"
+        );
+
+        assert!(should_rearm_unobserved_dispatches(
+            TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH + 1,
+            1,
+            dispatch_targets.len(),
+        ));
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("rearm should retry after durable storage recovers"),
+            1
+        );
+        assert!(
+            dispatch_targets.is_empty(),
+            "successful retry must retire the frozen target"
+        );
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("redispatch should return the same operation to dispatching");
+        assert!(!should_rearm_unobserved_dispatches(
+            TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH + 2,
+            1,
+            dispatch_targets.len(),
+        ));
     }
 
     #[tokio::test]

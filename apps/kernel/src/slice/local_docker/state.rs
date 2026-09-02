@@ -1,11 +1,12 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::error::DaemonError;
 
 use super::{
-    ensure_host_docker_ready, local_docker_container_is_running, local_docker_container_name,
-    run_local_docker_slice_screen, LocalDockerSliceOptions,
+    broker, docker_command, ensure_host_docker_ready, local_docker_container_is_running,
+    local_docker_container_name, run_local_docker_slice_screen, LocalDockerSliceOptions,
 };
 use crate::slice::model::{
     SliceBackendKind, SliceBackupRecord, SliceDisplayMode, SliceRecord, SliceSavedStateRecord,
@@ -51,7 +52,15 @@ fn save_local_docker_slice_state_inner(
     let image_ref = active_state_image_ref(&state_id);
     let state_dir = options.root.join("states").join(&state_id);
     let manifest_path = state_dir.join("manifest.json");
-    let home_archive_path = state_dir.join("home.tar.zst");
+    let previous_state = if manifest_path.exists() {
+        Some(read_state_manifest::<SliceSavedStateRecord>(
+            &manifest_path,
+            "slice.state.save",
+            "saved state manifest",
+        )?)
+    } else {
+        None
+    };
     std::fs::create_dir_all(&state_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "slice.state.save",
         message: format!(
@@ -61,26 +70,55 @@ fn save_local_docker_slice_state_inner(
     })?;
     with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", || {
         docker_commit_container(record, &image_ref, "slice.state.save")?;
-        archive_local_docker_home_volume(record, options, &home_archive_path, "slice.state.save")?;
+        let archive_result = archive_local_docker_home_volume(
+            record,
+            options,
+            &state_dir.join("home.tar.zst"),
+            "state",
+            &state_id,
+            "slice.state.save",
+        );
+        let (home_archive_path, size_bytes) = match archive_result {
+            Ok(captured) => captured,
+            Err(error) => {
+                remove_docker_image_best_effort(&image_ref);
+                return Err(error);
+            }
+        };
         let now_ms = crate::session::unix_epoch_ms();
-        let size_bytes = file_size(&home_archive_path);
         let state = SliceSavedStateRecord {
             id: state_id,
             slice_name: record.name.clone(),
             source_slice_id: record.id.clone(),
             backend: record.backend.clone(),
             os: record.os.clone(),
-            image_ref,
+            image_ref: image_ref.clone(),
             home_archive_path: home_archive_path.display().to_string(),
             manifest_path: manifest_path.display().to_string(),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
-            size_bytes,
+            size_bytes: Some(size_bytes),
             last_operation: Some("state.save".to_string()),
             last_operation_status: Some(crate::slice::model::SliceOperationStatus::Completed),
             last_error: None,
         };
-        write_state_manifest(&manifest_path, &state)?;
+        if let Err(error) = write_state_manifest(&manifest_path, &state) {
+            remove_home_archive_generation_best_effort("state", &state.id, &home_archive_path);
+            remove_docker_image_best_effort(&image_ref);
+            return Err(error);
+        }
+        if let Some(previous) = previous_state.as_ref() {
+            if previous.home_archive_path != state.home_archive_path {
+                remove_home_archive_generation_best_effort(
+                    "state",
+                    &previous.id,
+                    Path::new(&previous.home_archive_path),
+                );
+            }
+            if previous.image_ref != state.image_ref {
+                remove_docker_image_best_effort(&previous.image_ref);
+            }
+        }
         Ok(state)
     })
 }
@@ -114,7 +152,6 @@ fn create_local_docker_slice_backup_inner(
     let image_ref = format!("chariox-slice-backup:{backup_id}");
     let backup_dir = options.root.join("backups").join(&backup_id);
     let manifest_path = backup_dir.join("manifest.json");
-    let home_archive_path = backup_dir.join("home.tar.zst");
     std::fs::create_dir_all(&backup_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "slice.backup.create",
         message: format!(
@@ -124,10 +161,12 @@ fn create_local_docker_slice_backup_inner(
     })?;
     with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.backup.create", || {
         docker_commit_container(record, &image_ref, "slice.backup.create")?;
-        archive_local_docker_home_volume(
+        let (home_archive_path, size_bytes) = archive_local_docker_home_volume(
             record,
             options,
-            &home_archive_path,
+            &backup_dir.join("home.tar.zst"),
+            "backup",
+            &backup_id,
             "slice.backup.create",
         )?;
         let now_ms = crate::session::unix_epoch_ms();
@@ -140,19 +179,24 @@ fn create_local_docker_slice_backup_inner(
                 .to_string(),
             source_slice_id: record.id.clone(),
             source_state_id: state_id,
-            image_ref,
+            image_ref: image_ref.clone(),
             home_archive_path: home_archive_path.display().to_string(),
             manifest_path: manifest_path.display().to_string(),
             created_at_ms: now_ms,
-            size_bytes: file_size(&home_archive_path),
+            size_bytes: Some(size_bytes),
         };
-        write_state_manifest(&manifest_path, &backup)?;
+        if let Err(error) = write_state_manifest(&manifest_path, &backup) {
+            remove_home_archive_generation_best_effort("backup", &backup.id, &home_archive_path);
+            remove_docker_image_best_effort(&image_ref);
+            let _ = std::fs::remove_dir(&backup_dir);
+            return Err(error);
+        }
         Ok(backup)
     })
 }
 
 pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<(), DaemonError> {
-    let _ = Command::new("docker")
+    let _ = docker_command()
         .args(["image", "rm", "-f", &state.image_ref])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -169,6 +213,12 @@ pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<
             })?;
         }
     }
+    broker::remove_home_archive("state", &state.id).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "slice.state.reset",
+            message: format!("failed to remove managed home archive: {error}"),
+        }
+    })?;
     Ok(())
 }
 
@@ -274,7 +324,7 @@ fn ensure_local_docker_state_target(
 }
 
 fn container_exists_by_name(container_name: &str) -> bool {
-    Command::new("docker")
+    docker_command()
         .args(["container", "inspect", container_name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -290,7 +340,7 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
     if record.display_mode == SliceDisplayMode::Headed {
         run_local_docker_slice_screen(record, "stop", "slice.state.stop_desktop")?;
     }
-    let _ = Command::new("docker")
+    let _ = docker_command()
         .args([
             "exec",
             "-u",
@@ -303,7 +353,7 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let status = Command::new("docker")
+    let status = docker_command()
         .args(["stop", &container])
         .status()
         .map_err(|error| DaemonError::LocalTransport {
@@ -387,7 +437,7 @@ fn docker_commit_container(
     operation: &'static str,
 ) -> Result<(), DaemonError> {
     let container = local_docker_container_name(record);
-    let status = Command::new("docker")
+    let status = docker_command()
         .args(["commit", &container, image_ref])
         .status()
         .map_err(|error| DaemonError::LocalTransport {
@@ -410,15 +460,17 @@ fn archive_local_docker_home_volume(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
     archive_path: &Path,
+    archive_scope: &str,
+    archive_id: &str,
     operation: &'static str,
-) -> Result<(), DaemonError> {
+) -> Result<(PathBuf, u64), DaemonError> {
     let volume = format!("{}-home", local_docker_container_name(record));
     let helper = format!(
         "{}-home-archive-{}",
         local_docker_container_name(record),
         crate::session::unix_epoch_ms()
     );
-    let _ = Command::new("docker")
+    let _ = docker_command()
         .args(["rm", "-f", &helper])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -428,17 +480,18 @@ fn archive_local_docker_home_volume(
         &volume,
         &options.docker_image,
         archive_path,
+        archive_scope,
+        archive_id,
         operation,
     );
-    let _ = Command::new("docker")
+    let _ = docker_command()
         .args(["rm", "-f", &helper])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    result?;
-    let size = file_size(archive_path).unwrap_or(0);
+    let (archive_path, size) = result?;
     if size > 0 {
-        Ok(())
+        Ok((archive_path, size))
     } else {
         Err(DaemonError::LocalTransport {
             operation,
@@ -455,9 +508,11 @@ fn archive_local_docker_home_volume_with_helper(
     volume: &str,
     image: &str,
     archive_path: &Path,
+    archive_scope: &str,
+    archive_id: &str,
     operation: &'static str,
-) -> Result<(), DaemonError> {
-    let status = Command::new("docker")
+) -> Result<(PathBuf, u64), DaemonError> {
+    let status = docker_command()
         .args([
             "create",
             "--name",
@@ -481,7 +536,7 @@ fn archive_local_docker_home_volume_with_helper(
             message: format!("docker create home archive helper `{helper}` failed with {status}"),
         });
     }
-    let status = Command::new("docker")
+    let status = docker_command()
         .args(["start", helper])
         .status()
         .map_err(|error| DaemonError::LocalTransport {
@@ -494,7 +549,7 @@ fn archive_local_docker_home_volume_with_helper(
             message: format!("docker start home archive helper `{helper}` failed with {status}"),
         });
     }
-    let output = Command::new("docker")
+    let output = docker_command()
         .args([
             "exec",
             "-u",
@@ -520,7 +575,15 @@ fn archive_local_docker_home_volume_with_helper(
             ),
         });
     }
-    let status = Command::new("docker")
+    if let Some(captured) = broker::capture_home_archive(helper, archive_scope, archive_id)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to capture managed home archive: {error}"),
+        })?
+    {
+        return Ok(captured);
+    }
+    let status = docker_command()
         .args([
             "cp",
             &format!("{helper}:/tmp/home.tar.zst"),
@@ -535,7 +598,10 @@ fn archive_local_docker_home_volume_with_helper(
             ),
         })?;
     if status.success() {
-        Ok(())
+        Ok((
+            archive_path.to_path_buf(),
+            file_size(archive_path).unwrap_or(0),
+        ))
     } else {
         Err(DaemonError::LocalTransport {
             operation,
@@ -552,7 +618,10 @@ fn active_state_id(record: &SliceRecord) -> String {
 }
 
 fn active_state_image_ref(state_id: &str) -> String {
-    format!("chariox-slice-state:{state_id}")
+    format!(
+        "chariox-slice-state:{state_id}-{:016x}",
+        rand::random::<u64>()
+    )
 }
 
 fn backup_id(record: &SliceRecord, name: Option<&str>) -> String {
@@ -592,13 +661,82 @@ fn write_state_manifest<T: serde::Serialize>(path: &Path, value: &T) -> Result<(
             operation: "slice.state.manifest",
             message: format!("failed to encode saved state manifest: {error}"),
         })?;
-    std::fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+    let parent = path.parent().ok_or_else(|| DaemonError::LocalTransport {
         operation: "slice.state.manifest",
-        message: format!(
-            "failed to write saved state manifest {}: {error}",
-            path.display()
-        ),
-    })
+        message: format!("saved state manifest {} has no parent", path.display()),
+    })?;
+    let temporary = parent.join(format!(
+        ".{}.tmp-{}-{:016x}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("manifest"),
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(&payload)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.state.manifest",
+            message: format!(
+                "failed to atomically write saved state manifest {}: {error}",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn remove_home_archive_generation_best_effort(scope: &str, id: &str, path: &Path) {
+    match broker::remove_home_archive_path(scope, id, path) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(
+                scope,
+                id,
+                archive = %path.display(),
+                %error,
+                "failed to remove obsolete managed home archive generation"
+            );
+            return;
+        }
+    }
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                scope,
+                id,
+                archive = %path.display(),
+                %error,
+                "failed to remove obsolete local home archive generation"
+            );
+        }
+    }
+}
+
+fn remove_docker_image_best_effort(image_ref: &str) {
+    let _ = docker_command()
+        .args(["image", "rm", "-f", image_ref])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn read_state_manifest<T: serde::de::DeserializeOwned>(

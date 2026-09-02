@@ -65,7 +65,7 @@ type HostedCloudRelayEnsureResult = {
   status: RelayStatus | null
 }
 
-const DEFAULT_HOSTED_CLOUD_API_URL = "https://chariox-cloud-staging.osc-fr1.scalingo.io"
+const DEFAULT_HOSTED_CLOUD_API_URL = "https://staging.chariox.com"
 const HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS = 8_000
 const HOSTED_CLOUD_RELAY_CONNECT_POLL_MS = 500
 
@@ -206,15 +206,6 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
     if (polled.status === "approved") {
       let profile = polled.profile
       await deps.saveCloudRelayProfile(profile)
-      if (deps.pairCloudRelayMachine) {
-        profile = await deps.pairCloudRelayMachine(
-          profile,
-          relayStatus.machine_id,
-          relayStatus.machine_alias || undefined,
-        )
-        await deps.saveCloudRelayProfile(profile)
-        appendCloudNotice(deps, `cloud machine linked: ${profile.machineId ?? relayStatus.machine_id}`)
-      }
       if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
         const refreshedRelayStatus = await deps.getRelayStatus()
         const issued = profile.machineId && deps.issueCloudMachineRelayToken

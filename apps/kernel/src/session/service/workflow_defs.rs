@@ -627,6 +627,60 @@ impl SessionService {
         endpoint.set_owner_user_id(owner_user_id);
         let endpoint = endpoint.clone();
         workflow.bump_revision();
+        let workflow_revision = workflow.revision();
+        session.retarget_workflow_runtime_instances_revision(&workflow_id, workflow_revision);
+        Ok(endpoint)
+    }
+
+    pub fn set_workflow_endpoint_max_instances(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        max_instances: u16,
+    ) -> Result<WorkflowEndpointDefinition, DaemonError> {
+        if !(1..=crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES).contains(&max_instances) {
+            return Err(DaemonError::LocalTransport {
+                operation: "set_workflow_endpoint_max_instances",
+                message: format!(
+                    "endpoint max_instances must be between 1 and {}",
+                    crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES
+                ),
+            });
+        }
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let endpoint_id = self
+            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        let endpoint = workflow.endpoint_mut(&endpoint_id).ok_or_else(|| {
+            DaemonError::WorkflowEndpointNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+            }
+        })?;
+        endpoint.set_max_instances(max_instances);
+        let endpoint = endpoint.clone();
+        workflow.bump_revision();
+        let workflow_revision = workflow.revision();
+        session.retarget_workflow_runtime_instances_revision(&workflow_id, workflow_revision);
         Ok(endpoint)
     }
 

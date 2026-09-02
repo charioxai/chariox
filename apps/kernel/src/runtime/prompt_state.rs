@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::error::DaemonError;
@@ -43,6 +43,21 @@ impl PromptStateKey {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptStateOwner {
     state: Arc<StdMutex<PromptStateOwnerState>>,
+    delivery_settlement_claims: Arc<StdMutex<BTreeSet<PromptStateKey>>>,
+}
+
+pub(crate) struct PromptDeliverySettlementClaim {
+    key: PromptStateKey,
+    claims: Arc<StdMutex<BTreeSet<PromptStateKey>>>,
+}
+
+impl Drop for PromptDeliverySettlementClaim {
+    fn drop(&mut self) {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +67,119 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
+    pub(crate) fn try_claim_active_prompt_delivery_settlement(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) -> Option<PromptDeliverySettlementClaim> {
+        let key = PromptStateKey::new(session.id(), agent_id);
+        {
+            let mut claims = self
+                .delivery_settlement_claims
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !claims.insert(key.clone()) {
+                return None;
+            }
+        }
+        let matches = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_ref()
+            .is_some_and(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                    && prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
+            });
+        if !matches {
+            self.delivery_settlement_claims
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&key);
+            return None;
+        }
+        Some(PromptDeliverySettlementClaim {
+            key,
+            claims: Arc::clone(&self.delivery_settlement_claims),
+        })
+    }
+
+    pub(crate) fn compare_and_mark_active_prompt_delivery_failure(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        provider_session_id: &str,
+        status_transition: (PromptStatus, PromptStatus),
+    ) -> Option<PromptQueueItem> {
+        let (expected_status, next_status) = status_transition;
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()?;
+        if active.id() != prompt_id
+            || active.status() != expected_status
+            || active.durable_delivery_phase()
+                != Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            || active.durable_delivery_provider_run_id() != Some(provider_run_id)
+            || active.durable_delivery_provider_session_id() != Some(provider_session_id)
+        {
+            return None;
+        }
+        active.set_status(next_status);
+        active.set_durable_delivery_failure_pending(next_status == PromptStatus::Cancelling);
+        Some(active.clone())
+    }
+
+    pub(crate) fn compare_and_restore_active_prompt_after_resume_superseded(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        failed_provider_session_id: &str,
+        current_provider_session_id: &str,
+    ) -> Option<(PromptQueueItem, PromptQueueItem)> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()?;
+        if active.id() != prompt_id
+            || active.status() != PromptStatus::Cancelling
+            || !active.durable_delivery_failure_pending()
+            || active.durable_delivery_phase()
+                != Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            || active.durable_delivery_provider_run_id() != Some(provider_run_id)
+            || active.durable_delivery_provider_session_id() != Some(failed_provider_session_id)
+        {
+            return None;
+        }
+        let previous = active.clone();
+        active.set_status(PromptStatus::Dispatching);
+        active.set_durable_delivery(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(provider_run_id.to_string()),
+            Some(current_provider_session_id.to_string()),
+        );
+        active.set_durable_delivery_failure_pending(false);
+        Some((previous, active.clone()))
+    }
+
     pub(crate) fn replay_durable_submission(
         &self,
         session: &RuntimeSession,
@@ -379,6 +507,25 @@ impl PromptStateOwner {
         Ok(active.clone())
     }
 
+    pub(crate) fn replace_active_prompt_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected: &PromptQueueItem,
+        replacement: PromptQueueItem,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = &mut owner.ensure_agent_state(session, agent_id).active_prompt;
+        if active.as_ref() != Some(expected) {
+            return false;
+        }
+        *active = Some(replacement);
+        true
+    }
+
     pub(crate) fn begin_active_prompt_recovery(
         &self,
         session: &RuntimeSession,
@@ -438,6 +585,38 @@ impl PromptStateOwner {
             });
         }
         Ok(active.clone())
+    }
+
+    pub(crate) fn compare_and_mark_active_prompt_recovery_phase(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        operation_id: &str,
+        expected_phase: crate::session::DurablePromptDeliveryPhase,
+        next_phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            })?;
+        if active.id() != prompt_id
+            || active.durable_recovery_operation_id() != Some(operation_id)
+            || active.durable_recovery_phase() != Some(expected_phase)
+        {
+            return Ok(None);
+        }
+        if !active.mark_durable_recovery_phase(operation_id, next_phase) {
+            return Ok(None);
+        }
+        Ok(Some(active.clone()))
     }
 
     pub(crate) fn finalize_active_prompt_cancellation(

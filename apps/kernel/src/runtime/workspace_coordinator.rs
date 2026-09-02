@@ -200,6 +200,38 @@ mod tests {
     use super::WorkspaceCoordinator;
 
     #[test]
+    fn workflow_claims_queue_the_same_worktree_but_allow_distinct_worktrees() {
+        let coordinator = WorkspaceCoordinator::default();
+        let _first = coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                "worktree-1",
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect("first agent claim should acquire");
+        coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                "worktree-2",
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect("another worktree should run in parallel");
+        coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                "worktree-1",
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect_err("the same worktree should stay serialized");
+    }
+
+    #[test]
     fn rejects_overlapping_worktree_write_claims() {
         let coordinator = WorkspaceCoordinator::default();
         let _claim = coordinator

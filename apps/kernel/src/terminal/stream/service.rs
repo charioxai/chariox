@@ -18,6 +18,11 @@ pub struct TerminalStreamService {
     pub(super) completion_records: BTreeMap<u64, AssistantMessageCompletionRecord>,
     pub(super) pending_completion_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
     next_completion_record_id: u64,
+    pub(super) workflow_run_update_records: BTreeMap<u64, WorkflowRunUpdateRecord>,
+    pub(super) pending_workflow_run_updates_by_attachment:
+        BTreeMap<(String, String), VecDeque<u64>>,
+    next_workflow_run_update_record_id: u64,
+    pending_workflow_run_update_limit_per_attachment: usize,
     pending_output_record_limit_per_attachment: usize,
     output_coalesce_byte_limit: usize,
     output_drain_json_limit: usize,
@@ -56,6 +61,8 @@ pub(super) struct TerminalOutputBatchFanout {
 impl TerminalStreamService {
     pub fn new() -> Self {
         let service = Self {
+            pending_workflow_run_update_limit_per_attachment:
+                DEFAULT_PENDING_WORKFLOW_RUN_UPDATE_LIMIT_PER_ATTACHMENT,
             pending_output_record_limit_per_attachment:
                 DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT,
             output_coalesce_byte_limit: DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT,
@@ -70,6 +77,16 @@ impl TerminalStreamService {
     pub(super) fn with_pending_output_record_limit_per_attachment(limit: usize) -> Self {
         let service = Self {
             pending_output_record_limit_per_attachment: limit,
+            ..Self::new()
+        };
+        service.refresh_health();
+        service
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_pending_workflow_run_update_limit_per_attachment(limit: usize) -> Self {
+        let service = Self {
+            pending_workflow_run_update_limit_per_attachment: limit,
             ..Self::new()
         };
         service.refresh_health();
@@ -378,7 +395,10 @@ impl TerminalStreamService {
         record
     }
 
-    fn push_output_record(&mut self, record: TerminalOutputRecord) -> u64 {
+    fn push_output_record(&mut self, record: TerminalOutputRecord) {
+        if record.pending_recipient_attachment_ids.is_empty() {
+            return;
+        }
         let record_id = self.next_output_record_id;
         self.next_output_record_id = self.next_output_record_id.saturating_add(1);
         for attachment_id in &record.pending_recipient_attachment_ids {
@@ -395,7 +415,6 @@ impl TerminalStreamService {
             },
         );
         self.last_output_record_id = Some(record_id);
-        record_id
     }
 
     fn try_replace_external_observed_output_record(
@@ -772,7 +791,10 @@ impl TerminalStreamService {
         record
     }
 
-    fn push_completion_record(&mut self, record: AssistantMessageCompletionRecord) -> u64 {
+    fn push_completion_record(&mut self, record: AssistantMessageCompletionRecord) {
+        if record.pending_recipient_attachment_ids.is_empty() {
+            return;
+        }
         let record_id = self.next_completion_record_id;
         self.next_completion_record_id = self.next_completion_record_id.saturating_add(1);
         for attachment_id in &record.pending_recipient_attachment_ids {
@@ -782,7 +804,6 @@ impl TerminalStreamService {
                 .push_back(record_id);
         }
         self.completion_records.insert(record_id, record);
-        record_id
     }
 
     pub fn drain_completion_records(
@@ -893,6 +914,104 @@ impl TerminalStreamService {
         }
     }
 
+    pub fn record_workflow_run_update(
+        &mut self,
+        session_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        workflow_run: crate::session::WorkflowRun,
+    ) {
+        if recipient_attachment_ids.is_empty() {
+            return;
+        }
+        let record_id = self.next_workflow_run_update_record_id;
+        self.next_workflow_run_update_record_id =
+            self.next_workflow_run_update_record_id.saturating_add(1);
+        for attachment_id in &recipient_attachment_ids {
+            self.pending_workflow_run_updates_by_attachment
+                .entry((session_id.to_string(), attachment_id.clone()))
+                .or_default()
+                .push_back(record_id);
+        }
+        let pending_keys = recipient_attachment_ids
+            .iter()
+            .map(|attachment_id| (session_id.to_string(), attachment_id.clone()))
+            .collect();
+        self.workflow_run_update_records.insert(
+            record_id,
+            WorkflowRunUpdateRecord {
+                session_id: session_id.to_string(),
+                pending_recipient_attachment_ids: recipient_attachment_ids,
+                workflow_run,
+            },
+        );
+        self.enforce_pending_workflow_run_update_limits_for_keys(pending_keys);
+    }
+
+    fn enforce_pending_workflow_run_update_limits_for_keys(
+        &mut self,
+        keys: BTreeSet<(String, String)>,
+    ) {
+        for key in keys {
+            while self
+                .pending_workflow_run_updates_by_attachment
+                .get(&key)
+                .is_some_and(|queue| {
+                    queue.len() > self.pending_workflow_run_update_limit_per_attachment
+                })
+            {
+                let Some(record_id) = self
+                    .pending_workflow_run_updates_by_attachment
+                    .get_mut(&key)
+                    .and_then(VecDeque::pop_front)
+                else {
+                    break;
+                };
+                if let Some(record) = self.workflow_run_update_records.get_mut(&record_id) {
+                    remove_pending_recipient_id(
+                        &mut record.pending_recipient_attachment_ids,
+                        &key.1,
+                    );
+                }
+                if self
+                    .workflow_run_update_records
+                    .get(&record_id)
+                    .is_some_and(|record| record.pending_recipient_attachment_ids.is_empty())
+                {
+                    self.workflow_run_update_records.remove(&record_id);
+                }
+            }
+        }
+        self.pending_workflow_run_updates_by_attachment
+            .retain(|_, queue| !queue.is_empty());
+    }
+
+    pub fn drain_workflow_run_updates(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<crate::session::WorkflowRun> {
+        let mut drained = Vec::new();
+        let key = (session_id.to_string(), attachment_id.to_string());
+        let record_ids = self
+            .pending_workflow_run_updates_by_attachment
+            .remove(&key)
+            .unwrap_or_default();
+        for record_id in record_ids {
+            let Some(record) = self.workflow_run_update_records.get_mut(&record_id) else {
+                continue;
+            };
+            drained.push(record.workflow_run.clone());
+            remove_pending_recipient_id(
+                &mut record.pending_recipient_attachment_ids,
+                attachment_id,
+            );
+            if record.pending_recipient_attachment_ids.is_empty() {
+                self.workflow_run_update_records.remove(&record_id);
+            }
+        }
+        drained
+    }
+
     pub fn remove_session(&mut self, session_id: &str) {
         self.input_records
             .retain(|record| record.session_id != session_id);
@@ -917,6 +1036,10 @@ impl TerminalStreamService {
         self.completion_records
             .retain(|_, record| record.session_id != session_id);
         self.pending_completion_by_attachment
+            .retain(|(pending_session_id, _), _| pending_session_id != session_id);
+        self.workflow_run_update_records
+            .retain(|_, record| record.session_id != session_id);
+        self.pending_workflow_run_updates_by_attachment
             .retain(|(pending_session_id, _), _| pending_session_id != session_id);
         self.refresh_health();
     }
@@ -961,6 +1084,24 @@ impl TerminalStreamService {
                     );
                 }
                 self.remove_completion_record_if_drained(record_id);
+            }
+        }
+        if let Some(record_ids) = self.pending_workflow_run_updates_by_attachment.remove(&key) {
+            changed = true;
+            for record_id in record_ids {
+                if let Some(record) = self.workflow_run_update_records.get_mut(&record_id) {
+                    remove_pending_recipient_id(
+                        &mut record.pending_recipient_attachment_ids,
+                        attachment_id,
+                    );
+                }
+                if self
+                    .workflow_run_update_records
+                    .get(&record_id)
+                    .is_some_and(|record| record.pending_recipient_attachment_ids.is_empty())
+                {
+                    self.workflow_run_update_records.remove(&record_id);
+                }
             }
         }
         for record in self.notice_records.values_mut() {

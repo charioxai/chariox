@@ -8,6 +8,7 @@ impl DaemonConfig {
         if let Some(binding) = &self.room_environment_worker_binding {
             binding.validate(&self.host_machine_id)?;
         }
+        self.validate_publication_control_state_root()?;
         if self
             .relay_url
             .as_deref()
@@ -49,7 +50,7 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
-        if self.session_history_root.as_os_str().is_empty() {
+        if self.session_history_root().as_os_str().is_empty() {
             return Err(DaemonError::InvalidConfig {
                 field: "session_history_root",
                 message: "value must not be empty",

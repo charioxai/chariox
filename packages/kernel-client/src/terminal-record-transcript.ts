@@ -20,6 +20,7 @@ import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export const STEERING_PROMPT_MERGE_KEY_PREFIX = "steering-prompt:"
 export const PROVIDER_TERMINAL_OUTPUT_KIND = "provider_terminal"
+export const PROVIDER_CONNECTION_RETRY_MERGE_KEY = "__provider_connection_retry__"
 
 export type TerminalRecordTranscriptFields = {
   readonly prompt_id?: string | null
@@ -64,7 +65,7 @@ export type TerminalRecordTranscriptProjection = {
   readonly transcriptRole: TerminalRecordTranscriptRole | null
   readonly transcriptText: string
   readonly mergeKey?: string | null
-  readonly statusMergeKey: "__provider_status__" | null
+  readonly statusMergeKey: string | null
   readonly renderInAgentPane: boolean
   readonly append: boolean
   readonly replace: boolean
@@ -122,6 +123,7 @@ export function terminalRecordTranscriptProjection(
     && terminalRecordShouldRenderInAgentPane(record.kind, text, {
       externalObserved: sessionHistoryEntryIsExternalProviderObserved(metadata),
       passiveExternalTelemetry,
+      mergeKey: record.merge_key ?? null,
     })
   const updatesProviderActivity = !providerTerminal
     && record.kind === "provider_status"
@@ -148,7 +150,7 @@ export function terminalRecordTranscriptProjection(
     transcriptText,
     mergeKey: record.merge_key ?? null,
     statusMergeKey: record.kind === "provider_status" && !sessionHistoryEntryIsExternalProviderObserved(metadata)
-      ? "__provider_status__"
+      ? record.merge_key ?? "__provider_status__"
       : null,
     renderInAgentPane,
     append: renderInAgentPane && terminalRecordRoleShouldAppend(transcriptRole),
@@ -207,9 +209,13 @@ export function terminalRecordShouldRenderInAgentPane(
   options: {
     readonly externalObserved?: boolean
     readonly passiveExternalTelemetry?: boolean
+    readonly mergeKey?: string | null
   } = {},
 ): boolean {
   if (kind === "provider_status") {
+    if (options.mergeKey === PROVIDER_CONNECTION_RETRY_MERGE_KEY) {
+      return true
+    }
     return terminalRecordProviderStatusShouldRender({
       kind,
       source: options.externalObserved === true ? EXTERNAL_PROVIDER_OBSERVED_SOURCE : null,

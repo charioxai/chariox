@@ -37,6 +37,58 @@ fn records_terminal_input_and_fans_out_output() {
 }
 
 #[test]
+fn zero_recipient_outputs_and_completions_are_not_retained() {
+    let mut terminal = TerminalStreamService::new();
+
+    for index in 0..1_000 {
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some(format!("chunk-{index}")),
+            Vec::new(),
+            b"detached output",
+        );
+    }
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        "prompt-1",
+        Some(crate::session::PromptOrigin::Chariox),
+        "attachment-detached",
+        Vec::new(),
+        b"detached prompt",
+    );
+    let batch = terminal.fan_out_outputs(vec![TerminalOutputAppend {
+        session_id: "session-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+        source_attachment_id: Some("attachment-detached".to_string()),
+        kind: TerminalOutputKind::ProviderTool,
+        merge_key: Some("tool-1".to_string()),
+        recipient_attachment_ids: Arc::from(Vec::<String>::new()),
+        bytes: b"detached tool result".to_vec(),
+    }]);
+    terminal.record_assistant_message_completion(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        Vec::new(),
+        "detached-message",
+        42,
+    );
+
+    assert_eq!(batch.records.len(), 1);
+    assert!(batch.changed_keys.is_empty());
+    assert!(terminal.output_records().is_empty());
+    assert_eq!(terminal.health_snapshot().pending_output_records, 0);
+    assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
+}
+
+#[test]
 fn output_polling_is_per_recipient() {
     let mut terminal = TerminalStreamService::new();
     terminal.fan_out_output(
@@ -1003,6 +1055,11 @@ fn removing_attachment_prunes_pending_terminal_records() {
         "message-1",
         1,
     );
+    terminal.record_workflow_run_update(
+        "session-1",
+        vec!["attachment-1".to_string(), "attachment-2".to_string()],
+        completed_workflow_run_fixture(),
+    );
 
     assert!(terminal.remove_attachment("session-1", "attachment-1"));
 
@@ -1023,11 +1080,21 @@ fn removing_attachment_prunes_pending_terminal_records() {
             .pending_recipient_attachment_ids,
         vec!["attachment-2".to_string()],
     );
+    assert_eq!(
+        terminal
+            .workflow_run_update_records
+            .values()
+            .next()
+            .expect("workflow run update should remain")
+            .pending_recipient_attachment_ids,
+        vec!["attachment-2".to_string()],
+    );
 
     assert!(terminal.remove_attachment("session-1", "attachment-2"));
     assert!(terminal.output_records().is_empty());
     assert!(terminal.notice_records().is_empty());
     assert!(terminal.completion_records.is_empty());
+    assert!(terminal.workflow_run_update_records.is_empty());
 }
 
 #[test]
@@ -1059,6 +1126,11 @@ fn removes_all_records_for_session() {
         "message-1",
         1,
     );
+    terminal.record_workflow_run_update(
+        "session-1",
+        vec!["attachment-1".to_string()],
+        completed_workflow_run_fixture(),
+    );
 
     terminal.remove_session("session-1");
 
@@ -1066,7 +1138,105 @@ fn removes_all_records_for_session() {
     assert_eq!(terminal.input_records()[0].session_id, "session-2");
     assert!(terminal.output_records().is_empty());
     assert!(terminal.notice_records().is_empty());
+    assert!(terminal.workflow_run_update_records.is_empty());
+    assert!(terminal
+        .pending_workflow_run_updates_by_attachment
+        .is_empty());
     assert_eq!(terminal.health_snapshot().pending_output_records, 0);
     assert_eq!(terminal.health_snapshot().pending_notice_records, 0);
     assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
+}
+
+fn completed_workflow_run_fixture() -> crate::session::WorkflowRun {
+    let mut workflow_run = crate::session::WorkflowRun::new(
+        "workflow-run-1",
+        "workflow-1",
+        "endpoint-1",
+        "node-1",
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
+    workflow_run.set_status(crate::session::WorkflowRunStatus::Completed);
+    workflow_run
+}
+
+#[test]
+fn workflow_run_updates_fan_out_exactly_once_per_recipient_attachment() {
+    let mut terminal = TerminalStreamService::new();
+    let workflow_run = completed_workflow_run_fixture();
+
+    terminal.record_workflow_run_update(
+        "session-1",
+        vec!["attachment-1".to_string(), "attachment-2".to_string()],
+        workflow_run.clone(),
+    );
+
+    let first = terminal.drain_workflow_run_updates("session-1", "attachment-1");
+    assert_eq!(first, vec![workflow_run.clone()]);
+    assert!(terminal
+        .drain_workflow_run_updates("session-1", "attachment-1")
+        .is_empty());
+
+    let second = terminal.drain_workflow_run_updates("session-1", "attachment-2");
+    assert_eq!(second, vec![workflow_run]);
+    assert!(terminal.workflow_run_update_records.is_empty());
+}
+
+#[test]
+fn workflow_run_updates_are_scoped_to_their_session() {
+    let mut terminal = TerminalStreamService::new();
+    terminal.record_workflow_run_update(
+        "session-1",
+        vec!["attachment-1".to_string()],
+        completed_workflow_run_fixture(),
+    );
+
+    assert!(terminal
+        .drain_workflow_run_updates("session-2", "attachment-1")
+        .is_empty());
+    assert_eq!(
+        terminal
+            .drain_workflow_run_updates("session-1", "attachment-1")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn workflow_run_updates_without_recipients_leave_no_pending_record() {
+    let mut terminal = TerminalStreamService::new();
+    terminal.record_workflow_run_update("session-1", Vec::new(), completed_workflow_run_fixture());
+
+    assert!(terminal.workflow_run_update_records.is_empty());
+    assert!(terminal
+        .pending_workflow_run_updates_by_attachment
+        .is_empty());
+}
+
+#[test]
+fn workflow_run_updates_are_bounded_per_attachment() {
+    let mut terminal =
+        TerminalStreamService::with_pending_workflow_run_update_limit_per_attachment(2);
+    let mut first = completed_workflow_run_fixture();
+    first.set_status(crate::session::WorkflowRunStatus::Failed);
+    let mut second = completed_workflow_run_fixture();
+    second.set_status(crate::session::WorkflowRunStatus::Stopped);
+    let third = completed_workflow_run_fixture();
+
+    for workflow_run in [first, second.clone(), third.clone()] {
+        terminal.record_workflow_run_update(
+            "session-1",
+            vec!["attachment-1".to_string()],
+            workflow_run,
+        );
+    }
+
+    assert_eq!(terminal.workflow_run_update_records.len(), 2);
+    assert_eq!(
+        terminal.drain_workflow_run_updates("session-1", "attachment-1"),
+        vec![second, third]
+    );
+    assert!(terminal.workflow_run_update_records.is_empty());
 }

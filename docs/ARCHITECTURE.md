@@ -156,6 +156,24 @@ Remote-machine note:
 - provider availability is advertised from the worker kernel back through relay metadata
 - provider login remains local to the worker kernel; the home kernel consumes provider availability but does not proxy provider auth flows
 
+Managed-machine note:
+
+- a Chariox-managed environment is a Cloud-owned lifecycle record linked to a
+  runtime Machine only after its independent kernel registers
+- the managed kernel is not a worker lease and does not import the source Machine
+  identity, sessions, agents, provider runs, prompt history, or grants
+- stop and start preserve the independent kernel identity and runtime-owned state
+- Cloud owns desired lifecycle, durable operations, provider resource mappings,
+  bootstrap grants, coarse activity, and auto-stop policy; the private
+  infrastructure manager owns provider credentials and provider reconciliation
+- the relay remains transport-only, and direct source-to-target context transfer is
+  encrypted between kernels
+- the TUI and web Waiting Room project managed environments through the existing
+  Machine field and suppress the linked runtime Machine as a duplicate row
+
+See [M28_ENVIRONMENT_CONTEXT_MATERIALIZATION_PLAN.md](M28_ENVIRONMENT_CONTEXT_MATERIALIZATION_PLAN.md)
+for the implemented context and launch contract.
+
 ### 3.3 Chariox Kernel
 
 The Chariox Kernel is the runtime authority for live Room state on one machine/user context.

@@ -2,6 +2,13 @@ import { readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve as resolvePath } from "node:path"
 
 import type { WorkflowPublicationSnapshot } from "./kernel-types.js"
+import {
+  resolveWorkflowPublicationDeploymentContract,
+  workflowPublicationAllowedProviders,
+  workflowPublicationDeploymentContractPath,
+  type WorkflowPublicationPackageContractMetadata,
+  type WorkflowPublicationDeploymentContract,
+} from "./workflow-publication-deployment-contract.js"
 
 export type PublicationProviderModelProfile = {
   provider: string
@@ -29,6 +36,7 @@ export type WorkflowPublicationBindingsPackage = {
   snapshot: WorkflowPublicationSnapshot
   bindings: WorkflowPublicationBindings
   bindingsExisted: boolean
+  deploymentContract: WorkflowPublicationDeploymentContract | null
 }
 
 export async function loadWorkflowPublicationBindingsPackage(
@@ -46,6 +54,8 @@ export async function loadWorkflowPublicationBindingsPackage(
   const bindingsPath = resolvePath(root, bindingsName)
   const snapshot = parseJsonObject(await readFile(snapshotPath, "utf8"), snapshotPath) as WorkflowPublicationSnapshot
   const loaded = await readBindingsOrDefault(bindingsPath, snapshot)
+  const deploymentContract = await loadDeploymentContract(root, publicationPackage)
+  validatePackageProviderBindings(snapshot, loaded.bindings, deploymentContract)
   return {
     root,
     publicationJsonPath,
@@ -54,6 +64,7 @@ export async function loadWorkflowPublicationBindingsPackage(
     snapshot,
     bindings: loaded.bindings,
     bindingsExisted: loaded.existed,
+    deploymentContract,
   }
 }
 
@@ -84,9 +95,52 @@ export async function setWorkflowPublicationBinding(
 ) {
   const packageState = await loadWorkflowPublicationBindingsPackage(packagePath)
   const binding = bindingForAgent(packageState.bindings, packageState.snapshot, agentId)
-  binding.replacement = normalizeProfile(replacement)
+  const normalized = normalizeProfile(replacement)
+  if (packageState.deploymentContract) {
+    const allowed = workflowPublicationAllowedProviders(
+      packageState.deploymentContract,
+      agentId,
+      binding.captured.provider,
+    )
+    if (!allowed.includes(normalized.provider)) {
+      throw new Error(`provider ${normalized.provider} is not packaged for agent ${agentId}`)
+    }
+  }
+  binding.replacement = normalized
   await saveWorkflowPublicationBindings(packageState)
   return packageState
+}
+
+async function loadDeploymentContract(
+  root: string,
+  publicationPackage: Record<string, unknown>,
+): Promise<WorkflowPublicationDeploymentContract | null> {
+  if (publicationPackage.package_version !== 4) return null
+  const metadata = publicationPackage as WorkflowPublicationPackageContractMetadata
+  const path = workflowPublicationDeploymentContractPath(metadata)
+  if (!path) throw new Error("publication package v4 is missing deployment_contract")
+  const value = parseJsonObject(await readFile(resolvePath(root, path), "utf8"), path)
+  return resolveWorkflowPublicationDeploymentContract(metadata, value).contract
+}
+
+function validatePackageProviderBindings(
+  snapshot: WorkflowPublicationSnapshot,
+  bindings: WorkflowPublicationBindings,
+  contract: WorkflowPublicationDeploymentContract | null,
+): void {
+  if (!contract) return
+  const agents = new Map((snapshot.agents ?? []).map((agent) => [agent.id, agent] as const))
+  const overrides = bindings.provider_model_overrides ?? []
+  if (overrides.length !== agents.size || new Set(overrides.map((binding) => binding.agent_id)).size !== agents.size) {
+    throw new Error("publication bindings template does not match workflow agents")
+  }
+  for (const binding of overrides) {
+    const agent = agents.get(binding.agent_id)
+    if (!agent || agent.provider !== binding.captured.provider) {
+      throw new Error(`publication bindings captured provider does not match workflow agent ${binding.agent_id}`)
+    }
+    workflowPublicationAllowedProviders(contract, binding.agent_id, binding.captured.provider)
+  }
 }
 
 export async function clearWorkflowPublicationBinding(packagePath: string, agentId: string) {

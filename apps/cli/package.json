@@ -102,6 +102,7 @@
     "native-tui:remote-drill": "pnpm run build && node scripts/live-remote-native-tui-drill.mjs",
     "provider-thread-transfer:drill": "pnpm run build && node scripts/live-provider-thread-transfer-drill.mjs",
     "provider-accounts:live-drill": "pnpm run build && node scripts/live-multi-account-drill.mjs",
+    "waiting-room-inventory:drill": "pnpm run build && node scripts/live-waiting-room-provider-account-refresh-drill.mjs",
     "native-tui:claude-drill": "pnpm run build && node scripts/live-claude-native-tui-drill.mjs",
     "native-tui:claude-spike": "node scripts/live-claude-native-tui-spike.mjs"
   },

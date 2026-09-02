@@ -95,6 +95,12 @@ pub struct SliceRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     pub workspace_mount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development: Option<crate::managed_context::package::ManagedContextDevelopmentSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development_storage_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development_publication: Option<SliceDevelopmentPublication>,
     pub worker_kernel_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_kernel_id: Option<String>,
@@ -118,6 +124,16 @@ pub struct SliceRecord {
     pub display_endpoint: Option<SliceDisplayEndpoint>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SliceDevelopmentPublication {
+    pub publication_id: String,
+    pub destination_root: String,
+    pub primary_repository_path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repository_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +288,7 @@ pub struct CreateSliceInput {
     pub workspace_id: Option<String>,
     pub worktree_id: Option<String>,
     pub workspace_mount: Option<String>,
+    pub development: Option<crate::managed_context::package::ManagedContextDevelopmentSelection>,
     pub worker_kernel_ref: Option<String>,
     pub display_url: Option<String>,
     pub provider_auth: Vec<SliceProviderAuthSummary>,

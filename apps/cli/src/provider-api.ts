@@ -21,6 +21,7 @@ import {
   listProviderAccountProfilesRequest,
   createProviderAccountProfileRequest,
   linkProviderAccountProfileRequest,
+  importNativeProviderAccountProfileRequest,
   renameProviderAccountProfileRequest,
   setDefaultProviderAccountProfileRequest,
   refreshProviderAccountProfileRequest,
@@ -221,8 +222,11 @@ export async function startProviderLogin(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
+  method?: string,
 ): Promise<ProviderLoginStart> {
-  const response = await client.send<Record<string, unknown>>(startProviderLoginRequest(provider, accountProfile))
+  const response = await client.send<Record<string, unknown>>(
+    startProviderLoginRequest(provider, accountProfile, method),
+  )
   const payload = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted")
   return payload.login
 }
@@ -279,6 +283,11 @@ export async function createProviderAccountProfile(client: LocalIpcClient, provi
 
 export async function linkProviderAccountProfile(client: LocalIpcClient, provider: string, label: string, path: string): Promise<ProviderAccountProfile> {
   const response = await client.send<Record<string, unknown>>(linkProviderAccountProfileRequest(provider, label, path))
+  return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile
+}
+
+export async function importNativeProviderAccountProfile(client: LocalIpcClient, provider: string): Promise<ProviderAccountProfile> {
+  const response = await client.send<Record<string, unknown>>(importNativeProviderAccountProfileRequest(provider))
   return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile
 }
 

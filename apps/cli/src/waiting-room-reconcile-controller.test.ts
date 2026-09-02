@@ -46,6 +46,37 @@ test("waiting room reconcile controller applies normalized state and refreshes d
   ])
 })
 
+test("waiting room reconcile controller applies derived inventory through the projection setter", () => {
+  const nextState = waitingRoomState({
+    modelId: "gpt-5.6-sol",
+    projectSelectionId: "default",
+  })
+  const harness = createHarness({
+    currentState: waitingRoomState({
+      modelId: "gpt-5.6-luna",
+      projectSelectionId: "existing:project-one",
+    }),
+    update: {
+      normalizedState: nextState,
+      nextProvider: "codex",
+      nextModel: "gpt-5.6-sol",
+      nextEffort: "low",
+      shouldPersistProviderPreferences: false,
+    },
+    attached: true,
+  })
+
+  harness.controller.reconcileProjection(harness.state.currentState)
+
+  assert.equal(harness.state.currentState, nextState)
+  assert.deepEqual(harness.calls, [
+    "setProjectedWaitingRoomState",
+    "setProviderDefaults",
+    "updateSessionChrome",
+    "syncCommandCenter",
+  ])
+})
+
 test("waiting room reconcile controller applies and persists theme changes", () => {
   const harness = createHarness({
     currentState: waitingRoomState({ themeId: "dark" }),
@@ -124,6 +155,10 @@ function createHarness(options: {
     getCurrentState: () => state.currentState,
     setWaitingRoomState: (nextState) => {
       calls.push("setWaitingRoomState")
+      state.currentState = nextState
+    },
+    setProjectedWaitingRoomState: (nextState) => {
+      calls.push("setProjectedWaitingRoomState")
       state.currentState = nextState
     },
     getSessions: () => [] as SessionListEntry[],

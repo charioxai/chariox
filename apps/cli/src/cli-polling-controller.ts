@@ -16,6 +16,7 @@ import {
   sessionShouldRecoverMissingActiveProviderRun,
 } from "@chariox/kernel-client/provider-run-recovery"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
+import { workflowRuntimeSignature } from "./workflow-runtime-signature.js"
 
 type PollLoop = typeof defaultRunPollingLoop
 
@@ -35,6 +36,8 @@ type CliPollingControllerDeps = {
   isAttached: () => boolean
   getAttachment: () => RuntimeAttachment | null
   getSession: () => RuntimeSession
+  workflowScreenActive: () => boolean
+  rebuildTranscript: () => void
   getProviderRun: () => RuntimeProviderRun | null
   setProviderRun: (run: RuntimeProviderRun | null) => void
   updateSessionChrome: () => void
@@ -144,6 +147,10 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           return
         }
         const previousSession = deps.getSession()
+        const shouldRefreshWorkflowOutline = deps.workflowScreenActive()
+        const previousWorkflowRuntimeSignature = shouldRefreshWorkflowOutline
+          ? workflowRuntimeSignature(previousSession)
+          : null
         const session = await deps.getSessionState(previousSession.id)
         deps.recordDaemonActivity("session_state_poll")
         const projectedSession = deps.projectSession(session, deps.getProviderRun())
@@ -154,6 +161,12 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
             deps.shouldRefreshAgentPanesForSessionChange(projectedSession),
         })
         deps.applySessionState(projectedSession)
+        if (
+          shouldRefreshWorkflowOutline
+          && workflowRuntimeSignature(projectedSession) !== previousWorkflowRuntimeSignature
+        ) {
+          deps.rebuildTranscript()
+        }
         if (refreshTransition.shouldRefreshAgentPanes) {
           await deps.refreshAgentPanes(projectedSession)
         }

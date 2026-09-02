@@ -23,6 +23,7 @@ import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
 import {
   publicationCallerForRequest,
   publicationInvocationCaller,
+  publicationInvocationRequestId,
 } from "./publication-caller-claims.js"
 import {
   forwardHumanHttpResult,
@@ -37,6 +38,7 @@ import {
   resolveHttpsOptions,
 } from "./publication-config.js"
 import {
+  publicationCloudBackendIngress,
   registerCloudPublicationDeploymentBackend,
 } from "./publication-cloud-deployment.js"
 import { forwardWorkflowResult } from "./publication-http-response.js"
@@ -49,6 +51,7 @@ import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
 import { publicationStatusPayload } from "./publication-status.js"
+import { readConnectedPublicationOperationalStatus } from "./publication-cloud-operational-status.js"
 import { installPublicationViewerRoutes, publicationViewerPage } from "./publication-viewer.js"
 import type {
   GatewayDeps,
@@ -116,13 +119,11 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
       reply.code(400).headers({ "content-type": "application/json" })
       return { error: parsed.error }
     }
+    const caller = publicationCallerForRequest(request)
     const invocation: NormalizedInvocation = {
       publication_id: publication.publication_id,
-      request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      caller: publicationInvocationCaller(
-        publicationCallerForRequest(request),
-        { transport: "human_http_form" },
-      ),
+      request_id: publicationInvocationRequestId(caller),
+      caller: publicationInvocationCaller(caller, { transport: "human_http_form" }),
       input: parsed.input,
       mode: publication.mode ?? "sync",
     }
@@ -161,7 +162,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           const caller = publicationCallerForRequest(request)
           const invocation: NormalizedInvocation = {
             publication_id: publication.publication_id,
-            request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            request_id: publicationInvocationRequestId(caller),
             caller: caller
               ? publicationInvocationCaller(caller, { transport: "human_http" })
               : { type: "anonymous" },
@@ -276,9 +277,15 @@ function schedulePublicationEndpointRegistration(
   logger: CharioxLogger,
 ) {
   if (!publication) return
+  let registering = false
+  // This registration also refreshes the Cloud deployment health observation.
+  // Keep it below Cloud's default two-minute stale-health threshold.
   const interval = setInterval(() => {
+    if (registering) return
+    registering = true
     void registerServedPublicationEndpoint(publication, host, port, logger)
-  }, 5 * 60 * 1_000)
+      .finally(() => { registering = false })
+  }, 60_000)
   interval.unref?.()
 }
 
@@ -340,9 +347,12 @@ async function registerServedPublicationEndpoint(
     })
     const access = registered?.access ?? "local"
     const openUrl = registered?.open_url ?? localUrl
-    const cloudDeploymentId = process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
-    const cloudRunnerKey = process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY?.trim()
-    if (cloudDeploymentId && cloudRunnerKey) {
+    const ingress = publicationCloudBackendIngress({
+      cloudDeploymentId: process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID,
+      cloudRunnerKey: process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY,
+      access,
+    })
+    if (ingress.kind === "hosted_container") {
       logger.info("skipping local-runtime Cloud backend registration for hosted publication container", {
         publication_id: publication.publication_id,
         local_url: localUrl,
@@ -351,8 +361,7 @@ async function registerServedPublicationEndpoint(
       })
       return
     }
-    if (cloudDeploymentId && access !== "tunnel") {
-      const message = `Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access ${access}`
+    if (ingress.kind === "unavailable") {
       logger.warn("Cloud publication deployment backend is unavailable", {
         publication_id: publication.publication_id,
         local_url: localUrl,
@@ -361,11 +370,15 @@ async function registerServedPublicationEndpoint(
       })
       await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger, {
         status: "unavailable",
-        lastError: message,
+        lastError: ingress.lastError,
       })
       return
     }
-    await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger)
+    if (ingress.kind === "no_cloud_deployment") return
+    const operationalStatus = publication.agent_app?.enabled
+      ? undefined
+      : await readConnectedPublicationOperationalStatus(client, publication)
+    await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger, { operationalStatus })
   } catch (error) {
     logger.warn("failed to register workflow publication endpoint", {
       publication_id: publication.publication_id,
@@ -381,7 +394,7 @@ async function registerCloudDeploymentBackendIfConfigured(
   publication: WorkflowPublicationConfig,
   localUrl: string,
   logger: CharioxLogger,
-  options: { status?: "ready" | "unavailable" | "failed"; lastError?: string | null } = {},
+  options: { status?: "ready" | "unavailable" | "failed"; lastError?: string | null; operationalStatus?: unknown } = {},
 ) {
   const deploymentId = process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
   if (!deploymentId) return

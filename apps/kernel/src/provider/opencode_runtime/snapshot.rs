@@ -35,6 +35,38 @@ pub(super) fn opencode_messages_complete_active_prompt(
         .any(|message| opencode_message_completes_active_prompt(state, &message.info))
 }
 
+pub(super) fn opencode_messages_active_prompt_failure(
+    state: &OpenCodeRuntimeState,
+    messages: &[OpenCodeMessage],
+    active_user_message_id: Option<&str>,
+) -> Option<String> {
+    let active_user_message_id = active_user_message_id?;
+    messages.iter().rev().find_map(|message| {
+        (message.info.role == "assistant"
+            && message.info.session_id == state.session_id
+            && message.info.parent_id.as_deref() == Some(active_user_message_id))
+        .then(|| message.info.terminal_error_message())
+        .flatten()
+    })
+}
+
+pub(super) fn opencode_messages_have_empty_active_assistant(
+    state: &OpenCodeRuntimeState,
+    messages: &[OpenCodeMessage],
+) -> bool {
+    let Some(active_user_message_id) = state.active_user_message_id.as_deref() else {
+        return false;
+    };
+    messages.iter().any(|message| {
+        message.info.role == "assistant"
+            && message.info.session_id == state.session_id
+            && message.info.parent_id.as_deref() == Some(active_user_message_id)
+            && message.info.time.completed.is_none()
+            && message.info.error.is_none()
+            && message.parts.is_empty()
+    })
+}
+
 pub(super) fn refresh_opencode_message_metadata(
     state: &mut OpenCodeRuntimeState,
     provider_run_id: &str,
@@ -77,7 +109,7 @@ pub(super) fn collect_new_completed_assistant_messages(
             && message.info.role == "assistant"
             && state.message_belongs_to_active_prompt(&message.info.id)
             && message.info.time.completed.is_some()
-            && !message.info.is_tool_call_only_completion()
+            && message.info.is_terminal_assistant_completion()
             && !state
                 .completed_assistant_message_ids
                 .contains(message.info.id.as_str());
@@ -87,8 +119,7 @@ pub(super) fn collect_new_completed_assistant_messages(
         state
             .completed_assistant_message_ids
             .insert(message.info.id.clone());
-        if state.active_user_message_id.is_some() && message.info.is_terminal_assistant_completion()
-        {
+        if state.active_user_message_id.is_some() {
             state.active_terminal_assistant_message_id = Some(message.info.id.clone());
         }
         completions.push(OpenCodeAssistantCompletion {

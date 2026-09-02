@@ -266,6 +266,21 @@ impl SessionService {
         &mut self,
         now_ms: u64,
     ) -> Result<WorkflowWatchdogCollection, DaemonError> {
+        self.collect_due_workflow_watchdogs(now_ms, false)
+    }
+
+    pub(crate) fn collect_due_workflow_watchdogs_after_publication_activation(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<WorkflowWatchdogCollection, DaemonError> {
+        self.collect_due_workflow_watchdogs(now_ms, true)
+    }
+
+    fn collect_due_workflow_watchdogs(
+        &mut self,
+        now_ms: u64,
+        publication_runtime_prepared: bool,
+    ) -> Result<WorkflowWatchdogCollection, DaemonError> {
         let mut plans = Vec::new();
         let mut changed_session_ids = BTreeSet::new();
         let session_ids = self
@@ -281,14 +296,39 @@ impl SessionService {
                     Some(session) => session,
                     None => continue,
                 };
-                let active_run_exists = session.workflow_runs().iter().any(|run| {
-                    !matches!(
-                        run.status(),
-                        WorkflowRunStatus::Completed
-                            | WorkflowRunStatus::Failed
-                            | WorkflowRunStatus::Stopped
-                    )
-                });
+                let busy_agent_ids = session
+                    .workflow_runs()
+                    .iter()
+                    .filter(|run| !run.status().is_terminal())
+                    .flat_map(|run| run.node_runs())
+                    .filter(|node_run| {
+                        matches!(
+                            node_run.status(),
+                            crate::session::WorkflowNodeRunStatus::Created
+                                | crate::session::WorkflowNodeRunStatus::Ready
+                                | crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+                                | crate::session::WorkflowNodeRunStatus::Running
+                        )
+                    })
+                    .map(|node_run| node_run.agent_id().to_string())
+                    .collect::<BTreeSet<_>>();
+                let watchdog_agent_busy = session
+                    .workflow_watchdogs()
+                    .iter()
+                    .filter_map(|watchdog| {
+                        let workflow = session.workflow(watchdog.workflow_id())?;
+                        let endpoint = workflow.endpoint(watchdog.endpoint_id())?;
+                        let entry_agent_id = workflow.node(endpoint.entry_node_id())?.agent_id();
+                        let prompt_busy = session.active_prompt_for_agent(entry_agent_id).is_some()
+                            || session
+                                .queued_prompts_for_agent(entry_agent_id)
+                                .is_some_and(|prompts| !prompts.is_empty());
+                        Some((
+                            watchdog.id().to_string(),
+                            prompt_busy || busy_agent_ids.contains(entry_agent_id),
+                        ))
+                    })
+                    .collect::<BTreeMap<_, _>>();
                 let session_hidden = session.is_hidden();
                 let session_created_at_ms = session.created_at_ms();
                 let completed_statuses = session
@@ -302,6 +342,10 @@ impl SessionService {
                     .filter_map(|prompt| prompt.watchdog_id().map(str::to_string))
                     .collect::<BTreeSet<_>>();
                 for watchdog in session.workflow_watchdogs_mut().iter_mut() {
+                    let entry_agent_busy = watchdog_agent_busy
+                        .get(watchdog.id())
+                        .copied()
+                        .unwrap_or(true);
                     if let Some(run_status) = watchdog
                         .last_workflow_run_id()
                         .and_then(|run_id| completed_statuses.get(run_id).copied())
@@ -337,7 +381,7 @@ impl SessionService {
                         session_changed = true;
                         continue;
                     }
-                    let should_run_pending = watchdog.pending_run() && !active_run_exists;
+                    let should_run_pending = watchdog.pending_run() && !entry_agent_busy;
                     let due_now = now_ms >= watchdog.next_run_at_ms();
                     if should_run_pending {
                         watchdog.set_pending_run(false);
@@ -358,6 +402,7 @@ impl SessionService {
                         continue;
                     }
                     if session_hidden
+                        && !publication_runtime_prepared
                         && watchdog.wakeups_executed() == 0
                         && now_ms
                             < session_created_at_ms
@@ -381,7 +426,7 @@ impl SessionService {
                                 endpoint_id: watchdog.endpoint_id().to_string(),
                                 message,
                             })?;
-                    if active_run_exists {
+                    if entry_agent_busy {
                         match watchdog.policy() {
                             WorkflowWatchdogPolicy::Skip => {
                                 watchdog.set_last_status(Some("skipped_running".to_string()));

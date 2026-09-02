@@ -23,7 +23,7 @@ test("publication deployment API reads package metadata", async () => {
     assert.equal(metadata.transport, "human_http")
     assert.equal(metadata.route, "/final/*")
     assert.equal(metadata.packageUri, `file://${root}`)
-    assert.equal(metadata.packageVersion, 3)
+    assert.equal(metadata.packageVersion, 4)
     assert.equal(metadata.deploymentContract?.source.publication_id, "pub-1")
     assert.deepEqual(metadata.agentApp, {
       enabled: true,
@@ -131,6 +131,31 @@ test("publication deployment API reuploads package archives", async () => {
   }
 })
 
+test("publication deployment API rejects successful non-JSON responses without following redirects", async () => {
+  const root = await publicationPackageFixture()
+  const previousFetch = globalThis.fetch
+  let redirect: RequestRedirect | undefined
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    redirect = init?.redirect
+    return new Response("<html>login</html>", { status: 200, headers: { "content-type": "text/html" } })
+  }) as typeof fetch
+
+  try {
+    await assert.rejects(
+      createPublicationDeploymentFromPackage({
+        profile: profile(),
+        packagePath: root,
+        mode: "local_runtime",
+      }),
+      /returned non-JSON HTTP 200/,
+    )
+    assert.equal(redirect, "manual")
+  } finally {
+    globalThis.fetch = previousFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("managed Cloud deployment rejects persistent patch packages before network access", async () => {
   const root = await publicationPackageFixture({
     enabled: true,
@@ -179,7 +204,7 @@ async function publicationPackageFixture(
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-package-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: "pub-1",
     alias: "Public Demo",
     workflow_id: "workflow-1",
@@ -218,7 +243,7 @@ function deploymentContractFixture(minimumLocalDaemonProtocolVersion = 240): Rec
       captured_at_ms: 1,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: minimumLocalDaemonProtocolVersion,
     },
@@ -227,6 +252,7 @@ function deploymentContractFixture(minimumLocalDaemonProtocolVersion = 240): Rec
     credential_slots: [],
     configuration: [],
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",

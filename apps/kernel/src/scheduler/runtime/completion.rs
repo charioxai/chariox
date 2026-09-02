@@ -189,15 +189,20 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
         .turn_envelope()
         .and_then(|envelope| {
             envelope
-                .runtime_tool_calls()
-                .iter()
-                .rev()
-                .find(|call| {
-                    call.ok()
-                        && call.tool_name()
-                            == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL
+                .acknowledged_at_ms()
+                .or_else(|| {
+                    envelope
+                        .runtime_tool_calls()
+                        .iter()
+                        .rev()
+                        .find(|call| {
+                            call.ok()
+                                && call.tool_name()
+                                    == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL
+                        })
+                        .map(|call| call.timestamp_ms())
                 })
-                .map(|call| call.timestamp_ms())
+                .or_else(|| envelope.dispatched_at_ms())
         })
         .unwrap_or(started_at_ms);
     let provider_output_entries = history

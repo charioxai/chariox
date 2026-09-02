@@ -296,10 +296,23 @@ pub(crate) fn refresh_provider_account_profile_response(
                 client.usage_snapshot(&profile.profile_id)?,
             )
         }
-        Some("claude") => (
-            claude_auth_status(provider, &profile.profile_id, &environment)?,
-            profile.usage.clone(),
-        ),
+        Some("claude") => {
+            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            let usage = if status.auth_state == "authenticated" {
+                let executable = resolve_claude_executable()?;
+                crate::provider::probe_claude_account_usage(
+                    &executable,
+                    &profile.profile_id,
+                    &environment,
+                )?
+            } else {
+                profile
+                    .usage
+                    .clone()
+                    .reconciled_freshness(crate::session::unix_epoch_ms())
+            };
+            (status, usage)
+        }
         Some("opencode") => (
             opencode_auth_status(&profile.profile_id, &environment)?,
             opencode_usage_snapshot(&profile.profile_id, &environment),
@@ -308,7 +321,7 @@ pub(crate) fn refresh_provider_account_profile_response(
             return Err(unsupported_auth_provider(
                 "refresh provider account",
                 provider,
-            ))
+            ));
         }
     };
     registry.update_observation(
@@ -329,13 +342,26 @@ fn claude_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = Command::new(&executable)
-        .args(["auth", "status", "--json"])
-        .envs(environment)
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        .env_remove("ANTHROPIC_BASE_URL")
-        .env_remove("ANTHROPIC_CUSTOM_HEADERS")
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec![
+            "auth".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ],
+        environment.clone(),
+        None,
+        "claude:auth-status",
+    )?;
+    for name in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command
         .output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -371,8 +397,13 @@ fn opencode_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
-    let mut command = Command::new(&executable);
-    command.args(["auth", "list"]).envs(environment);
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["auth".to_string(), "list".to_string()],
+        environment.clone(),
+        None,
+        "opencode:auth-status",
+    )?;
     remove_account_auth_environment(&mut command, "opencode");
     let output = command
         .output()
@@ -380,16 +411,9 @@ fn opencode_auth_status(
             operation: "get_provider_auth_status",
             message: format!("failed to run OpenCode auth list: {error}"),
         })?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let normalized = strip_ansi(&text);
-    let has_credentials = output.status.success()
-        && !normalized.trim().is_empty()
-        && !normalized.to_ascii_lowercase().contains("0 credentials")
-        && !normalized.to_ascii_lowercase().contains("no credentials");
+    let credential_inspection = inspect_opencode_credentials(environment);
+    let has_credentials =
+        output.status.success() && credential_inspection == OpenCodeCredentialInspection::Valid;
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
         auth_state: if has_credentials {
@@ -402,7 +426,12 @@ fn opencode_auth_status(
         identity_summary: has_credentials.then(|| "Provider credentials configured".to_string()),
         plan: None,
         login_hint: Some(
-            "Use Provider Accounts to run `opencode auth login` for this account.".to_string(),
+            if credential_inspection == OpenCodeCredentialInspection::Malformed {
+                "Stored OpenCode credentials are malformed; reauthenticate this account."
+                    .to_string()
+            } else {
+                "Use Provider Accounts to run `opencode auth login` for this account.".to_string()
+            },
         ),
         detected_version: command_version(&executable).ok(),
     })
@@ -418,24 +447,28 @@ fn opencode_usage_snapshot(
         ProviderAccountUsageSnapshot,
     };
     let observed_at_ms = crate::session::unix_epoch_ms();
-    let Ok(executable) = resolve_opencode_executable() else {
-        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
-    };
-    let mut command = Command::new(executable);
-    command
-        .args(["stats", "--format", "json"])
-        .envs(environment);
-    remove_account_auth_environment(&mut command, "opencode");
-    let Ok(output) = command.output() else {
-        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
-    };
-    let tokens = find_numeric_field(&value, &["tokens", "totalTokens", "total_tokens"]);
-    let cost = find_numeric_field(&value, &["cost", "totalCost", "total_cost"]);
     let mut meters = Vec::new();
-    if let Some(used) = tokens {
+    let local_stats = resolve_opencode_executable().ok().and_then(|executable| {
+        let mut command = crate::provider::managed_isolated_utility_command(
+            executable.display().to_string(),
+            vec![
+                "stats".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            environment.clone(),
+            None,
+            "opencode:usage",
+        )
+        .ok()?;
+        remove_account_auth_environment(&mut command, "opencode");
+        let output = command.output().ok()?;
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).ok()
+    });
+    if let Some(used) = local_stats
+        .as_ref()
+        .and_then(|value| find_numeric_field(value, &["tokens", "totalTokens", "total_tokens"]))
+    {
         meters.push(ProviderAccountUsageMeter {
             meter_id: "local/tokens".to_string(),
             label: "Local token usage".to_string(),
@@ -453,7 +486,10 @@ fn opencode_usage_snapshot(
             observed_at_ms,
         });
     }
-    if let Some(used) = cost {
+    if let Some(used) = local_stats
+        .as_ref()
+        .and_then(|value| find_numeric_field(value, &["cost", "totalCost", "total_cost"]))
+    {
         meters.push(ProviderAccountUsageMeter {
             meter_id: "local/cost".to_string(),
             label: "Local recorded cost".to_string(),
@@ -471,10 +507,19 @@ fn opencode_usage_snapshot(
             observed_at_ms,
         });
     }
+    let go_usage = opencode_go_usage(environment, observed_at_ms);
+    if let OpenCodeGoUsage::Available(go_meters) = &go_usage {
+        let mut combined = go_meters.clone();
+        combined.extend(meters);
+        meters = combined;
+    }
+    let has_provider_usage = matches!(go_usage, OpenCodeGoUsage::Available(_));
     ProviderAccountUsageSnapshot {
         profile_id: account_profile.to_string(),
         provider: "opencode".to_string(),
-        availability: if meters.is_empty() {
+        availability: if has_provider_usage {
+            ProviderAccountUsageAvailability::Available
+        } else if meters.is_empty() {
             ProviderAccountUsageAvailability::Unavailable
         } else {
             // OpenCode local stats cannot represent Zen or arbitrary upstream
@@ -483,8 +528,203 @@ fn opencode_usage_snapshot(
         },
         meters,
         observed_at_ms: Some(observed_at_ms),
-        source: "opencode.local_stats".to_string(),
+        source: match go_usage {
+            OpenCodeGoUsage::Available(_) => "opencode.go_usage".to_string(),
+            OpenCodeGoUsage::NotEntitled => "opencode.go_not_entitled".to_string(),
+            OpenCodeGoUsage::Unavailable => "opencode.local_stats".to_string(),
+        },
         management_url: Some("https://opencode.ai/zen".to_string()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum OpenCodeGoUsage {
+    Available(Vec<crate::account_profile::ProviderAccountUsageMeter>),
+    NotEntitled,
+    Unavailable,
+}
+
+fn opencode_go_usage(
+    environment: &BTreeMap<String, String>,
+    observed_at_ms: u64,
+) -> OpenCodeGoUsage {
+    let Some(key) = opencode_provider_api_key(environment, "opencode-go")
+        .or_else(|| opencode_provider_api_key(environment, "opencode"))
+    else {
+        return OpenCodeGoUsage::Unavailable;
+    };
+    let response = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .get("https://opencode.ai/zen/go/v1/usage")
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("User-Agent", "chariox-kernel/provider-usage")
+        .call();
+    match response {
+        Ok(response) => match response
+            .into_string()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        {
+            Some(value) => opencode_go_usage_from_value(&value, observed_at_ms)
+                .map(OpenCodeGoUsage::Available)
+                .unwrap_or(OpenCodeGoUsage::Unavailable),
+            None => OpenCodeGoUsage::Unavailable,
+        },
+        Err(ureq::Error::Status(403, response)) => {
+            let body = response
+                .into_string()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if body.contains("entitlement") || body.contains("subscription required") {
+                OpenCodeGoUsage::NotEntitled
+            } else {
+                OpenCodeGoUsage::Unavailable
+            }
+        }
+        Err(_) => OpenCodeGoUsage::Unavailable,
+    }
+}
+
+fn opencode_provider_api_key(
+    environment: &BTreeMap<String, String>,
+    provider_id: &str,
+) -> Option<String> {
+    let value = read_opencode_auth_document(environment)?;
+    value
+        .get(provider_id)?
+        .get("key")?
+        .as_str()
+        .map(str::trim)
+        .filter(|key| valid_opencode_secret(key))
+        .map(str::to_string)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenCodeCredentialInspection {
+    NotObserved,
+    Valid,
+    Malformed,
+}
+
+fn inspect_opencode_credentials(
+    environment: &BTreeMap<String, String>,
+) -> OpenCodeCredentialInspection {
+    let Some(document) = read_opencode_auth_document(environment) else {
+        return OpenCodeCredentialInspection::NotObserved;
+    };
+    let Some(entries) = document.as_object() else {
+        return OpenCodeCredentialInspection::Malformed;
+    };
+    let mut observed_malformed = false;
+    for credential in entries.values() {
+        let credential_type = credential.get("type").and_then(serde_json::Value::as_str);
+        let secret_field = match credential_type {
+            Some("api") => Some("key"),
+            Some("oauth") => Some("access"),
+            _ => None,
+        };
+        let Some(secret_field) = secret_field else {
+            continue;
+        };
+        let secret = credential
+            .get(secret_field)
+            .and_then(serde_json::Value::as_str);
+        if secret.is_some_and(valid_opencode_secret) {
+            return OpenCodeCredentialInspection::Valid;
+        }
+        observed_malformed = true;
+    }
+    if observed_malformed {
+        OpenCodeCredentialInspection::Malformed
+    } else {
+        OpenCodeCredentialInspection::NotObserved
+    }
+}
+
+fn read_opencode_auth_document(
+    environment: &BTreeMap<String, String>,
+) -> Option<serde_json::Value> {
+    let data_home = environment.get("XDG_DATA_HOME")?;
+    let auth_path = std::path::Path::new(data_home).join("opencode/auth.json");
+    serde_json::from_slice(&std::fs::read(auth_path).ok()?).ok()
+}
+
+fn valid_opencode_secret(secret: &str) -> bool {
+    let secret = secret.trim();
+    !secret.is_empty()
+        && !secret
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
+fn opencode_go_usage_from_value(
+    value: &serde_json::Value,
+    observed_at_ms: u64,
+) -> Option<Vec<crate::account_profile::ProviderAccountUsageMeter>> {
+    use crate::account_profile::{
+        ProviderAccountUsageMeter, ProviderAccountUsageMeterKind, ProviderAccountUsageMeterScope,
+    };
+    let usage = value.get("usage").unwrap_or(value);
+    let windows = [
+        ("rolling", "5-hour", Some(5 * 60)),
+        ("weekly", "Weekly", Some(7 * 24 * 60)),
+        ("monthly", "Monthly", None),
+    ];
+    let meters = windows
+        .into_iter()
+        .filter_map(|(id, label, duration)| {
+            let window = usage.get(id)?;
+            let used_percent = window.get("percent")?.as_f64()?;
+            Some(ProviderAccountUsageMeter {
+                meter_id: format!("go/{id}"),
+                label: label.to_string(),
+                kind: ProviderAccountUsageMeterKind::RollingLimit,
+                scope: ProviderAccountUsageMeterScope::Plan,
+                used_percent: Some(used_percent),
+                used: None,
+                remaining: None,
+                total: None,
+                unit: None,
+                window_duration_minutes: duration,
+                resets_at_ms: window.get("resetsAt").and_then(provider_timestamp_ms),
+                state: usage_meter_state(used_percent, window.get("status")),
+                source: "opencode.go_usage".to_string(),
+                observed_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!meters.is_empty()).then_some(meters)
+}
+
+fn provider_timestamp_ms(value: &serde_json::Value) -> Option<u64> {
+    if let Some(value) = value.as_u64() {
+        return Some(if value < 10_000_000_000 {
+            value * 1_000
+        } else {
+            value
+        });
+    }
+    value
+        .as_str()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .and_then(|value| u64::try_from(value.timestamp_millis()).ok())
+}
+
+fn usage_meter_state(
+    used_percent: f64,
+    status: Option<&serde_json::Value>,
+) -> crate::account_profile::ProviderAccountUsageMeterState {
+    use crate::account_profile::ProviderAccountUsageMeterState;
+    let status = status
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if used_percent >= 100.0 || matches!(status, "exhausted" | "rejected" | "rate-limited") {
+        ProviderAccountUsageMeterState::Exhausted
+    } else if used_percent >= 80.0 || status == "warning" {
+        ProviderAccountUsageMeterState::Warning
+    } else {
+        ProviderAccountUsageMeterState::Healthy
     }
 }
 
@@ -495,13 +735,18 @@ fn remove_account_auth_environment(command: &mut Command, provider: &str) {
 }
 
 fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> {
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "provider_version",
-            message: error.to_string(),
-        })?;
+    let output = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["--version".to_string()],
+        BTreeMap::new(),
+        None,
+        "provider:version",
+    )?
+    .output()
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "provider_version",
+        message: error.to_string(),
+    })?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!text.is_empty())
         .then_some(text)
@@ -528,32 +773,20 @@ fn find_numeric_field(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
     }
 }
 
-fn strip_ansi(value: &str) -> String {
-    let mut result = String::with_capacity(value.len());
-    let mut escape = false;
-    for character in value.chars() {
-        if escape {
-            if character.is_ascii_alphabetic() {
-                escape = false;
-            }
-        } else if character == '\u{1b}' {
-            escape = true;
-        } else {
-            result.push(character);
-        }
-    }
-    result
-}
-
 fn claude_version() -> Result<String, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("failed to read Claude version: {error}"),
-        })?;
+    let output = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["--version".to_string()],
+        BTreeMap::new(),
+        None,
+        "claude:version",
+    )?
+    .output()
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "get_provider_auth_status",
+        message: format!("failed to read Claude version: {error}"),
+    })?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -574,15 +807,11 @@ fn claude_auth_status_from_value(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let identity_summary = if logged_in {
-        let mut parts = Vec::new();
-        for key in ["email", "orgName"] {
-            if let Some(text) = value.get(key).and_then(serde_json::Value::as_str) {
-                if !text.is_empty() {
-                    parts.push(text.to_string());
-                }
-            }
-        }
-        (!parts.is_empty()).then(|| parts.join(" / "))
+        value
+            .get("email")
+            .and_then(serde_json::Value::as_str)
+            .filter(|email| !email.is_empty())
+            .map(str::to_string)
     } else {
         None
     };
@@ -653,13 +882,22 @@ pub(crate) fn logout_provider_response(
         }
         Some("claude") => {
             let executable = resolve_claude_executable()?;
-            let status = Command::new(executable)
-                .args(["auth", "logout"])
-                .envs(environment)
-                .env_remove("ANTHROPIC_API_KEY")
-                .env_remove("ANTHROPIC_AUTH_TOKEN")
-                .env_remove("ANTHROPIC_BASE_URL")
-                .env_remove("ANTHROPIC_CUSTOM_HEADERS")
+            let mut command = crate::provider::managed_isolated_utility_command(
+                executable.display().to_string(),
+                vec!["auth".to_string(), "logout".to_string()],
+                environment,
+                None,
+                "claude:logout",
+            )?;
+            for name in [
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_CUSTOM_HEADERS",
+            ] {
+                command.env_remove(name);
+            }
+            let status = command
                 .status()
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "logout_provider",
@@ -764,56 +1002,41 @@ fn dev_stub_provider_catalog() -> OpenCodeProviderCatalog {
 }
 
 fn opencode_backend_catalog(catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
-    let mut models = BTreeMap::new();
-    let mut first_model = None;
-    let mut connected = false;
-
-    for provider in catalog
+    let source_connected = catalog.connected;
+    let source_default = catalog.default;
+    let mut all = catalog
         .all
         .into_iter()
-        .filter(|provider| provider.id == "opencode")
-    {
-        connected = connected || catalog.connected.iter().any(|id| id == &provider.id);
-        for (model_id, model) in provider.models {
-            if first_model.is_none() {
-                first_model = Some(model_id.clone());
-            }
-            models.insert(model_id, model);
-        }
-    }
+        .filter(|provider| matches!(provider.id.as_str(), "opencode" | "opencode-go"))
+        .filter(|provider| !provider.models.is_empty())
+        .map(|mut provider| {
+            provider.remote_machine_aliases.clear();
+            provider
+        })
+        .collect::<Vec<_>>();
+    all.sort_by(|left, right| left.id.cmp(&right.id));
 
-    if models.is_empty() {
-        return OpenCodeProviderCatalog {
-            all: Vec::new(),
-            default: Default::default(),
-            connected: Vec::new(),
-        };
-    }
-
-    let default_model = catalog
-        .default
-        .get("opencode")
-        .filter(|model_id| models.contains_key(*model_id))
-        .cloned()
-        .or(first_model);
-
-    let default = default_model
-        .map(|model_id| BTreeMap::from([("opencode".to_string(), model_id)]))
-        .unwrap_or_default();
+    let connected = all
+        .iter()
+        .filter(|provider| source_connected.iter().any(|id| id == &provider.id))
+        .map(|provider| provider.id.clone())
+        .collect();
+    let default = all
+        .iter()
+        .filter_map(|provider| {
+            let model_id = source_default
+                .get(&provider.id)
+                .filter(|model_id| provider.models.contains_key(*model_id))
+                .cloned()
+                .or_else(|| provider.models.keys().next().cloned())?;
+            Some((provider.id.clone(), model_id))
+        })
+        .collect();
 
     OpenCodeProviderCatalog {
-        all: vec![OpenCodeProviderInfo {
-            id: "opencode".to_string(),
-            name: "OpenCode".to_string(),
-            remote_machine_aliases: Vec::new(),
-            models,
-        }],
+        all,
         default,
-        connected: if connected {
-            vec!["opencode".to_string()]
-        } else {
-            Vec::new()
-        },
+        connected,
     }
 }
 
@@ -926,6 +1149,7 @@ fn approved_live_remote_machines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_profile::ProviderAccountUsageMeterState;
     use crate::provider::OpenCodeProviderModel;
     use serde_json::json;
     use std::fs;
@@ -1027,9 +1251,15 @@ exit 2
             registry_root.join("profiles.json"),
         )
         .expect("profile registry should open");
-        registry
+        let migrated = registry
             .migrate_effective_defaults("local", &registry_root.join("home"))
             .expect("default profiles should migrate");
+        let claude_profile_id = migrated
+            .iter()
+            .find(|profile| profile.provider == "claude")
+            .expect("claude profile should migrate")
+            .profile_id
+            .clone();
 
         let response = provider_auth_status_response(
             &registry,
@@ -1050,7 +1280,7 @@ exit 2
                 assert_eq!(status.provider, "claude-headless");
                 assert_eq!(status.auth_state, "authenticated");
                 assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
-                assert_eq!(status.account_profile, "default");
+                assert_eq!(status.account_profile, claude_profile_id);
                 assert!(status
                     .identity_summary
                     .as_deref()
@@ -1074,6 +1304,24 @@ exit 2
         assert_eq!(status.auth_state, "not_logged_in");
         assert_eq!(status.account_profile, "work");
         assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
+    }
+
+    #[test]
+    fn claude_auth_status_uses_email_as_the_account_identity() {
+        let status = claude_auth_status_from_value(
+            "claude-headless",
+            "work",
+            &json!({
+                "loggedIn": true,
+                "email": "dev@example.test",
+                "orgName": "dev@example.test's Organization",
+                "subscriptionType": "pro"
+            }),
+            Some("claude 1.2.3".to_string()),
+        );
+
+        assert_eq!(status.identity_summary.as_deref(), Some("dev@example.test"));
+        assert_eq!(status.plan.as_deref(), Some("pro"));
     }
 
     #[test]
@@ -1193,7 +1441,7 @@ exit 2
     }
 
     #[test]
-    fn opencode_backend_catalog_hides_upstream_provider_ids() {
+    fn opencode_backend_catalog_keeps_zen_and_go_but_hides_upstream_provider_ids() {
         let catalog = opencode_backend_catalog(OpenCodeProviderCatalog {
             all: vec![
                 OpenCodeProviderInfo {
@@ -1226,21 +1474,223 @@ exit 2
                         },
                     )]),
                 },
+                OpenCodeProviderInfo {
+                    id: "opencode-go".to_string(),
+                    name: "OpenCode Go".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: BTreeMap::from([(
+                        "deepseek-v4-pro".to_string(),
+                        OpenCodeProviderModel {
+                            id: "deepseek-v4-pro".to_string(),
+                            name: "DeepSeek V4 Pro".to_string(),
+                            status: "active".to_string(),
+                            limit: None,
+                            variants: BTreeMap::from([("high".to_string(), json!({}))]),
+                        },
+                    )]),
+                },
             ],
             default: BTreeMap::from([
                 ("openai".to_string(), "gpt-5.2".to_string()),
                 ("opencode".to_string(), "gpt-5.2".to_string()),
+                ("opencode-go".to_string(), "deepseek-v4-pro".to_string()),
             ]),
-            connected: vec!["openai".to_string(), "opencode".to_string()],
+            connected: vec![
+                "openai".to_string(),
+                "opencode".to_string(),
+                "opencode-go".to_string(),
+            ],
         });
 
-        assert_eq!(catalog.connected, vec!["opencode".to_string()]);
+        assert_eq!(
+            catalog.connected,
+            vec!["opencode".to_string(), "opencode-go".to_string()]
+        );
         assert_eq!(
             catalog.default.get("opencode"),
             Some(&"gpt-5.2".to_string())
         );
-        assert_eq!(catalog.all.len(), 1);
+        assert_eq!(
+            catalog.default.get("opencode-go"),
+            Some(&"deepseek-v4-pro".to_string())
+        );
+        assert_eq!(catalog.all.len(), 2);
         assert_eq!(catalog.all[0].id, "opencode");
+        assert_eq!(catalog.all[0].name, "OpenCode Zen");
         assert!(catalog.all[0].models.contains_key("gpt-5.2"));
+        assert_eq!(catalog.all[1].id, "opencode-go");
+        assert_eq!(catalog.all[1].name, "OpenCode Go");
+        assert!(catalog.all[1].models.contains_key("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn parses_all_opencode_go_subscription_windows() {
+        let meters = opencode_go_usage_from_value(
+            &json!({
+                "usage": {
+                    "rolling": {"status": "warning", "percent": 82.0, "resetsAt": "2027-01-15T12:00:00Z"},
+                    "weekly": {"status": "active", "percent": 34.0, "resetsAt": 1_800_000_000},
+                    "monthly": {"status": "rate-limited", "percent": 100.0}
+                }
+            }),
+            42,
+        )
+        .expect("Go usage should parse");
+
+        assert_eq!(meters.len(), 3);
+        assert_eq!(meters[0].label, "5-hour");
+        assert_eq!(meters[0].state, ProviderAccountUsageMeterState::Warning);
+        assert_eq!(meters[1].label, "Weekly");
+        assert_eq!(meters[1].resets_at_ms, Some(1_800_000_000_000));
+        assert_eq!(meters[2].label, "Monthly");
+        assert_eq!(meters[2].state, ProviderAccountUsageMeterState::Exhausted);
+    }
+
+    #[test]
+    fn opencode_go_usage_is_fail_closed_without_reported_windows() {
+        assert!(opencode_go_usage_from_value(&json!({}), 42).is_none());
+        assert!(opencode_go_usage_from_value(
+            &json!({"usage": {"rolling": {"status": "active"}}}),
+            42
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn opencode_timestamps_accept_seconds_milliseconds_and_rfc3339() {
+        assert_eq!(
+            provider_timestamp_ms(&json!(1_800_000_000)),
+            Some(1_800_000_000_000)
+        );
+        assert_eq!(
+            provider_timestamp_ms(&json!(1_800_000_000_000u64)),
+            Some(1_800_000_000_000)
+        );
+        assert_eq!(
+            provider_timestamp_ms(&json!("2027-01-15T12:00:00Z")),
+            Some(1_800_014_400_000)
+        );
+        assert_eq!(provider_timestamp_ms(&json!("not-a-time")), None);
+    }
+
+    #[test]
+    fn reads_only_valid_opencode_provider_keys() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-go-key-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"go-selected-profile-key"},"opencode":{"type":"api","key":"zen-selected-profile-key"},"openai":{"type":"oauth","access":"ignored"}}"#,
+        )
+        .expect("auth file should write");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        assert_eq!(
+            opencode_provider_api_key(&environment, "opencode-go").as_deref(),
+            Some("go-selected-profile-key")
+        );
+        assert_eq!(
+            opencode_provider_api_key(&environment, "opencode").as_deref(),
+            Some("zen-selected-profile-key")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_menu_output_as_an_opencode_api_key() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-invalid-key-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"└ enter"}}"#,
+        )
+        .expect("auth file should write");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        assert_eq!(opencode_provider_api_key(&environment, "opencode-go"), None);
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Malformed
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_opencode_oauth_and_short_opaque_api_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-valid-credentials-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"openai":{"type":"oauth","access":"oauth-token","refresh":"refresh-token"}}"#,
+        )
+        .expect("OAuth auth file should write");
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Valid
+        );
+
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"短鍵"}}"#,
+        )
+        .expect("API auth file should write");
+        assert_eq!(
+            opencode_provider_api_key(&environment, "opencode-go").as_deref(),
+            Some("短鍵")
+        );
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Valid
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_unobserved_and_control_character_opencode_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-unobserved-credentials-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::NotObserved
+        );
+
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"opaque\u0000key"}}"#,
+        )
+        .expect("auth file should write");
+        assert_eq!(opencode_provider_api_key(&environment, "opencode-go"), None);
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Malformed
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

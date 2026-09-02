@@ -125,7 +125,7 @@ fn infer_kind(
     }
     if matches!(
         id,
-        "provider" | "model" | "variant" | "mode" | "permissions" | "view"
+        "provider" | "account" | "model" | "variant" | "mode" | "permissions" | "view"
     ) {
         return TerminalCommandCatalogNodeKind::Dynamic;
     }
@@ -154,6 +154,7 @@ fn infer_execution_target(
 fn infer_dynamic_source(id: &str) -> Option<String> {
     match id {
         "provider" => Some("provider_catalog.providers".to_string()),
+        "account" => Some("provider_accounts.profiles".to_string()),
         "model" => Some("provider_catalog.models".to_string()),
         "variant" => Some("provider_catalog.variants".to_string()),
         "mode" => Some("session_config.modes".to_string()),
@@ -667,6 +668,7 @@ mod tests {
                 "config-workspace-live-sync-off",
                 "config-workspace-live-sync-managed",
                 "config-workspace-live-sync-tracked",
+                "account",
                 "model",
                 "variant",
                 "mode",

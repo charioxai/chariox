@@ -27,9 +27,21 @@ test("resolveCliDialogOverlayMode follows overlay render priority", () => {
     terminalPairingOpen: true,
     sessionBrowserOpen: true,
   }), "session-browser")
+  assert.equal(resolveCliDialogOverlayMode({
+    managedMachineOpen: true,
+    hotkeysOpen: true,
+    terminalPairingOpen: true,
+    sessionBrowserOpen: true,
+  }), "managed-machine")
 })
 
 test("cliDialogOverlayIsOpen detects any active dialog", () => {
+  assert.equal(cliDialogOverlayIsOpen({
+    managedMachineOpen: true,
+    hotkeysOpen: false,
+    terminalPairingOpen: false,
+    sessionBrowserOpen: false,
+  }), true)
   assert.equal(cliDialogOverlayIsOpen({
     hotkeysOpen: false,
     terminalPairingOpen: false,

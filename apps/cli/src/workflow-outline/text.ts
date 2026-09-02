@@ -1,4 +1,4 @@
-import type { WorkflowOutline, WorkflowOutlineEdgeItem, WorkflowOutlineNodeItem } from "./types.js"
+import type { WorkflowOutline, WorkflowOutlineEdgeItem, WorkflowOutlineEndpointItem, WorkflowOutlineNodeItem } from "./types.js"
 
 export type OutlineLine = {
   content: string
@@ -19,7 +19,7 @@ export function buildWorkflowOutlineNodeLines(node: WorkflowOutlineNodeItem): Ou
     lines.push({ content: `entry endpoints ${node.entryEndpoints.length}`, tone: "section" })
     for (const endpoint of node.entryEndpoints) {
       lines.push({
-        content: `  ${endpoint.id}${endpoint.alias ? ` (${endpoint.alias})` : ""}`,
+        content: `  ${formatOutlineEndpoint(endpoint)}`,
         tone: "section",
       })
     }
@@ -98,6 +98,12 @@ export function renderWorkflowOutlineToText(outline: WorkflowOutline) {
 
 function formatAgentLabel(node: WorkflowOutlineNodeItem) {
   return node.agentAlias ? `${node.agentRef} (${node.agentAlias})` : node.agentRef
+}
+
+function formatOutlineEndpoint(endpoint: WorkflowOutlineEndpointItem) {
+  return `${endpoint.id}${endpoint.alias ? ` (${endpoint.alias})` : ""}`
+    + ` • pool ${endpoint.busyCount}/${endpoint.maxInstances} busy`
+    + ` • ${endpoint.activeRunCount} active run${endpoint.activeRunCount === 1 ? "" : "s"}`
 }
 
 function formatAdjacentAgent(edge: WorkflowOutlineEdgeItem) {

@@ -5,15 +5,34 @@ fn persist_workflow_session_state(
     session_id: &str,
     reason: &'static str,
 ) -> Result<(), DaemonError> {
-    let session = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
-    app.durable_state_store()
-        .persist_workflow_runtime_transition(&session, reason)?;
-    app.sessions_mut()
-        .archive_terminal_workflow_runs(session_id)?;
-    if let Ok(hot_session) = app.sessions().get_session(session_id) {
-        app.update_session_projection(hot_session);
-    }
-    Ok(())
+    let durable_state = app.durable_state_store();
+    durable_state.with_workflow_runtime_transition_lock(|| {
+        let session =
+            crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
+        durable_state.persist_workflow_runtime_transition(&session, reason)?;
+        let archived = app
+            .sessions_mut()
+            .archive_terminal_workflow_runs(session_id)?;
+        if !archived.is_empty() {
+            // Terminal runs leave the hot snapshot after this point, so push
+            // one authoritative update per run before the projection change
+            // wakes subscribers; otherwise diffing never observes the
+            // terminal status.
+            let recipient_attachment_ids =
+                app.attachments().list_session_attachment_ids(session_id);
+            for workflow_run in archived {
+                app.terminal().record_workflow_run_update(
+                    session_id,
+                    recipient_attachment_ids.clone(),
+                    workflow_run,
+                );
+            }
+        }
+        if let Ok(hot_session) = app.sessions().get_session(session_id) {
+            app.update_session_projection(hot_session);
+        }
+        Ok(())
+    })
 }
 
 pub fn on_workflow_prompt_started(
@@ -99,6 +118,9 @@ pub fn on_workflow_prompt_completed(
                     "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
                 ),
             );
+            if release_settled_workflow_claims(app, session_id, prompt, provider_run_id) {
+                let _ = retry_blocked_workflow_claims(app);
+            }
             maybe_start_next_queued_workflow_prompt(app, session_id);
             persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
             return Ok(());
@@ -184,17 +206,10 @@ pub fn on_workflow_prompt_completed(
             session_id,
             provider_run_id,
             app.attachments().list_session_attachment_ids(session_id),
-            if failure.retry_scheduled {
-                format!(
-                    "Workflow handoff on edge `{}` failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
-                    failure.edge_id, failure.attempt, failure.max_attempts, failure.message
-                )
-            } else {
-                format!(
-                    "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}` after attempt {}/{}: {}",
-                    failure.edge_id, failure.attempt, failure.max_attempts, failure.message
-                )
-            },
+            format!(
+                "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}`: {}",
+                failure.edge_id, failure.message
+            ),
         );
     }
     if let Some(failure) = run_output_validation_failure.as_ref() {
@@ -213,17 +228,10 @@ pub fn on_workflow_prompt_completed(
             session_id,
             provider_run_id,
             app.attachments().list_session_attachment_ids(session_id),
-            if failure.retry_scheduled {
-                format!(
-                    "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
-                    failure.attempt, failure.max_attempts, failure.message
-                )
-            } else {
-                format!(
-                    "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
-                    failure.attempt, failure.max_attempts, failure.message
-                )
-            },
+            format!(
+                "Workflow run `{workflow_run_id}` failed final output validation: {}",
+                failure.message
+            ),
         );
     }
     if let Some(failure) = missing_output_failure.as_ref() {
@@ -242,17 +250,9 @@ pub fn on_workflow_prompt_completed(
             session_id,
             provider_run_id,
             app.attachments().list_session_attachment_ids(session_id),
-            if failure.retry_scheduled {
-                format!(
-                    "Workflow run `{workflow_run_id}` produced no structured output on attempt {}/{}; a corrective turn was scheduled.",
-                    failure.attempt, failure.max_attempts
-                )
-            } else {
-                format!(
-                    "Workflow run `{workflow_run_id}` failed after producing no structured output on attempt {}/{}.",
-                    failure.attempt, failure.max_attempts
-                )
-            },
+            format!(
+                "Workflow run `{workflow_run_id}` failed because the provider produced no structured output."
+            ),
         );
     }
     if validation_warnings.is_empty()
@@ -283,23 +283,10 @@ pub fn on_workflow_prompt_completed(
             );
         }
     }
-    let claim_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
-        app.providers()
-            .get_run_for_agent(session_id, prompt.target_agent_id())
-            .map(|run| run.id().to_string())
-    });
-    let released_claim = claim_provider_run_id
-        .as_deref()
-        .map(|provider_run_id| app.release_prompt_workspace_claim(provider_run_id))
-        .unwrap_or(false);
-    let released_workflow_claim = app.release_workflow_node_workspace_claim(
-        session_id,
-        workflow_run_id,
-        workflow_node_run_id,
-    );
+    let released_claim = release_settled_workflow_claims(app, session_id, prompt, provider_run_id);
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
     let workflow_run = current_workflow_run_for_notice(app, session_id, workflow_run);
-    if released_claim || released_workflow_claim {
+    if released_claim {
         let _ = retry_blocked_workflow_claims(app);
     }
     let state_suffix = workflow_run_status_notice_suffix(workflow_run.status());
@@ -391,6 +378,9 @@ pub fn on_workflow_prompt_cancelled(
         .resolve_workflow_run_ref(session_id, workflow_run_id)
         .is_ok_and(|run| run.status() == crate::session::WorkflowRunStatus::Paused);
     if paused {
+        if release_settled_workflow_claims(app, session_id, prompt, None) {
+            let _ = retry_blocked_workflow_claims(app);
+        }
         persist_workflow_session_state(app, session_id, "workflow_prompt_paused")?;
         return Ok(());
     }
@@ -416,9 +406,41 @@ pub fn on_workflow_prompt_cancelled(
         app.attachments().list_session_attachment_ids(session_id),
         format!("Workflow run `{}` was stopped.", workflow_run.id()),
     );
+    if release_settled_workflow_claims(app, session_id, prompt, None) {
+        let _ = retry_blocked_workflow_claims(app);
+    }
     maybe_start_next_queued_workflow_prompt(app, session_id);
     persist_workflow_session_state(app, session_id, "workflow_prompt_cancelled")?;
     Ok(())
+}
+
+fn release_settled_workflow_claims(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    provider_run_id: Option<&str>,
+) -> bool {
+    let Some(workflow_run_id) = prompt.workflow_run_id() else {
+        return false;
+    };
+    let Some(workflow_node_run_id) = prompt.workflow_node_run_id() else {
+        return false;
+    };
+    let claim_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+        app.providers()
+            .get_run_for_agent(session_id, prompt.target_agent_id())
+            .map(|run| run.id().to_string())
+    });
+    let released_prompt_claim = claim_provider_run_id
+        .as_deref()
+        .map(|provider_run_id| app.release_prompt_workspace_claim(provider_run_id))
+        .unwrap_or(false);
+    let released_workflow_claim = app.release_workflow_node_workspace_claim(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    );
+    released_prompt_claim || released_workflow_claim
 }
 
 fn workflow_node_run_has_valid_pending_final_output(

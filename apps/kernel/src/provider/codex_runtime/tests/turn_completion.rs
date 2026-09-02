@@ -1377,7 +1377,20 @@ fn reconnect_progress_keeps_active_turn_running() {
     assert!(!prompt_completed);
     assert_eq!(active_turn_id.as_deref(), Some("turn-reconnecting"));
     assert!(terminal_failure.is_none());
-    assert_eq!(notices, vec!["Reconnecting... 2/5".to_string()]);
+    assert!(notices.is_empty());
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(
+        chunks[0].kind,
+        crate::terminal::TerminalOutputKind::ProviderStatus
+    );
+    assert_eq!(
+        chunks[0].merge_key.as_deref(),
+        Some(crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&chunks[0].bytes),
+        "Codex connection interrupted — retrying (2/5)."
+    );
 }
 
 #[test]

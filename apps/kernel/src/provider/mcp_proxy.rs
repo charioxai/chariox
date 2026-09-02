@@ -235,8 +235,35 @@ fn mark_provider_proxy_tools_preapproved(response: &mut serde_json::Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::ffi::OsString;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::{Duration, Instant};
+
+    struct EnvironmentRestore(Vec<(&'static str, Option<OsString>)>);
+
+    impl EnvironmentRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvironmentRestore {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     #[test]
     fn proxy_config_preserves_policy_but_replaces_transport() {
@@ -310,6 +337,7 @@ mod tests {
             assert!(request.starts_with("POST /mcp HTTP/1.1\r\n"));
             assert!(request.contains("Authorization: Bearer secret-token\r\n"));
             assert!(request.contains("X-Test: yes\r\n"));
+            assert!(request.contains("Accept: application/json, text/event-stream\r\n"));
             assert!(request.contains(r#""method":"tools/list""#));
 
             let body = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
@@ -359,6 +387,327 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}})
         );
         server.join().expect("test server should finish");
+    }
+
+    #[test]
+    fn streamable_http_proxy_parses_matching_sse_json_rpc_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let (release_server_tx, release_server_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("proxy should connect");
+            let request = read_http_request(&mut stream);
+            assert!(request.contains("Accept: application/json, text/event-stream\r\n"));
+
+            let body = concat!(
+                ": keepalive\n\n",
+                "event: message\n",
+                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",",
+                "\"params\":{\"level\":\"info\"}}\n\n",
+                "event: message\n",
+                "data: {\"jsonrpc\":\"2.0\",\n",
+                "data: \"id\":7,\"result\":{\"ok\":true}}\n\n",
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n",
+                body.len(),
+                body
+            )
+            .expect("response should write");
+            stream.flush().expect("SSE response should flush");
+            release_server_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("proxy should return before the SSE stream closes");
+            write!(stream, "0\r\n\r\n").expect("terminating chunk should write");
+        });
+
+        let config = CharioxMcpServerConfig {
+            name: "browser".to_string(),
+            transport: CharioxMcpTransportConfig::StreamableHttp {
+                url: format!("http://{address}/mcp"),
+                bearer_token_env_var: None,
+                bearer_token_credential: None,
+                http_headers: BTreeMap::new(),
+                credential_http_headers: BTreeMap::new(),
+                env_http_headers: BTreeMap::new(),
+            },
+            enabled: true,
+            required: false,
+            startup_timeout_sec: None,
+            tool_timeout_sec: Some(2),
+            enabled_tools: None,
+            disabled_tools: None,
+            tools: BTreeMap::new(),
+        };
+
+        let (response_tx, response_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            response_tx
+                .send(dispatch_provider_mcp_proxy_request(
+                    "provider-run-http-sse-test",
+                    "session-http-sse-test",
+                    &config,
+                    json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}),
+                ))
+                .expect("test response receiver should remain connected");
+        });
+        let response = response_rx.recv_timeout(Duration::from_secs(1));
+        release_server_tx
+            .send(())
+            .expect("test server should remain connected");
+        client.join().expect("test client should finish");
+        let response = response
+            .expect("proxy should return before the SSE stream closes")
+            .expect("proxy should parse matching SSE response");
+        assert_eq!(
+            response,
+            json!({"jsonrpc": "2.0", "id": 7, "result": {"ok": true}})
+        );
+        server.join().expect("test server should finish");
+    }
+
+    #[test]
+    fn streamable_http_proxy_uses_configured_http_proxy_for_external_mcp() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP proxy should bind");
+        let address = listener.local_addr().expect("HTTP proxy address");
+        listener
+            .set_nonblocking(true)
+            .expect("HTTP proxy should become nonblocking");
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .expect("proxy read timeout");
+                        let request = read_http_request(&mut stream);
+                        assert!(request
+                            .starts_with("POST http://unresolvable.invalid/mcp HTTP/1.1\r\n"));
+                        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"proxied":true}}"#;
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .expect("proxy response should write");
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            panic!("MCP request did not use the configured HTTP proxy");
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("HTTP proxy accept failed: {error}"),
+                }
+            }
+        });
+
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", format!("http://{address}"));
+
+        let config = CharioxMcpServerConfig::streamable_http(
+            "external",
+            "http://unresolvable.invalid/mcp".to_string(),
+        );
+        let response = dispatch_provider_mcp_proxy_request(
+            "provider-run-http-proxy-test",
+            "session-http-proxy-test",
+            &config,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        )
+        .expect("external MCP request should use the configured HTTP proxy");
+        assert_eq!(
+            response,
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"proxied": true}})
+        );
+        server.join().expect("HTTP proxy should finish");
+    }
+
+    #[test]
+    fn streamable_http_proxy_respects_no_proxy_for_external_mcp() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+        std::env::set_var("NO_PROXY", ".example.invalid");
+
+        let proxy = streamable_http::configured_proxy_for_url("http://mcp.example.invalid/api")
+            .expect("NO_PROXY should bypass malformed proxy configuration");
+        assert!(proxy.is_none());
+    }
+
+    #[test]
+    fn streamable_http_proxy_bypasses_bracketed_ipv6_loopback() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+
+        let proxy = streamable_http::configured_proxy_for_url("http://[::1]:43120/mcp")
+            .expect("IPv6 loopback should bypass malformed proxy configuration");
+        assert!(proxy.is_none());
+    }
+
+    #[test]
+    fn streamable_http_proxy_matches_bracketed_ipv6_no_proxy_host() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+        std::env::set_var("NO_PROXY", "2001:db8::1");
+
+        let proxy = streamable_http::configured_proxy_for_url("http://[2001:db8::1]:43120/mcp")
+            .expect("NO_PROXY should match a bracketed IPv6 URL host");
+        assert!(proxy.is_none());
+    }
+
+    #[test]
+    fn streamable_https_proxy_prefers_https_proxy_configuration() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+        std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:3128");
+
+        let proxy = streamable_http::configured_proxy_for_url("https://mcp.example.invalid/api")
+            .expect("HTTPS_PROXY should take precedence over HTTP_PROXY");
+        assert!(proxy.is_some());
+    }
+
+    #[test]
+    fn streamable_http_proxy_rejects_malformed_proxy_configuration() {
+        let _environment_lock = crate::env_lock::lock();
+        let _environment_restore = EnvironmentRestore::capture(&[
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ]);
+        for name in [
+            "ALL_PROXY",
+            "all_proxy",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
+
+        let error = streamable_http::configured_proxy_for_url("http://mcp.example.invalid/api")
+            .expect_err("malformed proxy configuration must fail closed");
+        match error {
+            DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "mcp.proxy.http.proxy");
+                assert!(message.contains("HTTP_PROXY"));
+                assert!(!message.contains("secret"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

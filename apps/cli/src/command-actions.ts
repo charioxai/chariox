@@ -23,6 +23,7 @@ import {
   type ProviderCommandHandlerDeps,
 } from "./provider-command-handlers.js"
 import {
+  handleAccountSlashCommand,
   handleModelSlashCommand,
   handleModeSlashCommand,
   handlePermissionsSlashCommand,
@@ -218,6 +219,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     command: Extract<ParsedSlashCommand, { kind: "model" }>,
   ): Promise<void> => {
     await handleModelSlashCommand(deps, command)
+  }
+
+  const handleAccountCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "account" }>,
+  ): Promise<void> => {
+    await handleAccountSlashCommand(deps, command)
   }
 
   const handleVariantCommand = async (
@@ -449,6 +456,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   return {
     handleSessionCommand,
     handleProviderCommand,
+    handleAccountCommand,
     handleModelCommand,
     handleVariantCommand,
     handleModeCommand,

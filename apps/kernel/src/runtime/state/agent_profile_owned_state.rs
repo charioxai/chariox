@@ -53,23 +53,44 @@ impl KernelRuntimeOwnedState {
             agent_id,
             "update agent profile",
         )?;
-        let target_provider = provider
-            .as_deref()
-            .unwrap_or_else(|| agent.provider())
-            .to_string();
-        let target_model = model
-            .as_deref()
-            .or_else(|| agent.model())
-            .map(str::to_string);
-        let requested_account_profile = account_profile
-            .as_deref()
-            .unwrap_or_else(|| agent.provider_account_profile());
+        // While a substitute is active, profile edits retarget the stored
+        // primary snapshot; unspecified fields resolve against that snapshot,
+        // not the running substitute.
+        let editing_substituted_primary = agent.active_substitute_index().is_some();
+        let base_provider = if editing_substituted_primary {
+            agent.primary_provider()
+        } else {
+            agent.provider()
+        };
+        let base_model = if editing_substituted_primary {
+            agent.primary_model()
+        } else {
+            agent.model()
+        };
+        let base_effort = if editing_substituted_primary {
+            agent.primary_effort()
+        } else {
+            agent.effort()
+        };
+        let base_account_profile = if editing_substituted_primary {
+            agent.primary_account_profile().unwrap_or("default")
+        } else {
+            agent.provider_account_profile()
+        };
+        let target_provider = provider.as_deref().unwrap_or(base_provider).to_string();
+        let target_model = model.as_deref().or(base_model).map(str::to_string);
+        let requested_account_profile = account_profile.as_deref().unwrap_or(base_account_profile);
         let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
+            let account_owner_user_id =
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config_projection.snapshot(),
+                    agent.owner_user_id(),
+                );
             self.provider_account_profiles
                 .get(
-                    agent.owner_user_id(),
+                    &account_owner_user_id,
                     &target_provider,
                     requested_account_profile,
                 )?
@@ -79,8 +100,32 @@ impl KernelRuntimeOwnedState {
         };
         let target_effort = match effort.as_ref() {
             Some(value) => value.as_deref(),
-            None => agent.effort(),
+            None => base_effort,
         };
+        if editing_substituted_primary {
+            // The running substitute is left untouched and returning to
+            // primary lands on the edited values.
+            let primary_changed = target_provider != agent.primary_provider()
+                || target_model.as_deref() != agent.primary_model()
+                || target_account_profile != agent.primary_account_profile().unwrap_or("default")
+                || target_effort != agent.primary_effort();
+            let agent = if primary_changed {
+                self.agent_store.set_agent_primary_profile_snapshot(
+                    agent_id,
+                    &target_provider,
+                    target_model,
+                    target_effort.map(str::to_string),
+                    Some(target_account_profile),
+                )?
+            } else {
+                agent
+            };
+            return Ok(owned::OwnedAgentProfileUpdate {
+                agent,
+                terminated_run_ids: Vec::new(),
+                remote_update: None,
+            });
+        }
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()
             || target_account_profile != agent.provider_account_profile();
@@ -252,9 +297,11 @@ impl KernelRuntimeOwnedState {
                 provider,
                 model,
                 variant,
+                account_profile,
                 kernel_id,
                 worktree_id,
             } => {
+                let provider = provider.trim().to_string();
                 let kernel_id = kernel_id.and_then(|value| {
                     let trimmed = value.trim();
                     (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -274,9 +321,79 @@ impl KernelRuntimeOwnedState {
                         });
                     }
                 }
+                // Authority seam: a substitute must bind a real stable account
+                // profile from the kernel account inventory. An omitted alias
+                // resolves the provider's current default to its stable
+                // profile_id now, so the substitute never follows a later
+                // default change and can never launch via the literal default
+                // sentinel. Unregistered providers (no inventory family) keep
+                // historical pass-through semantics.
+                let requested_account = account_profile
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let account_profile = if crate::provider::canonical_provider_family(&provider)
+                    .is_some_and(|family| matches!(family, "codex" | "claude" | "opencode"))
+                {
+                    let requested = requested_account.unwrap_or("default");
+                    let account_owner_user_id =
+                        crate::account_profile::provider_account_authority_owner_user_id(
+                            &self.config_projection.snapshot(),
+                            agent.owner_user_id(),
+                        );
+                    match self.provider_account_profiles.get(
+                        &account_owner_user_id,
+                        &provider,
+                        requested,
+                    ) {
+                        Ok(profile) => Some(profile.profile_id),
+                        Err(_error) if requested_account.is_none() => {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "add agent substitute",
+                                message: format!(
+                                    "no usable account profile is registered for `{provider}`; \
+                                     register one first or bind an explicit account alias"
+                                ),
+                            });
+                        }
+                        Err(_) => {
+                            // Never echo stable internal profile IDs (or the
+                            // literal default sentinel) back to users. If the
+                            // selection matches an account registered under a
+                            // different provider, surface its public label as
+                            // a hint instead.
+                            let cross_provider_hint = self
+                                .provider_account_profiles
+                                .list(&account_owner_user_id, None)
+                                .ok()
+                                .and_then(|profiles| {
+                                    profiles
+                                        .iter()
+                                        .find(|profile| profile.profile_id == requested)
+                                        .map(|profile| {
+                                            format!(
+                                                " The account alias “{}” is registered for {}.",
+                                                profile.label, profile.provider
+                                            )
+                                        })
+                                })
+                                .unwrap_or_default();
+                            return Err(DaemonError::LocalTransport {
+                                operation: "add agent substitute",
+                                message: format!(
+                                    "no {provider} account matches that selection{cross_provider_hint}; \
+                                     choose an available account alias"
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    requested_account.map(str::to_string)
+                };
                 self.agent_store.add_agent_substitute(
                     agent_id,
                     crate::agent::AgentSubstituteProfile::new(provider, model, variant)
+                        .with_account_profile(account_profile)
                         .with_kernel_id(kernel_id)
                         .with_worktree_id(worktree_id),
                 )

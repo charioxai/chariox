@@ -1,6 +1,10 @@
 use super::*;
 
 impl CharioxConnectorAdapterRegistry {
+    pub(crate) fn bundled_roots() -> Vec<PathBuf> {
+        bundled_adapter_roots()
+    }
+
     pub fn user_root() -> Option<PathBuf> {
         chariox_home().map(|home| home.join("connectors").join("adapters"))
     }

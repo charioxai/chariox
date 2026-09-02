@@ -5,6 +5,7 @@ import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
+  WorkflowRun,
 } from "./cli-types.js"
 import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
 
@@ -140,6 +141,43 @@ test("kernel session snapshot refreshes panes when session shape changes", async
   ])
 })
 
+test("kernel session snapshot preserves an observed terminal workflow run", async () => {
+  const harness = createHarness({
+    session: session({
+      workflow_runs: [workflowRun("completed", "Completed"), workflowRun("active", "Running")],
+    }),
+  })
+
+  await harness.controller.apply(session({
+    workflow_runs: [workflowRun("active", "Running")],
+  }), null)
+
+  assert.deepEqual(harness.session.workflow_runs?.map((run) => run.id), ["active", "completed"])
+})
+
+test("kernel session snapshot does not resurrect an omitted non-terminal workflow run", async () => {
+  const harness = createHarness({
+    session: session({ workflow_runs: [workflowRun("stale-active", "Running")] }),
+  })
+
+  await harness.controller.apply(session({ workflow_runs: [] }), null)
+
+  assert.deepEqual(harness.session.workflow_runs, [])
+})
+
+test("kernel session snapshot uses its own terminal run without duplication", async () => {
+  const harness = createHarness({
+    session: session({ workflow_runs: [workflowRun("completed", "Completed")] }),
+  })
+
+  await harness.controller.apply(session({
+    workflow_runs: [workflowRun("completed", "Completed", { completed_at_ms: 20 })],
+  }), null)
+
+  assert.equal(harness.session.workflow_runs?.length, 1)
+  assert.equal(harness.session.workflow_runs?.[0]?.completed_at_ms, 20)
+})
+
 function createHarness(options: {
   session?: RuntimeSession
   providerRun?: RuntimeProviderRun | null
@@ -235,6 +273,28 @@ function activePrompt() {
     target_agent_id: "agent-1",
     prompt: "build",
     status: "running",
+  }
+}
+
+function workflowRun(
+  id: string,
+  status: WorkflowRun["status"],
+  overrides: Partial<WorkflowRun> = {},
+): WorkflowRun {
+  return {
+    id,
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    entry_node_id: "node-1",
+    status,
+    invocation_prompt: null,
+    active_node_run_id: null,
+    node_runs: [],
+    messages: [],
+    created_at_ms: 10,
+    started_at_ms: null,
+    completed_at_ms: status === "Running" ? null : 11,
+    ...overrides,
   }
 }
 

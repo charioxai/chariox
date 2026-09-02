@@ -97,7 +97,7 @@ fn multi_edge_completion_routes_only_matching_edge_id() {
 }
 
 #[test]
-fn unmatched_routed_edge_schedules_correction_instead_of_completing_run() {
+fn unmatched_routed_edge_fails_without_automatic_retry() {
     let mut service = SessionService::new(&test_config());
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -161,17 +161,16 @@ fn unmatched_routed_edge_schedules_correction_instead_of_completing_run() {
             Some(completion_with_message(routed.to_string())),
             None,
         )
-        .expect("invalid route should become a corrective workflow turn");
+        .expect("invalid route should become a visible failure");
 
-    assert_eq!(completion.workflow_run.status(), WorkflowRunStatus::Waiting);
+    assert_eq!(completion.workflow_run.status(), WorkflowRunStatus::Failed);
     assert!(completion.workflow_run.final_output().is_none());
-    assert_eq!(completion.dispatches.len(), 1);
-    assert_eq!(completion.dispatches[0].node_run.node_id(), router.id());
+    assert!(completion.dispatches.is_empty());
     let failure = completion
         .handoff_validation_failure
         .expect("invalid route should report a validation failure");
     assert_eq!(failure.edge_id, "nonexistent-edge");
-    assert!(failure.retry_scheduled);
+    assert!(!failure.message.is_empty());
 }
 
 #[test]

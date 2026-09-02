@@ -135,9 +135,11 @@ test("workflow trigger deployment bind request matches kernel shape", () => {
     setupId: "setup-1",
     operationKey: "deployment-setup:setup-1:runtime",
     deploymentId: "deployment-1",
+    environmentId: "environment-1",
     releaseId: "release-1",
     packageDigest: `sha256:${"a".repeat(64)}`,
     desiredRevision: 7,
+    callerClaimsPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n",
   }), {
     BindWorkflowPublicationDeployment: {
       session_id: "session-1",
@@ -145,9 +147,11 @@ test("workflow trigger deployment bind request matches kernel shape", () => {
       setup_id: "setup-1",
       operation_key: "deployment-setup:setup-1:runtime",
       deployment_id: "deployment-1",
+      environment_id: "environment-1",
       release_id: "release-1",
       package_digest: `sha256:${"a".repeat(64)}`,
       desired_revision: 7,
+      caller_claims_public_key_pem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n",
     },
   })
 })

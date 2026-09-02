@@ -53,7 +53,7 @@ test("publication entrypoint keeps builder actions outside credential and transp
   assert.doesNotMatch(entrypoint, /printf '%s' "\$value" > "\$path"/)
 })
 
-test("publication entrypoint imports every typed credential binding into runtime home", async () => {
+test("publication entrypoint imports legacy and single-account credential bindings into runtime home", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-credentials-"))
   const home = join(root, "home")
   const bindings = join(root, "bindings")
@@ -82,6 +82,140 @@ test("publication entrypoint imports every typed credential binding into runtime
     assert.equal((await stat(home)).mode & 0o777, 0o700)
     assert.equal((await stat(join(home, ".codex", "auth.json"))).mode & 0o077, 0)
     assert.equal((await stat(join(home, ".claude", ".credentials.json"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint imports only the designated default when multiple accounts share a provider", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-multi-account-"))
+  const home = join(root, "home")
+  const bindings = join(root, "bindings")
+  for (const [index, profileId] of [["000", "profile-main"], ["001", "profile-secondary"]]) {
+    const profile = join(bindings, index)
+    await mkdir(join(profile, "home", ".codex"), { recursive: true })
+    await writeFile(join(profile, "profile.json"), JSON.stringify({
+      kind: "provider",
+      provider: "codex",
+      profileId,
+    }))
+    await writeFile(join(profile, "home", ".codex", "auth.json"), profileId)
+  }
+  const accounts = [
+    { provider: "codex", account_profile: "profile-main", label: "Main", home: `${bindings}/000/home` },
+    { provider: "codex", account_profile: "profile-secondary", label: "Secondary", home: `${bindings}/001/home` },
+  ]
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: JSON.stringify({
+          schema_version: 1,
+          defaults: [{ provider: "codex", account_profile: "profile-main" }],
+          accounts,
+        }),
+      },
+    })
+    assert.equal(await readFile(join(home, ".codex", "auth.json"), "utf8"), "profile-main")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint stages root-only account bindings into the ephemeral runtime home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-accounts-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  const sourceProfile = join(sources, "000")
+  await mkdir(join(sourceProfile, "home", ".codex"), { recursive: true })
+  await writeFile(join(sourceProfile, "profile.json"), JSON.stringify({
+    kind: "provider",
+    provider: "codex",
+    profileId: "profile-secondary",
+  }), { mode: 0o600 })
+  await writeFile(join(sourceProfile, "home", ".codex", "auth.json"), "secondary-fixture", {
+    mode: 0o600,
+  })
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+        CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: JSON.stringify({
+          schema_version: 1,
+          defaults: [],
+          accounts: [{
+            provider: "codex",
+            account_profile: "profile-secondary",
+            label: "Secondary",
+            home: `${bindings}/000/home`,
+          }],
+        }),
+      },
+    })
+    assert.equal(
+      await readFile(join(bindings, "000", "home", ".codex", "auth.json"), "utf8"),
+      "secondary-fixture",
+    )
+    assert.equal(await readFile(join(sourceProfile, "home", ".codex", "auth.json"), "utf8"), "secondary-fixture")
+    assert.equal((await stat(bindings)).mode & 0o777, 0o700)
+    assert.equal((await stat(join(bindings, "000", "home", ".codex", "auth.json"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint keeps integration secrets scoped to runtime credential bindings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-integration-binding-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  const sourceProfile = join(sources, "000")
+  await mkdir(join(sourceProfile, "home"), { recursive: true })
+  await writeFile(join(sourceProfile, "profile.json"), JSON.stringify({
+    kind: "integration",
+    integration: "github-deployment-acceptance",
+    profileId: "profile-github",
+  }), { mode: 0o600 })
+  await writeFile(join(sourceProfile, "home", "secret"), "opaque-bearer-fixture", { mode: 0o600 })
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+      },
+    })
+    assert.equal(await readFile(join(bindings, "000", "home", "secret"), "utf8"), "opaque-bearer-fixture")
+    await assert.rejects(readFile(join(home, "secret")), { code: "ENOENT" })
+    assert.equal((await stat(join(bindings, "000", "home", "secret"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint rejects hidden state in staged account binding roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-account-state-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  await mkdir(join(sources, "000", "home", ".codex"), { recursive: true })
+  await mkdir(bindings, { recursive: true })
+  await writeFile(join(bindings, ".stale"), "must-not-be-ignored")
+  try {
+    await assert.rejects(
+      execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+        env: {
+          ...publicationEntrypointEnvironment({ root, home, bindings }),
+          CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 70)
+        assert.match(error.stderr, /credential bindings destination must be empty/)
+        return true
+      },
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -154,6 +288,29 @@ test("publication entrypoint rejects unsafe credential profile and destination p
       await rm(root, { recursive: true, force: true })
     }
   }
+})
+
+test("publication control state rejects an arbitrary mount or missing stable identities", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-control-guard-"))
+  const home = join(root, "home")
+  try {
+    for (const [control, expected] of [
+      [join(home, "retained"), /publication control state must use the dedicated mount/],
+      ["", /publication control state must use the dedicated mount/],
+      ["/var/lib/chariox/publication-control", /requires stable kernel, machine, runtime key and workspace/],
+    ]) {
+      await assert.rejects(execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+        env: {
+          ...publicationEntrypointEnvironment({ root, home, bindings: join(root, "bindings") }),
+          CHARIOX_PUBLICATION_CONTROL_STATE_DIR: control,
+          CHARIOX_DAEMON_ID: "",
+          CHARIOX_MACHINE_ID: "",
+          CHARIOX_PUBLICATION_RUNTIME_KEY: "",
+          CHARIOX_PUBLICATION_RUNTIME_WORKSPACE: "",
+        },
+      }), (error) => error.code === 70 && expected.test(error.stderr))
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 function publicationEntrypointEnvironment({ root, home, bindings }) {

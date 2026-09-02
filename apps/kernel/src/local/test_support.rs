@@ -308,16 +308,31 @@ impl LocalRouterTestHarness {
         agent_id: &str,
         label: &str,
     ) {
-        let provider_run_id = self.with_app(|app| {
-            app.providers()
-                .get_run_for_agent(session_id, agent_id)
-                .unwrap_or_else(|| {
-                    panic!("provider run should exist for workflow test agent `{agent_id}`")
-                })
-                .id()
-                .to_string()
-        });
+        let provider_run_id = self.wait_for_active_prompt_provider_run(session_id, agent_id);
         self.fan_out_workflow_test_output_to_provider(session_id, &provider_run_id, label);
+    }
+
+    fn wait_for_active_prompt_provider_run(&self, session_id: &str, agent_id: &str) -> String {
+        self.runtime.block_on(async {
+            for _ in 0..500 {
+                let provider_run_id = {
+                    let app = self.app.lock().await;
+                    app.sessions()
+                        .get_session(session_id)
+                        .expect("workflow test session should resolve")
+                        .active_prompt_for_agent(agent_id)
+                        .and_then(|prompt| prompt.durable_delivery_provider_run_id())
+                        .map(str::to_string)
+                };
+                if let Some(provider_run_id) = provider_run_id {
+                    return provider_run_id;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!(
+                "active workflow prompt for agent `{agent_id}` in session `{session_id}` should bind to a provider run"
+            );
+        })
     }
 
     fn fan_out_workflow_test_output_to_provider(

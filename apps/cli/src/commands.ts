@@ -13,6 +13,7 @@ export type ParsedSlashCommand =
       value: string
     }
   | { kind: "provider"; raw: string; value: string }
+  | { kind: "account"; raw: string; value: string }
   | { kind: "model"; raw: string; value: string }
   | { kind: "variant"; raw: string; value: string }
   | { kind: "mode"; raw: string; value: string }
@@ -59,6 +60,7 @@ export type SlashCommandHandlers = {
   onAttachment: (command: Extract<ParsedSlashCommand, { kind: "attachment" }>) => Promise<unknown> | unknown
   onSession: (command: Extract<ParsedSlashCommand, { kind: "session" }>) => Promise<unknown> | unknown
   onProvider: (command: Extract<ParsedSlashCommand, { kind: "provider" }>) => Promise<unknown> | unknown
+  onAccount?: (command: Extract<ParsedSlashCommand, { kind: "account" }>) => Promise<unknown> | unknown
   onModel: (command: Extract<ParsedSlashCommand, { kind: "model" }>) => Promise<unknown> | unknown
   onVariant: (command: Extract<ParsedSlashCommand, { kind: "variant" }>) => Promise<unknown> | unknown
   onMode: (command: Extract<ParsedSlashCommand, { kind: "mode" }>) => Promise<unknown> | unknown
@@ -124,6 +126,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "provider",
       raw: trimmed,
       value: trimmed.replace(/^\/provider\s*/, "").trim(),
+    }
+  }
+  if (trimmed.startsWith("/account")) {
+    return {
+      kind: "account",
+      raw: trimmed,
+      value: trimmed.replace(/^\/account\s*/, "").trim(),
     }
   }
   if (trimmed.startsWith("/model")) {
@@ -429,6 +438,9 @@ export async function executeSlashCommand(
       break
     case "provider":
       await handlers.onProvider(command)
+      break
+    case "account":
+      await handlers.onAccount?.(command)
       break
     case "model":
       await handlers.onModel(command)

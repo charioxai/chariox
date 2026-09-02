@@ -1,8 +1,13 @@
-use std::fs::OpenOptions;
+use std::collections::BTreeSet;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
+
+use wait_timeout::ChildExt;
+use zeroize::Zeroizing;
 
 use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
@@ -14,10 +19,14 @@ use super::model::{
 };
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
+mod broker;
+mod provider_inputs;
 mod state;
 #[cfg(test)]
 mod tests;
 
+use broker::docker_command;
+use provider_inputs::home_provider_credential_sources;
 pub use state::{
     create_local_docker_slice_backup, create_local_docker_slice_backup_live,
     default_local_docker_saved_state, remove_local_docker_saved_state,
@@ -25,12 +34,40 @@ pub use state::{
     set_local_docker_default_saved_state,
 };
 
+pub fn initialize_managed_docker_broker() {
+    broker::initialize();
+}
+
+pub(crate) fn managed_docker_broker_configured() -> bool {
+    broker::configured()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDockerSliceRelay {
     pub relay_url: String,
     pub container_relay_url: Option<String>,
     pub relay_token: String,
+    pub owner_public_key: Option<String>,
     pub cloud_relay_config_json: Option<String>,
+}
+
+impl LocalDockerSliceRelay {
+    pub(crate) fn uses_shared_relay(&self) -> bool {
+        self.container_relay_url.is_some()
+    }
+
+    pub(crate) fn uses_private_relay(&self) -> bool {
+        !self.uses_shared_relay()
+    }
+
+    pub(crate) fn worker_discovery_config(&self, mut owner_config: DaemonConfig) -> DaemonConfig {
+        owner_config.relay_url = Some(self.relay_url.clone());
+        if self.uses_private_relay() {
+            owner_config.relay_token = Some(self.relay_token.clone());
+            owner_config.cloud_relay = None;
+        }
+        owner_config
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +94,11 @@ pub struct LocalDockerProviderAccount {
 
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
-const SLICE_DOCKER_PROVISIONER_ENV: &str = "CHARIOX_SLICE_DOCKER_PROVISIONER";
+const MANAGED_SLICE_DOCKER_PROVISIONER: &str =
+    "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh";
+const MAX_PROVIDER_CREDENTIAL_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PROVIDER_CREDENTIAL_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const GITHUB_TOKEN_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {
@@ -75,7 +116,8 @@ impl LocalDockerSliceOptions {
                 .as_deref()
                 .map(expand_user_path_for_slice),
             saved_home_archive: None,
-            allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
+            allow_unconfined_seccomp: managed_docker_broker_configured()
+                || linux.allow_unconfined_seccomp.unwrap_or(false),
             memory_mb: linux.memory_mb,
             cpus: linux.cpus.clone(),
             screen_width: linux.screen_width.unwrap_or(1280),
@@ -123,42 +165,97 @@ pub fn run_local_docker_slice_action(
     }
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
-    command.arg(match action {
+    let action_name = match action {
         LocalDockerSliceAction::Provision => "provision",
         LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
         LocalDockerSliceAction::RemoveProviderAuth => "remove-provider-auth",
         LocalDockerSliceAction::Stop => "stop",
         LocalDockerSliceAction::Destroy => "destroy",
-    });
-    configure_local_docker_slice_command(&mut command, record, relay, options)?;
+    };
+    command.arg(action_name);
+    configure_local_docker_slice_command(
+        &mut command,
+        record,
+        relay,
+        options,
+        action == LocalDockerSliceAction::Provision,
+    )?;
+    let mut broker_inputs = Vec::new();
+    if let (true, true, Some(home)) = (
+        broker::configured(),
+        action == LocalDockerSliceAction::ImportProviderAuth,
+        std::env::var_os("HOME"),
+    ) {
+        let home = PathBuf::from(home);
+        for (environment, source, name) in home_provider_credential_sources(&home, provider) {
+            configure_provider_input(&mut command, &mut broker_inputs, environment, &source, name)?;
+        }
+    }
     if let Some(provider) = provider {
         command.env("CHARIOX_SLICE_AUTH_PROVIDER", provider);
     }
-    if let Some(account) = provider_account {
-        command
-            .env("CHARIOX_SLICE_ACCOUNT_OWNER", &account.owner_path_component)
-            .env("CHARIOX_SLICE_ACCOUNT_PROFILE", &account.profile_id);
-        if let Some(codex_home) = account.environment.get("CODEX_HOME") {
-            command.env(
-                "CHARIOX_SLICE_CODEX_AUTH",
-                Path::new(codex_home).join("auth.json"),
-            );
-        }
-        if let Some(data_home) = account.environment.get("XDG_DATA_HOME") {
-            command.env(
-                "CHARIOX_SLICE_OPENCODE_AUTH",
-                Path::new(data_home).join("opencode").join("auth.json"),
-            );
-        }
-        if let Some(claude_config_dir) = account.environment.get("CLAUDE_CONFIG_DIR") {
-            let root = Path::new(claude_config_dir);
+    if action == LocalDockerSliceAction::ImportProviderAuth {
+        if let Some(account) = provider_account {
             command
-                .env("CHARIOX_SLICE_CLAUDE_SETTINGS", root.join("settings.json"))
-                .env("CHARIOX_SLICE_CLAUDE_STATS", root.join("stats-cache.json"))
-                .env(
-                    "CHARIOX_SLICE_CLAUDE_CREDENTIALS",
-                    root.join(".credentials.json"),
-                );
+                .env("CHARIOX_SLICE_ACCOUNT_OWNER", &account.owner_path_component)
+                .env("CHARIOX_SLICE_ACCOUNT_PROFILE", &account.profile_id);
+            if let Some(codex_home) = account.environment.get("CODEX_HOME") {
+                let source = Path::new(codex_home).join("auth.json");
+                configure_provider_input(
+                    &mut command,
+                    &mut broker_inputs,
+                    "CHARIOX_SLICE_CODEX_AUTH",
+                    &source,
+                    "codex-auth.json",
+                )?;
+            }
+            if let Some(data_home) = account.environment.get("XDG_DATA_HOME") {
+                let source = Path::new(data_home).join("opencode").join("auth.json");
+                configure_provider_input(
+                    &mut command,
+                    &mut broker_inputs,
+                    "CHARIOX_SLICE_OPENCODE_AUTH",
+                    &source,
+                    "opencode-auth.json",
+                )?;
+            }
+            if let Some(claude_config_dir) = account.environment.get("CLAUDE_CONFIG_DIR") {
+                let root = Path::new(claude_config_dir);
+                for (environment, source, name) in [
+                    (
+                        "CHARIOX_SLICE_CLAUDE_SETTINGS",
+                        root.join("settings.json"),
+                        "claude-settings.json",
+                    ),
+                    (
+                        "CHARIOX_SLICE_CLAUDE_STATS",
+                        root.join("stats-cache.json"),
+                        "claude-stats.json",
+                    ),
+                    (
+                        "CHARIOX_SLICE_CLAUDE_CREDENTIALS",
+                        root.join(".credentials.json"),
+                        "claude-credentials.json",
+                    ),
+                ] {
+                    configure_provider_input(
+                        &mut command,
+                        &mut broker_inputs,
+                        environment,
+                        &source,
+                        name,
+                    )?;
+                }
+            }
+        }
+        if broker::configured() && matches!(provider, Some("all" | "github")) {
+            let github_token = bounded_github_token("gh", GITHUB_TOKEN_COMMAND_TIMEOUT);
+            replace_broker_input(
+                &mut broker_inputs,
+                "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
+                "github-token.txt",
+                github_token,
+            )?;
         }
     }
 
@@ -193,19 +290,43 @@ pub fn run_local_docker_slice_action(
                 log_path.display()
             ),
         })?;
-    let status = command
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr_log))
-        .status()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to run {} {} (log: {}): {error}",
-                script.display(),
-                action.as_str(),
-                log_path.display()
-            ),
-        })?;
+    let status =
+        if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
+            let output = output.map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.local_docker",
+                message: format!(
+                    "failed to use the managed slice Docker broker (log: {}): {error}",
+                    log_path.display()
+                ),
+            })?;
+            let mut stdout_log = log_file;
+            let mut stderr_log = stderr_log;
+            stdout_log
+                .write_all(&output.stdout)
+                .and_then(|()| stderr_log.write_all(&output.stderr))
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.local_docker",
+                    message: format!(
+                        "failed to write broker output {}: {error}",
+                        log_path.display()
+                    ),
+                })?;
+            output.status
+        } else {
+            command
+                .stdout(Stdio::from(log_file))
+                .stderr(Stdio::from(stderr_log))
+                .status()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.local_docker",
+                    message: format!(
+                        "failed to run {} {} (log: {}): {error}",
+                        script.display(),
+                        action.as_str(),
+                        log_path.display()
+                    ),
+                })?
+        };
     if status.success() {
         return Ok(());
     }
@@ -220,6 +341,201 @@ pub fn run_local_docker_slice_action(
             command_log_preview(&log_path)
         ),
     })
+}
+
+fn configure_provider_input(
+    command: &mut Command,
+    broker_inputs: &mut Vec<broker::ProvisionerInput>,
+    environment: &'static str,
+    source: &Path,
+    name: &'static str,
+) -> Result<(), DaemonError> {
+    if !broker::configured() {
+        command.env(environment, source);
+        return Ok(());
+    }
+    let contents = read_provider_credential_no_symlinks(source)?;
+    replace_broker_input(
+        broker_inputs,
+        environment,
+        name,
+        contents.map(Zeroizing::new),
+    )
+}
+
+fn replace_broker_input(
+    broker_inputs: &mut Vec<broker::ProvisionerInput>,
+    environment: &'static str,
+    name: &'static str,
+    contents: Option<Zeroizing<Vec<u8>>>,
+) -> Result<(), DaemonError> {
+    broker_inputs.retain(|input| input.environment != environment);
+    let Some(contents) = contents else {
+        return Ok(());
+    };
+    let total = broker_inputs
+        .iter()
+        .map(|input| input.contents.len())
+        .sum::<usize>()
+        .saturating_add(contents.len());
+    if total > MAX_PROVIDER_CREDENTIAL_TOTAL_BYTES {
+        return Err(local_docker_error(
+            "provider credentials exceed the managed broker transfer limit",
+        ));
+    }
+    broker_inputs.push(broker::ProvisionerInput {
+        environment,
+        name,
+        contents,
+    });
+    Ok(())
+}
+
+fn bounded_github_token(
+    program: impl AsRef<std::ffi::OsStr>,
+    timeout: Duration,
+) -> Option<Zeroizing<Vec<u8>>> {
+    let mut child = Command::new(program)
+        .args(["auth", "token", "--hostname", "github.com"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut contents = Zeroizing::new(Vec::new());
+        stdout
+            .by_ref()
+            .take((MAX_PROVIDER_CREDENTIAL_BYTES + 1) as u64)
+            .read_to_end(&mut contents)
+            .ok()?;
+        Some(contents)
+    });
+    let status = match child.wait_timeout(timeout).ok()? {
+        Some(status) => status,
+        None => {
+            let _ = crate::runtime::process_health::terminate_process_tree(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return None;
+        }
+    };
+    let contents = reader.join().ok().flatten()?;
+    (status.success()
+        && contents.len() <= MAX_PROVIDER_CREDENTIAL_BYTES
+        && !contents.iter().all(u8::is_ascii_whitespace))
+    .then_some(contents)
+}
+
+#[cfg(unix)]
+fn read_provider_credential_no_symlinks(source: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Component;
+
+    if !source.is_absolute() {
+        return Err(local_docker_error(
+            "managed provider credential paths must be absolute",
+        ));
+    }
+    let components = source
+        .components()
+        .filter_map(|component| match component {
+            Component::RootDir => None,
+            Component::Normal(name) => Some(Ok(name)),
+            _ => Some(Err(local_docker_error(
+                "managed provider credential path is not normalized",
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if components.is_empty() {
+        return Err(local_docker_error(
+            "managed provider credential path has no file name",
+        ));
+    }
+    let root = CString::new("/").expect("root path has no NUL");
+    let root_fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if root_fd < 0 {
+        return Err(local_docker_error(format!(
+            "failed to open provider credential root: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let mut directory = unsafe { OwnedFd::from_raw_fd(root_fd) };
+    for (index, component) in components.iter().enumerate() {
+        let component = CString::new(component.as_bytes()).map_err(|_| {
+            local_docker_error("managed provider credential path contains a NUL byte")
+        })?;
+        let last = index + 1 == components.len();
+        let flags = if last {
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
+        } else {
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW
+        };
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), component.as_ptr(), flags) };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(local_docker_error(format!(
+                "failed to open provider credential without symlinks {}: {error}",
+                source.display()
+            )));
+        }
+        let opened = unsafe { OwnedFd::from_raw_fd(fd) };
+        if last {
+            let file = File::from(opened);
+            let metadata = file.metadata().map_err(|error| {
+                local_docker_error(format!(
+                    "failed to inspect opened provider credential {}: {error}",
+                    source.display()
+                ))
+            })?;
+            if !metadata.is_file()
+                || metadata.nlink() != 1
+                || metadata.len() > MAX_PROVIDER_CREDENTIAL_BYTES as u64
+            {
+                return Err(local_docker_error(format!(
+                    "provider credential is not a bounded singly-linked regular file: {}",
+                    source.display()
+                )));
+            }
+            let mut contents = Vec::with_capacity(metadata.len() as usize);
+            file.take((MAX_PROVIDER_CREDENTIAL_BYTES + 1) as u64)
+                .read_to_end(&mut contents)
+                .map_err(|error| {
+                    local_docker_error(format!(
+                        "failed to read opened provider credential {}: {error}",
+                        source.display()
+                    ))
+                })?;
+            if contents.len() > MAX_PROVIDER_CREDENTIAL_BYTES {
+                return Err(local_docker_error(
+                    "provider credential grew beyond its limit",
+                ));
+            }
+            return Ok(Some(contents));
+        }
+        directory = opened;
+    }
+    unreachable!("provider credential components are nonempty")
+}
+
+#[cfg(not(unix))]
+fn read_provider_credential_no_symlinks(_source: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
+    Err(local_docker_error(
+        "managed provider credential transfer requires Unix",
+    ))
 }
 
 pub fn start_local_docker_slice_provider_login(
@@ -256,9 +572,9 @@ pub fn start_local_docker_slice_provider_login(
             "CHARIOX_SLICE_ACCOUNT_PROFILE",
             &provider_account.profile_id,
         );
-    configure_local_docker_slice_command(&mut command, record, None, options)?;
-    let output = command
-        .output()
+    configure_local_docker_slice_command(&mut command, record, None, options, false)?;
+    let output = broker::run_provisioner(&command, "start-provider-login", &[])
+        .unwrap_or_else(|| command.output())
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.auth.login",
             message: format!(
@@ -353,7 +669,7 @@ pub fn inspect_local_docker_slice_provider_auth(
     };
     let mut summaries = Vec::new();
     for (summary_provider, path) in checks {
-        let status = Command::new("docker")
+        let status = docker_command()
             .args(["exec", "-u", "slice", &container, "test", "-s", path])
             .status()
             .map_err(|error| DaemonError::LocalTransport {
@@ -379,7 +695,7 @@ pub fn inspect_local_docker_slice_provider_auth(
         }
     }
     if provider == "all" || provider == "github" {
-        let status = Command::new("docker")
+        let status = docker_command()
             .args([
                 "exec",
                 "-u",
@@ -470,7 +786,7 @@ pub fn inspect_local_docker_slice_host_runtime(
         return super::SliceHostRuntimeState::Unknown;
     }
     let container = local_docker_container_name(record);
-    let output = Command::new("docker")
+    let output = docker_command()
         .args([
             "inspect",
             "--format",
@@ -519,7 +835,7 @@ fn read_slice_log_file_entry(source: &str, path: &Path, tail_lines: usize) -> Sl
 fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> SliceLogEntry {
     let container = local_docker_container_name(record);
     let tail_lines_arg = tail_lines.to_string();
-    let output = Command::new("docker")
+    let output = docker_command()
         .args(["logs", "--tail", &tail_lines_arg, &container])
         .output();
     match output {
@@ -562,7 +878,7 @@ if [ "$found" -eq 0 ]; then
   printf '<no slice runtime logs>\n'
 fi
 "#;
-    let output = Command::new("docker")
+    let output = docker_command()
         .args([
             "exec",
             "-u",
@@ -618,18 +934,26 @@ fn configure_local_docker_slice_command(
     record: &SliceRecord,
     relay: Option<LocalDockerSliceRelay>,
     options: &LocalDockerSliceOptions,
+    provision: bool,
 ) -> Result<(), DaemonError> {
     let ports = LocalDockerSlicePorts::for_record(record);
     command
+        .env("CHARIOX_SLICE_ID", &record.id)
+        .env("CHARIOX_SLICE_OWNER_KERNEL_ID", &record.owner_kernel_id)
+        .env("CHARIOX_SLICE_OWNER_MACHINE_ID", &record.owner_machine_id)
         .env("CHARIOX_SLICE_NAME", local_docker_container_name(record))
+        .env(
+            "CHARIOX_SLICE_HOME_VOLUME",
+            format!("{}-home", local_docker_container_name(record)),
+        );
+    if !provision {
+        return Ok(());
+    }
+    command
         .env("CHARIOX_SLICE_DOCKER_IMAGE", &options.docker_image)
         .env(
             "CHARIOX_SLICE_BUILD_IMAGE",
             options.build_image.as_env_value(),
-        )
-        .env(
-            "CHARIOX_SLICE_HOME_VOLUME",
-            format!("{}-home", local_docker_container_name(record)),
         )
         .env("CHARIOX_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
         .env("CHARIOX_SLICE_CODEX_PORT", ports.codex.to_string())
@@ -692,6 +1016,12 @@ fn configure_local_docker_slice_command(
             .env("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", session_id)
             .env("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", &record.id);
     }
+    if std::env::var("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE")
+        .ok()
+        .is_some_and(|value| value == "1")
+    {
+        command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
+    }
     if let Some(memory_mb) = options.memory_mb {
         command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
     }
@@ -708,22 +1038,28 @@ fn configure_local_docker_slice_command(
         let LocalDockerSliceRelay {
             relay_token,
             container_relay_url,
+            owner_public_key,
             cloud_relay_config_json,
             ..
         } = relay;
         if let Some(cloud_relay_config_json) = cloud_relay_config_json {
-            let host_config_path =
-                write_cloud_relay_config_file(record, options, &cloud_relay_config_json)?;
-            command.env(
-                "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
-                host_config_path,
-            );
+            if !broker::configured() {
+                let host_config_path =
+                    write_cloud_relay_config_file(record, options, &cloud_relay_config_json)?;
+                command.env(
+                    "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
+                    host_config_path,
+                );
+            }
             command.env(
                 "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON",
                 cloud_relay_config_json,
             );
         }
         command.env("CHARIOX_SLICE_RELAY_TOKEN", relay_token);
+        if let Some(owner_public_key) = owner_public_key {
+            command.env("CHARIOX_SLICE_OWNER_PUBLIC_KEY", owner_public_key);
+        }
         if let Some(container_relay_url) = container_relay_url {
             command.env(
                 "CHARIOX_SLICE_RELAY_URL",
@@ -734,7 +1070,47 @@ fn configure_local_docker_slice_command(
     if let Some(workspace_mount) = record.workspace_mount.as_deref() {
         command.env("CHARIOX_SLICE_WORKSPACE", workspace_mount);
     }
+    if let Some(publication) = record.development_publication.as_ref() {
+        let destination_root = Path::new(&publication.destination_root);
+        if !destination_root.is_absolute() || publication.repository_paths.is_empty() {
+            return Err(local_docker_error(
+                "slice development publication has no safe repository mounts",
+            ));
+        }
+        let mut unique_paths = BTreeSet::new();
+        for (index, repository_path) in publication.repository_paths.iter().enumerate() {
+            let repository_path = Path::new(repository_path);
+            if !repository_path.is_absolute()
+                || repository_path.parent() != Some(destination_root)
+                || !unique_paths.insert(repository_path)
+            {
+                return Err(local_docker_error(
+                    "slice development repository mount escaped its publication",
+                ));
+            }
+            command.env(
+                format!("CHARIOX_SLICE_DEVELOPMENT_MOUNT_{index}"),
+                repository_path,
+            );
+        }
+        if !unique_paths.contains(Path::new(&publication.primary_repository_path)) {
+            return Err(local_docker_error(
+                "slice primary repository is not in its development mounts",
+            ));
+        }
+        command.env(
+            "CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT",
+            publication.repository_paths.len().to_string(),
+        );
+    }
     Ok(())
+}
+
+fn local_docker_error(message: impl Into<String>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "slice.local_docker",
+        message: message.into(),
+    }
 }
 
 fn write_cloud_relay_config_file(
@@ -822,6 +1198,7 @@ pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay
         relay_url: format!("ws://127.0.0.1:{}", ports.relay),
         container_relay_url: None,
         relay_token: local_docker_private_relay_token(record),
+        owner_public_key: None,
         cloud_relay_config_json: None,
     }
 }
@@ -890,7 +1267,7 @@ pub(super) fn ensure_local_docker_slice_ports_available(
 }
 
 pub(super) fn local_docker_container_is_running(record: &SliceRecord) -> bool {
-    let output = Command::new("docker")
+    let output = docker_command()
         .args(["ps", "--format", "{{.Names}}"])
         .output();
     let Ok(output) = output else {
@@ -911,15 +1288,14 @@ pub(super) fn run_local_docker_slice_screen(
     operation: &'static str,
 ) -> Result<(), DaemonError> {
     let container = local_docker_container_name(record);
-    let status = Command::new("docker")
-        .env(
-            "CHARIOX_SLICE_VIEWER_BACKEND",
-            record.display_backend().as_env_value(),
-        )
+    let viewer_backend = format!(
+        "CHARIOX_SLICE_VIEWER_BACKEND={}",
+        record.display_backend().as_env_value()
+    );
+    let status = docker_command()
+        .args(["exec", "-e"])
+        .arg(viewer_backend)
         .args([
-            "exec",
-            "-e",
-            "CHARIOX_SLICE_VIEWER_BACKEND",
             "-u",
             "slice",
             &container,
@@ -973,6 +1349,9 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
+    if broker::configured() {
+        return validate_linux_docker_slice_script(PathBuf::from(MANAGED_SLICE_DOCKER_PROVISIONER));
+    }
     if let Some(script) = std::env::var_os("CHARIOX_SLICE_DOCKER_PROVISIONER") {
         let script = expand_user_path_for_slice(&script.to_string_lossy());
         return validate_linux_docker_slice_script(script);
@@ -1066,7 +1445,7 @@ fn wait_for_docker_ready() -> bool {
 }
 
 fn docker_is_ready() -> bool {
-    Command::new("docker")
+    docker_command()
         .arg("info")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

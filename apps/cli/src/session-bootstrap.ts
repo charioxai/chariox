@@ -194,6 +194,11 @@ export async function bootstrapSession(
         agent_id: providerSettlement.targetAgent?.id ?? null,
         worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
       })
+    } else if (providerSettlement.reason === "credential_vault_locked") {
+      deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+      })
     }
   }
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
@@ -216,6 +221,10 @@ export async function bootstrapSession(
       session: hydratedSession,
       attachment,
       providerRun,
+      providerLaunchIssue: providerSettlement.action === "skipped"
+        && providerSettlement.reason === "credential_vault_locked"
+        ? "credential_vault_locked"
+        : null,
       createdSession,
       historyEntries: [],
       promptHistoryEntries: [],

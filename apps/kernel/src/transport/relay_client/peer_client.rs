@@ -115,7 +115,7 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
     .await
 }
 
-async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
+pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
     config: &crate::config::DaemonConfig,
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,

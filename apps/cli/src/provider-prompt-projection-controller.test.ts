@@ -38,6 +38,7 @@ test("provider prompt projection prefers provider run, then focused agent, then 
 
   assert.deepEqual(controller.currentProviderSelection(), {
     provider: "openai",
+    accountProfile: "default",
     model: "opencode/gpt-5.4",
     effort: "low",
   })
@@ -53,6 +54,7 @@ test("provider prompt projection prefers provider run, then focused agent, then 
 
   assert.deepEqual(controller.currentProviderSelection(), {
     provider: "codex",
+    accountProfile: "default",
     model: "openai/gpt-5.3-codex",
     effort: "medium",
   })
@@ -61,6 +63,7 @@ test("provider prompt projection prefers provider run, then focused agent, then 
 
   assert.deepEqual(controller.currentProviderSelection(), {
     provider: "codex",
+    accountProfile: "default",
     model: "openai/gpt-5.3-codex",
     effort: "medium",
   })

@@ -26,7 +26,6 @@ impl SessionService {
             next_workflow_endpoint_number: 0,
             next_workflow_node_number: 0,
             next_workflow_edge_number: 0,
-            next_workflow_run_number: 0,
             next_workflow_node_run_number: 0,
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
@@ -78,7 +77,8 @@ impl SessionService {
             self.host_daemon_id.clone(),
         );
         if let Some(project_id) = project_id {
-            debug_assert!(session.assign_project_id(project_id));
+            let assigned = session.assign_project_id(project_id);
+            debug_assert!(assigned);
         }
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
@@ -209,6 +209,28 @@ impl SessionService {
         self.restore_session_with_default_project_name_hint(session, None)
     }
 
+    pub(crate) fn commit_publication_runtime_configuration(
+        &mut self,
+        session: RuntimeSession,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let current = self
+            .store
+            .get(session.id())
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session.id().to_string(),
+            })?;
+        if !current.is_hidden()
+            || current.owner_user_id() != session.owner_user_id()
+            || current.host_daemon_id() != session.host_daemon_id()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "commit publication runtime configuration",
+                message: "publication runtime session ownership changed".to_string(),
+            });
+        }
+        Ok(self.store.insert(session))
+    }
+
     pub(crate) fn restore_session_with_default_project_name_hint(
         &mut self,
         mut session: RuntimeSession,
@@ -223,7 +245,8 @@ impl SessionService {
                 session.workspace_id(),
                 default_project_name_hint,
             );
-            debug_assert!(session.assign_project_id(project_id));
+            let assigned = session.assign_project_id(project_id);
+            debug_assert!(assigned);
         } else if !self.projects.contains_key(session.project_id()) {
             let name = self.unique_project_name(
                 session.owner_user_id(),
@@ -243,7 +266,8 @@ impl SessionService {
     }
 
     pub(crate) fn restore_projects(&mut self, projects: Vec<RuntimeProject>) {
-        for project in projects {
+        for mut project in projects {
+            project.normalize_workspace_ids();
             self.projects.insert(project.id().to_string(), project);
         }
     }
@@ -484,6 +508,27 @@ impl SessionService {
         Ok(project.clone())
     }
 
+    pub fn update_project_workspaces(
+        &mut self,
+        project_id: &str,
+        workspace_ids: Vec<String>,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        let workspace_ids = normalize_project_workspace_ids(workspace_ids)?;
+        let project =
+            self.ensure_project_owner(project_id, caller_user_id, "project.workspaces.update")?;
+        if project.kind() != RuntimeProjectKind::Named {
+            return Err(project_error(
+                "project.workspaces.update",
+                format!("default project `{project_id}` has immutable Workspace membership"),
+            ));
+        }
+        let project =
+            self.project_mut_for_owner(project_id, caller_user_id, "project.workspaces.update")?;
+        project.replace_workspace_ids(workspace_ids);
+        Ok(project.clone())
+    }
+
     pub fn archive_project(
         &mut self,
         project_id: &str,
@@ -577,13 +622,12 @@ impl SessionService {
                     &request.owner_user_id,
                     "session.create",
                 )?;
-                if project.workspace_id() != request.workspace_id {
+                if !project.contains_workspace(&request.workspace_id) {
                     return Err(project_error(
                         "session.create",
                         format!(
-                            "project `{project_id}` belongs to workspace `{}` instead of `{}`",
-                            project.workspace_id(),
-                            request.workspace_id
+                            "project `{project_id}` does not include Workspace `{}`",
+                            request.workspace_id,
                         ),
                     ));
                 }
@@ -1655,6 +1699,33 @@ fn resolve_workspace_link_ref_in_session<'a>(
 }
 
 const MAX_PROJECT_NAME_CHARS: usize = 120;
+const MAX_PROJECT_WORKSPACES: usize = 32;
+const MAX_PROJECT_WORKSPACE_ID_BYTES: usize = 4 * 1024;
+
+fn normalize_project_workspace_ids(workspace_ids: Vec<String>) -> Result<Vec<String>, DaemonError> {
+    if workspace_ids.is_empty() || workspace_ids.len() > MAX_PROJECT_WORKSPACES {
+        return Err(project_error(
+            "project.workspaces.update",
+            format!("a project must contain between 1 and {MAX_PROJECT_WORKSPACES} Workspaces"),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for workspace_id in &workspace_ids {
+        if workspace_id.trim().is_empty() || workspace_id.len() > MAX_PROJECT_WORKSPACE_ID_BYTES {
+            return Err(project_error(
+                "project.workspaces.update",
+                "project Workspace identifiers must be non-empty and bounded".to_string(),
+            ));
+        }
+        if !seen.insert(workspace_id.as_str()) {
+            return Err(project_error(
+                "project.workspaces.update",
+                format!("project Workspace `{workspace_id}` is duplicated"),
+            ));
+        }
+    }
+    Ok(workspace_ids)
+}
 
 fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
     let normalized = name.trim();

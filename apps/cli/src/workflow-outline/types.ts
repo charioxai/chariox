@@ -11,6 +11,9 @@ export type WorkflowOutlineEndpointItem = {
   id: string
   alias: string | null
   entryNodeId: string
+  maxInstances: number
+  busyCount: number
+  activeRunCount: number
 }
 
 export type WorkflowOutlineNodeItem = {

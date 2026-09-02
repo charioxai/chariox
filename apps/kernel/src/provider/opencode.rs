@@ -16,6 +16,7 @@ mod ports;
 pub use catalog_endpoint::opencode_catalog_endpoint;
 pub(crate) use catalog_endpoint::{
     ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
+    shutdown_opencode_account_endpoints,
 };
 
 const OPENCODE_ENV_OVERRIDE: &str = "CHARIOX_OPENCODE_BIN";

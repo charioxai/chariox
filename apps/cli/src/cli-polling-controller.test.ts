@@ -159,6 +159,38 @@ test("cli polling controller refreshes session state and provider run metadata",
   ])
 })
 
+test("cli polling controller refreshes an active workflow outline when pool state changes", async () => {
+  const harness = createHarness({
+    workflowScreenActive: true,
+    sessionState: session({
+      workflow_runtime_instances: [workflowRuntimeInstance("busy", "run-1")],
+    }),
+    nextSession: session({
+      workflow_runtime_instances: [workflowRuntimeInstance("idle", null)],
+    }),
+  })
+
+  await harness.controller.pollSessionState()
+
+  assert.ok(harness.calls.includes("rebuildTranscript"))
+})
+
+test("cli polling controller does not rebuild an inactive workflow outline", async () => {
+  const harness = createHarness({
+    workflowScreenActive: false,
+    sessionState: session({
+      workflow_runtime_instances: [workflowRuntimeInstance("busy", "run-1")],
+    }),
+    nextSession: session({
+      workflow_runtime_instances: [workflowRuntimeInstance("idle", null)],
+    }),
+  })
+
+  await harness.controller.pollSessionState()
+
+  assert.ok(!harness.calls.includes("rebuildTranscript"))
+})
+
 test("cli polling controller refreshes workspace live sync footer state after a turn completes", async () => {
   const nextSession = session()
   const status = workspaceLiveSyncStatus("conflict")
@@ -199,6 +231,7 @@ function createHarness(options: {
   shouldRefreshAgentPanesForSessionChange?: (session: RuntimeSession) => boolean
   tryGetProviderRun?: (providerRunId: string) => Promise<RuntimeProviderRun | null>
   getWorkspaceLiveSyncStatus?: (sessionId: string) => Promise<WorkspaceLiveSyncStatus>
+  workflowScreenActive?: boolean
 } = {}) {
   const calls: string[] = []
   const loopOperations: string[] = []
@@ -230,6 +263,8 @@ function createHarness(options: {
     isAttached: () => harness.attachment !== null,
     getAttachment: () => harness.attachment,
     getSession: () => harness.sessionState,
+    workflowScreenActive: () => options.workflowScreenActive ?? false,
+    rebuildTranscript: () => calls.push("rebuildTranscript"),
     getProviderRun: () => harness.providerRun,
     setProviderRun: (run) => {
       calls.push(`setProviderRun:${run?.id ?? "null"}`)
@@ -362,6 +397,26 @@ function agent(
     created_at_ms: 1,
     last_activity_at_ms: 1,
     ...overrides,
+  }
+}
+
+function workflowRuntimeInstance(
+  status: "busy" | "idle",
+  activeRunId: string | null,
+): NonNullable<RuntimeSession["workflow_runtime_instances"]>[number] {
+  return {
+    id: "instance-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    workflow_revision: 1,
+    ordinal: 1,
+    primary: true,
+    node_agent_ids: {},
+    worktree_id: "/workspace",
+    status,
+    active_run_id: activeRunId,
+    created_at_ms: 1,
+    updated_at_ms: 1,
   }
 }
 

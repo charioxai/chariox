@@ -17,6 +17,17 @@ import {
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
+import {
+  managedAutoStopLabel,
+  managedDurationLabel,
+  managedEnvironmentIsLaunchReady,
+  managedKernelContextLabel,
+  managedProviderAccountIsTransferable,
+  managedProviderAccountSelections,
+  selectedManagedEnvironment,
+  waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectRepositoryOptions,
+} from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
@@ -28,7 +39,32 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "selectedMachineRef" | "selectedKernelRef" | "projectSelectionId" | "sliceSelectionId" | "sliceDisplayMode">,
+  state: Pick<WaitingRoomState,
+    | "focus"
+    | "worktreeSelectionId"
+    | "workspaceLiveSyncMode"
+    | "selectedMachineRef"
+    | "selectedKernelRef"
+    | "projectSelectionId"
+    | "sliceSelectionId"
+    | "sliceDisplayMode"
+    | "managedComputeClass"
+    | "managedRegion"
+    | "managedKernelContext"
+    | "managedContextSourceTargetId"
+    | "managedDevelopmentMode"
+    | "managedRepositorySelection"
+    | "managedRepositoryIndex"
+    | "managedProviderAccountSource"
+    | "managedProviderAccountSelection"
+    | "managedProviderAccountIndex"
+    | "managedGitCredentialSource"
+    | "managedAutoStopPreset"
+    | "managedCustomMinimumRuntimeSeconds"
+    | "managedCustomIdleDelaySeconds"
+    | "providerId"
+    | "accountProfileId"
+  >,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -51,16 +87,34 @@ export function waitingRoomStartRows(
       workspacePath: options.targets?.workspacePath,
       worktreeSelectionId: state.worktreeSelectionId,
       worktreePath: options.targets?.worktreePath,
+      projectSelectionId: state.projectSelectionId,
+      developmentMode: state.managedDevelopmentMode,
+      repositorySelection: state.managedRepositorySelection,
       selectedMachineRef: state.selectedMachineRef,
       selectedKernelRef: state.selectedKernelRef,
     }),
     state.sliceDisplayMode,
   )
   const collaborationBackend = remote.collaborationBackend ?? "local"
+  const configuresManaged = waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)
+  const configuresSliceDevelopment = !configuresManaged
+    && Boolean(state.sliceSelectionId && state.sliceSelectionId !== "none")
+  const selectedEnvironment = selectedManagedEnvironment(state, remote)
+  const managedRepositoryRows = waitingRoomManagedRepositoryRows(state, remote, options.titleWidth)
+  const sliceDevelopmentRows: WaitingRoomRow[] = configuresSliceDevelopment
+    ? [
+        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
+        ...managedRepositoryRows,
+      ]
+    : []
   return [
     {
       id: "new",
-      title: "Start New Session",
+      title: configuresManaged
+        ? "Create machine and start session"
+        : selectedEnvironment && !managedEnvironmentIsLaunchReady(selectedEnvironment)
+          ? "Start machine and session"
+          : "Start New Session",
       value: "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,
@@ -201,6 +255,7 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+    ...sliceDevelopmentRows,
     {
       id: "join-header",
       title: "Join Existing Session",
@@ -218,32 +273,169 @@ export function waitingRoomStartRows(
   ]
 }
 
+function waitingRoomManagedRepositoryRows(
+  state: Pick<WaitingRoomState,
+    | "focus"
+    | "projectSelectionId"
+    | "managedDevelopmentMode"
+    | "managedRepositorySelection"
+    | "managedRepositoryIndex"
+  >,
+  remote: WaitingRoomRemoteState,
+  titleWidth: number,
+): WaitingRoomRow[] {
+  const repositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
+  const selectedSupportingRepositories = new Set(
+    state.managedRepositorySelection?.supportingWorkspaceIds ?? repositoryOptions
+      .slice(1)
+      .map((option) => option.workspaceId),
+  )
+  const selectedRepositoryCount = repositoryOptions.filter((option) => (
+    option.primary || selectedSupportingRepositories.has(option.workspaceId)
+  )).length
+  if (state.managedDevelopmentMode !== "current_project") {
+    return [{
+      id: "managed-repositories",
+      title: "Selected repositories",
+      value: "None",
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    }]
+  }
+  return [
+    {
+      id: "managed-repositories",
+      title: "Selected repositories",
+      value: `${selectedRepositoryCount} of ${repositoryOptions.length} included`,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+    ...repositoryOptions.map((option, index): WaitingRoomRow => ({
+      id: `managed-repository:${option.workspaceId}`,
+      title: option.workspaceId,
+      value: option.primary
+        ? "Primary (included)"
+        : selectedSupportingRepositories.has(option.workspaceId) ? "Included" : "Excluded",
+      titleWidth,
+      indent: 2,
+      focused: !option.primary
+        && state.focus === "managed-repositories"
+        && (state.managedRepositoryIndex ?? 0) === index - 1,
+      selectable: !option.primary,
+      scrollbar: "",
+    })),
+  ]
+}
+
+export function waitingRoomManagedMachineDialogRows(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState = {},
+  titleWidth = 28,
+): WaitingRoomRow[] {
+  const repositoryRows = waitingRoomManagedRepositoryRows(state, remote, titleWidth)
+  const accountSelections = managedProviderAccountSelections(state, remote)
+  return [
+    startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, titleWidth),
+    startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, titleWidth),
+    startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state, remote), state, titleWidth),
+    startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, titleWidth),
+    ...repositoryRows,
+    startRow(
+      "managed-provider-accounts",
+      "Provider accounts source",
+      state.managedProviderAccountSource === "none" ? "None" : `${accountSelections.length} selected`,
+      state,
+      titleWidth,
+    ),
+    ...(remote.providerAccounts ?? []).map((profile, managedProviderAccountIndex): WaitingRoomRow => {
+      const transferable = managedProviderAccountIsTransferable(profile)
+      const included = accountSelections.some((selection) => (
+        selection.provider === profile.provider && selection.accountProfile === profile.profile_id
+      ))
+      return {
+        id: `managed-provider-account:${profile.provider}:${profile.profile_id}`,
+        title: profile.label,
+        value: `${formatManagedProviderAccountFamily(profile.provider)} · ${included
+          ? transferable ? "Included" : `Included, ${profile.auth_state}`
+          : transferable ? "Excluded" : `Unavailable, ${profile.auth_state}`}`,
+        titleWidth,
+        indent: 2,
+        focused: state.focus === "managed-provider-account"
+          && (state.managedProviderAccountIndex ?? 0) === managedProviderAccountIndex,
+        selectable: transferable,
+        scrollbar: "",
+      }
+    }),
+    startRow(
+      "managed-git-credentials",
+      "Git credentials source",
+      state.managedGitCredentialSource === "none" ? "None" : "GitHub",
+      state,
+      titleWidth,
+    ),
+    startRow("managed-auto-stop", "Auto-stop policy", managedAutoStopLabel(state), state, titleWidth),
+    ...(state.managedAutoStopPreset === "custom"
+      ? [
+          startRow(
+            "managed-custom-minimum",
+            "Minimum runtime",
+            managedDurationLabel(state.managedCustomMinimumRuntimeSeconds),
+            state,
+            titleWidth,
+          ),
+          startRow(
+            "managed-custom-idle",
+            "Idle delay",
+            managedDurationLabel(state.managedCustomIdleDelaySeconds),
+            state,
+            titleWidth,
+          ),
+        ]
+      : []),
+  ]
+}
+
+function startRow(
+  id: WaitingRoomState["focus"],
+  title: string,
+  value: string,
+  state: Pick<WaitingRoomState, "focus">,
+  titleWidth: number,
+): WaitingRoomRow {
+  return {
+    id,
+    title,
+    value,
+    titleWidth,
+    indent: 1,
+    focused: state.focus === id,
+    selectable: true,
+    scrollbar: "",
+  }
+}
+
 function formatAccountValue(profile: ProviderAccountProfile | null): string {
   if (!profile) {
     return "Default (not discovered)"
   }
-  const identity = profile.identity_summary ? ` · ${profile.identity_summary}` : ""
-  const usage = compactUsage(profile)
-  return `${profile.label}${identity}${usage ? ` · ${usage}` : ""}`
-}
-
-function compactUsage(profile: ProviderAccountProfile): string | null {
-  const meters = profile.usage.meters ?? []
-  const meter = meters.find((candidate) => candidate.state === "exhausted") ?? meters[0]
-  if (!meter) {
-    return profile.usage.availability === "unavailable" ? "usage not observed" : null
-  }
-  if (meter.used_percent !== undefined && meter.used_percent !== null) {
-    return `${Math.round(meter.used_percent)}% used`
-  }
-  if (meter.remaining !== undefined && meter.remaining !== null) {
-    return `${meter.remaining}${meter.unit ? ` ${meter.unit}` : ""} remaining`
-  }
-  return meter.label
+  return profile.label
 }
 
 function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function formatManagedProviderAccountFamily(provider: string): string {
+  if (provider === "opencode") return "OpenCode"
+  if (provider === "codex") return "Codex"
+  if (provider === "claude") return "Claude"
+  return formatTitleCase(provider)
 }
 
 function formatBackendProviderLabel(providerId: BackendProviderId) {

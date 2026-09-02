@@ -134,6 +134,17 @@ pub enum CompletedTurnSettlementStatus {
     #[default]
     Completed,
     Cancelled,
+    Failed,
+}
+
+impl CompletedTurnSettlementStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -194,11 +205,12 @@ impl CompletedGitTurnSnapshotStore {
             .settled_turns
             .lock()
             .expect("settled prompt turn mutex poisoned");
-        if settled_turns.get(&key).is_some_and(|existing| {
-            existing.turn_id == projection.turn_id
-                && existing.settlement_status == CompletedTurnSettlementStatus::Cancelled
+        if let Some(existing) = settled_turns.get(&key).filter(|existing| {
+            existing.prompt_id == projection.prompt_id
+                && existing.settlement_status != CompletedTurnSettlementStatus::Completed
+                && projection.settlement_status == CompletedTurnSettlementStatus::Completed
         }) {
-            projection.settlement_status = CompletedTurnSettlementStatus::Cancelled;
+            projection.settlement_status = existing.settlement_status;
         }
         let replace = settled_turns
             .get(&key)
@@ -273,7 +285,7 @@ impl CompletedGitTurnSnapshotStore {
             .get(&completed_turn_agent_key(session_id, agent_id))
             .cloned();
         match (observed, settled) {
-            (Some(observed), Some(settled)) if observed.turn_id == settled.turn_id => {
+            (Some(observed), Some(settled)) if observed.prompt_id == settled.prompt_id => {
                 Some(CompletedGitTurnActionProjection {
                     settlement_status: settled.settlement_status,
                     ..observed

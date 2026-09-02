@@ -25,6 +25,7 @@ export type SlashCommandSubmitControllerDeps = {
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   handleSessionCommand: (command: SlashCommand<"session">) => Promise<boolean> | boolean
   handleProviderCommand: (command: SlashCommand<"provider">) => Promise<unknown> | unknown
+  handleAccountCommand?: (command: SlashCommand<"account">) => Promise<unknown> | unknown
   handleModelCommand: (command: SlashCommand<"model">) => Promise<unknown> | unknown
   handleVariantCommand: (command: SlashCommand<"variant">) => Promise<unknown> | unknown
   handleModeCommand: (command: SlashCommand<"mode">) => Promise<unknown> | unknown
@@ -144,6 +145,9 @@ export function createSlashCommandSubmitController(
           }
         },
         onProvider: (command) => runWithFooterError(deps.handleProviderCommand, command),
+        ...(deps.handleAccountCommand
+          ? { onAccount: (command: SlashCommand<"account">) => runWithFooterError(deps.handleAccountCommand!, command) }
+          : {}),
         onModel: (command) => runWithFooterError(deps.handleModelCommand, command),
         onVariant: (command) => runWithFooterError(deps.handleVariantCommand, command),
         onMode: (command) => runWithFooterError(deps.handleModeCommand, command),

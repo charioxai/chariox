@@ -488,6 +488,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::CreateProviderAccountProfile(_)
             | LocalDaemonRequest::LinkProviderAccountProfile(_)
+            | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
             | LocalDaemonRequest::RenameProviderAccountProfile(_)
             | LocalDaemonRequest::SetDefaultProviderAccountProfile(_)
             | LocalDaemonRequest::RefreshProviderAccountProfile(_)

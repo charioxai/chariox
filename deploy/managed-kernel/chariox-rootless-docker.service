@@ -1,0 +1,36 @@
+[Unit]
+Description=Chariox managed rootless Docker daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chariox-docker
+Group=chariox-docker
+Environment=HOME=/var/lib/chariox-docker/home
+Environment=XDG_RUNTIME_DIR=/run/chariox-docker
+Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+Delegate=yes
+RuntimeDirectory=chariox-docker
+RuntimeDirectoryMode=0700
+StateDirectory=chariox-docker
+StateDirectoryMode=0700
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=false
+ProtectKernelModules=true
+# OCI layers may contain setuid/setgid metadata. The daemon remains an
+# unprivileged user inside its rootless user namespace.
+RestrictSUIDSGID=false
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

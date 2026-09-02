@@ -615,6 +615,8 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
         _ => panic!("unexpected local response"),
     };
     let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
+    harness.launch_workflow_test_provider(session.id(), default_agent.id());
+    harness.launch_workflow_test_provider(session.id(), prompt_agent.id());
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {

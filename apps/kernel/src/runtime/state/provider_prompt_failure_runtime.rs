@@ -19,13 +19,14 @@ impl KernelRuntimeState {
                 agent_id: "provider run has no agent".to_string(),
             })?;
 
-        self.clear_failed_provider_resume_state_from_message(&provider_run, message);
+        self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
         if self
             .forward_leased_workflow_provider_failure(provider_run_id, message)
             .await?
         {
-            self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
+            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                .await;
             return Ok(());
         }
 
@@ -45,7 +46,8 @@ impl KernelRuntimeState {
         if project_failure_output {
             owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
         }
-        self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
+        self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+            .await;
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
             &agent_id,
@@ -53,19 +55,22 @@ impl KernelRuntimeState {
             Some(provider_run_id),
             message,
         );
-        if active_prompt.workflow_run_id().is_some() {
+        let workflow_dispatches = if active_prompt.workflow_run_id().is_some() {
             owned.workflow_fail_provider_prompt(
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),
                 message,
-            )?;
-        }
-        let completion = owned.complete_local_prompt_without_advance(
+            )?
+        } else {
+            WorkflowPromptDispatches::default()
+        };
+        let completion = owned.fail_local_prompt_without_advance(
             session_id,
             &agent_id,
             Some(provider_run_id),
         )?;
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         if completion
             .as_ref()
             .is_some_and(|completion| completion.released_claim)
@@ -102,83 +107,129 @@ impl KernelRuntimeState {
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
         message: &str,
-    ) {
-        let Some(replacement_resume_state) =
-            crate::app::failed_provider_resume_state_replacement_from_message(
-                provider_run,
-                message,
-            )
-        else {
-            return;
-        };
-        let Some(agent_id) = provider_run.agent_instance_id() else {
-            return;
-        };
-        let provider = provider_run.adapter_key();
-        let Some(stale_provider_session_id) = provider_run
-            .resume_state()
-            .provider_session_id(provider)
-            .map(str::to_string)
-        else {
-            return;
-        };
-        let Ok(current) = self.owned.agent_store.get_agent(agent_id) else {
-            return;
-        };
-        if current
-            .provider_resume_state()
-            .provider_session_id(provider)
-            != Some(stale_provider_session_id.as_str())
-        {
-            return;
-        }
-        let Ok(agent) = self.owned.agent_store.set_agent_runtime_profile(
-            agent_id,
-            provider_run.provider(),
-            Some(provider_run.model().to_string()),
-            provider_run.variant().map(str::to_string),
-            replacement_resume_state,
+    ) -> Result<bool, DaemonError> {
+        let Some(_) = crate::app::failed_provider_resume_state_replacement_from_message(
+            provider_run,
+            message,
         ) else {
-            return;
+            return Ok(false);
         };
-        let _ = self.owned.durable_state_store.append_event(
-            "agent.runtime_profile_updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-                "provider_run_id": provider_run.id(),
-                "reason": "failed_provider_resume_state_cleared",
-            }),
-        );
-        self.owned.record_notice(
-            provider_run.session_id(),
-            Some(provider_run.id()),
-            self.owned
-                .attachment_store
-                .list_session_attachment_ids(provider_run.session_id()),
-            crate::provider::provider_resume_failure_notice(provider, &stale_provider_session_id)
-                .unwrap_or_else(|| {
-                    format!(
-                        "Provider session `{stale_provider_session_id}` is no longer available. Chariox cleared it from the agent profile so the next prompt can start a new durable provider session."
-                    )
-                }),
-        );
+        Ok(matches!(
+            self.apply_provider_resume_state_replacement(
+                provider_run,
+                provider_run
+                    .resume_state()
+                    .provider_session_id(provider_run.adapter_key())
+                    .expect("classified resume failure must retain its provider session"),
+                "failed_provider_resume_state_cleared",
+            )?,
+            crate::agent::ProviderResumeClearOutcome::Cleared
+                | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent
+        ))
     }
 
-    fn end_owned_provider_run_after_terminal_failure(
+    pub(super) fn clear_unresponsive_provider_resume_state(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        expected_provider_session_id: &str,
+    ) -> Result<crate::agent::ProviderResumeClearOutcome, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(crate::agent::ProviderResumeClearOutcome::AlreadyAbsent);
+        };
+        self.clear_provider_resume_state_for_identity(
+            provider_run.session_id(),
+            agent_id,
+            provider_run.adapter_key(),
+            expected_provider_session_id,
+            provider_run.id(),
+            "unresponsive_provider_resume_state_cleared",
+        )
+    }
+
+    pub(super) fn clear_provider_resume_state_for_identity(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider: &str,
+        expected_provider_session_id: &str,
+        provider_run_id: &str,
+        reason: &'static str,
+    ) -> Result<crate::agent::ProviderResumeClearOutcome, DaemonError> {
+        let outcome = self
+            .owned
+            .agent_store
+            .clear_provider_resume_state_durably_if_matches(
+                &self.owned.durable_state_store,
+                agent_id,
+                provider,
+                expected_provider_session_id,
+                provider_run_id,
+                reason,
+            )?;
+        if matches!(outcome, crate::agent::ProviderResumeClearOutcome::Cleared) {
+            self.owned.record_notice(
+                session_id,
+                Some(provider_run_id),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id),
+                crate::provider::provider_resume_failure_notice(
+                    provider,
+                    expected_provider_session_id,
+                )
+                .unwrap_or_else(|| {
+                    format!(
+                        "Provider session `{expected_provider_session_id}` is no longer available. Chariox cleared it from the agent profile so the next prompt can start a new durable provider session."
+                    )
+                }),
+            );
+        }
+        Ok(outcome)
+    }
+
+    fn apply_provider_resume_state_replacement(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        expected_provider_session_id: &str,
+        reason: &'static str,
+    ) -> Result<crate::agent::ProviderResumeClearOutcome, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(crate::agent::ProviderResumeClearOutcome::AlreadyAbsent);
+        };
+        self.clear_provider_resume_state_for_identity(
+            provider_run.session_id(),
+            agent_id,
+            provider_run.adapter_key(),
+            expected_provider_session_id,
+            provider_run.id(),
+            reason,
+        )
+    }
+
+    pub(super) async fn retire_owned_provider_run_after_terminal_failure(
         &self,
         session_id: &str,
         provider_run_id: &str,
     ) {
         let owned = &self.owned;
-        let Ok(outcome) = owned
+        if let Ok(outcome) = owned
             .provider_store
             .terminate_run_provider_only(session_id, provider_run_id)
-        else {
-            return;
-        };
-        let _ = owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id());
-        owned.provider_run_projection.update(outcome.into_run());
+        {
+            let _ = owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id());
+            owned.provider_run_projection.update(outcome.into_run());
+        }
+        let (_, process_key) = self
+            .with_app_side_effect(|app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
+            })
+            .await
+            .unwrap_or((false, None));
+        owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
+        owned
+            .connector_adapter_processes
+            .shutdown_run(provider_run_id)
+            .await;
     }
 
     async fn forward_leased_workflow_provider_failure(

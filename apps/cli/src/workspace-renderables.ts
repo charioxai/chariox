@@ -13,6 +13,7 @@ import type {
   RuntimeSession,
   TranscriptEntry,
   WorkflowDefinition,
+  WorkflowEndpointRuntimeInstance,
   WorkflowRun,
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
@@ -49,6 +50,7 @@ export function buildWorkflowOutlineRenderable(
     workflows: WorkflowDefinition[]
     agents: AgentInstance[]
     workflowRuns: WorkflowRun[]
+    workflowRuntimeInstances?: WorkflowEndpointRuntimeInstance[]
     selectedWorkflowId: string | null
     selectedNodeId: string | null
     selectedComponent?: WorkflowComponentSelection | null

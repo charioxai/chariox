@@ -66,13 +66,14 @@ use super::{
     StopRoomEnvironmentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
     SubmitPromptsRequest, SubmitPromptsRequestItem, SubmitRoomEnvironmentActionRequest,
     TerminalType, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
-    UpdateAgentSubstitutesRequest, UpdateProviderRunSelectionRequest,
-    UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
-    UpdateSessionConfigRequest, UpdateWorkflowCanvasLayoutRequest,
-    UpdateWorkflowNodeInstructionsRequest, UpdateWorkflowPromptQueueRequest, WorkflowDesignNode,
-    WorkflowDesignOp, WorkflowDesignPoint, WorkflowPublicationSnapshot,
-    WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    UpdateAgentSubstitutesRequest, UpdateProjectWorkspacesRequest,
+    UpdateProviderRunSelectionRequest, UpdateRoomEnvironmentPointerRequest,
+    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
+    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest,
+    UpdateWorkflowPromptQueueRequest, WorkflowDesignNode, WorkflowDesignOp, WorkflowDesignPoint,
+    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 mod protocol_shapes;

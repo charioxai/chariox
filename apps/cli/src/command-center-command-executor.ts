@@ -14,6 +14,7 @@ type CommandCenterCommandExecutorDeps = {
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   onSession: CommandHandler<"session">
   onProvider: CommandHandler<"provider">
+  onAccount?: CommandHandler<"account">
   onModel: CommandHandler<"model">
   onVariant: CommandHandler<"variant">
   onMode: CommandHandler<"mode">
@@ -80,6 +81,7 @@ export function createCommandCenterCommandExecutor(
       onAttachment: (command) => deps.handleAttachmentCommand(command.raw),
       onSession: deps.onSession,
       onProvider: deps.onProvider,
+      ...(deps.onAccount ? { onAccount: deps.onAccount } : {}),
       onModel: deps.onModel,
       onVariant: deps.onVariant,
       onMode: deps.onMode,

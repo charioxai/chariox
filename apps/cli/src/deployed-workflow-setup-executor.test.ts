@@ -96,7 +96,7 @@ const completedSetup: DeploymentSetup = {
 }
 
 const profile: RelayCloudProfile = {
-  apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+  apiUrl: "https://staging.chariox.com",
   email: "user@example.test",
   accountId: "account-1",
   userId: "user-1",

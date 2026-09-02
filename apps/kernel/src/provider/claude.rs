@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rand::RngCore;
@@ -15,6 +15,8 @@ mod catalog;
 mod launch_args;
 mod mcp_config;
 mod native_tui;
+mod usage_capture;
+mod usage_probe;
 
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
@@ -22,7 +24,9 @@ use launch_args::claude_launch_args;
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
+pub(crate) use native_tui::ensure_claude_native_hidden_context_fits;
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
+pub(crate) use usage_probe::probe_claude_account_usage;
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 
@@ -32,12 +36,6 @@ const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
-const CLAUDE_AUTH_ENV_VARS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_CUSTOM_HEADERS",
-];
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
     resolve_claude_executable_unlocked()
@@ -147,6 +145,10 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
             native.permission_response_dir.display().to_string(),
         );
+        pty_env.insert(
+            "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+            native.usage_file.display().to_string(),
+        );
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
         pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
         let launch = ProviderLaunchResult {
@@ -197,6 +199,10 @@ fn plan_claude_launch_unlocked(
         pty_env.insert(
             "CHARIOX_CLAUDE_SETTINGS_FILE".to_string(),
             native.settings_file.display().to_string(),
+        );
+        pty_env.insert(
+            "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+            native.usage_file.display().to_string(),
         );
         crate::logging::info_with_fields(
             "daemon.provider.claude",
@@ -250,6 +256,10 @@ fn plan_claude_launch_unlocked(
         "CHARIOX_CLAUDE_SETTINGS_FILE".to_string(),
         native.settings_file.display().to_string(),
     );
+    pty_env.insert(
+        "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+        native.usage_file.display().to_string(),
+    );
     let mut args = claude_launch_args(request)?;
     args.extend([
         "--settings".to_string(),
@@ -280,9 +290,12 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
         })?;
         PathBuf::from(home).join(CLAUDE_HEADLESS_STATE_FILE)
     };
-    if state_path.exists() {
-        return Ok(());
-    }
+    ensure_claude_headless_onboarding_state_at(&state_path)
+}
+
+pub(super) fn ensure_claude_headless_onboarding_state_at(
+    state_path: &Path,
+) -> Result<(), DaemonError> {
     let parent = state_path
         .parent()
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -293,6 +306,109 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
         operation: "initialize Claude headless onboarding state",
         message: error.to_string(),
     })?;
+    let mut state_options = fs::OpenOptions::new();
+    state_options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        state_options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        state_options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let existing_state = match state_options.open(state_path) {
+        Ok(mut file) => {
+            let metadata = file
+                .metadata()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: error.to_string(),
+                })?;
+            if !metadata.is_file() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: format!(
+                        "Claude onboarding state is not a regular file: {}",
+                        state_path.display()
+                    ),
+                });
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "initialize Claude headless onboarding state",
+                        message: format!(
+                            "Claude onboarding state is not a regular file: {}",
+                            state_path.display()
+                        ),
+                    });
+                }
+            }
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
+            file.read_to_end(&mut bytes)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: error.to_string(),
+                })?;
+            let mut state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
+                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "initialize Claude headless onboarding state",
+                        message: format!("Claude onboarding state is invalid JSON: {error}"),
+                    }
+                })?
+            };
+            let object = state
+                .as_object_mut()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: "Claude onboarding state is not a JSON object".to_string(),
+                })?;
+            if object
+                .get("hasCompletedOnboarding")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                return Ok(());
+            }
+            object.insert(
+                "hasCompletedOnboarding".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            let mut bytes =
+                serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: error.to_string(),
+                })?;
+            bytes.push(b'\n');
+            Some(bytes)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            #[cfg(unix)]
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: format!(
+                        "Claude onboarding state is not a regular file: {}",
+                        state_path.display()
+                    ),
+                });
+            }
+            return Err(DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: error.to_string(),
+            });
+        }
+    };
     let mut nonce = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut nonce);
     let pending_path = parent.join(format!(
@@ -314,8 +430,11 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
                 operation: "initialize Claude headless onboarding state",
                 message: error.to_string(),
             })?;
+    let contents = existing_state
+        .as_deref()
+        .unwrap_or(b"{\"hasCompletedOnboarding\":true}\n");
     let write_result = pending
-        .write_all(b"{\"hasCompletedOnboarding\":true}\n")
+        .write_all(contents)
         .and_then(|()| pending.sync_all());
     if let Err(error) = write_result {
         drop(pending);
@@ -326,23 +445,41 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
         });
     }
     drop(pending);
-    let result = match fs::hard_link(&pending_path, &state_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(DaemonError::LocalTransport {
+    let result = if existing_state.is_some() {
+        fs::rename(&pending_path, state_path).map_err(|error| DaemonError::LocalTransport {
             operation: "initialize Claude headless onboarding state",
             message: error.to_string(),
-        }),
+        })
+    } else {
+        match fs::hard_link(&pending_path, state_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&pending_path);
+                return ensure_claude_headless_onboarding_state_at(state_path);
+            }
+            Err(error) => Err(DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: error.to_string(),
+            }),
+        }
     };
     let _ = fs::remove_file(pending_path);
-    result
+    result?;
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: error.to_string(),
+        })?;
+    Ok(())
 }
 
 fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
     let mut names = request
         .map(|request| request.provider_env_remove.clone())
         .unwrap_or_default();
-    for name in CLAUDE_AUTH_ENV_VARS {
+    for name in crate::account_profile::provider_auth_env_vars("claude") {
         if !names.iter().any(|existing| existing == name) {
             names.push((*name).to_string());
         }
@@ -440,8 +577,9 @@ mod tests {
     };
 
     use super::{
-        claude_provider_catalog, ensure_claude_headless_onboarding_state, plan_claude_launch,
-        resolve_claude_executable, CLAUDE_MCP_CONFIG_PLACEHOLDER,
+        claude_provider_catalog, ensure_claude_headless_onboarding_state,
+        ensure_claude_headless_onboarding_state_at, plan_claude_launch, resolve_claude_executable,
+        CLAUDE_MCP_CONFIG_PLACEHOLDER,
     };
 
     fn env_guard() -> crate::env_lock::EnvGuard {
@@ -591,6 +729,7 @@ mod tests {
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
         std::env::set_var("ANTHROPIC_API_KEY", "not-used-by-chariox");
+        std::env::set_var("CLAUDE_CONFIG_DIR", "");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -606,6 +745,7 @@ mod tests {
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
@@ -629,6 +769,10 @@ mod tests {
             .pty_env_remove
             .iter()
             .any(|name| name == "ANTHROPIC_API_KEY"));
+        assert!(launch
+            .pty_env_remove
+            .iter()
+            .any(|name| name == "CLAUDE_CONFIG_DIR"));
         assert_eq!(
             launch
                 .pty_env
@@ -745,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_existing_claude_headless_state() {
+    fn completes_existing_claude_headless_state_without_dropping_fields() {
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-existing-headless-state-{}",
@@ -765,9 +909,100 @@ mod tests {
         } else {
             std::env::remove_var("CLAUDE_CONFIG_DIR");
         }
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(&state_path).expect("completed state should remain readable"),
+        )
+        .expect("completed state should remain JSON");
+        assert_eq!(state["existing"], true);
+        assert_eq!(state["hasCompletedOnboarding"], true);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn leaves_completed_claude_headless_state_byte_identical() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-completed-headless-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        let existing = b"{\"existing\":true,\"hasCompletedOnboarding\":true}\n";
+        fs::write(&state_path, existing).expect("completed state should write");
+
+        ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect("completed state should be accepted");
+
         assert_eq!(
-            fs::read_to_string(&state_path).expect("existing state should remain"),
-            "{\"existing\":true}\n"
+            fs::read(&state_path).expect("completed state should remain"),
+            existing
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refuses_to_replace_invalid_claude_headless_state() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-invalid-headless-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        fs::write(&state_path, b"not JSON\n").expect("invalid state should write");
+
+        let error = ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect_err("invalid state must be rejected");
+
+        assert!(error.to_string().contains("invalid JSON"));
+        assert_eq!(
+            fs::read(&state_path).expect("invalid state should remain"),
+            b"not JSON\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn completes_empty_claude_headless_state() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-empty-headless-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        fs::write(&state_path, b" \n").expect("empty state should write");
+
+        ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect("empty state should be completed");
+
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(&state_path).expect("completed state should remain readable"),
+        )
+        .expect("completed state should remain JSON");
+        assert_eq!(state["hasCompletedOnboarding"], true);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_follow_symlinked_claude_headless_state() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-symlinked-headless-state-{}",
+            std::process::id()
+        ));
+        let target_path = root.join("target.json");
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        fs::write(&target_path, b"{\"existing\":true}\n").expect("target state should write");
+        symlink(&target_path, &state_path).expect("state symlink should write");
+
+        let error = ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect_err("state symlink must be rejected");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read(&target_path).expect("target state should remain"),
+            b"{\"existing\":true}\n"
         );
         let _ = fs::remove_dir_all(&root);
     }

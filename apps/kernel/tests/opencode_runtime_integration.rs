@@ -214,7 +214,7 @@ fn shared_opencode_idle_status_completes_the_prompt_without_hot_polling() {
 #[test]
 fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.disconnect_next_event_stream();
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -291,7 +291,7 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
 #[test]
 fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the_provider_run() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.disconnect_next_event_stream();
     mock_server.fail_next_event_stream_attempts(2);
@@ -457,7 +457,7 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
 #[test]
 fn launch_retries_temporary_event_subscription_failures() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.fail_next_event_stream_attempts(2);
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
@@ -671,7 +671,7 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
 #[test]
 fn managed_opencode_fixture_without_target_port_fails_health_check() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
     let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
     env::set_var("CHARIOX_OPENCODE_BIN", &fixture_path);
@@ -723,7 +723,7 @@ fn managed_opencode_fixture_without_target_port_fails_health_check() {
 #[test]
 fn opencode_event_stream_does_not_depend_on_session_status_polling() {
     let _guard = opencode_env_guard();
-    let fixture_path = create_opencode_fixture_script(10);
+    let fixture_path = create_opencode_fixture_script();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_omit_session_status(true);
     let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");

@@ -10,6 +10,19 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 #[test]
+fn credential_vault_locked_uses_a_stable_transport_error_code() {
+    let error = DaemonError::LocalTransport {
+        operation: "credential_vault_locked",
+        message: "Chariox vault is locked".to_string(),
+    };
+
+    let mapped = map_kernel_error(&error);
+
+    assert_eq!(mapped.code, "credential_vault_locked");
+    assert!(!mapped.retryable);
+}
+
+#[test]
 fn terminal_output_event_batches_stay_under_json_byte_cap() {
     let records = (0..20)
         .map(|index| TerminalOutputRecord {
@@ -150,6 +163,68 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
         }
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+#[test]
+fn waiting_room_inventory_changed_event_refreshes_for_provider_accounts() {
+    let previous = waiting_room_snapshot("inventory-a", Vec::new());
+    let mut current = previous.clone();
+    current.inventory_version = "inventory-b".to_string();
+    current.provider_accounts.push(provider_account_profile());
+
+    assert!(matches!(
+        waiting_room_inventory_changed_event(&current, Some(&previous)),
+        Some(KernelEvent::WaitingRoomInventoryChanged { inventory_version })
+            if inventory_version == "inventory-b"
+    ));
+}
+
+#[test]
+fn waiting_room_inventory_event_projection_tracks_full_and_row_refreshes_once() {
+    let mut projection = WaitingRoomInventoryEventProjection::default();
+    let initial = waiting_room_snapshot("inventory-a", Vec::new());
+
+    let initial_events = projection.project(initial.clone());
+    assert_eq!(initial_events.len(), 2);
+    assert!(matches!(
+        initial_events.as_slice(),
+        [
+            KernelEvent::WaitingRoomRowsChanged { .. },
+            KernelEvent::WaitingRoomInventoryChanged { .. }
+        ]
+    ));
+
+    let mut account_changed = initial;
+    account_changed.inventory_version = "inventory-b".to_string();
+    account_changed
+        .provider_accounts
+        .push(provider_account_profile());
+    let account_events = projection.project(account_changed.clone());
+    assert!(matches!(
+        account_events.as_slice(),
+        [KernelEvent::WaitingRoomInventoryChanged { inventory_version }]
+            if inventory_version == "inventory-b"
+    ));
+    assert!(projection.project(account_changed).is_empty());
+
+    let mut row_changed =
+        waiting_room_snapshot("inventory-c", vec![session_summary("session-a", 1)]);
+    row_changed
+        .provider_accounts
+        .push(provider_account_profile());
+    assert!(matches!(
+        projection.project(row_changed).as_slice(),
+        [KernelEvent::WaitingRoomRowsChanged { inventory_version, .. }]
+            if inventory_version == "inventory-c"
+    ));
+}
+
+#[test]
+fn waiting_room_inventory_changed_event_skips_row_only_changes() {
+    let previous = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+    let current = waiting_room_snapshot("inventory-b", vec![session_summary("session-a", 2)]);
+
+    assert!(waiting_room_inventory_changed_event(&current, Some(&previous)).is_none());
 }
 
 #[test]
@@ -549,6 +624,7 @@ fn waiting_room_snapshot(
 ) -> WaitingRoomPublicSnapshot {
     WaitingRoomPublicSnapshot {
         provider_accounts: Vec::new(),
+        git_credentials: Vec::new(),
         schema_version: 11,
         inventory_version: inventory_version.to_string(),
         structural_version: format!("structural-{inventory_version}"),
@@ -573,6 +649,31 @@ fn waiting_room_snapshot(
         remote_kernels: Vec::new(),
         terminals: Vec::new(),
         launch_target: None,
+    }
+}
+
+fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile {
+    crate::account_profile::ProviderAccountProfile {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        provider: "claude".to_string(),
+        profile_id: "managed-claude".to_string(),
+        label: "Managed Claude".to_string(),
+        origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+        is_default: false,
+        auth_state: crate::account_profile::ProviderAccountAuthState::Authenticated,
+        identity_summary: None,
+        plan: Some("pro".to_string()),
+        detected_provider_version: None,
+        last_validated_at_ms: Some(100),
+        usage: crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+            "managed-claude",
+            "claude",
+        ),
+        credential_kind: None,
+        credential_kind_not_reported_reason: Some(
+            "provider did not report credential type".to_string(),
+        ),
+        materializations: Vec::new(),
     }
 }
 
@@ -605,6 +706,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
         id: id.to_string(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         workspace_id: "workspace-1".to_string(),
+        workspace_ids: vec!["workspace-1".to_string()],
         name: name.to_string(),
         kind: crate::session::RuntimeProjectKind::Named,
         status: crate::session::RuntimeProjectStatus::Active,

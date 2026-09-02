@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -58,29 +58,23 @@ pub(crate) fn ensure_codex_account_endpoint(
     )
     .with_owner_user_id(owner_user_id)
     .with_provider_account_env(environment);
-    let launch = super::plan_codex_launch(Some(&request))?;
-    let endpoint = launch
-        .structured_endpoint
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "ensure_codex_account_endpoint",
-            message: "Codex account launch did not expose an endpoint".to_string(),
-        })?;
-    let program = launch
-        .pty_program
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "ensure_codex_account_endpoint",
-            message: "Codex account launch did not expose an executable".to_string(),
-        })?;
-    let mut command = Command::new(program);
+    let launch = crate::provider::apply_managed_provider_isolation(
+        super::plan_codex_launch(Some(&request))?,
+        &request,
+    )?;
+    let endpoint =
+        launch
+            .structured_endpoint
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "ensure_codex_account_endpoint",
+                message: "Codex account launch did not expose an endpoint".to_string(),
+            })?;
+    let mut command = crate::provider::command_from_provider_launch(launch)?;
     command
-        .args(launch.pty_args)
-        .envs(launch.pty_env)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    for name in launch.pty_env_remove {
-        command.env_remove(name);
-    }
     for name in crate::account_profile::provider_auth_env_vars("codex") {
         command.env_remove(name);
     }
@@ -135,6 +129,22 @@ pub(crate) fn invalidate_codex_account_endpoint(owner_user_id: &str, account_pro
         return;
     };
     if let Some(mut endpoint) = endpoints.remove(&key) {
+        let _ = crate::runtime::process_health::terminate_process_tree(endpoint.child.id());
+        let _ = endpoint.child.wait();
+    }
+}
+
+pub(crate) fn shutdown_codex_account_endpoints() {
+    let Some(endpoints) = CODEX_ACCOUNT_ENDPOINTS.get() else {
+        return;
+    };
+    let Ok(mut endpoints) = endpoints.lock() else {
+        return;
+    };
+    let drained = std::mem::take(&mut *endpoints);
+    drop(endpoints);
+
+    for (_, mut endpoint) in drained {
         let _ = crate::runtime::process_health::terminate_process_tree(endpoint.child.id());
         let _ = endpoint.child.wait();
     }

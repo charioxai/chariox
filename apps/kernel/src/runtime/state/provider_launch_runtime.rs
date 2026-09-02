@@ -363,7 +363,6 @@ impl KernelRuntimeState {
                 return;
             }
         }
-        let mut durable_agent_update = None;
         let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
         {
             let owned = &self.owned;
@@ -371,7 +370,6 @@ impl KernelRuntimeState {
             match result {
                 Ok(run) => {
                     if let Some(agent_id) = run.agent_instance_id() {
-                        durable_agent_update = owned.agent_store.get_agent(agent_id).ok();
                         match owned.advance_next_queued_prompt_dispatch(
                             run.session_id(),
                             agent_id,
@@ -406,14 +404,6 @@ impl KernelRuntimeState {
             }
         }
         self.spawn_workflow_prompt_dispatches(retry_metaagent_event_dispatches);
-        if let Some(agent) = durable_agent_update {
-            if let Err(error) = self
-                .append_agent_durable_event("agent.runtime_profile_updated", &agent, None)
-                .await
-            {
-                self.fail_provider_launch_in_lane(started, &error).await;
-            }
-        }
     }
 }
 

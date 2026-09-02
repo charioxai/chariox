@@ -1,3 +1,8 @@
+import type {
+  WorkflowPublicationDeploymentExtensionRequirement,
+  WorkflowPublicationDeploymentNetworkDestination,
+} from "@chariox/kernel-client/workflow-publication-deployment-contract"
+
 export type ParserKind =
   | "json"
   | "query_params"
@@ -78,6 +83,7 @@ export type WorkflowPublicationPackage = {
   source_session_id?: string
   workflow_id: string
   default_bindings_path?: string
+  event_bindings_path?: string
   deployment_contract?: {
     path?: string
     schema_version?: number
@@ -184,6 +190,7 @@ export type PublicationProviderModelProfile = {
   provider: string
   model?: string | null
   effort?: string | null
+  account_profile?: string | null
 }
 
 export type PublicationProviderModelOverride = {
@@ -207,14 +214,25 @@ export type PublicationCredentialRequirement = {
   used_by?: string
 }
 
-export type WorkflowPublicationRequirements = {
-  schema_version: number
+export type WorkflowPublicationRequirementsV1 = {
+  schema_version: 1
   mcps?: PublicationNamedRequirement[]
   skills?: PublicationNamedRequirement[]
   scripts?: PublicationNamedRequirement[]
   connectors?: PublicationNamedRequirement[]
   credentials?: PublicationCredentialRequirement[]
 }
+
+export type WorkflowPublicationRequirementsV2 = {
+  schema_version: 2
+  extensions: readonly WorkflowPublicationDeploymentExtensionRequirement[]
+  credential_slots: readonly WorkflowPublicationDeploymentExtensionRequirement["credential_slots"][number][]
+  network_destinations: readonly WorkflowPublicationDeploymentNetworkDestination[]
+}
+
+export type WorkflowPublicationRequirements =
+  | WorkflowPublicationRequirementsV1
+  | WorkflowPublicationRequirementsV2
 
 export type PublicationPackageMaterializationStatus = {
   materialized: boolean

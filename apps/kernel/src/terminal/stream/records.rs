@@ -112,6 +112,16 @@ pub struct AssistantMessageCompletionRecord {
     pub completed_at_ms: u64,
 }
 
+/// Authoritative terminal workflow-run transition fanned out to session
+/// attachments. Archiving removes terminal runs from hot snapshots, so
+/// subscribers receive these drained updates explicitly instead of diffing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkflowRunUpdateRecord {
+    pub(super) session_id: String,
+    pub(super) pending_recipient_attachment_ids: Vec<String>,
+    pub(super) workflow_run: crate::session::WorkflowRun,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TerminalStreamHealthSnapshot {
     pub pending_output_records: usize,

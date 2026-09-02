@@ -267,6 +267,14 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_submits()
     }
 
+    pub(crate) fn schedule_finished_structured_prompt_submit_retry(
+        &mut self,
+        finished: FinishedProviderPromptSubmitJob,
+    ) {
+        self.run_actor_mailbox
+            .schedule_finished_submit_retry(finished);
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &mut self,
         provider_run_id: &str,
@@ -281,6 +289,14 @@ impl ProviderProcessService {
                 .map(str::to_string),
         );
         Ok(run.clone())
+    }
+
+    pub(crate) fn schedule_finished_structured_output_poll_retry(
+        &mut self,
+        finished: FinishedProviderOutputPollJob,
+    ) {
+        self.run_actor_mailbox
+            .schedule_finished_output_poll_retry(finished);
     }
 
     pub(crate) fn drain_finished_structured_prompt_abort_jobs(
@@ -334,6 +350,7 @@ impl ProviderProcessService {
                 agent_id,
                 prompt_id,
                 result,
+                settlement_retry_attempt: 0,
             },
         );
     }
@@ -348,12 +365,41 @@ impl ProviderProcessService {
             .push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
                 provider_run_id,
                 result,
+                settlement_retry_attempt: 0,
             });
     }
 
     #[cfg(test)]
     pub(crate) fn insert_run_for_test(&mut self, run: RuntimeProviderRun) {
         self.runs.insert(run.id().to_string(), run);
+    }
+
+    pub(crate) fn preview_structured_output_metadata(
+        &self,
+        provider_run_id: &str,
+        batch: &ProviderPromptSignalBatch,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let mut run = self.get_run(provider_run_id)?;
+        if let Some(model) = batch.resolved_model.as_deref() {
+            let model = if run.adapter_key() == "claude" {
+                normalize_claude_selection_model(model)
+            } else {
+                model.to_string()
+            };
+            run.set_model(model);
+        }
+        if let Some(variant) = batch.resolved_variant.as_deref() {
+            run.set_variant(Some(variant.to_string()));
+        }
+        if let Some(resume_state) = batch.resolved_resume_state.as_ref() {
+            run.set_resume_state(resume_state.clone());
+            run.set_provider_session_id(
+                resume_state
+                    .provider_session_id(run.adapter_key())
+                    .map(str::to_string),
+            );
+        }
+        Ok(run)
     }
 
     pub(crate) fn apply_structured_output_metadata(

@@ -91,9 +91,12 @@ impl KernelRuntimeOwnedState {
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-            let _ = self.ensure_attachment_in_session(&session_id, &attachment_id)?;
-        }
+        let source_attachment =
+            if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+                None
+            } else {
+                Some(self.ensure_attachment_in_session(&session_id, &attachment_id)?)
+            };
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         let target_agent = self.agent_store.get_agent(&target_agent_id)?;
         if target_agent.session_id() != session_id {
@@ -116,13 +119,18 @@ impl KernelRuntimeOwnedState {
             .active_prompt_for_agent(&session, &target_agent_id)
             .is_some();
         let will_queue = prepared.force_queue || queued_while_active;
-        let prompt = if will_queue {
-            prepared.prompt.clone()
+        let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
+            prepared.prompt.clone().with_source_attribution(
+                source_attachment.client_id(),
+                source_attachment.owner_user_id(),
+            )
         } else {
-            prepared
-                .prompt
-                .clone()
-                .with_id(self.session_store.reserve_prompt_id())
+            prepared.prompt.clone()
+        };
+        let prompt = if will_queue {
+            prompt
+        } else {
+            prompt.with_id(self.session_store.reserve_prompt_id())
         };
         let outcome = self.prompt_state_owner.submit_prepared_prompt(
             &session,
@@ -646,6 +654,7 @@ mod tests {
                     workspace_id: Some("workspace-stopped-slice".to_string()),
                     worktree_id: Some("worktree-stopped-slice".to_string()),
                     workspace_mount: None,
+                    development: None,
                     worker_kernel_ref: Some("slice:stopped-slice".to_string()),
                     display_url: None,
                     provider_auth: Vec::new(),

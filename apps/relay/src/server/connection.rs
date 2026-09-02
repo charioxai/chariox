@@ -113,6 +113,7 @@ pub(crate) async fn handle_connection(
         }
     }));
     let mut registered_daemon_key: Option<DaemonKey> = None;
+    let mut auth_expiry_deadline: Option<Instant> = None;
     let mut first_message_received = false;
     let mut last_read_at = Instant::now();
     let mut last_ping_at = Instant::now() - RELAY_HEARTBEAT_INTERVAL;
@@ -124,6 +125,22 @@ pub(crate) async fn handle_connection(
         loop {
             let message = tokio::select! {
                 message = reader.next() => message,
+                _ = async {
+                    match auth_expiry_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                        None => pending().await,
+                    }
+                } => {
+                    relay_log(
+                        "warn",
+                        "relay_connection_token_expired",
+                        json!({
+                            "peer_addr": peer_addr.to_string(),
+                        }),
+                    );
+                    send_close(&outgoing_tx, "relay token expired".to_string());
+                    break;
+                }
                 _ = connection_check.tick() => {
                     let elapsed = last_read_at.elapsed();
                     if (!first_message_received && elapsed >= RELAY_FIRST_MESSAGE_TIMEOUT)
@@ -193,11 +210,23 @@ pub(crate) async fn handle_connection(
                                 RelayAction::DaemonRegister,
                                 None,
                             )?;
+                            if let Err(reason) = validate_daemon_registration_identity(
+                                &identity,
+                                &registration,
+                            ) {
+                                send_close(&outgoing_tx, reason.to_string());
+                                break;
+                            }
+                            auth_expiry_deadline = relay_auth_expiry_deadline(
+                                &auth_verifier,
+                                identity.expires_at_ms,
+                            );
                             let daemon_key = DaemonKey::new(
                                 identity.realm_id.clone(),
                                 registration.daemon_id.clone(),
                             );
                             let allowed_actions = identity.allowed_actions.clone();
+                            let allowed_targets = identity.allowed_targets.clone();
                             if registered_daemon_key
                                 .as_ref()
                                 .is_some_and(|current_key| current_key != &daemon_key)
@@ -233,6 +262,7 @@ pub(crate) async fn handle_connection(
                                     realm_id: Some(identity.realm_id.clone()),
                                     identity: Some(identity.into()),
                                     allowed_actions,
+                                    allowed_targets,
                                     daemon_registration: Some(registration.clone()),
                                     client_daemon_key: None,
                                 },
@@ -260,18 +290,33 @@ pub(crate) async fn handle_connection(
                                     &auth_verifier,
                                     &registration.auth_token,
                                     RelayAction::DaemonHeartbeat,
-                                    Some(daemon_id.as_str()),
+                                    None,
                                 )?;
+                                if let Err(reason) = validate_daemon_registration_identity(
+                                    &identity,
+                                    &registration,
+                                ) {
+                                    send_close(&outgoing_tx, reason.to_string());
+                                    break;
+                                }
+                                auth_expiry_deadline = relay_auth_expiry_deadline(
+                                    &auth_verifier,
+                                    identity.expires_at_ms,
+                                );
                                 if identity.realm_id != current_daemon_key.realm_id {
                                     break;
                                 }
                                 if registration.daemon_id != daemon_id {
                                     break;
                                 }
+                                let allowed_actions = identity.allowed_actions.clone();
+                                let allowed_targets = identity.allowed_targets.clone();
                                 let mut guard = registry.write().await;
                                 if let Some(peer) = guard.peers.get_mut(&peer_addr) {
                                     peer.realm_id = Some(identity.realm_id.clone());
                                     peer.identity = Some(identity.into());
+                                    peer.allowed_actions = allowed_actions;
+                                    peer.allowed_targets = allowed_targets;
                                     peer.daemon_registration = Some(registration.clone());
                                 }
                                 guard.daemons.insert(current_daemon_key, registration);
@@ -287,7 +332,12 @@ pub(crate) async fn handle_connection(
                                     .as_deref()
                                     .or(target.daemon_alias.as_deref()),
                             )?;
+                            auth_expiry_deadline = relay_auth_expiry_deadline(
+                                &auth_verifier,
+                                identity.expires_at_ms,
+                            );
                             let allowed_actions = identity.allowed_actions.clone();
+                            let allowed_targets = identity.allowed_targets.clone();
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &identity.realm_id, &target)
                                     .await
@@ -340,6 +390,7 @@ pub(crate) async fn handle_connection(
                                     realm_id: Some(identity.realm_id.clone()),
                                     identity: Some(identity.into()),
                                     allowed_actions,
+                                    allowed_targets,
                                     daemon_registration: None,
                                     client_daemon_key: Some(daemon_key.clone()),
                                 },
@@ -470,6 +521,29 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             };
+                            if !peer_allows_target(
+                                &registry,
+                                peer_addr,
+                                &target,
+                                &target_daemon_key,
+                            )
+                            .await
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::DaemonPeerResponse {
+                                        request_id,
+                                        from_daemon_id: target_daemon_key.daemon_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "target_not_allowed",
+                                            "daemon token does not allow the requested target",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let relay_request_id = format!(
                                 "relay-peer-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -562,6 +636,16 @@ pub(crate) async fn handle_connection(
                                 .await;
                                 continue;
                             };
+                            if !peer_allows_target(
+                                &registry,
+                                peer_addr,
+                                &target,
+                                &target_daemon_key,
+                            )
+                            .await
+                            {
+                                continue;
+                            }
                             let daemon_sender = routes.daemon_sender(&target_daemon_key);
                             if let Some(daemon_sender) = daemon_sender {
                                 if send_envelope(

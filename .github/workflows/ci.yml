@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -91,6 +92,9 @@ jobs:
       - name: Client protocol conformance gate
         run: cargo test -p chariox-kernel client_protocol_conformance -- --nocapture
 
+      - name: Release session project assignment regression
+        run: cargo test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
+
       - name: Clippy
         run: |
           node --test scripts/clippy-changed-lines-gate.test.mjs
@@ -98,9 +102,10 @@ jobs:
 
       - name: Install official provider test harnesses
         run: |
-          npm install --global @openai/codex@0.144.0 opencode-ai@1.4.1
+          npm install --global @anthropic-ai/claude-code@2.1.207 @openai/codex@0.144.0 opencode-ai@1.18.23
+          test "$(claude --version)" = "2.1.207 (Claude Code)"
           test "$(codex --version)" = "codex-cli 0.144.0"
-          test "$(opencode --version)" = "1.4.1"
+          test "$(opencode --version)" = "1.18.23"
 
       - name: Test
         run: cargo test --workspace

@@ -36,6 +36,8 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
         caller_metaagent_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let reconciles_runtime_instances =
+            workflow_design_op_reconciles_runtime_instances(&request.op);
         let node_owner_user_id = self.ensure_workflow_design_op_authorized(
             &request.session_id,
             &request.op,
@@ -51,6 +53,9 @@ impl KernelRuntimeOwnedState {
                 node_owner_user_id,
                 caller_metaagent_id.map(str::to_string),
             )?;
+        if reconciles_runtime_instances {
+            self.workflow_cleanup_runtime_instances_exclusive(&request.session_id)?;
+        }
         self.workflow_session(&request.session_id)
     }
 
@@ -265,5 +270,51 @@ impl KernelRuntimeOwnedState {
         )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
+    }
+}
+
+fn workflow_design_op_reconciles_runtime_instances(op: &crate::local::WorkflowDesignOp) -> bool {
+    match op {
+        crate::local::WorkflowDesignOp::WorkflowRemove { .. }
+        | crate::local::WorkflowDesignOp::EndpointRemove { .. } => true,
+        crate::local::WorkflowDesignOp::EndpointUpdate { patch, .. } => {
+            patch.max_instances.is_some() || patch.entry_node_id.is_some()
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workflow_design_op_reconciles_runtime_instances;
+
+    #[test]
+    fn pool_and_entry_edits_and_endpoint_removal_reconcile_runtime_instances() {
+        let patch = |entry_node_id, max_instances| crate::local::WorkflowDesignOp::EndpointUpdate {
+            workflow_id: "workflow-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            patch: crate::local::WorkflowDesignEndpointPatch {
+                alias: None,
+                entry_node_id,
+                max_instances,
+            },
+        };
+        assert!(workflow_design_op_reconciles_runtime_instances(&patch(
+            None,
+            Some(1)
+        )));
+        assert!(!workflow_design_op_reconciles_runtime_instances(&patch(
+            None, None
+        )));
+        assert!(workflow_design_op_reconciles_runtime_instances(&patch(
+            Some("node-2".to_string()),
+            None,
+        )));
+        assert!(workflow_design_op_reconciles_runtime_instances(
+            &crate::local::WorkflowDesignOp::EndpointRemove {
+                workflow_id: "workflow-1".to_string(),
+                endpoint_id: "endpoint-1".to_string(),
+            }
+        ));
     }
 }

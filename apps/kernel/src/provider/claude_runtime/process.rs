@@ -30,6 +30,11 @@ pub(super) fn spawn_claude_child(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (name, _) in std::env::vars() {
+        if crate::secret::secret_like_env_name(&name) {
+            command.env_remove(name);
+        }
+    }
     for name in env_remove {
         command.env_remove(name);
     }

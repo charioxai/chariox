@@ -395,21 +395,22 @@ async fn scoped_tokens_route_and_list_only_within_their_realm() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn accepted_daemon_socket_is_not_closed_when_initial_token_expires() {
-    let mut claims = BTreeMap::new();
-    claims.insert(
-        "daemon-token".to_string(),
-        scoped_claim(
-            "daemon-token",
-            "daemon-1",
-            RelaySubjectKind::Kernel,
-            "realm-a",
-            vec![RelayAction::DaemonRegister],
-            None,
-        ),
+async fn accepted_daemon_socket_is_closed_when_initial_token_expires() {
+    let now_ms = test_current_unix_ms();
+    let mut daemon_claim = scoped_claim(
+        "daemon-token",
+        "daemon-1",
+        RelaySubjectKind::Kernel,
+        "realm-a",
+        vec![RelayAction::DaemonRegister],
+        None,
     );
+    daemon_claim.issued_at_ms = now_ms.saturating_sub(1);
+    daemon_claim.expires_at_ms = now_ms + 100;
+    let mut claims = BTreeMap::new();
+    claims.insert("daemon-token".to_string(), daemon_claim);
     let auth_verifier =
-        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), Some(10)));
+        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), None));
     let server = RelayServer::with_auth_verifier(
         RelayConfig {
             host: "127.0.0.1".to_string(),
@@ -471,7 +472,7 @@ async fn accepted_daemon_socket_is_not_closed_when_initial_token_expires() {
         assert_eq!(guard.daemon_count(), 1);
         assert_eq!(guard.peer_count(), 1);
     }
-    assert_no_relay_close(&mut daemon_socket).await;
+    assert_relay_close(&mut daemon_socket).await;
 
     let _ = daemon_socket.close(None).await;
     let _ = shutdown_tx.send(());
@@ -479,32 +480,33 @@ async fn accepted_daemon_socket_is_not_closed_when_initial_token_expires() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn accepted_client_socket_is_not_closed_when_initial_token_expires() {
+async fn accepted_client_socket_is_closed_when_initial_token_expires() {
+    let now_ms = test_current_unix_ms();
+    let mut daemon_claim = scoped_claim(
+        "daemon-token",
+        "daemon-1",
+        RelaySubjectKind::Kernel,
+        "realm-a",
+        vec![RelayAction::DaemonRegister],
+        None,
+    );
+    daemon_claim.issued_at_ms = now_ms.saturating_sub(1);
+    daemon_claim.expires_at_ms = now_ms + 1_000;
+    let mut client_claim = scoped_claim(
+        "client-token",
+        "client-1",
+        RelaySubjectKind::Client,
+        "realm-a",
+        vec![RelayAction::ClientConnect],
+        Some(vec!["daemon-1"]),
+    );
+    client_claim.issued_at_ms = now_ms.saturating_sub(1);
+    client_claim.expires_at_ms = now_ms + 150;
     let mut claims = BTreeMap::new();
-    claims.insert(
-        "daemon-token".to_string(),
-        scoped_claim(
-            "daemon-token",
-            "daemon-1",
-            RelaySubjectKind::Kernel,
-            "realm-a",
-            vec![RelayAction::DaemonRegister],
-            None,
-        ),
-    );
-    claims.insert(
-        "client-token".to_string(),
-        scoped_claim(
-            "client-token",
-            "client-1",
-            RelaySubjectKind::Client,
-            "realm-a",
-            vec![RelayAction::ClientConnect],
-            Some(vec!["daemon-1"]),
-        ),
-    );
+    claims.insert("daemon-token".to_string(), daemon_claim);
+    claims.insert("client-token".to_string(), client_claim);
     let auth_verifier =
-        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), Some(10)));
+        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), None));
     let server = RelayServer::with_auth_verifier(
         RelayConfig {
             host: "127.0.0.1".to_string(),
@@ -591,7 +593,7 @@ async fn accepted_client_socket_is_not_closed_when_initial_token_expires() {
     }
 
     sleep(Duration::from_millis(75)).await;
-    assert_no_relay_close(&mut client_socket).await;
+    assert_relay_close(&mut client_socket).await;
 
     let _ = client_socket.close(None).await;
     let _ = daemon_socket.close(None).await;

@@ -47,6 +47,13 @@ export async function listDeploymentProjects(
   return getJson(profile, "/deployment-projects", { accountId: profile.accountId })
 }
 
+export function getPublicationCallerClaimsVerifier(profile: RelayCloudProfile): Promise<{
+  readonly algorithm: "Ed25519"
+  readonly publicKeyPem: string
+}> {
+  return getJson(profile, "/publication-caller-claims/verifier", {})
+}
+
 export async function getDeploymentProject(
   profile: RelayCloudProfile,
   projectId: string,
@@ -251,7 +258,10 @@ export async function reviewDeploymentClaim(
   profile: RelayCloudProfile,
   claimToken: string,
 ): Promise<DeploymentClaimResult> {
-  return postJson(profile, "/deployment-claims/review", { claimToken })
+  return postJson(profile, "/deployment-claims/review", {
+    accountId: profile.accountId,
+    claimToken,
+  })
 }
 
 export async function acceptDeploymentClaim(
@@ -812,6 +822,9 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
       ? body.error.message
       : `deployed workflow request failed with ${response.status}`
     throw new Error(message)
+  }
+  if (body === null) {
+    throw new Error(`deployed workflow request returned non-JSON HTTP ${response.status}`)
   }
   return body as TResponse
 }

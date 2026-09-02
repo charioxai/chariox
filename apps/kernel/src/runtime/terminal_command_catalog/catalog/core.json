@@ -347,6 +347,12 @@
         "value": "/agent provider "
       },
       {
+        "id": "agent-account",
+        "label": "account",
+        "description": "Set the focused or named agent provider account",
+        "value": "/agent account "
+      },
+      {
         "id": "agent-model",
         "label": "model",
         "description": "Set the focused or named agent model",

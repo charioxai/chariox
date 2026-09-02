@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 296);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 297);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -118,9 +118,11 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             setup_id: "setup-1".to_string(),
             operation_key: "deployment-setup:setup-1:runtime".to_string(),
             deployment_id: "deployment-1".to_string(),
+            environment_id: "environment-1".to_string(),
             release_id: "release-1".to_string(),
             package_digest: "sha256:abc123".to_string(),
             desired_revision: 7,
+            caller_claims_public_key_pem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n".to_string(),
         },
     );
     let mut workflow =
@@ -188,9 +190,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         crate::local::MaterializeWorkflowPublicationRequest {
             publication_id: "publication-1".to_string(),
             snapshot: snapshot.clone(),
+            runtime_key: Some("deployment-1:replica-0".to_string()),
         },
     ));
-    let publication = crate::session::WorkflowPublicationDefinition::new_immutable(
+    let mut publication = crate::session::WorkflowPublicationDefinition::new_immutable(
         "publication-1",
         "session-1",
         "workflow-1",
@@ -216,6 +219,12 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some("publish-operation-1".to_string()),
         Some("sha256:publication-request-1".to_string()),
         "local",
+    );
+    publication.set_runtime_materialization(
+        crate::session::WorkflowPublicationRuntimeMaterialization {
+            key: "deployment-1:replica-0".to_string(),
+            agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
+        },
     );
     let session = crate::session::RuntimeSession::new(
         "session-1",
@@ -371,6 +380,12 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             process_id: Some(4242),
             replayed: false,
         },
+        LocalDaemonRequest::ActivateWorkflowPublicationRuntime(crate::local::ActivateWorkflowPublicationRuntimeRequest {
+            publication_id: "publication-1".to_string(), runtime_keys: vec!["deployment-1:replica-0".to_string()],
+        }),
+        LocalDaemonResponse::WorkflowPublicationRuntimeActivated {
+            publication_id: "publication-1".to_string(), runtime_keys: vec!["deployment-1:replica-0".to_string()],
+        },
     ]);
     let mut snapshot = snapshot;
     for path in [
@@ -423,6 +438,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/0/CreateWorkflowPublication/transport/kind"),
         Some(&serde_json::json!("human_http"))
+    );
+    assert_eq!(
+        snapshot.pointer("/5/MaterializeWorkflowPublication/runtime_key"),
+        Some(&serde_json::json!("deployment-1:replica-0"))
     );
     assert_eq!(
         snapshot.pointer("/5/MaterializeWorkflowPublication/snapshot/workflow/schemas/0/id"),
@@ -581,6 +600,14 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some(&serde_json::json!(7))
     );
     assert_eq!(
+        snapshot.pointer("/18/BindWorkflowPublicationDeployment/environment_id"),
+        Some(&serde_json::json!("environment-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/18/BindWorkflowPublicationDeployment/caller_claims_public_key_pem"),
+        Some(&serde_json::json!("-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n"))
+    );
+    assert_eq!(
         snapshot.pointer("/19/WorkflowPublicationDeploymentBound/tunnel_url"),
         Some(&serde_json::json!(
             "https://relay.example.test/display/publication-1/"
@@ -605,16 +632,24 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     );
     let serialized =
         serde_json::to_string(&snapshot).expect("workflow publication shape should encode");
+    assert_eq!(
+        snapshot.pointer("/20/ActivateWorkflowPublicationRuntime/runtime_keys"),
+        Some(&serde_json::json!(["deployment-1:replica-0"]))
+    );
+    assert_eq!(
+        snapshot.pointer("/21/WorkflowPublicationRuntimeActivated/publication_id"),
+        Some(&serde_json::json!("publication-1"))
+    );
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "512308bc1f2b4f3f26eab5c87e04dfe733913b458d829c0cf7e0ebb0e648784e"
+        "017fbcd592319e79f1167104b7d39dec8562e3e86ed006b252ef783081c63c96"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 296);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 297);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

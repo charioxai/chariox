@@ -235,7 +235,10 @@ fn serve_ready_connection(
         .to_string()
     } else if capability_request {
         assert!(request.contains("\"sessionToken\":\"cloud-session-token\""));
-        assert!(request.contains("\"generatorId\":\"dev.chariox.dummy\""));
+        assert!(
+            !request.contains("\"generatorId\":"),
+            "the path-bound generator ID must not be duplicated into the strict Cloud request body"
+        );
         assert!(request.contains("\"version\":\"1.0.0\""));
         assert!(request.contains(&format!(
             "\"manifestDigest\":\"{}\"",
@@ -519,6 +522,19 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         binding.event_interest_key
     );
 
+    let persisted = harness.with_app(|app| {
+        app.durable_state_store()
+            .load_workflow_hot_states("daemon-test")
+            .expect("durable workflow state should load")
+            .into_iter()
+            .find(|(session_id, _)| session_id == &graph.session_id)
+            .map(|(_, state)| state)
+            .expect("event publication session should be persisted")
+    });
+    assert_eq!(persisted.workflow_publications.len(), 2);
+    assert_eq!(persisted.workflow_publication_snapshots.len(), 2);
+    assert_eq!(persisted.workflow_event_bindings.len(), 2);
+
     let package_files = match harness
         .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
             ExportWorkflowPublicationPackageRequest {
@@ -536,7 +552,7 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
             package_files,
             ..
         } => {
-            assert_eq!(package_version, 3);
+            assert_eq!(package_version, 4);
             package_files
         }
         response => panic!("unexpected response: {response:?}"),
@@ -553,8 +569,14 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
     .unwrap();
     assert!(binding_template.contains("\"requested_scope\": \"tenant:local\""));
     assert!(binding_template.contains("\"connection_id\": null"));
+    assert!(binding_template.contains("\"reply_mode\": \"disabled\""));
+    assert!(binding_template.contains("\"action_ids\": []"));
     assert!(!binding_template.contains("connection-local"));
     let publication_json = package_json_file(&package_files, "publication.json");
+    assert_eq!(
+        publication_json["event_bindings_path"],
+        serde_json::json!("event-bindings.local.json")
+    );
     assert_eq!(
         publication_json["hooks"][0]["transport"],
         serde_json::json!("event_based")
@@ -619,6 +641,32 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         tested.workflow_event_bindings().len(),
         2,
         "a second publication may intentionally fan out the same event interest"
+    );
+    let accepted_receipt = tested
+        .workflow_event_delivery_receipts()
+        .values()
+        .next()
+        .expect("test delivery receipt should remain available");
+    let duplicate = harness
+        .runtime_state()
+        .accept_workflow_event_delivery(chariox_event_protocol::EventDeliveryEnvelope {
+            delivery_id: accepted_receipt.delivery_id.clone(),
+            binding_id: binding.id.clone(),
+            event_type: binding.event_type.clone(),
+            event_type_version: binding.event_type_version,
+            occurrence_id: accepted_receipt.occurrence_id.clone(),
+            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            prompt: "Replay the already accepted test event.".to_string(),
+            artifacts: Vec::new(),
+            metadata: serde_json::json!({"test": true, "duplicate": true}),
+            reply_context: None,
+            expires_at_ms: u64::MAX,
+        })
+        .expect("a duplicate delivery should return its durable receipt without blocking");
+    assert!(duplicate.duplicate);
+    assert_eq!(
+        duplicate.queued_prompt_id,
+        accepted_receipt.queued_prompt_id
     );
 
     let active_route_count = || match harness

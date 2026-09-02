@@ -8,7 +8,7 @@ import { resolveBuiltBinary } from "./drill-runtime-helpers.mjs"
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://chariox-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
+const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://staging.chariox.com").replace(/\/$/, "")
 const pollTimeoutMs = Number(process.env.CHARIOX_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
 const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
 const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging")

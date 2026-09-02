@@ -74,11 +74,16 @@ export function getProviderAuthStatusRequest(provider: string, accountProfile = 
   }
 }
 
-export function startProviderLoginRequest(provider: string, accountProfile = "default") {
+export function startProviderLoginRequest(
+  provider: string,
+  accountProfile = "default",
+  method?: string | null,
+) {
   return {
     StartProviderLogin: {
       provider,
       account_profile: accountProfile,
+      ...(method ? { method } : {}),
     },
   }
 }
@@ -118,6 +123,10 @@ export function createProviderAccountProfileRequest(provider: string, label: str
 
 export function linkProviderAccountProfileRequest(provider: string, label: string, path: string) {
   return { LinkProviderAccountProfile: { provider, label, path } }
+}
+
+export function importNativeProviderAccountProfileRequest(provider: string) {
+  return { ImportNativeProviderAccountProfile: { provider } }
 }
 
 export function renameProviderAccountProfileRequest(provider: string, accountProfile: string, label: string) {

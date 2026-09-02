@@ -59,6 +59,7 @@ import type {
 import { createWaitingRoomHiddenKernelController } from "./waiting-room-hidden-kernel-controller.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import { createWaitingRoomLaunchOwnershipTracker } from "./waiting-room-launch-ownership.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type {
   WorkspaceScreenMode,
@@ -135,10 +136,11 @@ export function createCliAppState(options: {
   const [terminalPairingState, setTerminalPairingState] = createSignal<TerminalPairingLinkView | null>(null)
   const [terminalPairingQrLines, setTerminalPairingQrLines] = createSignal<string[]>([])
   const [sessionBrowserOpen, setSessionBrowserOpen] = createSignal(false)
+  const [managedMachineDialogOpen, setManagedMachineDialogOpen] = createSignal(false)
   const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null =>
     formatAgentLocationLabel(agent, slicesState())
   const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
-  const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
+  const [waitingRoomState, setWaitingRoomStateSignal] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
       initialProviderCatalog,
@@ -149,6 +151,22 @@ export function createCliAppState(options: {
       initialThemeRegistry,
     ),
   )
+  const waitingRoomLaunchOwnership = createWaitingRoomLaunchOwnershipTracker(waitingRoomState())
+  const setWaitingRoomState = ((
+    value: WaitingRoomState | ((previous: WaitingRoomState) => WaitingRoomState),
+  ) => {
+    const next = setWaitingRoomStateSignal(value)
+    waitingRoomLaunchOwnership.update(next)
+    return next
+  }) as typeof setWaitingRoomStateSignal
+  const setWaitingRoomStateProjection = ((
+    value: WaitingRoomState | ((previous: WaitingRoomState) => WaitingRoomState),
+  ) => {
+    const next = setWaitingRoomStateSignal(value)
+    waitingRoomLaunchOwnership.synchronize(next)
+    return next
+  }) as typeof setWaitingRoomStateSignal
+  const waitingRoomLaunchOwnershipRevision = waitingRoomLaunchOwnership.revision
   const initialWorkspaceTarget = initialSession.workspace_id || cliOptions.workspace || options.cwd
   const initialWorktreeTarget = initialSession.worktree_id || cliOptions.worktree || initialWorkspaceTarget
   const [pendingWorkspaceTarget, setPendingWorkspaceTarget] = createSignal(initialWorkspaceTarget)
@@ -163,7 +181,11 @@ export function createCliAppState(options: {
   const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(
     sessionProjectedStreamingAgentId(initialSession),
   )
-  const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
+  const [statusLine, setStatusLine] = createSignal(
+    initialBinding?.providerLaunchIssue === "credential_vault_locked"
+      ? "Chariox vault locked. Run /credential vault manage."
+      : DEFAULT_CONNECTED_STATUS,
+  )
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
   const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
@@ -268,11 +290,15 @@ export function createCliAppState(options: {
     setTerminalPairingQrLines,
     sessionBrowserOpen,
     setSessionBrowserOpen,
+    managedMachineDialogOpen,
+    setManagedMachineDialogOpen,
     agentLocationLabel,
     sessionBrowserIndex,
     setSessionBrowserIndex,
     waitingRoomState,
     setWaitingRoomState,
+    setWaitingRoomStateProjection,
+    waitingRoomLaunchOwnershipRevision,
     pendingWorkspaceTarget,
     setPendingWorkspaceTarget,
     pendingWorktreeTarget,

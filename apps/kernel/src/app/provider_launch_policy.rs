@@ -10,12 +10,18 @@ use crate::provider::{
 };
 use crate::session::RuntimeSession;
 
-pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
+pub(crate) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
     let credentials = crate::credential::load_user_credentials().unwrap_or_default();
     let _ = config;
-    crate::secret::RuntimeSecretService::credential_env_names_from(&credentials)
+    let mut names = crate::secret::RuntimeSecretService::credential_env_names_from(&credentials)
         .into_iter()
-        .collect()
+        .collect::<Vec<_>>();
+    for name in crate::provider::managed_provider_control_env_remove() {
+        if !names.iter().any(|existing| existing == &name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 pub(crate) fn resolve_mcp_credentials_for_launch(
@@ -129,10 +135,23 @@ pub(crate) fn failed_provider_resume_state_replacement_from_message(
     run: &RuntimeProviderRun,
     message: &str,
 ) -> Option<ProviderResumeState> {
-    let operation = if message.contains("thread/resume") {
+    let provider_message = message
+        .strip_prefix("Provider prompt dispatch failed: ")
+        .unwrap_or(message)
+        .trim();
+    let operation = if provider_message.contains("thread/resume") {
         "thread/resume"
-    } else if message.contains("codex_thread_resume") {
+    } else if provider_message.contains("codex_thread_resume") {
         "codex_thread_resume"
+    } else if run.adapter_key().eq_ignore_ascii_case("opencode")
+        && (provider_message.starts_with("Provider finish_reason: network_error")
+            || provider_message.contains("Upstream request failed: Endpoint is unavailable"))
+    {
+        "provider_stream/network_error"
+    } else if run.adapter_key().eq_ignore_ascii_case("opencode")
+        && provider_message.starts_with("OpenCode became idle without producing assistant output")
+    {
+        "provider_stream/empty_idle_assistant"
     } else {
         return None;
     };
@@ -194,6 +213,69 @@ fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opencode_run_with_resume_state() -> RuntimeProviderRun {
+        let mut run = RuntimeProviderRun::from_control_capability_inference(
+            "provider-run-1",
+            "session-1".to_string(),
+            Some("agent-1".to_string()),
+            "opencode".to_string(),
+        );
+        run.set_resume_state(ProviderResumeState::from_opencode_session_id(
+            "open-session-1",
+        ));
+        run
+    }
+
+    #[test]
+    fn opencode_network_error_retires_only_the_failed_resume_session() {
+        let run = opencode_run_with_resume_state();
+
+        let replacement = failed_provider_resume_state_replacement_from_message(
+            &run,
+            "Provider prompt dispatch failed: Provider finish_reason: network_error (retries exhausted)",
+        )
+        .expect("retry-exhausted OpenCode stream failures should retire the session");
+
+        assert_eq!(replacement.opencode_session_id(), None);
+    }
+
+    #[test]
+    fn opencode_empty_idle_assistant_retires_only_the_failed_resume_session() {
+        let run = opencode_run_with_resume_state();
+
+        let replacement = failed_provider_resume_state_replacement_from_message(
+            &run,
+            "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.",
+        )
+        .expect("an empty idle assistant poisons the resumed OpenCode session");
+
+        assert_eq!(replacement.opencode_session_id(), None);
+    }
+
+    #[test]
+    fn opencode_unavailable_upstream_retires_only_the_failed_resume_session() {
+        let run = opencode_run_with_resume_state();
+
+        let replacement = failed_provider_resume_state_replacement_from_message(
+            &run,
+            "Provider prompt dispatch failed: Error from provider (Console): Upstream request failed: Endpoint is unavailable.",
+        )
+        .expect("an unavailable OpenCode upstream poisons the resumed provider session");
+
+        assert_eq!(replacement.opencode_session_id(), None);
+    }
+
+    #[test]
+    fn opencode_resume_recovery_ignores_unrelated_terminal_failures() {
+        let run = opencode_run_with_resume_state();
+
+        assert!(failed_provider_resume_state_replacement_from_message(
+            &run,
+            "provider request failed: network_error",
+        )
+        .is_none());
+    }
 
     #[test]
     fn workspace_live_sync_protected_roots_include_working_directory_and_local_links() {

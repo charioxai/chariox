@@ -6,6 +6,7 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"
 import {
+  PROVIDER_CONNECTION_RETRY_MERGE_KEY,
   PROVIDER_TERMINAL_OUTPUT_KIND,
   terminalRecordIsPassiveExternalProviderTelemetry,
   terminalRecordPromptHistoryText,
@@ -336,6 +337,21 @@ test("terminalRecordTranscriptProjection keeps ordinary status merge separate fr
   assert.equal(ordinary.statusMergeKey, "__provider_status__")
   assert.equal(external.statusMergeKey, null)
   assert.equal(external.metadata.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+})
+
+test("terminalRecordTranscriptProjection renders and preserves structured connection retries", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+    merge_key: PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+  }, "Codex connection interrupted — retrying (2/5).", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => false,
+  })
+
+  assert.equal(projection.renderProviderStatus, false)
+  assert.equal(projection.renderInAgentPane, true)
+  assert.equal(projection.appendsLiveTranscript, true)
+  assert.equal(projection.statusMergeKey, PROVIDER_CONNECTION_RETRY_MERGE_KEY)
 })
 
 test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and normalized errors", () => {

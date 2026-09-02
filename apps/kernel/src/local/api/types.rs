@@ -20,6 +20,8 @@ mod daemon;
 mod event_publication;
 mod external_provider_session;
 mod history;
+mod managed_context;
+mod managed_environment;
 mod metaagent;
 mod prompt_control;
 mod prompt_settings;
@@ -46,6 +48,8 @@ pub use daemon::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
+pub use managed_context::*;
+pub use managed_environment::*;
 pub use metaagent::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
@@ -62,5 +66,6 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 296 adds bounded Room Environment screenshot artifact transfer.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 296;
+/// Version 297 combines managed-context transport with bounded Room
+/// Environment screenshot artifact transfer.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 297;

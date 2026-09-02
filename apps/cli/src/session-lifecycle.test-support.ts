@@ -92,6 +92,7 @@ export function createBaseDeps(overrides: Record<string, unknown> = {}) {
     connectedStatus: "Connected",
     waitingRoomState: () => waitingRoomState,
     attachmentState: () => currentAttachment,
+    sessionState: () => ({ ...detachedState.session, id: currentAttachment?.session_id ?? "no-session" }),
     deriveDetachedCliTransitionState: () => detachedState,
     deriveAttachedCliTransitionState: ({ session }: { session: RuntimeSession }) => attachedState(session),
     clearPendingPromptAttachments: () => calls.push("clearPendingPromptAttachments"),

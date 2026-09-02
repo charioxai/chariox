@@ -68,7 +68,7 @@
         "minimum_local_daemon_protocol_version"
       ],
       "properties": {
-        "package_version": { "const": 3 },
+        "package_version": { "const": 4 },
         "minimum_kernel_version": { "$ref": "#/definitions/non_empty_string" },
         "minimum_local_daemon_protocol_version": { "type": "integer", "minimum": 1 }
       }
@@ -88,7 +88,7 @@
     },
     "configuration": {
       "type": "array",
-      "items": { "type": "object" }
+      "items": { "$ref": "#/definitions/configuration_field" }
     },
     "capabilities": {
       "type": "object",
@@ -96,7 +96,10 @@
       "properties": {
         "actions": { "$ref": "#/definitions/string_array" },
         "manipulation_levels": { "$ref": "#/definitions/string_array" },
-        "extensions": { "type": "object" },
+        "extensions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/extension_requirement" }
+        },
         "filesystem": { "type": "object" },
         "network": { "$ref": "#/definitions/network_policy" }
       },
@@ -226,19 +229,159 @@
         "label": { "$ref": "#/definitions/non_empty_string" },
         "provider": { "$ref": "#/definitions/non_empty_string" },
         "integration": { "$ref": "#/definitions/non_empty_string" },
+        "extension_id": { "type": "string", "pattern": "^(mcp|skill|script|connector):.+$" },
+        "authentication_method": { "$ref": "#/definitions/non_empty_string" },
         "required": { "type": "boolean" },
         "scope": { "const": "environment" },
+        "agent_ids": { "$ref": "#/definitions/string_array" },
         "uses": { "$ref": "#/definitions/string_array" },
         "allowed_destination_ids": { "$ref": "#/definitions/string_array" },
-        "test_method": { "enum": ["provider_native", "runtime_requirement"] }
+        "test_method": { "enum": ["provider_native", "integration_native"] }
       },
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "provider" } } },
           "then": { "required": ["provider"] },
-          "else": { "required": ["integration"] }
+          "else": {
+            "required": [
+              "integration",
+              "extension_id",
+              "authentication_method",
+              "agent_ids"
+            ]
+          }
         }
       ]
+    },
+    "extension_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "version",
+        "content_digest",
+        "launch_definition",
+        "credential_slots",
+        "network_destinations",
+        "uses",
+        "readiness_test",
+        "portability"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^(mcp|skill|script|connector):.+$" },
+        "kind": { "enum": ["mcp", "skill", "script", "connector"] },
+        "name": { "$ref": "#/definitions/non_empty_string" },
+        "version": { "$ref": "#/definitions/sha256" },
+        "content_digest": { "$ref": "#/definitions/sha256" },
+        "launch_definition": { "type": ["object", "null"] },
+        "credential_slots": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/extension_credential_slot" }
+        },
+        "network_destinations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/network_destination" }
+        },
+        "uses": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/extension_use" }
+        },
+        "readiness_test": { "type": "object" },
+        "portability": { "$ref": "#/definitions/extension_portability" }
+      }
+    },
+    "extension_use": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "node_ids"],
+      "properties": {
+        "agent_id": { "$ref": "#/definitions/non_empty_string" },
+        "node_ids": { "$ref": "#/definitions/string_array" }
+      }
+    },
+    "extension_credential_slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot_id",
+        "kind",
+        "label",
+        "integration",
+        "extension_id",
+        "role",
+        "authentication_method",
+        "required",
+        "agent_ids",
+        "node_ids",
+        "readiness_test"
+      ],
+      "properties": {
+        "slot_id": { "type": "string", "pattern": "^integration:[a-z0-9-]+$" },
+        "kind": { "const": "integration" },
+        "label": { "$ref": "#/definitions/non_empty_string" },
+        "integration": { "$ref": "#/definitions/non_empty_string" },
+        "extension_id": { "type": "string", "pattern": "^(mcp|skill|script|connector):.+$" },
+        "role": { "$ref": "#/definitions/non_empty_string" },
+        "authentication_method": { "$ref": "#/definitions/non_empty_string" },
+        "required": { "const": true },
+        "agent_ids": { "$ref": "#/definitions/string_array" },
+        "node_ids": { "$ref": "#/definitions/string_array" },
+        "readiness_test": { "const": "integration_native" }
+      }
+    },
+    "extension_portability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classification"],
+          "properties": { "classification": { "const": "portable" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classification", "reason", "recommendation"],
+          "properties": {
+            "classification": { "const": "local_only" },
+            "reason": { "$ref": "#/definitions/non_empty_string" },
+            "recommendation": { "$ref": "#/definitions/non_empty_string" }
+          }
+        }
+      ]
+    },
+    "configuration_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "kind", "label", "required", "secret", "agent_id", "node_ids", "captured"],
+      "properties": {
+        "key": { "$ref": "#/definitions/non_empty_string" },
+        "kind": { "const": "provider_profile" },
+        "label": { "$ref": "#/definitions/non_empty_string" },
+        "required": { "const": true },
+        "secret": { "const": false },
+        "agent_id": { "$ref": "#/definitions/non_empty_string" },
+        "node_ids": { "$ref": "#/definitions/string_array" },
+        "allowed_providers": {
+          "description": "Providers declared by this immutable package that its deployment operator may bind to this agent, including deliberate cross-provider recovery from an unavailable captured provider.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/non_empty_string" }
+        },
+        "captured": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "model", "effort"],
+          "properties": {
+            "provider": { "$ref": "#/definitions/non_empty_string" },
+            "model": { "type": ["string", "null"] },
+            "effort": { "type": ["string", "null"] }
+          }
+        }
+      }
     },
     "network_policy": {
       "oneOf": [

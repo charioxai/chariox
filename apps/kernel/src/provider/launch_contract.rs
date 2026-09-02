@@ -255,6 +255,12 @@ impl ProviderResumeState {
             ("codex", "codex_thread_resume" | "thread/resume") => {
                 Some(self.without_provider_session_id(provider))
             }
+            ("opencode", "provider_stream/network_error") => {
+                Some(self.without_provider_session_id(provider))
+            }
+            ("opencode", "provider_stream/empty_idle_assistant") => {
+                Some(self.without_provider_session_id(provider))
+            }
             _ => None,
         }
     }
@@ -1006,6 +1012,11 @@ mod tests {
             state.replacement_after_provider_resume_failure("opencode", "codex_thread_resume"),
             None
         );
+        let replacement = state
+            .replacement_after_provider_resume_failure("opencode", "provider_stream/network_error")
+            .expect("OpenCode stream failures should retire the failed provider session");
+        assert_eq!(replacement.opencode_session_id(), None);
+        assert_eq!(replacement.codex_thread_id(), Some("codex-thread"));
         assert!(provider_resume_failure_notice("codex", "codex-thread")
             .is_some_and(|message| message.contains("codex-thread")));
         assert_eq!(

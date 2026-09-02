@@ -190,10 +190,13 @@ fn dispatch_prepared_workflow_node_prompt(
     prompt: &str,
 ) -> Result<(), DaemonError> {
     let provider_run_id =
-        match ensure_workflow_provider_run_for_agent(app, session_id, target_agent_id) {
-            Ok(provider_run_id) => provider_run_id,
-            Err(error) => return Err(error),
-        };
+        crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
+            app,
+            session_id,
+            target_agent_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
     match app.acquire_workflow_node_workspace_claim(
         session_id,
         &provider_run_id,
@@ -243,6 +246,11 @@ fn dispatch_prepared_workflow_node_prompt(
             return Err(error);
         }
     };
+    // A queued admission must not keep its claim: the worktree hold would block
+    // earlier queued prompts for the same agent from ever being promoted.
+    if matches!(outcome, PromptSubmissionOutcome::Queued { .. }) {
+        let _ = app.release_prompt_workspace_claim(&provider_run_id);
+    }
     handle_workflow_prompt_submission_outcome(
         app,
         session_id,
@@ -316,7 +324,14 @@ fn retry_prepared_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
-    let provider_run_id = ensure_workflow_provider_run_for_agent(app, session_id, target_agent_id)?;
+    let provider_run_id =
+        crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
+            app,
+            session_id,
+            target_agent_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
     match app.acquire_workflow_node_workspace_claim(
         session_id,
         &provider_run_id,
@@ -344,6 +359,11 @@ fn retry_prepared_workflow_node_prompt(
         target_agent_id,
         prompt,
     )?;
+    // A queued admission must not keep its claim: the worktree hold would block
+    // earlier queued prompts for the same agent from ever being promoted.
+    if matches!(outcome, PromptSubmissionOutcome::Queued { .. }) {
+        let _ = app.release_prompt_workspace_claim(&provider_run_id);
+    }
     handle_workflow_prompt_submission_outcome(
         app,
         session_id,
@@ -506,6 +526,10 @@ fn fail_workflow_node_after_schedule_error(
         workflow_run_id,
         workflow_node_run_id,
     );
+    if app.release_workflow_node_workspace_claim(session_id, workflow_run_id, workflow_node_run_id)
+    {
+        let _ = retry_blocked_workflow_claims(app);
+    }
     match app.start_next_queued_workflow_prompt(session_id) {
         Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
             workflow_run,
@@ -584,6 +608,49 @@ pub fn ensure_workflow_provider_run_for_agent_with_event_reply(
         event_reply_enabled,
         event_context_enabled,
         event_actions_enabled,
+        false,
+        None,
+    )
+}
+
+pub fn ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    event_reply_enabled: bool,
+    event_context_enabled: bool,
+    event_actions_enabled: bool,
+) -> Result<String, DaemonError> {
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+        event_context_enabled,
+        event_actions_enabled,
+        true,
+        None,
+    )
+}
+
+pub fn ensure_fresh_workflow_provider_run_for_node_with_event_reply(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    workflow_node_run_id: &str,
+    event_reply_enabled: bool,
+    event_context_enabled: bool,
+    event_actions_enabled: bool,
+) -> Result<String, DaemonError> {
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+        event_context_enabled,
+        event_actions_enabled,
+        true,
+        Some(workflow_node_run_id),
     )
 }
 

@@ -123,7 +123,7 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
     })
     assert.equal(calls[3]?.url.pathname, "/deployment-projects/project-1/releases")
     assert.equal(calls[3]?.body?.accountId, "account-1")
-    assert.equal(calls[3]?.body?.packageVersion, 3)
+    assert.equal(calls[3]?.body?.packageVersion, 4)
     assert.equal(calls[3]?.body?.contractVersion, 1)
     assert.match(String(calls[3]?.body?.packageId), /^sha256:[a-f0-9]{64}$/)
     assert.match(String(calls[3]?.body?.packageDigest), /^sha256:[a-f0-9]{64}$/)
@@ -220,6 +220,10 @@ test("deployed workflow API scopes claim and member handoff requests", async () 
       targetAccountId: "customer-account",
       targetEmail: "owner@customer.test",
       expiresInSeconds: 600,
+    })
+    assert.deepEqual(calls[1]?.body, {
+      accountId: "account-1",
+      claimToken: "chariox_claim_secret",
     })
     assert.deepEqual(calls[2]?.body, {
       accountId: "account-1",
@@ -345,6 +349,23 @@ test("deployed workflow API scopes the destination credential lifecycle", async 
     assert.equal("enrollmentMode" in (calls[1]?.body ?? {}), false)
     assert.equal("enrollmentMode" in (calls[4]?.body ?? {}), false)
     assert.equal("enrollmentMode" in (calls[6]?.body ?? {}), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("deployed workflow API rejects successful non-JSON credential responses", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response("<html>Access login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" },
+  })
+
+  try {
+    await assert.rejects(
+      listDeploymentCredentialProfiles(profile),
+      /deployed workflow request returned non-JSON HTTP 200/,
+    )
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -736,7 +757,7 @@ function release(body: Record<string, unknown> | null) {
     status: "available",
     packageId: body?.packageId,
     packageDigest: body?.packageDigest,
-    packageVersion: 3,
+    packageVersion: 4,
     contractVersion: 1,
     verifiedAt: "2026-01-01T00:00:00.000Z",
     createdAt: "2026-01-01T00:00:00.000Z",

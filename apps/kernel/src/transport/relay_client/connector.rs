@@ -59,6 +59,8 @@ struct StaticRelayConfig {
 }
 
 const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGED_SLICE_ACTIVATION_CONFIRMATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const MANAGED_SLICE_ACTIVATION_CONFIRMATION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 5_000;
@@ -101,6 +103,10 @@ fn should_start_cloud_token_refresh(task: Option<&JoinHandle<()>>) -> bool {
 
 fn should_start_leased_projection_pump(task: Option<&JoinHandle<()>>) -> bool {
     task.is_none_or(|task| task.is_finished())
+}
+
+fn should_refresh_remote_inventory(dynamic_relay: bool, managed_slice_worker: bool) -> bool {
+    dynamic_relay && !managed_slice_worker
 }
 
 fn cloud_presence_refresh_interval(daemon_id: &str) -> Duration {
@@ -179,6 +185,30 @@ fn record_relay_reconnect(router: &CommandRouter, relay_url: &str, reason: &str,
         .record_relay_reconnect_attempt(relay_url, reason, delay);
 }
 
+async fn dynamic_relay_heartbeat_registration<F, Fut>(
+    active_relay_url: &str,
+    active_relay_token: &mut String,
+    config: &crate::config::DaemonConfig,
+    registration: F,
+) -> Result<Option<chariox_relay::protocol::DaemonRegistration>, &'static str>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = chariox_relay::protocol::DaemonRegistration>,
+{
+    match relay_config_continuity(active_relay_url, active_relay_token, config) {
+        RelayConfigContinuity::Continue => Ok(None),
+        RelayConfigContinuity::Reconnect(reason) => Err(reason),
+        RelayConfigContinuity::Reauthenticate => {
+            let registration = registration().await;
+            if config.relay_token.as_deref() != Some(registration.auth_token.as_str()) {
+                return Err("relay token changed while building registration");
+            }
+            *active_relay_token = registration.auth_token.clone();
+            Ok(Some(registration))
+        }
+    }
+}
+
 fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
     if let Some(handle) = task.take() {
         handle.abort();
@@ -239,6 +269,259 @@ fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> J
             }
         }
     })
+}
+
+fn spawn_managed_slice_token_refresh(
+    router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
+    relay_url: String,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let refresh = async {
+            let identity = router.managed_slice_relay_identity().ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "refresh slice relay token",
+                    message: "slice relay bootstrap identity is missing".to_string(),
+                }
+            })?;
+            let slice_id = identity.slice_id;
+            let owner_kernel_id = identity.owner_kernel_id;
+            let owner_machine_id = identity.owner_machine_id;
+            let config = router.relay_config_snapshot();
+            let owner_public_key = state
+                .read()
+                .await
+                .peer_public_key(&owner_kernel_id)
+                .or_else(|| router.managed_slice_relay_owner_public_key())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "refresh slice relay token",
+                    message: "slice owner relay key is not known".to_string(),
+                })?;
+            let response = super::peer_client::send_peer_request_to_known_kernel_via_relay(
+                &config,
+                &state,
+                chariox_relay::protocol::ClientTarget {
+                    daemon_id: Some(owner_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                &owner_public_key,
+                crate::transport::relay_peer::RelayPeerRequest::RefreshManagedSliceRelayToken {
+                    slice_id: slice_id.clone(),
+                    owner_kernel_id: owner_kernel_id.clone(),
+                    worker_kernel_id: config.daemon_id.clone(),
+                },
+            )
+            .await?;
+            match response {
+                crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenRefreshed {
+                    slice_id: refreshed_slice_id,
+                    relay_token,
+                    expires_at_ms,
+                    relay_recovery_token,
+                    recovery_expires_at_ms,
+                    relay_peer_protocol_version,
+                } if refreshed_slice_id == slice_id
+                    && relay_peer_protocol_version
+                        >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+                {
+                    router
+                        .install_managed_slice_relay_token(
+                            crate::runtime::router::ManagedSliceRelayTokenInstallRequest {
+                                slice_id: slice_id.clone(),
+                                owner_kernel_id: owner_kernel_id.clone(),
+                                owner_machine_id: owner_machine_id.clone(),
+                                relay_token: relay_token.into_inner(),
+                                expires_at_ms,
+                                relay_recovery_token: relay_recovery_token.into_inner(),
+                                recovery_expires_at_ms,
+                                owner_public_key,
+                            },
+                        )
+                        .await
+                }
+                crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code,
+                    retryable,
+                } => Err(DaemonError::LocalTransport {
+                    operation: "refresh slice relay token",
+                    message: format!(
+                        "slice owner rejected relay token refresh ({code}, retryable={retryable})"
+                    ),
+                }),
+                _ => Err(DaemonError::LocalTransport {
+                    operation: "refresh slice relay token",
+                    message: "slice owner returned an incompatible relay token response"
+                        .to_string(),
+                }),
+            }
+        };
+        match bounded_cloud_relay_refresh(refresh, CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT).await {
+            CloudRelayRefreshResult::Refreshed => {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "managed slice relay token refresh completed",
+                    serde_json::json!({ "relay_url": relay_url }),
+                );
+            }
+            CloudRelayRefreshResult::Failed(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "failed to refresh managed slice relay token",
+                    serde_json::json!({ "relay_url": relay_url, "error": error }),
+                );
+            }
+            CloudRelayRefreshResult::TimedOut => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "managed slice relay token refresh timed out",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                        "timeout_ms": CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis(),
+                    }),
+                );
+            }
+        }
+    })
+}
+
+fn spawn_managed_slice_activation_confirmation(
+    router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let Some(pending) = state
+                .write()
+                .await
+                .claim_pending_managed_slice_activation_confirmation()
+            else {
+                return;
+            };
+            let config = router.relay_config_snapshot();
+            let response =
+                super::peer_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
+                    &config,
+                    &state,
+                    chariox_relay::protocol::ClientTarget {
+                        daemon_id: Some(pending.owner_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    &pending.owner_public_key,
+                    crate::transport::relay_peer::RelayPeerRequest::ConfirmManagedSliceRelayToken {
+                        slice_id: pending.slice_id.clone(),
+                        owner_kernel_id: pending.owner_kernel_id.clone(),
+                        worker_kernel_id: pending.worker_kernel_id.clone(),
+                        activation_nonce: pending.activation_nonce.clone(),
+                    },
+                    MANAGED_SLICE_ACTIVATION_CONFIRMATION_REQUEST_TIMEOUT,
+                )
+                .await;
+            let retryable = match response {
+                Ok(
+                    crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
+                        slice_id,
+                        activation_nonce,
+                        relay_peer_protocol_version,
+                    },
+                ) if slice_id == pending.slice_id
+                    && activation_nonce == pending.activation_nonce
+                    && relay_peer_protocol_version
+                        >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+                {
+                    state
+                        .write()
+                        .await
+                        .finish_managed_slice_activation_confirmation(
+                            &pending.slice_id,
+                            &pending.activation_nonce,
+                        );
+                    crate::logging::info_with_fields(
+                        "daemon.relay_client",
+                        "managed slice relay token activation confirmed",
+                        serde_json::json!({
+                            "slice_id": pending.slice_id,
+                            "owner_kernel_id": pending.owner_kernel_id,
+                        }),
+                    );
+                    false
+                }
+                Ok(crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code,
+                    retryable,
+                }) => {
+                    if !retryable {
+                        state
+                            .write()
+                            .await
+                            .finish_managed_slice_activation_confirmation(
+                                &pending.slice_id,
+                                &pending.activation_nonce,
+                            );
+                    }
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "managed slice relay token activation confirmation was rejected",
+                        serde_json::json!({
+                            "slice_id": pending.slice_id,
+                            "owner_kernel_id": pending.owner_kernel_id,
+                            "code": code,
+                            "retryable": retryable,
+                        }),
+                    );
+                    retryable
+                }
+                Ok(response) => {
+                    state
+                        .write()
+                        .await
+                        .finish_managed_slice_activation_confirmation(
+                            &pending.slice_id,
+                            &pending.activation_nonce,
+                        );
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "managed slice relay token activation confirmation returned an incompatible response",
+                        serde_json::json!({
+                            "slice_id": pending.slice_id,
+                            "owner_kernel_id": pending.owner_kernel_id,
+                            "response": format!("{response:?}"),
+                        }),
+                    );
+                    false
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "managed slice relay token activation confirmation failed",
+                        serde_json::json!({
+                            "slice_id": pending.slice_id,
+                            "owner_kernel_id": pending.owner_kernel_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    true
+                }
+            };
+            if !retryable || !state.read().await.connected() {
+                return;
+            }
+            sleep(MANAGED_SLICE_ACTIVATION_CONFIRMATION_RETRY_DELAY).await;
+            if !state.read().await.connected() {
+                return;
+            }
+        }
+    })
+}
+
+async fn spawn_pending_managed_slice_activation_confirmation_after_connect(
+    router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
+) -> Option<JoinHandle<()>> {
+    state
+        .read()
+        .await
+        .pending_managed_slice_activation_confirmation()?;
+    Some(spawn_managed_slice_activation_confirmation(router, state))
 }
 
 fn spawn_leased_projection_pump(
@@ -386,6 +669,22 @@ async fn run_daemon_relay_connector_inner(
                         );
                     }
                 }
+            }
+            match router
+                .activate_managed_slice_recovery_connection(crate::session::unix_epoch_ms())
+                .await
+            {
+                Ok(true) => crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "activated managed slice relay recovery credential",
+                    serde_json::json!({}),
+                ),
+                Ok(false) => {}
+                Err(error) => crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "managed slice relay recovery credential is unavailable",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
             }
         }
 
@@ -649,6 +948,13 @@ async fn run_daemon_relay_connector_inner(
                 router
                     .transport_health_store()
                     .record_relay_connected(&relay_url);
+                if static_relay.is_none() {
+                    let _ = spawn_pending_managed_slice_activation_confirmation_after_connect(
+                        Arc::clone(&router),
+                        Arc::clone(&state),
+                    )
+                    .await;
+                }
                 if replayed_display_tunnel_count > 0 {
                     crate::logging::info_with_fields(
                         "daemon.relay_client",
@@ -670,8 +976,11 @@ async fn run_daemon_relay_connector_inner(
                 }
                 let mut cloud_presence_schedule =
                     CloudPresencePublishSchedule::new(Instant::now(), &daemon_id);
-                let mut inventory_refresh_task = static_relay
-                    .is_none()
+                let refresh_remote_inventory = should_refresh_remote_inventory(
+                    static_relay.is_none(),
+                    router.managed_slice_relay_identity().is_some(),
+                );
+                let mut inventory_refresh_task = refresh_remote_inventory
                     .then(|| spawn_remote_inventory_projection_refresh(Arc::clone(&router)));
                 let mut heartbeat_interval = tokio::time::interval(heartbeat);
                 heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -710,13 +1019,19 @@ async fn run_daemon_relay_connector_inner(
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
                                     if let Err(error) = handle_incoming_envelope(
-                                        &router,
-                                        &command_sequence,
-                                        &state,
-                                        &outgoing_tx,
-                                        &subscription_tasks,
-                                        &event_runtime,
-                                        &command_result_cache,
+                                        IncomingEnvelopeContext {
+                                            router: &router,
+                                            command_sequence: &command_sequence,
+                                            state: &state,
+                                            outgoing_tx: &outgoing_tx,
+                                            subscription_tasks: &subscription_tasks,
+                                            event_runtime: &event_runtime,
+                                            command_result_cache: &command_result_cache,
+                                        },
+                                        static_relay.is_none().then_some((
+                                            relay_url.as_str(),
+                                            active_relay_token.as_str(),
+                                        )),
                                         &payload,
                                     )
                                     .await
@@ -790,24 +1105,49 @@ async fn run_daemon_relay_connector_inner(
                                     Arc::clone(&router),
                                     relay_url.clone(),
                                 ));
+                            } else if router.managed_slice_relay_token_refresh_due()
+                                && should_start_cloud_token_refresh(token_refresh_task.as_ref())
+                            {
+                                token_refresh_task = Some(spawn_managed_slice_token_refresh(
+                                    Arc::clone(&router),
+                                    Arc::clone(&state),
+                                    relay_url.clone(),
+                                ));
                             }
-                            match relay_config_continuity(
+                            let config = router.relay_config_snapshot();
+                            let continuity = dynamic_relay_heartbeat_registration(
                                 &relay_url,
-                                &active_relay_token,
-                                &router.relay_config_snapshot(),
-                            ) {
-                                RelayConfigContinuity::Continue => {}
-                                RelayConfigContinuity::TokenRotated(next_token) => {
-                                    active_relay_token = next_token;
-                                    crate::logging::info_with_fields(
-                                        "daemon.relay_client",
-                                        "relay token rotated on active socket",
-                                        serde_json::json!({
-                                            "relay_url": relay_url,
-                                        }),
-                                    );
+                                &mut active_relay_token,
+                                &config,
+                                || router.relay_registration(),
+                            )
+                            .await;
+                            let reconnect_reason = match continuity {
+                                Ok(None) => None,
+                                Ok(Some(registration)) => {
+                                    let reauthentication = RelayEnvelope::DaemonHeartbeat {
+                                        daemon_id: daemon_id.clone(),
+                                        registration: Some(registration),
+                                    };
+                                    if send_outgoing_envelope(&outgoing_tx, reauthentication)
+                                        .is_err()
+                                    {
+                                        Some("relay reauthentication send failed")
+                                    } else {
+                                        crate::logging::info_with_fields(
+                                            "daemon.relay_client",
+                                            "relay socket reauthentication queued",
+                                            serde_json::json!({
+                                                "relay_url": relay_url,
+                                                "phase": "token_refresh",
+                                            }),
+                                        );
+                                        None
+                                    }
                                 }
-                                RelayConfigContinuity::Reconnect(reason) => {
+                                Err(reason) => Some(reason),
+                            };
+                            if let Some(reason) = reconnect_reason {
                                     crate::logging::warn_with_fields(
                                         "daemon.relay_client",
                                         "relay socket reconnect requested",
@@ -827,29 +1167,25 @@ async fn run_daemon_relay_connector_inner(
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay configuration changed", true).await;
                                     break "relay configuration changed";
-                                }
                             }
                         }
                         _ = heartbeat_interval.tick() => {
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
+                            let mut heartbeat_registration = None;
                             if static_relay.is_none() {
-                                match relay_config_continuity(
+                                let config = router.relay_config_snapshot();
+                                match dynamic_relay_heartbeat_registration(
                                     &relay_url,
-                                    &active_relay_token,
-                                    &router.relay_config_snapshot(),
-                                ) {
-                                    RelayConfigContinuity::Continue => {}
-                                    RelayConfigContinuity::TokenRotated(next_token) => {
-                                        active_relay_token = next_token;
-                                        crate::logging::info_with_fields(
-                                            "daemon.relay_client",
-                                            "relay token rotated on active socket",
-                                            serde_json::json!({
-                                                "relay_url": relay_url,
-                                            }),
-                                        );
+                                    &mut active_relay_token,
+                                    &config,
+                                    || router.relay_registration(),
+                                )
+                                .await
+                                {
+                                    Ok(registration) => {
+                                        heartbeat_registration = registration;
                                     }
-                                    RelayConfigContinuity::Reconnect(reason) => {
+                                    Err(reason) => {
                                         crate::logging::warn_with_fields(
                                             "daemon.relay_client",
                                             "relay socket reconnect requested",
@@ -873,8 +1209,18 @@ async fn run_daemon_relay_connector_inner(
                                         break "relay configuration changed";
                                     }
                                 }
+                                if heartbeat_registration.is_some() {
+                                    crate::logging::info_with_fields(
+                                        "daemon.relay_client",
+                                        "relay socket reauthentication queued",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                            "phase": "heartbeat",
+                                        }),
+                                    );
+                                }
                             }
-                            if static_relay.is_none()
+                            if refresh_remote_inventory
                                 && heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
                                 && inventory_refresh_task
                                     .as_ref()
@@ -888,7 +1234,7 @@ async fn run_daemon_relay_connector_inner(
                             }
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
-                                registration: None,
+                                registration: heartbeat_registration,
                             };
                             if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);

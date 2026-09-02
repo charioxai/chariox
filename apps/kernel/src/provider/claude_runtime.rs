@@ -11,6 +11,7 @@ use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
 use super::claude::materialize_runtime_claude_mcp_config;
+use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
@@ -22,12 +23,14 @@ mod events;
 mod input;
 mod process;
 mod state;
+pub(crate) mod usage;
 mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
+use usage::apply_claude_usage_capture;
 use watchdog::ClaudeTurnStallAction;
 
 pub(crate) fn initialize_claude_runtime(
@@ -58,6 +61,7 @@ pub(crate) fn initialize_claude_runtime(
     let env = run.pty_env().clone();
     let context_file = env.get("CHARIOX_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
     let settings_file = env.get("CHARIOX_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
+    let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
     let env_remove = run.pty_env_remove().to_vec();
     let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
@@ -79,6 +83,8 @@ pub(crate) fn initialize_claude_runtime(
             working_directory,
             context_file,
             settings_file,
+            usage_file,
+            last_usage_file_contents: None,
             mcp_config_file,
             child,
             stdin,
@@ -88,14 +94,15 @@ pub(crate) fn initialize_claude_runtime(
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
             session_id: Some(session_id),
+            active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
             turn_watchdog: Default::default(),
             cancelled_turn_pending_settlement: false,
             next_turn_number: 1,
             result_number: 1,
-            emitted_text_offsets: BTreeMap::new(),
-            saw_text_delta: false,
+            emitted_text_by_block: BTreeMap::new(),
+            completed_text_blocks: Default::default(),
             exit_reported: false,
         },
         selection: ClaudeRunSelection {
@@ -136,6 +143,9 @@ fn install_claude_mcp_config_argument(
         }
         _ => {}
     }
+    if let Some(directory) = config_file.and_then(std::path::Path::parent) {
+        expose_runtime_directory_in_managed_namespace(args, directory)?;
+    }
     Ok(())
 }
 
@@ -161,8 +171,9 @@ pub(crate) fn submit_claude_prompt(
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
-    state.saw_text_delta = false;
-    state.emitted_text_offsets.clear();
+    state.active_stream_message_id = None;
+    state.emitted_text_by_block.clear();
+    state.completed_text_blocks.clear();
     Ok(())
 }
 
@@ -206,6 +217,7 @@ pub(crate) fn drain_claude_events(
             Err(TryRecvError::Disconnected) => break,
         }
     }
+    apply_claude_usage_capture(state, &mut batch);
 
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
@@ -304,10 +316,12 @@ fn retry_stalled_claude_turn(
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.record_restart(Instant::now());
-    batch.notices.push(
-        "Claude Code emitted no runtime events; restarted it and retried the unacknowledged turn once"
-            .to_string(),
-    );
+    batch.chunks.push(crate::provider::ProviderPromptChunk {
+        kind: TerminalOutputKind::ProviderStatus,
+        merge_key: Some(crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY.to_string()),
+        bytes: crate::provider::provider_retry_status("Claude", Some("runtime unresponsive"))
+            .into_bytes(),
+    });
     Ok(())
 }
 
@@ -447,11 +461,12 @@ fn restart_claude_runtime(
     state.active_variant = run.variant().map(str::to_string);
     state.active_execution_mode = run.execution_mode();
     state.active_permission_level = run.permission_level();
+    state.active_stream_message_id = None;
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.turn_watchdog.settle();
-    state.emitted_text_offsets.clear();
-    state.saw_text_delta = false;
+    state.emitted_text_by_block.clear();
+    state.completed_text_blocks.clear();
     state.exit_reported = false;
     Ok(())
 }
@@ -473,7 +488,7 @@ fn claude_args_without_resume(args: &[String]) -> Vec<String> {
     sanitized
 }
 
-fn new_claude_session_id() -> String {
+pub(crate) fn new_claude_session_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -507,6 +522,10 @@ fn write_claude_hidden_context(
     let Some(path) = &state.context_file else {
         return Ok(());
     };
+    crate::provider::ensure_claude_native_hidden_context_fits(
+        provider_run_id,
+        hidden_system_context.trim(),
+    )?;
     std::fs::write(path, hidden_system_context.trim()).map_err(|error| {
         DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),
@@ -559,6 +578,8 @@ mod tests {
                 working_directory: None,
                 context_file: None,
                 settings_file: None,
+                usage_file: None,
+                last_usage_file_contents: None,
                 mcp_config_file: None,
                 child,
                 stdin,
@@ -568,14 +589,15 @@ mod tests {
                 active_execution_mode: AgentExecutionMode::Build,
                 active_permission_level: AgentPermissionLevel::Yolo,
                 session_id: None,
+                active_stream_message_id: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
                 turn_watchdog: Default::default(),
                 cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,
                 result_number: 1,
-                emitted_text_offsets: Default::default(),
-                saw_text_delta: false,
+                emitted_text_by_block: Default::default(),
+                completed_text_blocks: Default::default(),
                 exit_reported: false,
             },
             ProviderPromptSignalBatch::default(),
@@ -614,7 +636,7 @@ mod tests {
         assert_eq!(
             batch.terminal_failure.as_deref(),
             Some(
-                "Provider reported a resource limit: You've hit your usage limit. Your limit will reset later."
+                "Provider reported a substitutable resource limit: You've hit your usage limit. Your limit will reset later."
             )
         );
     }
@@ -788,6 +810,51 @@ mod tests {
     }
 
     #[test]
+    fn managed_runtime_mcp_config_is_visible_inside_the_private_tmp_namespace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-runtime-binding-test-{}",
+            std::process::id()
+        ));
+        let config = root.join("mcp-config.json");
+        let mut args = vec![
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            "--setenv".to_string(),
+            crate::provider::managed_isolation::MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--".to_string(),
+            "/usr/local/bin/claude".to_string(),
+            "--mcp-config".to_string(),
+            CLAUDE_MCP_CONFIG_PLACEHOLDER.to_string(),
+        ];
+
+        super::install_claude_mcp_config_argument(&mut args, Some(&config))
+            .expect("managed MCP config should be installed");
+
+        let separator = args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("managed launch should retain its separator");
+        assert_eq!(
+            &args[separator - 5..separator],
+            [
+                "--dir",
+                root.to_str().expect("test root should be UTF-8"),
+                "--ro-bind",
+                root.to_str().expect("test root should be UTF-8"),
+                root.to_str().expect("test root should be UTF-8"),
+            ]
+        );
+        assert!(args[separator + 1..].windows(2).any(|window| {
+            window
+                == [
+                    "--mcp-config",
+                    config.to_str().expect("config should be UTF-8"),
+                ]
+        }));
+    }
+
+    #[test]
     fn generated_claude_session_ids_are_uuid_v4_shape() {
         let session_id = new_claude_session_id();
         assert_eq!(session_id.len(), 36);
@@ -884,6 +951,155 @@ mod tests {
     }
 
     #[test]
+    fn reconciles_partial_stream_with_authoritative_assistant_snapshot() {
+        let (mut state, mut streamed) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "CL" }
+                }
+            }),
+            &mut streamed,
+        );
+        assert_eq!(streamed.chunks[0].bytes, b"CL");
+
+        let mut completed = ProviderPromptSignalBatch::default();
+        let assistant = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "content": [{ "type": "text", "text": "CLAUDE_MANAGED_EMPTY_OK" }]
+            }
+        });
+        apply_claude_message("run-1", &mut state, assistant.clone(), &mut completed);
+
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(completed.chunks[0].bytes, b"AUDE_MANAGED_EMPTY_OK");
+
+        let mut duplicate = ProviderPromptSignalBatch::default();
+        apply_claude_message("run-1", &mut state, assistant, &mut duplicate);
+        assert!(duplicate.chunks.is_empty());
+    }
+
+    #[test]
+    fn ignores_stream_replay_after_authoritative_assistant_snapshot() {
+        let (mut state, mut completed) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "content": [{ "type": "text", "text": "CLAUDE_MANAGED_EMPTY_OK" }]
+                }
+            }),
+            &mut completed,
+        );
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].bytes, b"CLAUDE_MANAGED_EMPTY_OK");
+
+        let mut replay = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "message_start",
+                    "message": { "id": "msg-1" }
+                }
+            }),
+            &mut replay,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "CLAUDE_MANAGED_EMPTY_OK" }
+                }
+            }),
+            &mut replay,
+        );
+
+        assert!(replay.chunks.is_empty());
+    }
+
+    #[test]
+    fn reused_block_index_in_later_assistant_message_remains_streamable() {
+        let (mut state, mut first) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "content": [{ "type": "text", "text": "first message" }]
+                }
+            }),
+            &mut first,
+        );
+        assert_eq!(first.chunks[0].bytes, b"first message");
+
+        let mut second_stream = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "message_start",
+                    "message": { "id": "msg-2" }
+                }
+            }),
+            &mut second_stream,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "second" }
+                }
+            }),
+            &mut second_stream,
+        );
+        assert_eq!(second_stream.chunks[0].bytes, b"second");
+
+        let mut second_completed = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-2",
+                    "content": [{ "type": "text", "text": "second message" }]
+                }
+            }),
+            &mut second_completed,
+        );
+        assert_eq!(second_completed.chunks[0].bytes, b" message");
+    }
+
+    #[test]
     fn marks_result_completion_and_usage() {
         let (mut state, mut batch) = parser_state();
 
@@ -935,6 +1151,31 @@ mod tests {
         assert_eq!(usage.meters[0].used_percent, Some(84.0));
         assert_eq!(usage.meters[0].window_duration_minutes, Some(300));
         assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_000_000_000));
+    }
+
+    #[test]
+    fn normalizes_claude_rate_limit_event_string_reset_timestamps() {
+        let (mut state, mut batch) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "rateLimitType": "seven_day",
+                    "utilization": 41.0,
+                    "status": "allowed",
+                    "resetsAt": "2027-01-15T12:00:00Z"
+                }
+            }),
+            &mut batch,
+        );
+
+        let usage = batch.account_usage.expect("rate limit usage");
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
+        assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_014_400_000));
     }
 
     #[test]

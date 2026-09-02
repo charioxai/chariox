@@ -23,6 +23,7 @@ export type SplitPaneFooterRenderControllerDeps = {
   agentBusyLatch: SplitPaneFooterRenderOptions["agentBusyLatch"]
   sessionConfigValues: () => SplitPaneFooterRenderOptions["sessionConfigValues"]
   agentLocationLabel: SplitPaneFooterRenderOptions["agentLocationLabel"]
+  providerAccountLabel?: SplitPaneFooterRenderOptions["providerAccountLabel"]
   badgeWidth: number
   animationFrame: () => number
   renderFooters: (options: SplitPaneFooterRenderOptions) => void
@@ -52,6 +53,7 @@ export function createSplitPaneFooterRenderController(
         agentBusyLatch: deps.agentBusyLatch,
         sessionConfigValues: deps.sessionConfigValues(),
         agentLocationLabel: deps.agentLocationLabel,
+        providerAccountLabel: deps.providerAccountLabel ?? (() => "Account unavailable"),
         badgeWidth: deps.badgeWidth,
         animationFrame: deps.animationFrame(),
       })

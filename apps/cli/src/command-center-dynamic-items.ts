@@ -14,6 +14,10 @@ import { filterCommandCenterItems } from "./command-center-search.js"
 import { mapNodeToItem, type CommandNode } from "./command-center-tree-projection.js"
 import type { CommandCenterDynamicContext } from "./command-center-context.js"
 import type { CommandCenterItem } from "./command-center-types.js"
+import {
+  providerAccountDisplayLabel,
+  providerAccountsForProvider,
+} from "./waiting-room-provider-accounts.js"
 
 export function providerNamespaceRootItem(
   provider: BackendProviderId,
@@ -181,6 +185,22 @@ export function buildModelItems(input: string, context: CommandCenterDynamicCont
       description: modelSelectionDescription(option.id, option.id === context.currentModel, localFallback),
       kind: "model" as const,
       value: option.id,
+    })),
+    query,
+  )
+}
+
+export function buildAccountItems(input: string, context: CommandCenterDynamicContext) {
+  const query = input.slice("/account ".length).trim().toLowerCase()
+  return filterCommandCenterItems(
+    providerAccountsForProvider(context.providerAccounts ?? [], context.currentProvider).map((profile) => ({
+      id: `account-${profile.provider}-${profile.profile_id}`,
+      label: providerAccountDisplayLabel(profile),
+      description: profile.profile_id === (context.currentAccount ?? "default")
+        ? "current account"
+        : profile.auth_state,
+      kind: "account" as const,
+      value: profile.profile_id,
     })),
     query,
   )

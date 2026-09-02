@@ -205,12 +205,6 @@ impl CharioxMcpRegistry {
     }
 
     pub fn project_root(workspace: impl AsRef<Path>) -> PathBuf {
-        if let Some(root) = managed_capability_root() {
-            return root
-                .join("project")
-                .join(workspace_registry_hash(workspace.as_ref()))
-                .join("mcps");
-        }
         workspace.as_ref().join(".chariox").join("mcps")
     }
 
@@ -411,9 +405,4 @@ fn managed_capability_root() -> Option<PathBuf> {
     std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-}
-
-fn workspace_registry_hash(workspace: &Path) -> String {
-    let digest = Sha256::digest(workspace.to_string_lossy().as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -73,7 +73,7 @@ export type CompletedGitTurnActionProjection = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   completed_at_ms: number
-  settlement_status: "completed" | "cancelled"
+  settlement_status: "completed" | "cancelled" | "failed"
   duration_ms?: number | null
   changed_paths: string[]
   undo_available: boolean
@@ -329,6 +329,7 @@ export type AgentInstance = {
   substitutes?: AgentSubstituteProfile[]
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null
+  primary_account_profile?: string | null
   substitution_timeout_ms?: number | null
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null
@@ -355,6 +356,7 @@ export type AgentSubstituteProfile = {
   provider: string
   model: string
   variant?: string | null
+  account_profile?: string | null
   kernel_id?: string | null
   worktree_id?: string | null
 }

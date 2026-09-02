@@ -136,6 +136,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             handle: "entry".to_string(),
             entry_node: "router".to_string(),
             alias: Some("entry".to_string()),
+            max_instances: None,
             canvas: None,
         }],
         queues: Vec::new(),
@@ -282,17 +283,14 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             Some(completion_with_message(invalid_handoff.to_string())),
             None,
         )
-        .expect("edge handoff schema failure should schedule correction");
+        .expect("edge handoff schema failure should fail the run");
     let failure = invalid
         .handoff_validation_failure
         .as_ref()
         .expect("handoff validation failure should be reported");
-    let correction_prompt = invalid.dispatches[0]
-        .endpoint_prompt
-        .as_deref()
-        .expect("correction should include a prompt");
-    assert_eq!(correction_prompt.matches("classify this task").count(), 1);
-    assert!(invalid.dispatches[0].messages.is_empty());
+    assert!(invalid.dispatches.is_empty());
+    assert_eq!(invalid.workflow_run.status(), WorkflowRunStatus::Failed);
+    assert_eq!(invalid.workflow_run.intermediate_outputs().len(), 2);
     assert_eq!(
         invalid
             .workflow_run
@@ -314,10 +312,19 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             ),
         )
         .expect("handoff validation failure should be recorded");
-    let correction_node_run_id = invalid.dispatches[0].node_run.id().to_string();
+
+    let routed_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            &report.workflow_id,
+            endpoint_id,
+            Some("classify this task".to_string()),
+        )
+        .expect("fresh workflow run should create after the failed invocation");
+    let routed_node_run_id = routed_run.node_runs()[0].id().to_string();
     service
-        .start_workflow_node_run(session.id(), workflow_run.id(), &correction_node_run_id)
-        .expect("correction turn should start");
+        .start_workflow_node_run(session.id(), routed_run.id(), &routed_node_run_id)
+        .expect("router should start for the fresh run");
     let routed = serde_json::json!({
         "workflow_handoffs": [{
             "edge_id": edge_a_id,
@@ -329,8 +336,8 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
     let completion = service
         .complete_workflow_node_run(
             session.id(),
-            workflow_run.id(),
-            &correction_node_run_id,
+            routed_run.id(),
+            &routed_node_run_id,
             Some(completion_with_message(routed.to_string())),
             None,
         )
@@ -355,7 +362,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
     assert_eq!(output.message(), r#"{"task":"only a"}"#);
     assert!(!output.message().contains("started"));
     assert!(!output.message().contains("routing"));
-    assert_eq!(completion.workflow_run.intermediate_outputs().len(), 2);
+    assert!(completion.workflow_run.intermediate_outputs().is_empty());
     assert_eq!(
         completion
             .workflow_run
@@ -372,7 +379,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             .iter()
             .filter(|node_run| node_run.node_id() == router_node_id)
             .count(),
-        2
+        1
     );
     assert_eq!(
         completion

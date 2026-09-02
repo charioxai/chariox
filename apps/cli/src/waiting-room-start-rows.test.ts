@@ -37,6 +37,8 @@ test("waiting room start rows render configuration labels and join action", () =
     "live-sync",
     "collaborators",
     "slice",
+    "managed-development",
+    "managed-repositories",
     "join-header",
   ])
   assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "local")
@@ -49,6 +51,8 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing codex)")
+  assert.equal(rows.find((row) => row.id === "managed-development")?.value, "Empty")
+  assert.equal(rows.find((row) => row.id === "managed-repositories")?.value, "None")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })
@@ -228,6 +232,54 @@ test("waiting room start rows include selected slice provider account", () => {
 
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
+})
+
+test("waiting room account row shows only the public alias", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "codex")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ providerId: "codex" }),
+    {
+      providerId: "codex",
+      model: modelOptions[0] ?? null,
+      effort: "low",
+      accountProfile: {
+        owner_user_id: "local",
+        provider: "codex",
+        profile_id: "opaque-profile-id",
+        label: "codex-2",
+        origin: "linked",
+        is_default: false,
+        auth_state: "authenticated",
+        identity_summary: "owner@example.com",
+        usage: {
+          profile_id: "opaque-profile-id",
+          provider: "codex",
+          availability: "available",
+          source: "test",
+          meters: [{
+            meter_id: "credits",
+            label: "Credits",
+            kind: "credit_balance",
+            scope: "account",
+            state: "healthy",
+            remaining: 42,
+            source: "test",
+            observed_at_ms: 1,
+          }],
+        },
+      },
+    },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "account")?.value, "codex-2")
 })
 
 test("waiting room start rows do not conflate worker auth with the selected account", () => {

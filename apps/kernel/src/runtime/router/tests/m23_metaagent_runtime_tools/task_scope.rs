@@ -1,10 +1,11 @@
 use super::*;
 
-#[tokio::test]
-async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
-    tokio::spawn(metaagent_runtime_mcp_manages_scoped_task_artifacts_impl())
-        .await
-        .expect("metaagent task artifact test should join");
+#[test]
+fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
+    run_large_stack_async_test(
+        "metaagent-runtime-mcp-manages-scoped-task-artifacts",
+        metaagent_runtime_mcp_manages_scoped_task_artifacts_impl,
+    );
 }
 
 async fn metaagent_runtime_mcp_manages_scoped_task_artifacts_impl() {
@@ -133,16 +134,12 @@ async fn metaagent_runtime_mcp_manages_scoped_task_artifacts_impl() {
     let state_router = router.clone();
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "meta task runtime tool updates should publish a complete session projection"
-    );
-    drop(app_guard);
-    let state_response = state_task
+    let state_response = tokio::time::timeout(std::time::Duration::from_secs(1), state_task)
         .await
+        .expect("meta task runtime tool updates should publish without waiting for the app lock")
         .expect("state task should join")
         .expect("state should resolve");
+    drop(app_guard);
     match state_response {
         LocalDaemonResponse::SessionState { session, .. } => {
             assert!(

@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::paths::{default_config_dir, default_state_dir};
+use super::private_file::write_private_file;
 use crate::error::DaemonError;
 
-const HOSTED_STAGING_API_URL: &str = "https://chariox-cloud-staging.osc-fr1.scalingo.io";
+const HOSTED_STAGING_API_URL: &str = "https://staging.chariox.com";
 pub(super) const HOSTED_STAGING_RELAY_URL: &str = "wss://195.201.123.115.sslip.io";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +16,10 @@ pub(super) struct PersistedDaemonConfig {
     pub(super) relay_url: Option<String>,
     #[serde(default)]
     pub(super) relay_token: Option<String>,
+    #[serde(default)]
+    pub(super) managed_slice_relay_recovery_token: Option<String>,
+    #[serde(default)]
+    pub(super) managed_slice_relay_owner_public_key: Option<String>,
     #[serde(default)]
     pub(super) cloud_relay: Option<PersistedCloudRelayProfile>,
     #[serde(default)]
@@ -217,10 +222,24 @@ pub(super) fn persist_daemon_config(
             operation,
             message: error.to_string(),
         })?;
-    fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+    write_private_file(&path, payload.as_bytes()).map_err(|error| DaemonError::LocalTransport {
         operation,
         message: error.to_string(),
     })
+}
+
+pub(crate) fn persist_managed_cloud_relay_profile(
+    profile: PersistedCloudRelayProfile,
+) -> Result<(), DaemonError> {
+    let mut persisted = load_persisted_daemon_config();
+    persisted.relay_url = None;
+    persisted.relay_token = None;
+    persisted.cloud_relay = Some(profile.canonicalized());
+    persist_daemon_config(&persisted, "persist managed cloud relay profile")
+}
+
+pub(crate) fn load_managed_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
+    load_persisted_relay_config()?.cloud_relay
 }
 
 fn cli_preferences_path() -> PathBuf {

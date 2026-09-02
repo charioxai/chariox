@@ -35,6 +35,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
+        DaemonError::ManagedContext {
+            code, retryable, ..
+        } => relay_error(code, &error.to_string(), *retryable),
         DaemonError::RemoteLeasesDisabled { .. } => {
             relay_error("remote_leases_disabled", &error.to_string(), false)
         }

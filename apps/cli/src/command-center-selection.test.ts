@@ -18,7 +18,7 @@ const commandItem: CommandCenterItem = {
   value: "/agent list",
 }
 
-test("command center completion text expands provider, model, and variant items", () => {
+test("command center completion text expands provider, account, model, and variant items", () => {
   assert.equal(commandCenterCompletionText({
     id: "agent-review-agent",
     label: "@Review Agent",
@@ -33,6 +33,13 @@ test("command center completion text expands provider, model, and variant items"
     kind: "provider",
     value: "codex",
   }), "/provider codex")
+  assert.equal(commandCenterCompletionText({
+    id: "account-secondary",
+    label: "Validation",
+    description: "Account",
+    kind: "account",
+    value: "secondary",
+  }), "/account secondary")
   assert.equal(commandCenterCompletionText({
     id: "model-codex",
     label: "codex/gpt-5.4",

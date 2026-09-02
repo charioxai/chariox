@@ -34,6 +34,13 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
     },
+    #[error("managed context `{operation}` failed: {message}")]
+    ManagedContext {
+        code: &'static str,
+        operation: &'static str,
+        message: String,
+        retryable: bool,
+    },
     #[error("session `{session_id}` was not found")]
     SessionNotFound { session_id: String },
     #[error("session alias `{alias}` is invalid: {message}")]

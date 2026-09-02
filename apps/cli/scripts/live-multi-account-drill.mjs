@@ -67,21 +67,24 @@ const profiles = (option("profiles", "") ?? "").split(",").map((value) => value.
 const kernelUrl = option("kernel-url", "ws://127.0.0.1:7777")
 const workspace = path.resolve(option("workspace", process.cwd()))
 const model = option("model")
+const effort = option("effort")
 const execute = process.argv.includes("--execute")
 const timeoutMs = Number(option("timeout-ms", "300000"))
 
 if (!provider || profiles.length !== 2) {
-  console.error("usage: live-multi-account-drill.mjs --provider <codex|claude|opencode> --profiles <profile-a,profile-b> [--kernel-url ws://...] [--model model] [--workspace path] [--execute]")
+  console.error("usage: live-multi-account-drill.mjs --provider <codex|claude|opencode> --profiles <profile-a,profile-b> [--kernel-url ws://...] [--model model] [--effort effort] [--workspace path] [--evidence-root path] [--execute]")
   process.exit(2)
 }
-if (execute && !model) {
-  console.error("--execute requires --model so the drill never guesses an account entitlement")
+if (execute && (!model || !effort)) {
+  console.error("--execute requires --model and --effort so the drill never guesses an account entitlement or effort level")
   process.exit(2)
 }
 
 const evidence = {
   provider,
   profiles,
+  model,
+  effort,
   mode: execute ? "live-turns" : "read-only-preflight",
   started_at_ms: Date.now(),
   checks: [],
@@ -115,7 +118,7 @@ try {
       workspace,
       workspace,
       `multi-account-${provider}-${Date.now()}`,
-      { provider, model, account_profile: profiles[0] },
+      { provider, model, effort, account_profile: profiles[0] },
     )), "SessionCreated")
     sessionId = created.session.id
     const first = created.agent
@@ -129,7 +132,7 @@ try {
       `${provider}-${profiles[1]}`,
       model,
       workspace,
-      null,
+      effort,
       "plan",
       "required",
       undefined,
@@ -138,7 +141,11 @@ try {
       profiles[1],
     )), "AgentSpawned").agent
     assert.equal(first.account_profile, profiles[0])
+    assert.equal(first.model, model)
+    assert.equal(first.effort, effort)
     assert.equal(second.account_profile, profiles[1])
+    assert.equal(second.model, model)
+    assert.equal(second.effort, effort)
     const prompt = "Reply with exactly the account-isolation marker: CHARIOX_MULTI_ACCOUNT_OK"
     await Promise.all([
       client.send(submitPromptRequest(sessionId, attachment.id, first.id, prompt, [])),
@@ -151,8 +158,11 @@ try {
       provider,
       accountProfile: profiles[1],
       model,
+      effort,
     })), "AgentProfileUpdated").agent
     assert.equal(switched.account_profile, profiles[1])
+    assert.equal(switched.model, model)
+    assert.equal(switched.effort, effort)
     await client.send(submitPromptRequest(sessionId, attachment.id, first.id, prompt, []))
     await waitForTurns(client, sessionId, [first.id], timeoutMs)
     evidence.checks.push({ kind: "concurrent_turns", profiles: [...profiles], passed: true })
@@ -165,7 +175,10 @@ try {
   await client.close().catch(() => {})
 }
 
-const evidenceRoot = "/Users/miguel/.codex/evidence/multi-account-provider-management"
+const evidenceRoot = path.resolve(option(
+  "evidence-root",
+  path.join(process.env.HOME ?? process.cwd(), ".codex/evidence/workflow-infrastructure-platform/provider-accounts"),
+))
 await mkdir(evidenceRoot, { recursive: true })
 const evidencePath = path.join(evidenceRoot, `live-${provider}-${Date.now()}.json`)
 await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8")

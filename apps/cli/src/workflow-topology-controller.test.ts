@@ -73,6 +73,25 @@ test("workflow topology controller adds graph edges", async () => {
   }])
 })
 
+test("workflow topology controller sets endpoint capacity through design ops", async () => {
+  const current = { ...workflow(), endpoints: [endpoint("endpoint-1", "node-1")] }
+  const updated = { ...current, endpoints: [endpointWithCapacity("endpoint-1", "node-1", 4)] }
+  const harness = createHarness({
+    ResolveWorkflow: { WorkflowResolved: { workflow: current } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: { ...session(), workflows: [updated] } } },
+  })
+
+  const payload = await harness.controller.setWorkflowEndpointMaxInstances("workflow-1", "endpoint-1", 4)
+
+  assert.equal(payload.endpoint.max_instances, 4)
+  assert.deepEqual(harness.designOps, [{
+    kind: "endpoint_update",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    patch: { max_instances: 4 },
+  }])
+})
+
 test("workflow topology controller resolves and removes endpoint aliases through design ops", async () => {
   const current = {
     ...workflow(),
@@ -136,6 +155,10 @@ function endpoint(id: string, entryNodeId: string): WorkflowEndpointDefinition {
     alias: null,
     entry_node_id: entryNodeId,
   }
+}
+
+function endpointWithCapacity(id: string, entryNodeId: string, maxInstances: number): WorkflowEndpointDefinition {
+  return { ...endpoint(id, entryNodeId), max_instances: maxInstances }
 }
 
 function node(id: string): WorkflowNodeDefinition {

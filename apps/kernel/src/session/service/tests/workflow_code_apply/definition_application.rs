@@ -158,6 +158,85 @@ fn applies_workflow_code_definition_to_session_primitives() {
 }
 
 #[test]
+fn workflow_code_round_trips_endpoint_max_instances() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+    let owner_user_id = "workflow-code-owner".to_string();
+    let mut definition = workflow_code_definition();
+
+    let defaulted_report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            owner_user_id.clone(),
+            Some("meta-1".to_string()),
+        )
+        .expect("workflow-code should apply with default endpoint max_instances");
+    let defaulted_session = service.get_session(session.id()).expect("session exists");
+    let defaulted_workflow = defaulted_session
+        .workflow(&defaulted_report.workflow_id)
+        .expect("workflow should exist");
+    let defaulted_endpoint_id = defaulted_report
+        .endpoint_ids
+        .get("entry")
+        .expect("entry id")
+        .clone();
+    assert_eq!(
+        defaulted_workflow
+            .endpoint(&defaulted_endpoint_id)
+            .map(|endpoint| endpoint.max_instances()),
+        Some(1),
+        "workflow-code endpoints without max_instances must apply the default of 1"
+    );
+
+    definition.endpoints[0].max_instances = Some(3);
+    let pooled_report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            owner_user_id.clone(),
+            Some("meta-1".to_string()),
+        )
+        .expect("workflow-code should apply with endpoint max_instances");
+    let pooled_session = service.get_session(session.id()).expect("session exists");
+    let pooled_workflow = pooled_session
+        .workflow(&pooled_report.workflow_id)
+        .expect("workflow should exist");
+    let pooled_endpoint_id = pooled_report.endpoint_ids.get("entry").expect("entry id");
+    assert_eq!(
+        pooled_workflow
+            .endpoint(pooled_endpoint_id)
+            .map(|endpoint| endpoint.max_instances()),
+        Some(3)
+    );
+
+    let export = crate::workflow_code::export_workflow_code_source_from_session_workflow(
+        &pooled_session,
+        pooled_workflow.id(),
+        crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+        crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
+    )
+    .expect("workflow-code source should export from session workflow");
+    assert!(
+        export.source.contains("maxInstances: 3"),
+        "exported source must round-trip endpoint max_instances: {}",
+        export.source
+    );
+}
+
+#[test]
 fn workflow_code_definition_alias_base_allocates_template_aliases() {
     let mut service = SessionService::new(&test_config());
     let session = service

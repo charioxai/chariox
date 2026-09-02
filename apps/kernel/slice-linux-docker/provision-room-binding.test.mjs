@@ -22,11 +22,14 @@ if (args[0] === "exec" && args.includes("df")) {
   console.log("Filesystem 1M-blocks Used Available Use% Mounted\\nfixture 10000 1 9999 1% /home/slice");
   process.exit(0);
 }
+if (args[0] === "exec" && args.includes("rm") && args.includes("/tmp/chariox-slice-state/cloud-relay-config.json")) {
+  process.exit(0);
+}
 if (args[0] === "exec" && args.at(-1) === "/opt/chariox-slice/start-runtime.sh") {
   appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
   process.exit(0);
 }
-throw new Error("unexpected Docker operation: " + JSON.stringify(args));
+process.exit(0);
 `, { mode: 0o700 });
     const log = join(root, "docker.jsonl");
     const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) =>

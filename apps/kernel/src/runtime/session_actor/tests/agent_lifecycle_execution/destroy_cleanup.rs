@@ -19,6 +19,10 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
             .expect("extra agent should be created");
         let provider_run =
             launch_dev_stub_provider(&mut app_locked, session.id(), extra_agent.id(), "opus");
+        assert!(
+            app_locked.pty().has_process(provider_run.id()),
+            "provider launch should own a managed process before agent deletion"
+        );
         let external_sessions = app_locked.external_provider_session_index_store();
         external_sessions.upsert(external_provider_session_record(
             "codex",
@@ -140,6 +144,22 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
         crate::provider::ExternalProviderObservedCursor::default(),
         "destroying an attached agent should prune its Chariox-owned provider transcript cursor"
     );
+    assert!(
+        _locked_app.pty().has_process(&provider_run_id),
+        "agent deletion must not block while the app-owned process registry is locked"
+    );
+    drop(_locked_app);
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let process_exists = app.lock().await.pty().has_process(&provider_run_id);
+            if !process_exists {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("deferred agent deletion cleanup should remove the managed provider process");
 }
 
 #[tokio::test]

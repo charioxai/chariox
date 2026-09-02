@@ -17,7 +17,7 @@ use crate::agent::AgentServiceStore;
 use crate::app::{
     ActiveTurnStore, AttachedProviderTranscriptCursorStore, DaemonApp,
     ExternalProviderSessionIndexStore, PromptActivityStore, PromptWorkspaceClaimStore,
-    ProviderProcessTrackingStore, WorkflowDesignEventStore,
+    ProviderLaunchFailureRetryStore, ProviderProcessTrackingStore, WorkflowDesignEventStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -43,10 +43,12 @@ use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod event_delivery_runtime_state;
 mod human_environment_action_runtime_state;
+mod managed_activity_runtime_state;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
+mod publication_activation;
 mod room_browser_controller;
 mod room_display;
 mod room_environment_placement;
@@ -57,6 +59,7 @@ mod room_screenshot;
 pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -67,7 +70,11 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
+    workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
+    publication_activation: Arc<publication_activation::PublicationActivation>,
     provider_process_tracking: ProviderProcessTrackingStore,
+    provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
@@ -76,6 +83,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_generations:
         Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
+    agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
     operational_history_store: OperationalHistoryStore,
@@ -213,6 +221,7 @@ mod browser_controller_compatibility_runtime_state;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_controller_runtime_state;
 mod capability_owned_state;
+mod detached_provider_run_owned_state;
 mod owned;
 mod pending_runtime_state;
 use pending_runtime_state::*;
@@ -240,7 +249,7 @@ mod provider_liveness_runtime;
 mod provider_login_state;
 pub(in crate::runtime) use provider_login_state::{
     ProviderAuthProcessOperation, ProviderLoginProcessBackend, ProviderLoginProcessRecord,
-    ProviderLoginProcessStore,
+    ProviderLoginProcessStore, PROVIDER_LOGIN_TIMEOUT_MS,
 };
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
@@ -268,6 +277,7 @@ mod session;
 mod session_collaboration_state;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod slice_development_runtime_state;
 mod slice_runtime_state;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -430,8 +440,10 @@ impl KernelRuntimeState {
         let (
             completed_git_turn_snapshots,
             provider_process_projection,
+            provider_launch_failure_retries,
             relay_state,
             legacy_workflow_history,
+            agent_runtime_projection,
         ) = {
             let started = Instant::now();
             loop {
@@ -439,8 +451,10 @@ impl KernelRuntimeState {
                     break (
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
+                        app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
+                        app.agent_runtime_projection_store(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -465,16 +479,27 @@ impl KernelRuntimeState {
                     crate::git_observer::WorkspaceLiveSyncJournal::default()
                 }
             };
+        let publication_activation = Arc::new(publication_activation::PublicationActivation::new(
+            config_projection
+                .snapshot()
+                .publication_control_state_root
+                .is_some(),
+        ));
         Self {
             app,
             provider_runtime_lanes,
+            detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
                 config_projection,
                 session_store,
                 agent_store,
                 attachment_store,
                 provider_store,
+                workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
+                workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
+                publication_activation,
                 provider_process_tracking,
+                provider_launch_failure_retries,
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
@@ -482,6 +507,7 @@ impl KernelRuntimeState {
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
+                agent_runtime_projection,
                 provider_run_projection,
                 provider_process_projection,
                 operational_history_store,

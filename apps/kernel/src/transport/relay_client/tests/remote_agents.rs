@@ -313,8 +313,15 @@ async fn assert_remote_native_terminal_resize(
     assert_eq!(app.pty().size(&worker_provider_run_id), Some((83, 27)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_agents_execute_prompts_through_the_home_session() {
+#[test]
+fn remote_machine_agents_execute_prompts_through_the_home_session() {
+    run_async_with_large_test_stack(
+        "remote-agents-execute-prompts",
+        remote_machine_agents_execute_prompts_through_the_home_session_async,
+    );
+}
+
+async fn remote_machine_agents_execute_prompts_through_the_home_session_async() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -955,7 +962,7 @@ async fn wait_for_leased_agent_active_prompt_attachments(
     app: Arc<Mutex<DaemonApp>>,
     leased_agent_id: &str,
 ) -> Vec<crate::session::PromptAttachment> {
-    for _ in 0..80 {
+    for _ in 0..400 {
         let attachments = {
             let mut app = app.lock().await;
             RemoteLeaseRuntime::new(&mut app)
@@ -1095,38 +1102,39 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
             .to_string()
     };
 
-    let outcome = app_home
-        .lock()
-        .await
-        .submit_prompt(
-            &session_id,
-            &attachment_id,
-            Some(&remote_agent_id),
-            "cancel this remote prompt\n",
-            Vec::new(),
-        )
-        .expect("remote prompt should submit");
+    let (outcome, cancellation, forced_cancellation) = {
+        // Keep the home state locked from admission through the repeated
+        // cancellation. The remote dev-stub may otherwise finish the prompt
+        // between these assertions when the full suite is under load.
+        let mut app_home = app_home.lock().await;
+        let outcome = app_home
+            .submit_prompt(
+                &session_id,
+                &attachment_id,
+                Some(&remote_agent_id),
+                "cancel this remote prompt\n",
+                Vec::new(),
+            )
+            .expect("remote prompt should submit");
+        let cancellation = app_home
+            .cancel_active_prompt(&session_id, &attachment_id)
+            .expect("remote prompt should cancel");
+        let forced_cancellation = app_home
+            .cancel_active_prompt(&session_id, &attachment_id)
+            .expect("a repeated remote cancellation should force settlement");
+        (outcome, cancellation, forced_cancellation)
+    };
     assert!(matches!(
         outcome,
         crate::session::PromptSubmissionOutcome::Started { .. }
     ));
 
-    let cancellation = app_home
-        .lock()
-        .await
-        .cancel_active_prompt(&session_id, &attachment_id)
-        .expect("remote prompt should cancel");
     assert_eq!(cancellation.prompt.target_agent_id(), remote_agent_id);
     assert_eq!(
         cancellation.prompt.status(),
         crate::session::PromptStatus::Cancelling
     );
 
-    let forced_cancellation = app_home
-        .lock()
-        .await
-        .cancel_active_prompt(&session_id, &attachment_id)
-        .expect("a repeated remote cancellation should force settlement");
     assert_eq!(
         forced_cancellation.prompt.status(),
         crate::session::PromptStatus::Cancelled

@@ -38,6 +38,55 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import { materializePublicationConfig } from "../publication-config.js"
+
+test("gateway refuses a kernel that ignores the publication resume key", async () => {
+  await assert.rejects(materializePublicationConfig(baseConfig, {} as never, {
+    send: async () => ({ WorkflowPublicationMaterialized: { session: { id: "fresh-session" } } }),
+  }, "deployment-a:replica-0"), /did not acknowledge.*protocol 282/)
+})
+
+test("gateway refuses missing or mismatched runtime activation acknowledgements", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-activation-"))
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1, package_version: 4, publication_id: "activation-publication",
+      source_session_id: "session-1", workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+      hooks: [{ id: "hook", transport: "human_http", endpoint_id: "endpoint-1", route: "/*", methods: ["GET"] }],
+    }))
+    await writeDeploymentContractFixture(root, "activation-publication", "hook")
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1, source_session: { id: "session-1", workspace_id: "/repo", worktree_id: "/repo" },
+      workflow: { id: "workflow-1", nodes: [], edges: [], endpoints: [] },
+      endpoint: { id: "endpoint-1", entry_node_id: "node" }, agents: [], queues: [],
+    }))
+    for (const acknowledgement of [undefined,
+      { publication_id: "wrong", runtime_keys: ["deployment:replica-0"] },
+      { publication_id: "activation-publication", runtime_keys: ["wrong"] },
+    ]) {
+      await assert.rejects(loadPublicationPackageConfig(root, {
+        materialize: true, runtimeKey: "deployment", runtimeWorkspace: root,
+        validateRequirements: false, validateProviderBindings: false,
+        client: { send: async (request) => {
+          if ("ActivateWorkflowPublicationRuntime" in request) {
+            return { WorkflowPublicationRuntimeActivated: acknowledgement }
+          }
+          if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment" } } }
+          return { WorkflowPublicationMaterialized: {
+            publication_id: "activation-publication", agent_id_map: {},
+            session: { id: "runtime", workflow_publications: [{
+              id: "activation-publication", runtime_materialization: { key: "deployment:replica-0", agent_id_map: {} },
+            }] },
+          } }
+        } },
+      }), /did not acknowledge publication runtime activation; protocol 283/)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("gateway materializes exported publication packages through the kernel", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-materialize-"))
@@ -46,10 +95,11 @@ test("gateway materializes exported publication packages through the kernel", as
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      event_bindings_path: "event-bindings.local.json",
       deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
         id: "hook-1",
@@ -59,7 +109,11 @@ test("gateway materializes exported publication packages through the kernel", as
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "codex",
+      allowedProviders: ["codex", "opencode"],
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -103,6 +157,33 @@ test("gateway materializes exported publication packages through the kernel", as
         replacement: { provider: "opencode", model: "gpt-5", effort: "medium" },
       }],
     }))
+    await writeFile(join(root, "event-bindings.local.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      destination_environment_id: "environment-1",
+      secrets_included: false,
+      bindings: [{
+        source_binding_id: "source-binding-1",
+        generator_id: "dev.chariox.github",
+        generator_version: "1.0.0",
+        manifest_digest: "sha256:manifest",
+        event_type: "pull_request.synchronize",
+        event_type_version: 1,
+        filter: { repository: "charioxai/drill" },
+        requested_scope: "repository:charioxai/drill",
+        endpoint_id: "endpoint-1",
+        queue_ref: "default",
+        reply_mode: "disabled",
+        action_ids: [],
+        source_environment_id: "source-environment",
+        source_revision: 1,
+        activation: {
+          connection_id: "connection-1",
+          environment_id: "environment-1",
+          mode: "authorized",
+        },
+      }],
+    }))
     await writeFile(join(root, "requirements.json"), JSON.stringify({
       schema_version: 1,
       mcps: [{ name: "playwright" }],
@@ -112,10 +193,16 @@ test("gateway materializes exported publication packages through the kernel", as
       credentials: [{ name: "github-token", used_by: "github" }],
     }))
 
+    await assert.rejects(loadPublicationPackageConfig(root, {
+      materialize: true, runtimeKey: "deployment-a",
+      client: { send: async () => { throw new Error("must reject before contacting kernel") } },
+    }), /explicit stable runtime workspace/)
+
     const config = await loadPublicationPackageConfig(root, {
       kernelEndpoint: "ws://kernel",
       materialize: true,
       runtimeWorkspace,
+      runtimeKey: "deployment-a",
       client: {
         send: async (request) => {
           requests.push(request)
@@ -127,10 +214,18 @@ test("gateway materializes exported publication packages through the kernel", as
           if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
           if ("ListConnectors" in request) return { ConnectorsListed: { connectors: [{ name: "github" }] } }
           if ("ListCredentials" in request) return { CredentialsListed: { credentials: [{ id: "github-token" }] } }
+          if ("CreateWorkflowEventBinding" in request) {
+            return { WorkflowEventBindingCreated: { binding: { id: "runtime-binding-1" } } }
+          }
+          if ("ActivateWorkflowPublicationRuntime" in request) {
+            return { WorkflowPublicationRuntimeActivated: { publication_id: "pub-1", runtime_keys: ["deployment-a:replica-0"] } }
+          }
           return {
             WorkflowPublicationMaterialized: {
               publication_id: "pub-1",
-              session: { id: "runtime-session-1" },
+              session: { id: "runtime-session-1", workflow_publications: [{
+                id: "pub-1", runtime_materialization: { key: "deployment-a:replica-0", agent_id_map: { "agent-1": "agent-2" } },
+              }] },
               agent_id_map: { "agent-1": "agent-2" },
             },
           }
@@ -146,11 +241,14 @@ test("gateway materializes exported publication packages through the kernel", as
       "ListConnectors",
       "ListCredentials",
       "MaterializeWorkflowPublication",
+      "CreateWorkflowEventBinding",
       "AttachToSession",
+      "ActivateWorkflowPublicationRuntime",
     ])
     assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: runtimeWorkspace } })
     const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {
       MaterializeWorkflowPublication: {
+        runtime_key: string
         snapshot: {
           source_session: { workspace_id: string; worktree_id: string }
           agents: Array<{
@@ -163,6 +261,7 @@ test("gateway materializes exported publication packages through the kernel", as
         }
       }
     }
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.runtime_key, "deployment-a:replica-0")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.workspace_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.worktree_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, runtimeWorkspace)
@@ -187,7 +286,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
     await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-agent-app",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -289,7 +388,7 @@ test("gateway remaps portable package workspace paths before local materializati
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-portable",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -388,7 +487,7 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -402,7 +501,11 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "missing-provider",
+      allowedProviders: ["missing-provider", "codex"],
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -493,7 +596,7 @@ test("gateway accepts provider-prefixed captured models when the provider matche
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -507,7 +610,10 @@ test("gateway accepts provider-prefixed captured models when the provider matche
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "codex",
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -588,7 +694,7 @@ test("gateway fails before materialization when provider/model bindings cannot b
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -602,7 +708,10 @@ test("gateway fails before materialization when provider/model bindings cannot b
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "missing-provider",
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -659,13 +768,112 @@ test("gateway fails before materialization when provider/model bindings cannot b
   }
 })
 
+test("gateway materializes captured dev-stub bindings without exposing them in the provider catalog", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-dev-stub-bindings-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 4,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+      default_bindings_path: "bindings.local.json",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "dev-stub",
+    }])
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "dev-stub",
+        model: "workflow-intermediate-node",
+        effort: "low",
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    const config = await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      promptProviderModelReplacement: false,
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: ["gpt-5"] })
+          return {
+            WorkflowPublicationMaterialized: {
+              publication_id: "pub-1",
+              session: { id: "runtime-session-1" },
+              agent_id_map: { "agent-1": "agent-2" },
+            },
+          }
+        },
+      },
+    })
+
+    const materializeRequest = requests.at(-1) as {
+      MaterializeWorkflowPublication: {
+        snapshot: {
+          agents: Array<{ provider: string; model: string | null; effort?: string | null }>
+        }
+      }
+    }
+    assert.equal(config.session_id, "runtime-session-1")
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "GetProviderCatalog",
+      "MaterializeWorkflowPublication",
+    ])
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "dev-stub")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "workflow-intermediate-node")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "low")
+  } finally {
+    await removeMaterializationFixture(root)
+  }
+})
+
 test("gateway fails package materialization before runtime creation when requirements are missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-requirements-"))
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -678,7 +886,10 @@ test("gateway fails package materialization before runtime creation when require
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "codex",
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {

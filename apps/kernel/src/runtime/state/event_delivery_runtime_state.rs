@@ -203,15 +203,15 @@ impl KernelRuntimeState {
                 ),
             });
         }
-        if let Some(receipt) = self
-            .owned
-            .session_store
-            .read()
-            .get_session(&session_id)?
-            .workflow_event_delivery_receipts()
-            .get(&delivery.delivery_id)
-            .cloned()
-        {
+        let existing_receipt = {
+            let sessions = self.owned.session_store.read();
+            sessions
+                .get_session(&session_id)?
+                .workflow_event_delivery_receipts()
+                .get(&delivery.delivery_id)
+                .cloned()
+        };
+        if let Some(receipt) = existing_receipt {
             return Ok(AcceptedWorkflowEventDelivery {
                 delivery_id: delivery.delivery_id,
                 queued_prompt_id: receipt.queued_prompt_id,
@@ -296,8 +296,7 @@ impl KernelRuntimeState {
             .owned
             .workflow_start_next_queued_prompt_for_response(&session_id)
         {
-            Ok(Some((_, dispatches))) => dispatches,
-            Ok(None) => WorkflowPromptDispatches::default(),
+            Ok((_, dispatches)) => dispatches,
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.event_delivery",

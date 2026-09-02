@@ -204,6 +204,15 @@ impl ProviderProcessServiceStore {
         self.write().enable_workflow_tools(run_id)
     }
 
+    pub(crate) fn mark_workflow_fresh_context(
+        &self,
+        run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .mark_workflow_fresh_context(run_id, workflow_node_run_id)
+    }
+
     pub(crate) fn reconcile_run_liveness_provider_only(
         &self,
         session_id: &str,
@@ -329,6 +338,31 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderPromptSubmitJob> {
         self.write().drain_finished_structured_prompt_submit_jobs()
+    }
+
+    pub(crate) fn schedule_finished_structured_prompt_submit_retry(
+        &self,
+        finished: FinishedProviderPromptSubmitJob,
+    ) {
+        self.write()
+            .schedule_finished_structured_prompt_submit_retry(finished);
+    }
+
+    pub(crate) fn schedule_finished_structured_output_poll_retry(
+        &self,
+        finished: FinishedProviderOutputPollJob,
+    ) {
+        self.write()
+            .schedule_finished_structured_output_poll_retry(finished);
+    }
+
+    pub(crate) fn preview_structured_output_metadata(
+        &self,
+        provider_run_id: &str,
+        batch: &ProviderPromptSignalBatch,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.read()
+            .preview_structured_output_metadata(provider_run_id, batch)
     }
 
     #[cfg(test)]

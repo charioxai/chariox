@@ -14,6 +14,7 @@ export type CliStdinKeyControllerDeps = {
   parseKeypress: CliStdinKeypressParser
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
+  handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean
   handleSessionBrowserKey: (event: CliStdinKeyEvent) => boolean
   requestExit: () => void
   handleFocusedInteractionKey: (event: CliStdinKeyEvent) => boolean
@@ -54,6 +55,9 @@ export function createCliStdinKeyController(
       }
       if (event.eventType !== "release" && deps.dialogOverlayOpen() && event.name === "escape") {
         deps.closeActiveDialogOverlay()
+        return true
+      }
+      if (deps.handleManagedMachineDialogKey?.(event)) {
         return true
       }
       if (deps.handleSessionBrowserKey(event)) {

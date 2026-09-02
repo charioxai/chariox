@@ -301,6 +301,7 @@ function createBuilder() {
         handle: handle("endpoint", options.handle),
         entry_node: ref(entryNode, "node"),
         ...(options.alias !== undefined ? { alias: options.alias } : {}),
+        ...(options.maxInstances !== undefined ? { max_instances: options.maxInstances } : {}),
         ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
       }
       recordSourceSpan(item.handle)

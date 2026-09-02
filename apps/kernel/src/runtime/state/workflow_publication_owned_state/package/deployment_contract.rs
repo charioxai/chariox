@@ -13,16 +13,16 @@ pub(super) fn workflow_publication_deployment_contract_json(
 ) -> Result<serde_json::Value, DaemonError> {
     let package_digest = super::workflow_publication_package_digest(package_files)?;
     let provider_requirements = provider_requirements(snapshot);
-    let network_destinations = network_destinations(agent_app)?;
+    let network_destinations = network_destinations(agent_app, requirements)?;
     let provider_slots = provider_requirements
         .iter()
         .filter_map(|requirement| provider_credential_slot(requirement, &network_destinations))
         .collect::<Vec<_>>();
     let mut credential_slots = provider_slots;
     credential_slots.extend(integration_credential_slots(
-        snapshot,
+        requirements,
         &network_destinations,
-    ));
+    )?);
     validate_network_destination_slots(&network_destinations, &credential_slots)?;
     let assets = package_asset_manifest(package_files)?;
     let route = deployment_route(publication, publication_value, agent_app);
@@ -50,14 +50,14 @@ pub(super) fn workflow_publication_deployment_contract_json(
             "snapshot_digest": publication.source_snapshot_digest(),
         },
         "compatibility": {
-            "package_version": 3,
+            "package_version": super::workflow_publication_package_version(agent_app),
             "minimum_kernel_version": env!("CARGO_PKG_VERSION"),
             "minimum_local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         },
         "routes": [route],
         "provider_requirements": provider_requirements,
         "credential_slots": credential_slots,
-        "configuration": [],
+        "configuration": deployment_configuration(snapshot),
         "capabilities": capability_ceiling(agent_app, requirements, &provider_requirements, &network_destinations),
         "resources": resource_hints(snapshot, agent_app),
         "presentation": {
@@ -68,6 +68,48 @@ pub(super) fn workflow_publication_deployment_contract_json(
         },
         "signatures": [],
     }))
+}
+
+fn deployment_configuration(
+    snapshot: &crate::local::WorkflowPublicationSnapshot,
+) -> Vec<serde_json::Value> {
+    // The deployment operator owns the runtime provider credentials and may
+    // recover an unavailable captured provider by rebinding an agent to any
+    // provider already declared by this immutable package. Consumers still
+    // reject providers outside the packaged requirements.
+    let allowed_providers = snapshot
+        .agents
+        .iter()
+        .map(|agent| agent.provider().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            let node_ids = snapshot
+                .workflow
+                .nodes()
+                .iter()
+                .filter(|node| node.agent_id() == agent.id())
+                .map(|node| node.id().to_string())
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "key": format!("provider_profile:{}", agent.id()),
+                "kind": "provider_profile",
+                "label": format!("Provider profile for {}", agent.id()),
+                "required": true,
+                "secret": false,
+                "agent_id": agent.id(),
+                "node_ids": node_ids,
+                "allowed_providers": allowed_providers,
+                "captured": {
+                    "provider": agent.provider(),
+                    "model": agent.model(),
+                    "effort": agent.effort(),
+                },
+            })
+        })
+        .collect()
 }
 
 fn deployment_route(
@@ -216,39 +258,37 @@ fn provider_credential_slot(
 }
 
 fn integration_credential_slots(
-    snapshot: &crate::local::WorkflowPublicationSnapshot,
+    requirements: &serde_json::Value,
     network_destinations: &[serde_json::Value],
-) -> Vec<serde_json::Value> {
-    let mut uses = std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-    for agent in &snapshot.agents {
-        for grant in agent.extension_grants() {
-            let Some(credential) = grant
-                .credential
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
-            uses.entry(credential.to_string())
-                .or_default()
-                .insert(grant.name.clone());
-        }
-    }
-    uses.into_iter()
-        .map(|(credential, uses)| {
-            let slot_id = format!("integration:{}", stable_slot_component(&credential));
-            serde_json::json!({
+) -> Result<Vec<serde_json::Value>, DaemonError> {
+    requirements
+        .get("credential_slots")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| invalid_requirements("credential_slots must be an array"))?
+        .iter()
+        .map(|slot| {
+            let slot_id = required_requirement_string(slot, "slot_id")?;
+            let integration = required_requirement_string(slot, "integration")?;
+            let label = required_requirement_string(slot, "label")?;
+            let authentication_method =
+                required_requirement_string(slot, "authentication_method")?;
+            let extension_id = required_requirement_string(slot, "extension_id")?;
+            let agent_ids = requirement_string_array(slot, "agent_ids")?;
+            let node_ids = requirement_string_array(slot, "node_ids")?;
+            Ok(serde_json::json!({
                 "slot_id": slot_id,
                 "kind": "integration",
-                "label": credential,
-                "integration": credential,
-                "required": true,
+                "label": label,
+                "integration": integration,
+                "extension_id": extension_id,
+                "authentication_method": authentication_method,
+                "required": slot.get("required").and_then(serde_json::Value::as_bool).unwrap_or(true),
                 "scope": "environment",
-                "uses": uses,
-                "allowed_destination_ids": destination_ids_for_slot(network_destinations, &slot_id),
-                "test_method": "runtime_requirement",
-            })
+                "agent_ids": agent_ids,
+                "uses": node_ids,
+                "allowed_destination_ids": destination_ids_for_slot(network_destinations, slot_id),
+                "test_method": "integration_native",
+            }))
         })
         .collect()
 }
@@ -280,12 +320,7 @@ fn capability_ceiling(
     serde_json::json!({
         "actions": actions,
         "manipulation_levels": manipulation,
-        "extensions": {
-            "mcps": requirements.get("mcps").cloned().unwrap_or_else(|| serde_json::json!([])),
-            "skills": requirements.get("skills").cloned().unwrap_or_else(|| serde_json::json!([])),
-            "scripts": requirements.get("scripts").cloned().unwrap_or_else(|| serde_json::json!([])),
-            "connectors": requirements.get("connectors").cloned().unwrap_or_else(|| serde_json::json!([])),
-        },
+        "extensions": requirements.get("extensions").cloned().unwrap_or_else(|| serde_json::json!([])),
         "filesystem": { "write_policy": "ephemeral_runtime_only" },
         "network": {
             "policy_version": 1,
@@ -298,22 +333,25 @@ fn capability_ceiling(
 
 fn network_destinations(
     agent_app: Option<&serde_json::Value>,
+    requirements: &serde_json::Value,
 ) -> Result<Vec<serde_json::Value>, DaemonError> {
-    let Some(destinations) = agent_app
+    let configured = agent_app
         .and_then(|value| value.pointer("/network/destinations"))
+        .and_then(serde_json::Value::as_array);
+    let extension_destinations = requirements
+        .get("network_destinations")
         .and_then(serde_json::Value::as_array)
-    else {
-        return Ok(Vec::new());
-    };
-    if destinations.len() > 256 {
+        .ok_or_else(|| invalid_requirements("network_destinations must be an array"))?;
+    let destination_count = configured.map_or(0, Vec::len) + extension_destinations.len();
+    if destination_count > 256 {
         return Err(invalid_network_policy(
             "network destinations must contain at most 256 entries",
         ));
     }
     let mut ids = std::collections::BTreeSet::new();
     let mut hosts = std::collections::BTreeSet::new();
-    let mut normalized = Vec::with_capacity(destinations.len());
-    for destination in destinations {
+    let mut normalized = Vec::with_capacity(destination_count);
+    for destination in configured.into_iter().flatten() {
         let id = destination
             .get("id")
             .and_then(serde_json::Value::as_str)
@@ -365,8 +403,86 @@ fn network_destinations(
             "credential_slot_ids": credential_slot_ids,
         }));
     }
+    for destination in extension_destinations {
+        let id = required_requirement_string(destination, "id")?;
+        let host = destination
+            .pointer("/host/value")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| is_canonical_dns_name(value))
+            .ok_or_else(|| invalid_requirements("extension destination host is invalid"))?;
+        if !is_network_destination_id(id) {
+            return Err(invalid_requirements("extension destination id is invalid"));
+        }
+        if !ids.insert(id.to_string()) || !hosts.insert(host.to_string()) {
+            return Err(invalid_network_policy(
+                "network destination ids and hosts must be unique",
+            ));
+        }
+        let ports = destination
+            .get("ports")
+            .and_then(serde_json::Value::as_array)
+            .filter(|values| values.as_slice() == [serde_json::json!(443)])
+            .ok_or_else(|| {
+                invalid_requirements("portable extension destinations must use TLS port 443")
+            })?;
+        let credential_slot_ids = requirement_string_array(destination, "credential_slot_ids")?;
+        if credential_slot_ids
+            .iter()
+            .any(|slot_id| !is_credential_slot_id(slot_id))
+        {
+            return Err(invalid_requirements(
+                "extension destination credential slot id is invalid",
+            ));
+        }
+        normalized.push(serde_json::json!({
+            "id": id,
+            "host": { "kind": "exact_dns", "value": host },
+            "ports": ports,
+            "protocols": ["tls"],
+            "credential_slot_ids": credential_slot_ids,
+        }));
+    }
     normalized.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
     Ok(normalized)
+}
+
+fn required_requirement_string<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a str, DaemonError> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_requirements(format!("{field} must be a non-empty string")))
+}
+
+fn requirement_string_array(
+    value: &serde_json::Value,
+    field: &str,
+) -> Result<Vec<String>, DaemonError> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| invalid_requirements(format!("{field} must be an array")))?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .filter(|entry| !entry.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    invalid_requirements(format!("{field} must contain non-empty strings"))
+                })
+        })
+        .collect()
+}
+
+fn invalid_requirements(message: impl Into<String>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "export workflow publication package",
+        message: format!("extension requirements are invalid: {}", message.into()),
+    }
 }
 
 fn provider_access(requirement: &serde_json::Value) -> Option<serde_json::Value> {

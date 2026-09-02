@@ -55,6 +55,7 @@ export type CliAutomationProcessCompositionDeps = {
   externalProviderSessionsState: AnyFn
   externalProviderSessionsPageState: AnyFn
   slicesState: AnyFn
+  providerAccountsState: AnyFn
   waitingRoomTargets: AnyFn
   themeRegistryState: AnyFn
   selectedWorkflowId: AnyFn
@@ -92,7 +93,7 @@ export type CliAutomationProcessCompositionDeps = {
   toggleAgentPaneTurn?: AnyFn
   toggleBlob: AnyFn
   toggleAgentPaneBlob?: AnyFn
-  restoreTerminalAndExit: AnyFn
+  requestExit: AnyFn
   sleep: AnyFn
 }
 
@@ -122,6 +123,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     externalProviderSessionsState: deps.externalProviderSessionsState,
     externalProviderSessionsPageState: deps.externalProviderSessionsPageState,
     slicesState: deps.slicesState,
+    providerAccountsState: deps.providerAccountsState,
     waitingRoomTargets: deps.waitingRoomTargets,
     themeRegistryState: deps.themeRegistryState,
     selectedWorkflowId: deps.selectedWorkflowId,
@@ -180,7 +182,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
-    restoreTerminalAndExit: deps.restoreTerminalAndExit,
+    requestExit: deps.requestExit,
     sleep: deps.sleep,
   })
 

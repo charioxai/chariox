@@ -1,4 +1,5 @@
 import type { SliceDisplayBackend } from "./kernel-types-cloud.js"
+import type { ManagedEnvironmentDevelopmentSetup } from "./ipc-managed-environment-requests.js"
 
 export function listSlicesRequest() {
   return { ListSlices: null }
@@ -13,6 +14,7 @@ export function createSliceRequest(options: {
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
+  developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
   workerKernelRef?: string | null
   displayUrl?: string | null
   providerAuth?: unknown[]
@@ -29,12 +31,30 @@ export function createSliceRequest(options: {
       workspace_id: options.workspaceId ?? null,
       worktree_id: options.worktreeId ?? null,
       workspace_mount: options.workspaceMount ?? null,
+      ...(options.developmentSetup
+        ? { development: serializeSliceDevelopment(options.developmentSetup) }
+        : {}),
       worker_kernel_ref: options.workerKernelRef ?? null,
       display_url: options.displayUrl ?? null,
       provider_auth: options.providerAuth ?? [],
       from_saved_state: options.fromSavedState ?? null,
       base: options.base ?? null,
     },
+  }
+}
+
+function serializeSliceDevelopment(
+  development: ManagedEnvironmentDevelopmentSetup,
+) {
+  if (development.kind === "empty") return { kind: "empty" } as const
+  return {
+    kind: "source_project" as const,
+    project_id: development.projectId,
+    repositories: development.repositories.map((repository) => ({
+      role: repository.role,
+      workspaceId: repository.workspaceId,
+      worktreeId: repository.worktreeId,
+    })),
   }
 }
 

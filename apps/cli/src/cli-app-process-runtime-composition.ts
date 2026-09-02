@@ -59,6 +59,7 @@ export function createCliAppProcessRuntimeComposition(
     externalProviderSessionsState: deps.externalProviderSessionsState,
     externalProviderSessionsPageState: deps.externalProviderSessionsPageState,
     slicesState: deps.slicesState,
+    providerAccountsState: deps.providerAccountsState,
     waitingRoomTargets: deps.waitingRoomTargets,
     themeRegistryState: deps.themeRegistryState,
     selectedWorkflowId: deps.selectedWorkflowId,
@@ -96,7 +97,7 @@ export function createCliAppProcessRuntimeComposition(
     toggleBlob: deps.toggleBlob,
     toggleAgentPaneBlob: deps.toggleAgentPaneBlob,
     onQueuedPromptAction: deps.onQueuedPromptAction,
-    restoreTerminalAndExit: deps.restoreTerminalAndExit,
+    requestExit: deps.requestExit,
     sleep: deps.sleep,
   })
   automationProcessComposition.start()
@@ -112,6 +113,7 @@ export function createCliAppProcessRuntimeComposition(
     closingStateController: deps.closingStateController,
     isAttached: deps.isAttached,
     sessionState: deps.sessionState,
+    workflowScreenActive: deps.workflowScreenActive,
     resizeSession: deps.resizeSession,
     setDaemonDisconnected: deps.setDaemonDisconnected,
     setStatusLine: deps.setStatusLine,

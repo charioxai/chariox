@@ -55,6 +55,7 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
             handle: "entry".to_string(),
             entry_node: "worker".to_string(),
             alias: Some("entry".to_string()),
+            max_instances: None,
             canvas: None,
         }],
         queues: Vec::new(),

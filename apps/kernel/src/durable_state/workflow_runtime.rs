@@ -3,9 +3,9 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use crate::error::DaemonError;
 use crate::session::{
     DurableWorkflowHotState, RuntimeSession, WorkflowConsole, WorkflowDefinition,
-    WorkflowEventBinding, WorkflowEventDeliveryReceipt, WorkflowPromptQueueDefinition,
-    WorkflowPublicationDefinition, WorkflowPublicationSnapshot, WorkflowQueuedPrompt, WorkflowRun,
-    WorkflowScheduleDefinition,
+    WorkflowEndpointRuntimeInstance, WorkflowEventBinding, WorkflowEventDeliveryReceipt,
+    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowPublicationSnapshot,
+    WorkflowQueuedPrompt, WorkflowRun, WorkflowScheduleDefinition,
 };
 
 use super::{
@@ -24,26 +24,69 @@ pub(crate) struct DurableWorkflowRunPage {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn with_workflow_runtime_transition_lock<T>(
+        &self,
+        transition: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let _guard = self
+            .workflow_runtime_transition_lock
+            .lock()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.lock_workflow_runtime_transition",
+                message: error.to_string(),
+            })?;
+        transition()
+    }
+
     pub(crate) fn persist_workflow_runtime_transition(
         &self,
         session: &RuntimeSession,
         reason: &str,
     ) -> Result<u64, DaemonError> {
+        self.persist_workflow_runtime_event(
+            session,
+            "workflow.runtime.updated",
+            serde_json::json!({
+                "owner_id": session.host_daemon_id(),
+                "session_id": session.id(),
+                "reason": reason,
+            }),
+        )
+    }
+
+    // Agent configuration and normalized workflow state must advance in the
+    // same transaction. A plain event would leave the hot-state snapshot stale.
+    pub(crate) fn persist_publication_runtime_configuration(
+        &self,
+        session: &RuntimeSession,
+    ) -> Result<u64, DaemonError> {
+        self.persist_workflow_runtime_event(
+            session,
+            "workflow.publication.reconfigured",
+            serde_json::json!({
+                "session": session,
+            }),
+        )
+    }
+
+    fn persist_workflow_runtime_event(
+        &self,
+        session: &RuntimeSession,
+        event_kind: &'static str,
+        payload: serde_json::Value,
+    ) -> Result<u64, DaemonError> {
         let timestamp_ms = unix_epoch_ms();
         let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "owner_id": session.host_daemon_id(),
-            "session_id": session.id(),
-            "reason": reason,
-        }))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.encode_workflow_runtime_transition",
-            message: error.to_string(),
-        })?;
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_workflow_runtime_transition",
+                message: error.to_string(),
+            })?;
         let encoded = encode_workflow_session(session)?;
         self.writer
             .execute(DurableWriteOperation::WorkflowRuntimeTransition {
                 event_id,
+                event_kind,
                 timestamp_ms,
                 payload_json,
                 owner_id: session.host_daemon_id().to_string(),
@@ -383,6 +426,7 @@ impl DurableKernelStateStore {
 
 pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
     pub(super) event_id: &'a str,
+    pub(super) event_kind: &'a str,
     pub(super) timestamp_ms: u64,
     pub(super) payload_json: &'a str,
     pub(super) owner_id: &'a str,
@@ -399,12 +443,13 @@ pub(super) fn write_workflow_runtime_transition(
     transaction.execute(
         "INSERT INTO durable_state_events (
             event_id, kind, subject_id, timestamp_ms, payload_json
-         ) VALUES (?1, 'workflow.runtime.updated', ?2, ?3, ?4)",
+         ) VALUES (?1, ?5, ?2, ?3, ?4)",
         params![
             write.event_id,
             write.session_id,
             write.timestamp_ms as i64,
-            write.payload_json
+            write.payload_json,
+            write.event_kind
         ],
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
@@ -863,6 +908,14 @@ fn encode_workflow_hot_entities(
             &prompt,
         )?);
     }
+    for instance in state.workflow_runtime_instances {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "runtime_instance",
+            instance.id(),
+            &instance,
+        )?);
+    }
     for schedule in state.workflow_schedules {
         entities.push(encode_workflow_hot_entity(
             session_id,
@@ -950,6 +1003,9 @@ fn decode_workflow_hot_entity(
         "queued_prompt" => state
             .workflow_queued_prompts
             .push_back(decode!(WorkflowQueuedPrompt)),
+        "runtime_instance" => state
+            .workflow_runtime_instances
+            .push(decode!(WorkflowEndpointRuntimeInstance)),
         "schedule" => state
             .workflow_schedules
             .push(decode!(WorkflowScheduleDefinition)),
@@ -1043,6 +1099,9 @@ fn storage_error(operation: &'static str, error: rusqlite::Error) -> DaemonError
 mod tests {
     use super::*;
     use crate::session::WorkflowRunStatus;
+    use std::collections::BTreeMap;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     fn temp_store(label: &str) -> (DurableKernelStateStore, std::path::PathBuf) {
@@ -1100,6 +1159,16 @@ mod tests {
             accepted_at_ms: unix_epoch_ms(),
             expires_at_ms: unix_epoch_ms().saturating_add(60_000),
         });
+        session.add_workflow_runtime_instance(WorkflowEndpointRuntimeInstance::new(
+            "instance-1",
+            "workflow-1",
+            "endpoint-1",
+            1,
+            1,
+            true,
+            BTreeMap::from([("node-1".to_string(), "agent-1".to_string())]),
+            "/workspace",
+        ));
         session
     }
 
@@ -1114,6 +1183,16 @@ mod tests {
         drop(store);
         let store = DurableKernelStateStore::open(path.clone())
             .expect("workflow runtime store should reopen after restart");
+
+        let hot_states = store
+            .load_workflow_hot_states("kernel-1")
+            .expect("workflow hot state should load");
+        assert_eq!(hot_states.len(), 1);
+        assert_eq!(hot_states[0].1.workflow_runtime_instances.len(), 1);
+        assert_eq!(
+            hot_states[0].1.workflow_runtime_instances[0].id(),
+            "instance-1"
+        );
 
         let active = store
             .load_active_workflow_runs("kernel-1")
@@ -1178,6 +1257,143 @@ mod tests {
                 .len(),
             1
         );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_runtime_transition_lock_serializes_snapshot_capture_and_commit() {
+        let (store, path) = temp_store("workflow-runtime-transition-order");
+        let session = Arc::new(Mutex::new(session_with_runs()));
+        let delayed_store = store.clone();
+        let delayed_session = Arc::clone(&session);
+        let (start_delayed_tx, start_delayed_rx) = mpsc::channel();
+        let (delayed_attempt_tx, delayed_attempt_rx) = mpsc::channel();
+
+        session
+            .lock()
+            .expect("session should lock")
+            .workflow_run_mut("run-active")
+            .expect("active run should exist")
+            .set_status(WorkflowRunStatus::Completed);
+
+        let delayed = thread::spawn(move || {
+            start_delayed_rx
+                .recv()
+                .expect("newer transition should release delayed transition");
+            delayed_attempt_tx
+                .send(())
+                .expect("delayed transition should report its attempt");
+            delayed_store
+                .with_workflow_runtime_transition_lock(|| {
+                    let snapshot = delayed_session.lock().expect("session should lock").clone();
+                    delayed_store
+                        .persist_workflow_runtime_transition(&snapshot, "delayed_transition")
+                })
+                .expect("delayed transition should persist");
+        });
+
+        store
+            .with_workflow_runtime_transition_lock(|| {
+                start_delayed_tx
+                    .send(())
+                    .expect("delayed transition should start");
+                delayed_attempt_rx
+                    .recv()
+                    .expect("delayed transition should wait on the shared lock");
+                let snapshot = session.lock().expect("session should lock").clone();
+                store.persist_workflow_runtime_transition(&snapshot, "newer_transition")?;
+                session
+                    .lock()
+                    .expect("session should lock")
+                    .archive_terminal_workflow_runs();
+                Ok(())
+            })
+            .expect("newer transition should persist");
+        delayed.join().expect("delayed transition should join");
+
+        assert!(store
+            .load_active_workflow_runs("kernel-1")
+            .expect("active runs should load")
+            .is_empty());
+        assert_eq!(
+            store
+                .resolve_workflow_run("kernel-1", "session-1", "run-active")
+                .expect("run should resolve")
+                .expect("run history should remain")
+                .status(),
+            WorkflowRunStatus::Completed,
+            "a delayed transition must snapshot current state after the newer commit",
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalized_active_runs_replace_stale_legacy_nonterminal_runs() {
+        let (store, path) = temp_store("workflow-runtime-active-replacement");
+        let mut stale_session = session_with_runs();
+        let mut settled_session = stale_session.clone();
+        settled_session
+            .workflow_run_mut("run-active")
+            .expect("active run should exist")
+            .set_status(WorkflowRunStatus::Completed);
+        store
+            .persist_workflow_runtime_transition(&settled_session, "settled")
+            .expect("settled state should persist");
+
+        let normalized_active_runs = store
+            .load_active_workflow_runs("kernel-1")
+            .expect("active runs should load")
+            .into_iter()
+            .map(|(_, workflow_run)| workflow_run)
+            .collect();
+        stale_session.restore_active_workflow_runs(normalized_active_runs);
+
+        assert!(stale_session.workflow_run("run-active").is_none());
+        assert_eq!(
+            stale_session
+                .workflow_run("run-completed")
+                .expect("terminal run awaiting archival should remain")
+                .status(),
+            WorkflowRunStatus::Completed,
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_runtime_transition_deletes_removed_runtime_instances() {
+        let (store, path) = temp_store("workflow-runtime-instance-deletion");
+        let mut session = session_with_runs();
+        store
+            .persist_workflow_runtime_transition(&session, "instance_created")
+            .expect("runtime instance should persist");
+        assert_eq!(
+            store
+                .load_workflow_hot_states("kernel-1")
+                .expect("workflow hot state should load")[0]
+                .1
+                .workflow_runtime_instances
+                .len(),
+            1,
+        );
+
+        session
+            .remove_workflow_runtime_instance("instance-1")
+            .expect("runtime instance should exist");
+        store
+            .persist_workflow_runtime_transition(&session, "instance_removed")
+            .expect("runtime instance removal should persist");
+        assert!(store
+            .load_workflow_hot_states("kernel-1")
+            .expect("workflow hot state should load")[0]
+            .1
+            .workflow_runtime_instances
+            .is_empty());
 
         drop(store);
         let _ = std::fs::remove_file(path);
