@@ -570,6 +570,7 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
                     meters: vec![crate::account_profile::ProviderAccountUsageMeter {
                         meter_id: "go/monthly".to_string(),
                         label: "Monthly".to_string(),
+                        service_id: Some("opencode-go".to_string()),
                         kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
                         scope: crate::account_profile::ProviderAccountUsageMeterScope::Plan,
                         used_percent: Some(100.0),

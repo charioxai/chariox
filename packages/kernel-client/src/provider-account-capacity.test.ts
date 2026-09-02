@@ -54,6 +54,17 @@ test("does not block stale or reset usage", () => {
   }, nowMs).state, "unknown")
 })
 
+test("scopes OpenCode Go exhaustion to Go rather than Zen or arbitrary upstream providers", () => {
+  const openCode = profile("opencode", [{ ...usage, service_id: "opencode-go" }])
+
+  assert.equal(providerAccountCapacity(openCode, nowMs, "opencode-go/deepseek-v4-pro").state, "exhausted")
+  assert.equal(providerAccountCapacity(openCode, nowMs, "opencode/gpt-5.2").state, "unknown")
+  assert.equal(providerAccountCapacity(openCode, nowMs, "opencode/gpt-5.2").detail, "OpenCode Zen balance not reported")
+  assert.equal(providerAccountCapacity(openCode, nowMs, "openai/gpt-5.2").state, "unknown")
+  assert.equal(providerAccountCapacityLabel(openCode, nowMs, "opencode-go/deepseek-v4-pro"), "Account · OpenCode Go (exhausted)")
+  assert.equal(providerAccountCapacity(openCode, nowMs).state, "warning")
+})
+
 function profile(provider: string, meters: ProviderAccountUsageMeter[]): ProviderAccountProfile {
   return {
     owner_user_id: "owner",

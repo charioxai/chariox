@@ -57,6 +57,7 @@ impl DaemonApp {
                     &account_owner_user_id,
                     &request.provider,
                     &request.account_profile,
+                    Some(&request.model),
                     operation,
                 )?
             } else {

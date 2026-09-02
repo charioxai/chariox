@@ -195,10 +195,10 @@ export function buildAccountItems(input: string, context: CommandCenterDynamicCo
   const query = input.slice("/account ".length).trim().toLowerCase()
   return filterCommandCenterItems(
     providerAccountsForProvider(context.providerAccounts ?? [], context.currentProvider).map((profile) => {
-      const capacity = providerAccountCapacity(profile)
+      const capacity = providerAccountCapacity(profile, Date.now(), context.currentModel)
       return {
         id: `account-${profile.provider}-${profile.profile_id}`,
-        label: providerAccountDisplayLabel(profile),
+        label: providerAccountDisplayLabel(profile, context.currentModel),
         description: profile.profile_id === (context.currentAccount ?? "default")
           ? `current account · ${capacity.detail}`
           : capacity.detail,

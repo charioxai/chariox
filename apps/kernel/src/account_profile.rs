@@ -224,6 +224,10 @@ pub struct ProviderAccountMaterializationStatus {
 pub struct ProviderAccountUsageMeter {
     pub meter_id: String,
     pub label: String,
+    /// OpenCode child service that owns this meter, for example
+    /// `opencode-go`. Absent for provider-wide meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
     pub kind: ProviderAccountUsageMeterKind,
     pub scope: ProviderAccountUsageMeterScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +328,7 @@ struct ProviderAccountUsageBlock {
 
 fn provider_account_usage_block(
     provider: &str,
+    model: Option<&str>,
     usage: &ProviderAccountUsageSnapshot,
     now_ms: u64,
 ) -> Option<ProviderAccountUsageBlock> {
@@ -341,16 +346,27 @@ fn provider_account_usage_block(
                 .resets_at_ms
                 .is_none_or(|resets_at_ms| resets_at_ms > now_ms)
     };
-    let exhausted = usage
-        .meters
-        .iter()
+    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
+    let selected_opencode_service = (provider == "opencode")
+        .then(|| model.and_then(opencode_service_from_model))
+        .flatten();
+    let relevant_meters = usage.meters.iter().filter(|meter| {
+        if provider != "opencode" {
+            return true;
+        }
+        let meter_service = meter
+            .service_id
+            .as_deref()
+            .or_else(|| meter.meter_id.starts_with("go/").then_some("opencode-go"));
+        selected_opencode_service.is_some_and(|service| meter_service == Some(service))
+    });
+    let exhausted = relevant_meters
         .filter(is_currently_exhausted)
         .collect::<Vec<_>>();
     if exhausted.is_empty() {
         return None;
     }
 
-    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
     if matches!(provider, "codex" | "claude") {
         let exhausted_usage = exhausted
             .iter()
@@ -398,6 +414,11 @@ fn provider_account_usage_block(
     })
 }
 
+fn opencode_service_from_model(model: &str) -> Option<&str> {
+    let (service, model_id) = model.split_once('/')?;
+    (!service.is_empty() && !model_id.is_empty()).then_some(service)
+}
+
 /// Read-side projection so list/get responses report honest freshness for
 /// run-gated usage without mutating persisted state.
 fn project_usage_freshness(mut profile: ProviderAccountProfile) -> ProviderAccountProfile {
@@ -417,7 +438,7 @@ pub const PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION: u32 = 1;
 /// imported/linked profile may carry any of these classes, so the kind stays
 /// explicitly unknown (no value + a not-reported reason) until the
 /// provider-native adapter actually reports it. Never secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCredentialKind {
     /// Subscription-backed access confirmed by the provider-native flow.
@@ -428,6 +449,27 @@ pub enum ProviderCredentialKind {
     Prepaid,
     /// More than one of the above on one account.
     Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountServiceCredentialType {
+    ApiKey,
+    Oauth,
+    Unknown,
+}
+
+/// One provider service configured inside a parent account profile. OpenCode
+/// can hold several independent upstream credentials in one isolated store.
+/// This projection contains no credential material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountService {
+    pub service_id: String,
+    pub label: String,
+    pub auth_state: ProviderAccountAuthState,
+    pub credential_type: ProviderAccountServiceCredentialType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_kind: Option<ProviderCredentialKind>,
 }
 
 /// Enrollment methods a provider adapter can run through its own native CLI /
@@ -498,6 +540,8 @@ pub struct ProviderAccountProfile {
     pub detected_provider_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_validated_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ProviderAccountService>,
     pub usage: ProviderAccountUsageSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub materializations: Vec<ProviderAccountMaterializationStatus>,
@@ -880,12 +924,14 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         provider: &str,
         profile_id: &str,
+        model: Option<&str>,
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
         if profile.auth_state == ProviderAccountAuthState::Authenticated {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
+                model,
                 &profile.usage,
                 crate::session::unix_epoch_ms(),
             ) {
@@ -937,6 +983,7 @@ impl ProviderAccountProfileRegistry {
             &owner_user_id,
             provider,
             agent.provider_account_profile(),
+            agent.model(),
             operation,
         )?;
         Ok(())
@@ -1055,6 +1102,7 @@ impl ProviderAccountProfileRegistry {
         profile.public.auth_state = ProviderAccountAuthState::NotConfigured;
         profile.public.identity_summary = None;
         profile.public.plan = None;
+        profile.public.services.clear();
         profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
         mark_profile_materializations_stale(&mut profile.public);
@@ -1091,6 +1139,25 @@ impl ProviderAccountProfileRegistry {
             usage.meters = merged;
         }
         profile.public.usage = usage;
+        let result = profile.public.clone();
+        self.persist_locked(&document)?;
+        Ok(result)
+    }
+
+    pub fn update_services(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        mut services: Vec<ProviderAccountService>,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let mut document = self.write_document()?;
+        let profile =
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+        services.dedup_by(|left, right| left.service_id == right.service_id);
+        profile.public.services = services;
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
@@ -2386,6 +2453,7 @@ fn new_public_profile(
         plan: None,
         detected_provider_version: None,
         last_validated_at_ms: None,
+        services: Vec::new(),
         usage: ProviderAccountUsageSnapshot::unavailable(profile_id, provider),
         materializations: Vec::new(),
     }
@@ -3341,6 +3409,7 @@ mod tests {
         ProviderAccountUsageMeter {
             meter_id: "rate_limit/five_hour".to_string(),
             label: "5-hour".to_string(),
+            service_id: None,
             kind: ProviderAccountUsageMeterKind::RollingLimit,
             scope: ProviderAccountUsageMeterScope::Account,
             used_percent: Some(21.0),
@@ -3366,6 +3435,7 @@ mod tests {
         ProviderAccountUsageMeter {
             meter_id: label.to_ascii_lowercase().replace(' ', "_"),
             label: label.to_string(),
+            service_id: None,
             kind,
             scope: ProviderAccountUsageMeterScope::Account,
             used_percent: None,
@@ -3410,6 +3480,7 @@ mod tests {
         );
         assert!(provider_account_usage_block(
             "opencode",
+            Some("opencode-go/deepseek-v4-pro"),
             &capacity_snapshot(
                 "opencode",
                 ProviderAccountUsageAvailability::Available,
@@ -3421,6 +3492,7 @@ mod tests {
         .is_some());
         assert!(provider_account_usage_block(
             "opencode",
+            Some("opencode-go/deepseek-v4-pro"),
             &capacity_snapshot(
                 "opencode",
                 ProviderAccountUsageAvailability::Available,
@@ -3435,6 +3507,7 @@ mod tests {
         .is_none());
         assert!(provider_account_usage_block(
             "opencode",
+            Some("opencode-go/deepseek-v4-pro"),
             &capacity_snapshot(
                 "opencode",
                 ProviderAccountUsageAvailability::Available,
@@ -3455,6 +3528,7 @@ mod tests {
         .is_none());
         assert!(provider_account_usage_block(
             "opencode",
+            Some("opencode-go/deepseek-v4-pro"),
             &capacity_snapshot(
                 "opencode",
                 ProviderAccountUsageAvailability::Stale,
@@ -3464,6 +3538,43 @@ mod tests {
             now_ms,
         )
         .is_none());
+    }
+
+    #[test]
+    fn opencode_usage_admission_is_scoped_to_the_selected_service() {
+        let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
+        let go_exhausted = ProviderAccountUsageMeter {
+            service_id: Some("opencode-go".to_string()),
+            ..capacity_meter(
+                "Monthly",
+                ProviderAccountUsageMeterKind::RollingLimit,
+                ProviderAccountUsageMeterState::Exhausted,
+                now_ms,
+                Some(now_ms + 60_000),
+            )
+        };
+        let usage = capacity_snapshot(
+            "opencode",
+            ProviderAccountUsageAvailability::Available,
+            vec![go_exhausted],
+            now_ms,
+        );
+
+        assert!(provider_account_usage_block(
+            "opencode",
+            Some("opencode-go/deepseek-v4-pro"),
+            &usage,
+            now_ms,
+        )
+        .is_some());
+        assert!(
+            provider_account_usage_block("opencode", Some("opencode/gpt-5.2"), &usage, now_ms,)
+                .is_none()
+        );
+        assert!(
+            provider_account_usage_block("opencode", Some("openai/gpt-5.2"), &usage, now_ms,)
+                .is_none()
+        );
     }
 
     #[test]
@@ -3491,6 +3602,7 @@ mod tests {
         for provider in ["codex", "claude"] {
             assert!(provider_account_usage_block(
                 provider,
+                None,
                 &capacity_snapshot(
                     provider,
                     ProviderAccountUsageAvailability::Available,
@@ -3502,6 +3614,7 @@ mod tests {
             .is_none(), "{provider} usage exhaustion alone must remain runnable when paid credits may be available");
             assert!(provider_account_usage_block(
                 provider,
+                None,
                 &capacity_snapshot(
                     provider,
                     ProviderAccountUsageAvailability::Available,
@@ -3514,6 +3627,7 @@ mod tests {
             assert!(
                 provider_account_usage_block(
                     provider,
+                    None,
                     &capacity_snapshot(
                         provider,
                         ProviderAccountUsageAvailability::Available,
@@ -3527,6 +3641,7 @@ mod tests {
             );
             let blocked = provider_account_usage_block(
                 provider,
+                None,
                 &capacity_snapshot(
                     provider,
                     ProviderAccountUsageAvailability::Available,

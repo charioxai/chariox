@@ -67,6 +67,6 @@ export function defaultProviderAccountProfileId(
     ?? "default"
 }
 
-export function providerAccountDisplayLabel(profile: ProviderAccountProfile): string {
-  return providerAccountCapacityLabel(profile)
+export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
+  return providerAccountCapacityLabel(profile, Date.now(), model)
 }
