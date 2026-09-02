@@ -17,6 +17,7 @@ import {
   terminateChild,
 } from "./lib/drill-runtime-helpers.mjs"
 import { writeIsolatedKernelConfig } from "./lib/drill-kernel-storage.mjs"
+import { sanitizeDrillMetadata } from "./lib/drill-secrets.mjs"
 import {
   RELAY_ISSUER,
   RELAY_SECRET,
@@ -226,7 +227,11 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
           options,
         })
         matrix.results.push(result)
-        await writeFile(path.join(evidenceRoot, `${provider}-worker-resume-result.json`), `${JSON.stringify(result, null, 2)}\n`, "utf8")
+        await writeFile(
+          path.join(evidenceRoot, `${provider}-worker-resume-result.json`),
+          `${JSON.stringify(sanitizeDrillMetadata(result), null, 2)}\n`,
+          "utf8",
+        )
         console.log(`${provider}: ${result.status}`)
         if (result.status !== "passed") {
           console.log(result.errors.join("\n"))
@@ -396,7 +401,11 @@ async function main() {
       for (const provider of options.providers) {
         const result = await runScenario({ provider, root: runtimeRoot, kernelUrl, options })
         matrix.results.push(result)
-        await writeFile(path.join(evidenceRoot, `${provider}-${options.drill}-result.json`), `${JSON.stringify(result, null, 2)}\n`, "utf8")
+        await writeFile(
+          path.join(evidenceRoot, `${provider}-${options.drill}-result.json`),
+          `${JSON.stringify(sanitizeDrillMetadata(result), null, 2)}\n`,
+          "utf8",
+        )
         console.log(`${provider}: ${result.status}`)
         if (result.status !== "passed") {
           console.log(result.errors.join("\n"))
@@ -432,7 +441,11 @@ async function main() {
       && matrix.results.every((result) => result.status === "passed")
       && matrix.cleanup.runtime_root_removed
       && matrix.cleanup.provider_credentials_removed
-    await writeFile(path.join(evidenceRoot, "matrix.json"), `${JSON.stringify(matrix, null, 2)}\n`, "utf8")
+    await writeFile(
+      path.join(evidenceRoot, "matrix.json"),
+      `${JSON.stringify(sanitizeDrillMetadata(matrix), null, 2)}\n`,
+      "utf8",
+    )
   }
 
   console.log(`provider thread transfer drill evidence: ${evidenceRoot}`)

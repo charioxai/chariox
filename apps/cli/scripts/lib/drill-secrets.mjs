@@ -20,18 +20,21 @@ export function redactDrillSecretText(value) {
   return SECRET_VALUE_PATTERNS.reduce((text, pattern) => text.replace(pattern, "<redacted>"), value)
 }
 
-export function sanitizeDrillMetadata(value, key = "") {
-  if (isSensitiveDrillKey(key)) return "<redacted>"
+export function sanitizeDrillMetadata(value, key = "", inheritedSensitive = false) {
+  const sensitive = inheritedSensitive || isSensitiveDrillKey(key)
+  if (sensitive && typeof value === "string") return "<redacted>"
   if (typeof value === "string") {
     return redactDrillSecretText(value)
   }
   if (value === null || typeof value === "number" || typeof value === "boolean") return value
-  if (Array.isArray(value)) return value.map((item) => sanitizeDrillMetadata(item, key))
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeDrillMetadata(item, key, sensitive))
+  }
   if (!value || typeof value !== "object") return null
 
   const sanitized = {}
   for (const [childKey, childValue] of Object.entries(value)) {
-    sanitized[childKey] = sanitizeDrillMetadata(childValue, childKey)
+    sanitized[childKey] = sanitizeDrillMetadata(childValue, childKey, sensitive)
   }
   return sanitized
 }

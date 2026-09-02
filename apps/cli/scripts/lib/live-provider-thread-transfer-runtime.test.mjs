@@ -21,12 +21,115 @@ import {
   providerThreadSliceBuildProfile,
   providerThreadSliceBuildEnv,
   providerThreadSliceConfigLines,
+  providerThreadKernelEventSnapshot,
   providerRunSnapshot,
   providersNeedClaudeCredentials,
   terminalProviderHistoryError,
+  sliceRestartContinuityChecks,
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
 } from "./live-provider-thread-transfer-runtime.mjs"
+
+test("provider thread evidence redacts credentials from kernel events", () => {
+  assert.deepEqual(
+    providerThreadKernelEventSnapshot({
+      event: "session_snapshot",
+      provider_run: {
+        runtime_mcp_auth_token: "fixture-runtime-token",
+        pty_env: {
+          CHARIOX_MCP_TOKEN: "fixture-runtime-token",
+          SAFE_VALUE: "visible",
+        },
+      },
+    }, 42),
+    {
+      observed_at_ms: 42,
+      event: "session_snapshot",
+      provider_run: {
+        runtime_mcp_auth_token: "<redacted>",
+        pty_env: {
+          CHARIOX_MCP_TOKEN: "<redacted>",
+          SAFE_VALUE: "visible",
+        },
+      },
+    },
+  )
+})
+
+test("slice restart continuity requires stable worker identity and fresh execution", () => {
+  assert.deepEqual(
+    sliceRestartContinuityChecks({
+      beforeRun: { id: "provider-run-before", started_at_ms: 100 },
+      afterRun: { id: "provider-run-after", started_at_ms: 300 },
+      beforeBinding: {
+        worker_kernel_id: "kernel-stable",
+        worker_machine_id: "slice:slice-1",
+        execution_lease_id: "lease-before",
+        leased_agent_id: "leased-agent-before",
+      },
+      afterBinding: {
+        worker_kernel_id: "kernel-stable",
+        worker_machine_id: "slice:slice-1",
+        execution_lease_id: "lease-after",
+        leased_agent_id: "leased-agent-after",
+      },
+      sliceBeforeRestart: {
+        worker_kernel_id: "kernel-stable",
+        worker_machine_id: "slice:slice-1",
+      },
+      restartedSlice: {
+        status: "running",
+        worker_kernel_id: "kernel-stable",
+        worker_machine_id: "slice:slice-1",
+      },
+      savedState: {
+        image_ref: "chariox-slice-state:fixture",
+        created_at_ms: 200,
+      },
+    }),
+    {
+      agent_binding_repaired: true,
+      slice_worker_identity_preserved: true,
+      slice_restart_timeline_valid: true,
+      slice_restart_completed: true,
+    },
+  )
+})
+
+test("slice restart continuity rejects an unchanged execution lease", () => {
+  const checks = sliceRestartContinuityChecks({
+    beforeRun: { id: "provider-run-before", started_at_ms: 100 },
+    afterRun: { id: "provider-run-after", started_at_ms: 300 },
+    beforeBinding: {
+      worker_kernel_id: "kernel-stable",
+      worker_machine_id: "slice:slice-1",
+      execution_lease_id: "lease-same",
+      leased_agent_id: "leased-agent-same",
+    },
+    afterBinding: {
+      worker_kernel_id: "kernel-stable",
+      worker_machine_id: "slice:slice-1",
+      execution_lease_id: "lease-same",
+      leased_agent_id: "leased-agent-same",
+    },
+    sliceBeforeRestart: {
+      worker_kernel_id: "kernel-stable",
+      worker_machine_id: "slice:slice-1",
+    },
+    restartedSlice: {
+      status: "running",
+      worker_kernel_id: "kernel-stable",
+      worker_machine_id: "slice:slice-1",
+    },
+    savedState: {
+      image_ref: "chariox-slice-state:fixture",
+      created_at_ms: 200,
+    },
+  })
+
+  assert.equal(checks.agent_binding_repaired, false)
+  assert.equal(checks.slice_restart_completed, false)
+})
 
 test("provider run evidence retains account and execution authority", () => {
   assert.deepEqual(

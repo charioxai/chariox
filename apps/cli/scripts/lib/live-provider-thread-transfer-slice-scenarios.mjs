@@ -32,10 +32,12 @@ import {
   providerEffort,
   providerModel,
   providerRunSnapshot,
+  providerThreadKernelEventSnapshot,
   providerThreadId,
   realProviderEnv,
   sendControlRequest,
   sliceRecordSnapshot,
+  sliceRestartContinuityChecks,
   sliceSavedStateSnapshot,
   variant,
   variantAny,
@@ -75,10 +77,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
   const kernelEvents = []
   try {
     client.onKernelEvent((event) => {
-      kernelEvents.push({
-        observed_at_ms: Date.now(),
-        ...event,
-      })
+      kernelEvents.push(providerThreadKernelEventSnapshot(event))
     })
 
     const sliceName = `provider-thread-slice-${provider.replaceAll("-", "_")}-${process.pid}`
@@ -278,19 +277,15 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.checks.permission_level_preserved = beforeRun.permission_level === afterRun.permission_level
     const beforeBinding = agent.remote_execution ?? null
     const afterBinding = afterAgent?.remote_execution ?? null
-    result.checks.agent_binding_repaired = Boolean(
-      beforeBinding
-      && afterBinding
-      && afterBinding.worker_kernel_id === savedState.slice.worker_kernel_id
-      && afterBinding.worker_machine_id === savedState.slice.worker_machine_id
-      && afterBinding.execution_lease_id !== beforeBinding.execution_lease_id
-      && afterBinding.leased_agent_id !== beforeBinding.leased_agent_id,
-    )
-    result.checks.slice_worker_restarted = (
-      result.evidence.slice_before_restart.worker_kernel_id
-      && result.evidence.slice_state_saved.slice.worker_kernel_id
-      && result.evidence.slice_before_restart.worker_kernel_id !== result.evidence.slice_state_saved.slice.worker_kernel_id
-    )
+    Object.assign(result.checks, sliceRestartContinuityChecks({
+      beforeRun,
+      afterRun,
+      beforeBinding,
+      afterBinding,
+      sliceBeforeRestart,
+      restartedSlice: savedState.slice,
+      savedState: savedState.state,
+    }))
     if (!result.checks.same_chariox_agent_record) {
       throw new Error(`slice restart did not preserve same Chariox agent record ${agent.id}`)
     }
@@ -317,6 +312,15 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     }
     if (!result.checks.agent_binding_repaired) {
       throw new Error(`slice restart did not replace the remote execution binding for ${agent.id}`)
+    }
+    if (!result.checks.slice_worker_identity_preserved) {
+      throw new Error(`slice restart changed durable worker identity for ${sliceId}`)
+    }
+    if (!result.checks.slice_restart_timeline_valid) {
+      throw new Error(`slice restart timestamps do not prove save-before-relaunch ordering for ${agent.id}`)
+    }
+    if (!result.checks.slice_restart_completed) {
+      throw new Error(`slice restart did not produce a running slice with fresh execution for ${agent.id}`)
     }
 
     const recallMarker = `${rememberMarker}_SLICE_RECALLED`
@@ -426,10 +430,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
   const kernelEvents = []
   try {
     client.onKernelEvent((event) => {
-      kernelEvents.push({
-        observed_at_ms: Date.now(),
-        ...event,
-      })
+      kernelEvents.push(providerThreadKernelEventSnapshot(event))
     })
 
     logStep(result, provider, "create-local-session", { workspace })

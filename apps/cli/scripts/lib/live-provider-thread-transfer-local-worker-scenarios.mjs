@@ -25,6 +25,7 @@ import {
   providerEffort,
   providerModel,
   providerRunSnapshot,
+  providerThreadKernelEventSnapshot,
   providerThreadId,
   sendControlRequest,
   variant,
@@ -61,10 +62,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
   const kernelEvents = []
   try {
     client.onKernelEvent((event) => {
-      kernelEvents.push({
-        observed_at_ms: Date.now(),
-        ...event,
-      })
+      kernelEvents.push(providerThreadKernelEventSnapshot(event))
     })
     logStep(result, provider, "create-session", { workspace })
     const session = variant(
@@ -314,10 +312,7 @@ export async function runWorkerResumeScenario({
   const kernelEvents = []
   try {
     client.onKernelEvent((event) => {
-      kernelEvents.push({
-        observed_at_ms: Date.now(),
-        ...event,
-      })
+      kernelEvents.push(providerThreadKernelEventSnapshot(event))
     })
 
     logStep(result, provider, "create-session", { workspace })

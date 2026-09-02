@@ -57,3 +57,13 @@ test("sanitizes nested drill metadata", () => {
     unsupported: null,
   })
 })
+
+test("preserves non-secret cleanup results whose names mention credentials", () => {
+  assert.deepEqual(sanitizeDrillMetadata({
+    provider_credentials_removed: true,
+    provider_credentials_cleanup_error: "Bearer abcdefghijklmnopqrstuvwxyz",
+  }), {
+    provider_credentials_removed: true,
+    provider_credentials_cleanup_error: "<redacted>",
+  })
+})

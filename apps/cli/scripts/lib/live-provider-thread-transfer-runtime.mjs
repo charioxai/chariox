@@ -24,6 +24,7 @@ import {
   portIsAvailable,
   terminateChild,
 } from "./drill-runtime-helpers.mjs"
+import { sanitizeDrillMetadata } from "./drill-secrets.mjs"
 
 export const scriptDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 export const cliRoot = path.resolve(scriptDir, "..")
@@ -296,6 +297,65 @@ export function providerRunSnapshot(run) {
     working_directory: run?.working_directory ?? null,
     started_at_ms: run?.started_at_ms ?? null,
     last_activity_at_ms: run?.last_activity_at_ms ?? null,
+  }
+}
+
+export function providerThreadKernelEventSnapshot(event, observedAtMs = Date.now()) {
+  return sanitizeDrillMetadata({
+    observed_at_ms: observedAtMs,
+    ...event,
+  })
+}
+
+export function sliceRestartContinuityChecks({
+  beforeRun,
+  afterRun,
+  beforeBinding,
+  afterBinding,
+  sliceBeforeRestart,
+  restartedSlice,
+  savedState,
+}) {
+  const agentBindingRepaired = Boolean(
+    beforeBinding
+    && afterBinding
+    && afterBinding.worker_kernel_id === restartedSlice?.worker_kernel_id
+    && afterBinding.worker_machine_id === restartedSlice?.worker_machine_id
+    && afterBinding.execution_lease_id !== beforeBinding.execution_lease_id
+    && afterBinding.leased_agent_id !== beforeBinding.leased_agent_id,
+  )
+  const sliceWorkerIdentityPreserved = Boolean(
+    sliceBeforeRestart?.worker_kernel_id
+    && sliceBeforeRestart?.worker_machine_id
+    && sliceBeforeRestart.worker_kernel_id === restartedSlice?.worker_kernel_id
+    && sliceBeforeRestart.worker_machine_id === restartedSlice?.worker_machine_id,
+  )
+  const beforeStartedAtMs = beforeRun?.started_at_ms
+  const savedAtMs = savedState?.created_at_ms
+  const afterStartedAtMs = afterRun?.started_at_ms
+  const sliceRestartTimelineValid = (
+    Number.isFinite(beforeStartedAtMs)
+    && Number.isFinite(savedAtMs)
+    && Number.isFinite(afterStartedAtMs)
+    && beforeStartedAtMs <= savedAtMs
+    && savedAtMs <= afterStartedAtMs
+  )
+  const sliceRestartCompleted = Boolean(
+    restartedSlice?.status === "running"
+    && savedState?.image_ref
+    && beforeRun?.id
+    && afterRun?.id
+    && beforeRun.id !== afterRun.id
+    && agentBindingRepaired
+    && sliceWorkerIdentityPreserved
+    && sliceRestartTimelineValid,
+  )
+
+  return {
+    agent_binding_repaired: agentBindingRepaired,
+    slice_worker_identity_preserved: sliceWorkerIdentityPreserved,
+    slice_restart_timeline_valid: sliceRestartTimelineValid,
+    slice_restart_completed: sliceRestartCompleted,
   }
 }
 
