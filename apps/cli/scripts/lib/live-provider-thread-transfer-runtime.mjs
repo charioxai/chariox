@@ -178,6 +178,13 @@ export function providerThreadSliceTargetArch(
   )
 }
 
+export function providerThreadSliceBuildEnv(env = process.env) {
+  return {
+    ...env,
+    DOCKER_BUILDKIT: "1",
+  }
+}
+
 export function variant(response, name) {
   if (!response || !(name in response)) {
     throw new Error(`expected ${name}, got ${JSON.stringify(response)}`)
@@ -834,7 +841,7 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
     repoRoot,
   ], {
     cwd: repoRoot,
-    env: process.env,
+    env: providerThreadSliceBuildEnv(),
     stdoutPath,
     stderrPath,
     timeoutMs,
