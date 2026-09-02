@@ -16,6 +16,7 @@ import {
   cleanupSliceModeProviderCredentials,
   normalizeProviderOutputText,
   providersNeedClaudeCredentials,
+  sliceProviderAuthImportRequest,
   terminalProviderHistoryError,
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
@@ -221,4 +222,14 @@ test("worker resume daemons keep Chariox state inside the drill runtime root", (
   assert.equal(env.CHARIOX_HOME, "/tmp/provider-runtime/worker-1-xdg-config/chariox")
   assert.equal(env.CHARIOX_SESSION_HISTORY_DIR, "/tmp/provider-runtime/worker-1-history")
   assert.equal(env.CHARIOX_DAEMON_SOCKET, "/tmp/provider-runtime/worker.sock")
+})
+
+test("slice provider auth import includes the required managed account profile", () => {
+  assert.deepEqual(sliceProviderAuthImportRequest("slice-1", "codex"), {
+    ImportSliceProviderAuth: {
+      slice_ref: "slice-1",
+      provider: "codex",
+      account_profile: "default",
+    },
+  })
 })

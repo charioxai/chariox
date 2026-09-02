@@ -12,7 +12,6 @@ import {
   getSessionStateRequest,
   getSliceRequest,
   getSliceLogsRequest,
-  importSliceProviderAuthRequest,
   launchProviderRunRequest,
   listSliceAuditRequest,
   moveAgentToLocalRequest,
@@ -37,6 +36,7 @@ import {
   providerThreadId,
   realProviderEnv,
   sendControlRequest,
+  sliceProviderAuthImportRequest,
   sliceRecordSnapshot,
   sliceSavedStateSnapshot,
   variant,
@@ -126,7 +126,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
     const authImported = variant(
       await withTimeout(
-        client.send(importSliceProviderAuthRequest(sliceId, providerAuthName(provider))),
+        client.send(sliceProviderAuthImportRequest(sliceId, provider)),
         `import slice provider auth for ${provider}`,
         Math.min(options.timeoutMs, 120_000),
       ),
@@ -553,7 +553,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
     const authImported = variant(
       await withTimeout(
-        client.send(importSliceProviderAuthRequest(sliceId, providerAuthName(provider))),
+        client.send(sliceProviderAuthImportRequest(sliceId, provider)),
         `import slice provider auth for ${provider}`,
         Math.min(options.timeoutMs, 120_000),
       ),
