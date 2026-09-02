@@ -233,12 +233,18 @@ test("structured snapshots bind compact accessibility and DOM nodes to one docum
     {
       node_ref: "backend:103",
       parent_ref: "backend:102",
+      document_index: 0,
       node_type: 1,
       node_name: "BUTTON",
       text: "",
       attributes: { id: "save", type: "submit" },
       bounds: { x: 10, y: 20, width: 100, height: 30 },
     },
+  );
+  assert.equal(
+    first.dom_nodes.find((node) => node.node_ref === "backend:200").document_index,
+    1,
+    "frame nodes must retain the document that owns them",
   );
   assert.deepEqual(
     first.dom_nodes.find((node) => node.node_ref === "backend:105").attributes,

@@ -2019,7 +2019,7 @@ mod tests {
     #[test]
     fn room_lease_captures_a_document_bound_structured_snapshot_over_stdio() {
         let tool = TestTool::new(
-            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.snapshot\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"snapshot_revision\":1,\"accessibility_nodes\":[{\"node_ref\":\"backend:103\",\"parent_ref\":null,\"child_refs\":[],\"role\":\"button\",\"name\":\"Save\",\"description\":\"\",\"value\":\"\",\"ignored\":false,\"disabled\":false,\"focused\":true}],\"dom_nodes\":[{\"node_ref\":\"backend:103\",\"parent_ref\":\"backend:102\",\"node_type\":1,\"node_name\":\"BUTTON\",\"text\":\"\",\"attributes\":{\"id\":\"save\"},\"bounds\":{\"x\":10,\"y\":20,\"width\":100,\"height\":30}}]}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
+            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.snapshot\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"snapshot_revision\":1,\"accessibility_nodes\":[{\"node_ref\":\"backend:103\",\"parent_ref\":null,\"child_refs\":[],\"role\":\"button\",\"name\":\"Save\",\"description\":\"\",\"value\":\"\",\"ignored\":false,\"disabled\":false,\"focused\":true}],\"dom_documents\":[{\"document_index\":0,\"url\":\"https://a.test\",\"owner_node_ref\":null}],\"dom_nodes\":[{\"node_ref\":\"backend:103\",\"parent_ref\":\"backend:102\",\"document_index\":0,\"node_type\":1,\"node_name\":\"BUTTON\",\"text\":\"\",\"attributes\":{\"id\":\"save\"},\"bounds\":{\"x\":10,\"y\":20,\"width\":100,\"height\":30}}]}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
         );
         let store = BrowserControllerProcessStore::new(
             tool.path(),
@@ -2036,6 +2036,7 @@ mod tests {
         assert_eq!(snapshot.browser_generation, 1);
         assert_eq!(snapshot.snapshot_revision, 1);
         assert_eq!(snapshot.accessibility_nodes[0].node_ref, "backend:103");
+        assert_eq!(snapshot.dom_documents[0].document_index, 0);
         assert_eq!(snapshot.dom_nodes[0].attributes["id"], "save");
         store.release("room-1").expect("Room releases controller");
     }

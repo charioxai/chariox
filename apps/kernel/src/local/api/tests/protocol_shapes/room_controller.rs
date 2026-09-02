@@ -12,7 +12,7 @@ use crate::transport::room_browser_controller::{
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 34);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 35);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -54,8 +54,8 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 298);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 34);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 35);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -273,8 +273,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         serde_json::json!({"kind":"computer_input_applied","action_id":"action-7"}),
         serde_json::json!({"kind":"snapshot","snapshot":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
-            "snapshot_revision":2,"accessibility_nodes":[],"dom_documents":[],"shadow_roots":[],
-            "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"node_type":1,"node_name":"BUTTON",
+            "snapshot_revision":2,"accessibility_nodes":[],"dom_documents":[{
+                "document_index":0,"url":"https://example.test/","owner_node_ref":null
+            }],"shadow_roots":[],
+            "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON",
                 "text":"","attributes":{},"bounds":{"x":1.5,"y":2.0,"width":3.0,"height":4.0}}]
         }}),
         serde_json::json!({"kind":"navigation","result":{

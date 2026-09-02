@@ -38,7 +38,7 @@ test("Room Environment placement uses shared requests", () => {
 })
 
 test("Room Environment screenshot transfer uses bounded protocol 296 requests", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 298)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 299)
   assert.deepEqual(
     captureRoomEnvironmentScreenshotRequest("session-1", "attachment-1"),
     {
@@ -69,7 +69,7 @@ test("Room Environment screenshot transfer uses bounded protocol 296 requests", 
 })
 
 test("Room Environment state request matches protocol 296", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 298)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 299)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -194,7 +194,7 @@ test("Room Environment state request matches protocol 296", () => {
 })
 
 test("Room Environment event replay request matches protocol 296", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 298)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 299)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -366,7 +366,7 @@ test("Room Environment viewport update carries only dimensions and observed revi
 })
 
 test("Room Environment pointer update carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 298)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 299)
   assert.deepEqual(updateRoomEnvironmentPointerRequest("session-1", 3, 7, { x: 320, y: 180 }), {
     UpdateRoomEnvironmentPointer: {
       session_id: "session-1",
@@ -424,7 +424,7 @@ test("Room Environment Action cancellation request cannot forge Actor identity",
 })
 
 test("Room Environment pointer click submission carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 298)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 299)
   assert.deepEqual(
     submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-1", {
       kind: "pointer_click",
