@@ -2,11 +2,12 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import http from "node:http"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { browserStateCleanupFailure } from "./lib/browser-state-drill-cleanup.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
@@ -43,21 +44,30 @@ let requests = null
 let slice = null
 let fixture = null
 let fixturePort = null
+let savedState = null
+let cleanupResult = null
 
 await mkdir(artifactDir, { recursive: true })
 await mkdir(tempRoot, { recursive: true })
 
+let failure = null
 try {
   await run()
-  await writeManifest(true)
-  console.log(`M20_DOCKER_SLICE_BROWSER_STATE_PASS ${JSON.stringify({ artifactDir, screenshots, markers })}`)
 } catch (error) {
-  await writeManifest(false, error)
+  failure = error
+}
+try {
+  cleanupResult = await cleanup()
+} catch (error) {
+  failure ??= error
+}
+if (failure) {
+  await writeManifest(false, failure)
   await finalizeDrillArtifacts({
     rootDir: artifactDir,
     passed: false,
     preserveOnFailure: true,
-    failure: error,
+    failure,
     metadata: {
       drill: "docker-slice-browser-state",
       artifactDir,
@@ -68,13 +78,15 @@ try {
       fixturePort,
       markers,
       screenshots,
+      cleanup: cleanupResult,
     },
     log,
   })
-  console.error(error?.stack ?? String(error))
+  console.error(failure?.stack ?? String(failure))
   process.exitCode = 1
-} finally {
-  await cleanup()
+} else {
+  await writeManifest(true)
+  console.log(`M20_DOCKER_SLICE_BROWSER_STATE_PASS ${JSON.stringify({ artifactDir, screenshots, markers, cleanup: cleanupResult })}`)
 }
 
 async function run() {
@@ -154,6 +166,7 @@ async function run() {
   log("saving slice state")
   const saved = unwrap(await client.send(requests.saveSliceStateRequest(slice.id, "shutdown")), "SliceStateSaved")
   assert.ok(saved.state?.id, "save-state should create a saved state record")
+  savedState = saved.state
   await writeFile(path.join(artifactDir, "save-state-response.json"), JSON.stringify(saved, null, 2))
   log("removing container and home volume to force saved-state restore")
   await removeContainerAndHomeVolume()
@@ -560,22 +573,47 @@ async function runCommand(command, args, options = {}) {
 }
 
 async function cleanup() {
-  if (process.env.M20_KEEP_RESOURCES !== "1") {
-    if (client && requests && slice) {
-      await client.send(requests.deleteSliceRequest(slice.id)).catch(() => undefined)
+  if (client && requests && slice) {
+    if (savedState) {
+      await client.send(requests.resetSliceStateRequest(slice.id)).catch(() => undefined)
     }
-    await removeContainerAndHomeVolume().catch(() => undefined)
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined)
+    await client.send(requests.deleteSliceRequest(slice.id)).catch(() => undefined)
+  }
+  await removeContainerAndHomeVolume().catch(() => undefined)
+  if (savedState?.image_ref) {
+    await docker(["image", "rm", "-f", savedState.image_ref]).catch(() => undefined)
   }
   client?.close?.()
-  fixture?.server?.close?.()
+  await closeFixtureServer()
   for (const child of children.toReversed()) {
-    if (!child.killed) child.kill("SIGTERM")
+    await terminateChild(child)
   }
-  await sleep(1000)
-  for (const child of children) {
-    if (!child.killed) child.kill("SIGKILL")
+  await rm(tempRoot, { recursive: true, force: true })
+
+  const dockerAvailable = (await runCommand("docker", ["info", "--format", "{{json .ServerVersion}}"], { timeoutMs: 20_000 })).code === 0
+  const containerGone = (await runCommand("docker", ["container", "inspect", containerName], { timeoutMs: 20_000 })).code !== 0
+  const volumeGone = (await runCommand("docker", ["volume", "inspect", homeVolume], { timeoutMs: 20_000 })).code !== 0
+  const savedImageGone = savedState?.image_ref
+    ? (await runCommand("docker", ["image", "inspect", savedState.image_ref], { timeoutMs: 20_000 })).code !== 0
+    : true
+  const occupiedPorts = []
+  for (const port of [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, fixturePort].filter(Number.isInteger)) {
+    if (!(await portIsAvailable(port))) occupiedPorts.push(port)
   }
+  const result = {
+    dockerAvailable,
+    containerGone,
+    volumeGone,
+    savedImageGone,
+    tempRootRemoved: await access(tempRoot).then(() => false).catch(() => true),
+    listenersReleased: occupiedPorts.length === 0,
+    occupiedPorts,
+  }
+  cleanupResult = result
+  await writeFile(path.join(artifactDir, "cleanup.json"), `${JSON.stringify(result, null, 2)}\n`)
+  const cleanupFailure = browserStateCleanupFailure(result)
+  if (cleanupFailure) throw cleanupFailure
+  return result
 }
 
 async function writeManifest(ok, error = null) {
@@ -588,7 +626,48 @@ async function writeManifest(ok, error = null) {
     fixturePort,
     markers,
     screenshots,
+    cleanup: cleanupResult,
   }, null, 2))
+}
+
+async function closeFixtureServer() {
+  if (!fixture?.server) return
+  fixture.server.closeAllConnections?.()
+  fixture.server.closeIdleConnections?.()
+  await new Promise((resolve) => fixture.server.close(resolve))
+}
+
+async function terminateChild(child) {
+  if (!child || child.exitCode != null) return
+  child.kill("SIGTERM")
+  if (await waitForChildExit(child, 5_000)) return
+  child.kill("SIGKILL")
+  await waitForChildExit(child, 1_000)
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode != null) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (exited) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      child.off("exit", onExit)
+      resolve(exited)
+    }
+    const onExit = () => finish(true)
+    const timeout = setTimeout(() => finish(false), timeoutMs)
+    child.once("exit", onExit)
+  })
+}
+
+async function portIsAvailable(port) {
+  return await new Promise((resolve) => {
+    const server = net.createServer()
+    server.once("error", () => resolve(false))
+    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)))
+  })
 }
 
 function log(message) {
