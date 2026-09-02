@@ -26,7 +26,7 @@ import {
   makeWorkerResumePorts,
   parseArgs,
   printHelp,
-  prebuildLocalDockerSliceImageIfNeeded,
+  providerThreadSliceBuildEnv,
   prepareIsolatedWorkerProviderEnv,
   prepareSliceModeProviderEnv,
   realProviderEnv,
@@ -337,27 +337,21 @@ async function main() {
             "",
             "[slices.linux]",
             `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
-            `build_image = ${JSON.stringify(options.sliceBuildImage === "always" ? "auto" : options.sliceBuildImage)}`,
+            `build_image = ${JSON.stringify(options.sliceBuildImage)}`,
             "memory_mb = 2048",
             `cpus = ${JSON.stringify("1.0")}`,
           ],
         })
-        console.log(`slice-restart: prebuild image policy ${options.sliceBuildImage}`)
-        const sliceImageBuild = await prebuildLocalDockerSliceImageIfNeeded(
-          runtimeRoot,
-          options.sliceBuildImage,
-          options.timeoutMs,
-        )
+        const sliceBuildEnv = providerThreadSliceBuildEnv()
+        console.log(`slice-restart: provisioner image policy ${options.sliceBuildImage}`)
         matrix.slice_image = defaultLocalDockerSliceImage
         matrix.slice_build_image = options.sliceBuildImage
-      matrix.slice_image_build = sliceImageBuild
-        ? {
-            image: sliceImageBuild.image,
-            performed: true,
-            cargo_build_profile: sliceImageBuild.buildProfile,
-            cargo_opt_level: sliceImageBuild.optLevel,
-          }
-        : { image: defaultLocalDockerSliceImage, performed: false }
+        matrix.slice_image_build = {
+          image: defaultLocalDockerSliceImage,
+          delegated_to: "slice-provisioner",
+          cargo_build_profile: sliceBuildEnv.CHARIOX_SLICE_RUNTIME_BUILD_PROFILE,
+          cargo_opt_level: sliceBuildEnv.CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL,
+        }
         sliceModeProviderEnv = await prepareSliceModeProviderEnv(runtimeRoot, options.providers)
         options.providerStateSourceEnv = sliceModeProviderEnv
       }

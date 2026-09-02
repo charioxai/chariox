@@ -37,6 +37,8 @@ SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
+SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
@@ -97,6 +99,14 @@ fail() {
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
   fail "slice account owner/profile contains an unsafe path component"
 fi
+case "$SLICE_RUNTIME_BUILD_PROFILE" in
+  dev|release) ;;
+  *) fail "CHARIOX_SLICE_RUNTIME_BUILD_PROFILE must be dev or release" ;;
+esac
+case "$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" in
+  0|1|2|3|s|z) ;;
+  *) fail "CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL is invalid" ;;
+esac
 
 run_with_timeout() {
   local seconds="$1"
@@ -370,6 +380,8 @@ build_standard_runtime_image() {
   log "building $image"
   docker_build \
     --build-arg "TARGETARCH=$target_arch" \
+    --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
+    --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
