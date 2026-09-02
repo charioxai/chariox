@@ -115,14 +115,24 @@ Drill:
 6. Fully remove the running container.
 7. Relaunch from the saved slice.
 8. Verify the installed program still exists.
-9. Verify browser cookies, localStorage, IndexedDB, and cache survived.
-10. Capture screenshots before save and after restore.
+9. Verify browser cookies, localStorage, IndexedDB, Cache Storage, and the
+   service-worker registration survived.
+10. Stop the fixture and verify the restored service worker serves a cached
+    marker while its network origin is offline.
+11. Capture screenshots before save, after restore, and during the offline
+    service-worker check.
 
 Pass criteria:
 
 - Browser data survives a full container destroy/recreate.
+- Cache Storage and the service worker work after restore, including offline.
 - Installed program survives.
 - No manual file repair is needed after restore.
+
+Run locally with
+`pnpm --dir apps/cli browser-computer:persistence-drill`. The retained manifest
+records the exact Git head, kernel hash, initial and restored slice runtime
+identity, resource samples, assertions, screenshots, and cleanup result.
 
 ## Phase 5: Gmail Live Drill
 
