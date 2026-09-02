@@ -42,8 +42,8 @@ export async function runRoomEnvironmentCompanion(input) {
 
   await input.activityController.synchronize()
   await Promise.all([
-    input.waitForLocalActionNotice(input.localNoticeCount),
-    input.waitForRemoteActionNotice(input.remoteNoticeCount),
+    input.waitForLocalActionNotice(input.localNoticeIds),
+    input.waitForRemoteActionNotice(input.remoteNoticeIds),
   ])
   const after = unwrap(
     await input.observerClient.send(input.requests.getRoomEnvironmentStateRequest(input.ready.sessionId)),
