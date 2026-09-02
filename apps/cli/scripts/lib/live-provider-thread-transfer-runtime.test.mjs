@@ -17,7 +17,7 @@ import {
   normalizeProviderOutputText,
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
-  providerThreadSliceBuildEnv,
+  providerThreadSliceBuildCommand,
   providerThreadSliceTargetArch,
   providersNeedClaudeCredentials,
   sliceProviderAuthImportRequest,
@@ -282,15 +282,24 @@ test("provider thread slice builds normalize the local Docker target architectur
   )
 })
 
-test("provider thread slice builds require BuildKit without losing daemon selection", () => {
+test("provider thread slice builds use the available Buildx frontend", () => {
+  const pluginProbe = (command, args) => command === "docker" && args[0] === "buildx"
   assert.deepEqual(
-    providerThreadSliceBuildEnv({
-      DOCKER_BUILDKIT: "0",
-      DOCKER_HOST: "unix:///tmp/isolated-docker.sock",
-    }),
+    providerThreadSliceBuildCommand(pluginProbe),
     {
-      DOCKER_BUILDKIT: "1",
-      DOCKER_HOST: "unix:///tmp/isolated-docker.sock",
+      command: "docker",
+      prefixArgs: ["buildx", "build", "--load"],
     },
+  )
+  assert.deepEqual(
+    providerThreadSliceBuildCommand((command) => command === "docker-buildx"),
+    {
+      command: "docker-buildx",
+      prefixArgs: ["build", "--load"],
+    },
+  )
+  assert.throws(
+    () => providerThreadSliceBuildCommand(() => false),
+    /require Docker Buildx/,
   )
 })
