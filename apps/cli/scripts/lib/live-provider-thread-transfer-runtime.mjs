@@ -706,11 +706,12 @@ export function workerResumeDaemonEnv({
   codexPort,
   providerEnv = realProviderEnv(),
 }) {
+  const xdgConfigHome = path.join(root, `${daemonId}-xdg-config`)
   return {
     ...process.env,
     ...providerEnv,
-    CHARIOX_HOME: path.join(root, `${daemonId}-chariox-home`),
-    XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
+    CHARIOX_HOME: path.join(xdgConfigHome, "chariox"),
+    XDG_CONFIG_HOME: xdgConfigHome,
     XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(mcpPort),
