@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 const MAX_FILL_TEXT_BYTES: usize = 65_536;
+const MAX_DOCUMENT_URL_BYTES: usize = 2_048;
 const MAX_DIALOG_PROMPT_TEXT_BYTES: usize = 2_048;
 pub(crate) const MIN_BROWSER_ACTION_TIMEOUT_MS: u64 = 100;
 pub(crate) const MAX_BROWSER_ACTION_TIMEOUT_MS: u64 = 5_000;
@@ -13,6 +14,8 @@ pub(crate) enum BrowserLocatorAction {
         text: String,
         append: bool,
         submit: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_document_url: Option<String>,
     },
     Submit,
 }
@@ -36,10 +39,26 @@ impl BrowserLocatorAction {
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
             Self::Click | Self::Submit => Ok(()),
-            Self::Fill { text, .. } if text.len() <= MAX_FILL_TEXT_BYTES => Ok(()),
-            Self::Fill { .. } => Err(format!(
-                "browser fill text exceeds {MAX_FILL_TEXT_BYTES} UTF-8 bytes"
-            )),
+            Self::Fill {
+                text,
+                expected_document_url,
+                ..
+            } => {
+                if text.len() > MAX_FILL_TEXT_BYTES {
+                    return Err(format!(
+                        "browser fill text exceeds {MAX_FILL_TEXT_BYTES} UTF-8 bytes"
+                    ));
+                }
+                if let Some(expected_document_url) = expected_document_url {
+                    if expected_document_url.is_empty()
+                        || expected_document_url.len() > MAX_DOCUMENT_URL_BYTES
+                        || url::Url::parse(expected_document_url).is_err()
+                    {
+                        return Err("browser fill expected document URL is invalid".to_string());
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
@@ -58,11 +77,13 @@ impl BrowserLocatorAction {
                 text,
                 append,
                 submit,
+                expected_document_url,
             } => serde_json::json!({
                 "kind": "fill",
                 "text": text,
                 "append": append,
                 "submit": submit,
+                "expected_document_url": expected_document_url,
             }),
             Self::Submit => serde_json::json!({ "kind": "submit" }),
         }
@@ -266,6 +287,15 @@ mod tests {
             text: "😀".repeat(20_000),
             append: false,
             submit: false,
+            expected_document_url: None,
+        }
+        .validate()
+        .is_err());
+        assert!(BrowserLocatorAction::Fill {
+            text: "secret".to_string(),
+            append: false,
+            submit: false,
+            expected_document_url: Some("not a URL".to_string()),
         }
         .validate()
         .is_err());

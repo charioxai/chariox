@@ -191,6 +191,79 @@ test("fill can atomically submit the same resolved form", async () => {
   ));
 });
 
+test("secret fill rejects a same-document URL change before inserting the secret", async () => {
+  const connection = new FakeActionConnection([
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+  ]);
+  connection.documentUrl = "https://example.test/recovery";
+
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:104",
+      action: {
+        kind: "fill",
+        text: "secret-canary",
+        append: false,
+        submit: false,
+        expected_document_url: "https://example.test/login",
+      },
+      timeoutMs: 500,
+      sleep: async () => {},
+    }),
+    (error) =>
+      error instanceof BrowserActionError &&
+      error.code === "browser_secret_target_changed",
+  );
+
+  assert.equal(
+    connection.calls.some((call) => call.method === "Input.insertText"),
+    false,
+    "the secret must not reach native input after the target URL changes",
+  );
+});
+
+test("secret fill writes only through the document-bound operation", async () => {
+  const connection = new FakeActionConnection([
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+  ]);
+  connection.documentUrl = "https://example.test/login";
+
+  const result = await performBrowserAction({
+    connection,
+    sessionId: "session-a",
+    targetId: "target-a",
+    documentId: "loader-a",
+    nodeRef: "backend:104",
+    action: {
+      kind: "fill",
+      text: "secret-canary",
+      append: false,
+      submit: true,
+      expected_document_url: "https://example.test/login",
+    },
+    timeoutMs: 500,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.action_kind, "fill");
+  assert.equal(JSON.stringify(result).includes("secret-canary"), false);
+  assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
+  const secureFill = connection.calls.find(
+    (call) =>
+      call.method === "Runtime.callFunctionOn" &&
+      call.params.functionDeclaration.includes("expectedDocumentUrl"),
+  );
+  assert.equal(secureFill.params.arguments[0].value, "secret-canary");
+  assert.equal(secureFill.params.arguments[2].value, "https://example.test/login");
+  assert.equal(secureFill.params.arguments[3].value, true);
+});
+
 for (const dialogEventType of ["mousePressed", "mouseReleased"]) {
   test(`click returns when ${dialogEventType} opens a dialog without waiting for its blocked response`, async () => {
     const connection = new FakeActionConnection([
@@ -313,6 +386,16 @@ class FakeActionConnection {
                 ? this.actionability.shift()
                 : this.actionability[0]),
             },
+          },
+        };
+      }
+      if (params.functionDeclaration.includes("expectedDocumentUrl")) {
+        const expectedDocumentUrl = params.arguments[2].value;
+        return {
+          result: {
+            value: this.documentUrl === expectedDocumentUrl
+              ? { ok: true }
+              : { ok: false, reason: "target_url_changed" },
           },
         };
       }
