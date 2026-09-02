@@ -372,11 +372,11 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           return { ok: false, reason: "target_url_changed" };
         }
         this.focus();
-        if (
-          ownerWindow.location.href !== expectedDocumentUrl ||
-          !(ownerDocument.activeElement === this || this.contains?.(ownerDocument.activeElement))
-        ) {
+        if (ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
+        }
+        if (!(ownerDocument.activeElement === this || this.contains?.(ownerDocument.activeElement))) {
+          return { ok: false, reason: "target_not_focusable" };
         }
         const currentValue = this.isContentEditable
           ? String(this.textContent || "")
@@ -421,6 +421,12 @@ async function secureFillElement(connection, sessionId, objectId, action) {
       throw new BrowserActionError(
         "browser_secret_target_changed",
         "browser secret target changed before insertion",
+      );
+    }
+    if (outcome?.reason === "target_not_focusable") {
+      throw new BrowserActionError(
+        "browser_secret_target_not_focusable",
+        "browser secret target could not receive focus before insertion",
       );
     }
     throw new BrowserActionError(
