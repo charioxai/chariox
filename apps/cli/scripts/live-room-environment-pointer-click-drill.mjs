@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import http from "node:http"
@@ -10,6 +10,13 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+
+import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
+import {
+  automationNoticeEntries,
+  automationNoticeIds,
+  automationNoticeTexts,
+} from "./lib/room-tui-notices.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -22,8 +29,20 @@ const containerName = `chariox-slice-${runId}`
 const homeVolume = `${containerName}-home`
 const kernelPort = 51000 + Math.floor(Math.random() * 1000)
 const relayPort = 53000 + Math.floor(Math.random() * 1000)
-const relayToken = `${runId}-relay-token`
+const relayScopedIssuer = `${runId}-issuer`
+const relayScopedSecret = `${runId}-scoped-secret`
 const homeDaemonId = `${runId}-home`
+const daemonRelayToken = scopedRelayToken({
+  subject: homeDaemonId,
+  subjectKind: "kernel",
+  actions: ["daemon_register", "daemon_heartbeat", "packet_route", "peer_request", "peer_event"],
+})
+const remoteTuiRelayToken = scopedRelayToken({
+  subject: `${runId}-remote-tui`,
+  subjectKind: "client",
+  actions: ["client_metadata_read", "client_connect", "packet_route"],
+  userId: "local",
+})
 const directDaemonEnvironmentNames = [
   "CHARIOX_DAEMON_SOCKET",
   "CHARIOX_DAEMON_ID",
@@ -53,6 +72,7 @@ let sessionId = null
 let requests = null
 let failure = null
 let result = null
+let companionResult = null
 
 await mkdir(evidenceRoot, { recursive: true })
 
@@ -87,7 +107,8 @@ async function run() {
       ...process.env,
       CHARIOX_RELAY_HOST: "127.0.0.1",
       CHARIOX_RELAY_PORT: String(relayPort),
-      CHARIOX_RELAY_TOKEN: relayToken,
+      CHARIOX_RELAY_SCOPED_ISSUER: relayScopedIssuer,
+      CHARIOX_RELAY_SCOPED_HMAC_SECRET: relayScopedSecret,
     },
     stdio: ["ignore", "pipe", "pipe"],
   })
@@ -111,7 +132,7 @@ async function run() {
     CHARIOX_MACHINE_ID: `${runId}-machine`,
     CHARIOX_MACHINE_ALIAS: `${runId}-machine`,
     CHARIOX_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
-    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_TOKEN: daemonRelayToken,
     CHARIOX_SESSION_HISTORY_DIR: path.join(tempRoot, "history"),
     XDG_CONFIG_HOME: path.join(tempRoot, "xdg-config"),
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
@@ -171,6 +192,7 @@ async function run() {
     name: runId,
     backend: "local_docker",
     displayMode: "headed",
+    displayBackend: "selkies",
     workspaceMount: repoRoot,
     workerKernelRef: `${runId}-worker`,
     base: "clean",
@@ -332,6 +354,12 @@ async function run() {
     waitForLocalNotice(/^Room input: available$/),
     waitForRemoteNotice(/^Room input: available$/),
   ])
+  companionResult = await runCompanionIfConfigured({
+    environment: released,
+    localNoticeIds: automationNoticeIds(releasedLocalTui),
+    remoteNoticeIds: automationNoticeIds(releasedRemoteTui),
+    activityController,
+  })
   const observed = unwrap(
     await observerClient.send(requests.getRoomEnvironmentStateRequest(sessionId)),
     "RoomEnvironmentState",
@@ -344,17 +372,19 @@ async function run() {
   assert.ok(observed.event_cursor >= released.event_cursor)
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v3",
+    schema: "chariox.room_environment.pointer_click_drill.v4",
     status: "passed",
     startedAt,
-    topology: "local kernel and headed Docker worker, direct local TUI and relay-attached remote TUI",
+    topology: companionResult
+      ? "local kernel and headed Docker worker, production Web client, direct local TUI, and relay-attached remote TUI"
+      : "local kernel and headed Docker worker, direct local TUI and relay-attached remote TUI",
     sessionId,
     sliceId: slice.id,
     environmentId: retry.environment.environment_id,
     actionId: click.action_id,
     actorId: desktopOwner.actor_id,
     idempotencyKey,
-    physicalEffect: "POINTER_CLICK_COUNT=1",
+    physicalEffect: companionResult?.physicalEffect ?? "POINTER_CLICK_COUNT=1",
     containerLimits: limits,
     assertions: [
       "public Room request completed one attributed Computer Action",
@@ -367,6 +397,12 @@ async function run() {
       "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
       "relay-attached remote TUI captured the real headed display and verified its PNG digest locally",
       "TUI projected input release and a second protocol client observed the same or newer authoritative state",
+      ...(companionResult ? [
+        "production Web client joined the same authoritative Room as both real TUIs",
+        "Web input produced one attributed Computer Action and the physical headed desktop effect",
+        "direct local and relay-attached remote TUIs projected the Web-originated Action",
+        "Web released desktop ownership after the Action",
+      ] : []),
     ],
     activityNotices,
     daemonActivities,
@@ -382,7 +418,91 @@ async function run() {
       readyNoticeCount: automationNoticeTexts(readyRemoteTui).length,
       screenshot: remoteScreenshot,
     },
+    ...(companionResult ? {
+      companion: {
+        status: companionResult.status,
+        client: companionResult.client,
+        actionId: companionResult.actionId,
+        actorId: companionResult.actorId,
+        screenshot: companionResult.screenshot,
+      },
+    } : {}),
   }
+}
+
+function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
+  const issuedAtMs = Date.now()
+  const claims = {
+    issuer: relayScopedIssuer,
+    subject,
+    subject_kind: subjectKind,
+    realm_id: "local-dev",
+    allowed_actions: actions,
+    allowed_targets: null,
+    issued_at_ms: issuedAtMs,
+    expires_at_ms: issuedAtMs + 15 * 60_000,
+    token_id: `${subject}-${issuedAtMs}`,
+    account_id: "local-dev-account",
+    organization_id: null,
+    user_id: userId,
+    device_id: null,
+    machine_id: subjectKind === "kernel" ? `${runId}-machine` : null,
+    client_id: subjectKind === "client" ? subject : null,
+    session_id: null,
+    public_key_thumbprint: null,
+    entitlements_version: "room-pointer-drill",
+  }
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url")
+  const signature = createHmac("sha256", relayScopedSecret).update(payload).digest("base64url")
+  return `chariox-scoped-v1.${payload}.${signature}`
+}
+
+async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
+  const noticePattern = /^Room action: .+ · computer pointer_click · completed$/
+  return await runRoomEnvironmentCompanion({
+    env: process.env,
+    ready: {
+      kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
+      relayUrl: `ws://127.0.0.1:${relayPort}`,
+      relayToken: remoteTuiRelayToken,
+      relayScopedIssuer,
+      relayScopedSecret,
+      daemonId: homeDaemonId,
+      machineId: `${runId}-machine`,
+      sessionId,
+      sliceId: slice.id,
+      containerName,
+      environmentId: environment.environment_id,
+      runtimeGeneration: environment.runtime_generation,
+      viewportRevision: environment.viewport.revision,
+      evidenceRoot,
+    },
+    client,
+    observerClient,
+    requests,
+    activityController,
+    localNoticeIds,
+    remoteNoticeIds,
+    waitForPhysicalEffect: (physicalEffect) => waitForBrowserText(
+      physicalEffect,
+      20_000,
+      "Web companion click did not reach the physical browser",
+    ),
+    waitForLocalActionNotice: (baselineIds) => waitForTuiNoticeAfter(
+      localAutomation,
+      "local",
+      noticePattern,
+      baselineIds,
+      20_000,
+    ),
+    waitForRemoteActionNotice: (baselineIds) => waitForTuiNoticeAfter(
+      remoteAutomation,
+      "remote",
+      noticePattern,
+      baselineIds,
+      20_000,
+    ),
+  })
 }
 
 async function seedConfig(tempRoot) {
@@ -427,7 +547,7 @@ async function startRemoteTui({ tempRoot }) {
     env,
     connectionArgs: [
       "--relay-url", `ws://127.0.0.1:${relayPort}`,
-      "--relay-token", relayToken,
+      "--relay-token", remoteTuiRelayToken,
       "--target-daemon-id", homeDaemonId,
     ],
   })
@@ -627,15 +747,16 @@ async function waitForTuiNotice(automation, kind, pattern, timeoutMs) {
   )
 }
 
-function automationNoticeTexts(snapshot) {
-  const entries = Array.isArray(snapshot?.transcript?.entries)
-    ? snapshot.transcript.entries
-    : []
-  return entries.flatMap((entry) => (
-    entry?.role === "notice" && typeof entry.text === "string"
-      ? [entry.text]
-      : []
-  ))
+async function waitForTuiNoticeAfter(automation, kind, pattern, baselineIds, timeoutMs) {
+  const baseline = new Set(baselineIds)
+  return await waitForAutomationSnapshot(
+    automation,
+    (snapshot) => automationNoticeEntries(snapshot).some((notice) => (
+      !baseline.has(notice.id) && pattern.test(notice.text)
+    )),
+    `${kind} TUI notice after transcript baseline ${pattern}`,
+    timeoutMs,
+  )
 }
 
 async function waitForSocket(socketPath, timeoutMs = 20_000) {
@@ -724,10 +845,14 @@ async function createAutomationClient(socketPath) {
 
 async function waitForAutomationSnapshot(automation, predicate, label, timeoutMs = 20_000) {
   let lastSnapshot = null
-  return await waitFor(async () => {
-    lastSnapshot = await automation.send("snapshot")
-    return predicate(lastSnapshot) ? lastSnapshot : false
-  }, timeoutMs, `${label} did not appear; last snapshot ${JSON.stringify(lastSnapshot)}`)
+  try {
+    return await waitFor(async () => {
+      lastSnapshot = await automation.send("snapshot")
+      return predicate(lastSnapshot) ? lastSnapshot : false
+    }, timeoutMs, `${label} did not appear`)
+  } catch (error) {
+    throw new Error(`${error.message}; last snapshot ${JSON.stringify(lastSnapshot)}`)
+  }
 }
 
 async function sliceScreen(args) {
@@ -852,10 +977,19 @@ async function portIsAvailable(port) {
 }
 
 async function terminateChild(child) {
-  if (!child || child.exitCode != null) return
-  signalChild(child, "SIGTERM")
+  if (!child) return
+  if (child.killProcessGroup) {
+    signalProcessGroup(child.pid, "SIGTERM")
+    await waitForChildExit(child, 5_000)
+    if (await waitForProcessGroupExit(child.pid, 500)) return
+    signalProcessGroup(child.pid, "SIGKILL")
+    await waitForProcessGroupExit(child.pid, 1_000)
+    return
+  }
+  if (child.exitCode != null) return
+  child.kill("SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  signalChild(child, "SIGKILL")
+  child.kill("SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
@@ -876,16 +1010,31 @@ function waitForChildExit(child, timeoutMs) {
   })
 }
 
-function signalChild(child, signal) {
-  if (child.killProcessGroup) {
-    try {
-      process.kill(-child.pid, signal)
-      return
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error
-    }
+async function waitForProcessGroupExit(processGroupId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!processGroupExists(processGroupId)) return true
+    await sleep(50)
   }
-  child.kill(signal)
+  return !processGroupExists(processGroupId)
+}
+
+function processGroupExists(processGroupId) {
+  try {
+    process.kill(-processGroupId, 0)
+    return true
+  } catch (error) {
+    if (error?.code === "ESRCH") return false
+    throw error
+  }
+}
+
+function signalProcessGroup(processGroupId, signal) {
+  try {
+    process.kill(-processGroupId, signal)
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error
+  }
 }
 
 async function waitFor(operation, timeoutMs, message) {
