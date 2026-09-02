@@ -17,6 +17,7 @@ import {
   normalizeProviderOutputText,
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
+  providerThreadSliceTargetArch,
   providersNeedClaudeCredentials,
   sliceProviderAuthImportRequest,
   terminalProviderHistoryError,
@@ -259,5 +260,23 @@ test("provider thread slice builds use a low-memory development profile", () => 
       CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE: "benchmark",
     }),
     /build profile/,
+  )
+})
+
+test("provider thread slice builds normalize the local Docker target architecture", () => {
+  assert.equal(providerThreadSliceTargetArch({}, "arm64"), "arm64")
+  assert.equal(providerThreadSliceTargetArch({}, "aarch64"), "arm64")
+  assert.equal(providerThreadSliceTargetArch({}, "x64"), "amd64")
+  assert.equal(providerThreadSliceTargetArch({}, "x86_64"), "amd64")
+  assert.equal(
+    providerThreadSliceTargetArch(
+      { CHARIOX_PROVIDER_THREAD_SLICE_TARGET_ARCH: "amd64" },
+      "arm64",
+    ),
+    "amd64",
+  )
+  assert.throws(
+    () => providerThreadSliceTargetArch({}, "riscv64"),
+    /target architecture/,
   )
 })
