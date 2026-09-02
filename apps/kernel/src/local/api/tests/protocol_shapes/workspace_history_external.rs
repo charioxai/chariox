@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -41,7 +41,7 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -170,7 +170,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
@@ -362,7 +362,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -409,7 +409,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -476,7 +476,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -565,7 +565,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -695,7 +695,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -721,9 +721,15 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         };
     let pty_secret_request =
         crate::transport::relay_peer::RelayPeerRequest::ResolveHomeCredentialSecret {
-            context,
+            context: context.clone(),
             credential_id: "ssh-password".to_string(),
             injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty,
+        };
+    let computer_secret_request =
+        crate::transport::relay_peer::RelayPeerRequest::ResolveHomeCredentialSecret {
+            context: context.clone(),
+            credential_id: "desktop-password".to_string(),
+            injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer,
         };
     let list_response =
         crate::transport::relay_peer::RelayPeerResponse::HomeCredentialToolHandled {
@@ -740,11 +746,14 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     let secret_response =
         crate::transport::relay_peer::RelayPeerResponse::HomeCredentialSecretResolved {
             credential_id: "gmail-password".to_string(),
-            secret_input: "redacted-by-test-fixture".to_string(),
+            secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                "redacted-by-test-fixture".to_string(),
+            ),
         };
     let snapshot = serde_json::json!([
         list_request,
         browser_secret_request,
+        computer_secret_request,
         pty_secret_request,
         list_response,
         secret_response
@@ -759,14 +768,18 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/2/injection/kind"),
+        Some(&serde_json::json!("computer"))
+    );
+    assert_eq!(
+        snapshot.pointer("/3/injection/kind"),
         Some(&serde_json::json!("pty"))
     );
     assert_eq!(
-        snapshot.pointer("/3/kind"),
+        snapshot.pointer("/4/kind"),
         Some(&serde_json::json!("home_credential_tool_handled"))
     );
     assert_eq!(
-        snapshot.pointer("/4/kind"),
+        snapshot.pointer("/5/kind"),
         Some(&serde_json::json!("home_credential_secret_resolved"))
     );
     let serialized =
@@ -774,13 +787,27 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "212b2760be69363ed329c2fd5885457517478e5dd60d629da883430083ca8eca"
+        "1db26e45df57ec3bc21aeba0aed6ca232352a75163d331398ab4bac2b98e51d5"
     );
 }
 
 #[test]
+fn relay_home_credential_secret_debug_output_is_redacted() {
+    let response = crate::transport::relay_peer::RelayPeerResponse::HomeCredentialSecretResolved {
+        credential_id: "desktop-password".to_string(),
+        secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+            "must-not-appear-in-relay-debug".to_string(),
+        ),
+    };
+
+    let debug = format!("{response:?}");
+    assert!(debug.contains("[redacted remote credential secret input]"));
+    assert!(!debug.contains("must-not-appear-in-relay-debug"));
+}
+
+#[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),

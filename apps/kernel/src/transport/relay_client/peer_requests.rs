@@ -1117,7 +1117,10 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok((credential_id, secret_input)) => {
                     RelayPeerResponse::HomeCredentialSecretResolved {
                         credential_id,
-                        secret_input,
+                        secret_input:
+                            crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                                secret_input,
+                            ),
                     }
                 }
                 Err(error) => {

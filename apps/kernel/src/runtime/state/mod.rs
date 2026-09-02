@@ -36,6 +36,7 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
+mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod provider_output_deadline_store;
 mod provider_reload;

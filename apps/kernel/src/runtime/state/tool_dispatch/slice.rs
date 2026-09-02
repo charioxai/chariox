@@ -207,10 +207,10 @@ impl KernelRuntimeState {
                             credentials,
                             &user_config.credential_vault,
                         )?;
-                        service.browser_secret_input_for_target_url(
+                        zeroize::Zeroizing::new(service.browser_secret_input_for_target_url(
                             &args.credential_id,
                             &browser_url,
-                        )?
+                        )?)
                     }
                 };
                 let mut command_args = vec![if args.submit {
@@ -232,6 +232,16 @@ impl KernelRuntimeState {
                         &output,
                     ),
                 });
+            }
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL => {
+                // Keep the infrequent approval and vault flow off the shared dispatch future's
+                // stack; this router is also used by latency-sensitive non-secret commands.
+                return Box::pin(self.dispatch_computer_secret_input_tool(
+                    provider_run,
+                    agent_id,
+                    arguments,
+                ))
+                .await;
             }
             crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL => {
                 let args = serde_json::from_value::<
@@ -510,14 +520,14 @@ pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
 
 async fn run_slice_screen_command_with_stdin(
     args: Vec<String>,
-    stdin: String,
+    stdin: zeroize::Zeroizing<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     run_slice_screen_command_inner(args, Some(stdin), None).await
 }
 
 async fn run_slice_screen_command_inner(
     args: Vec<String>,
-    stdin: Option<String>,
+    stdin: Option<zeroize::Zeroizing<String>>,
     timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
@@ -662,6 +672,28 @@ pub(crate) async fn run_room_pointer_click(
     } else {
         Err(room_pointer_click_error(&format!(
             "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_secret_text_input(
+    input: crate::transport::room_browser_controller::RoomComputerSecretInput,
+) -> Result<(), DaemonError> {
+    let output = run_slice_screen_command_inner(
+        vec!["computer-secret-paste-stdin".to_string()],
+        Some(input.into_zeroizing()),
+        Some(ROOM_POINTER_CLICK_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_pointer_click_error(&format!(
+            "slice computer secret helper exited with status {}",
             output
                 .status_code
                 .map(|code| code.to_string())

@@ -340,6 +340,56 @@ fn browser_secret_input_requires_browser_injection() {
 }
 
 #[test]
+fn computer_secret_input_requires_explicit_computer_policy() {
+    let _guard = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_TEST_COMPUTER_PASSWORD", "computer-secret");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "desktop_password".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_COMPUTER_PASSWORD".to_string(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: vec![UserCredentialUse::Computer],
+        injection: UserCredentialInjectionConfig::Computer,
+        metadata: None,
+    }]);
+
+    assert_eq!(
+        service
+            .computer_secret_input("desktop_password")
+            .expect("computer secret should resolve"),
+        "computer-secret"
+    );
+    std::env::remove_var("CHARIOX_TEST_COMPUTER_PASSWORD");
+}
+
+#[test]
+fn computer_secret_input_rejects_browser_policy_before_secret_read() {
+    let _guard = crate::env_lock::lock();
+    std::env::remove_var("CHARIOX_TEST_COMPUTER_SECRET_MISSING");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "browser_only".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_COMPUTER_SECRET_MISSING".to_string(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: vec![UserCredentialUse::Browser],
+        injection: UserCredentialInjectionConfig::Browser,
+        metadata: None,
+    }]);
+
+    let error = service
+        .computer_secret_input("browser_only")
+        .expect_err("computer input should require computer policy");
+    assert!(error.to_string().contains("not allowed for Computer"));
+    assert!(!error
+        .to_string()
+        .contains("CHARIOX_TEST_COMPUTER_SECRET_MISSING"));
+}
+
+#[test]
 fn upsert_vault_backed_credential_stores_secret_and_metadata() {
     let root = std::env::temp_dir().join(format!(
         "chariox-vault-credential-upsert-test-{}",

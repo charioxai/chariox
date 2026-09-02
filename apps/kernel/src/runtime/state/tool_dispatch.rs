@@ -7,6 +7,7 @@ use super::*;
 
 mod agent_messaging;
 mod capability_registry;
+mod computer_secret;
 mod connector;
 mod credential;
 mod extension_list_tool;
@@ -25,7 +26,9 @@ mod remote_extension_control_plane;
 mod script;
 mod skill_package_response;
 mod slice;
-pub(super) use slice::{capture_room_environment_screenshot, run_room_pointer_click};
+pub(super) use slice::{
+    capture_room_environment_screenshot, run_room_pointer_click, run_room_secret_text_input,
+};
 mod worker_home_credential_client;
 mod worker_home_extension_client;
 mod worker_home_room_browser_client;
@@ -485,6 +488,7 @@ impl KernelRuntimeState {
 fn is_slice_runtime_tool(tool_name: &str) -> bool {
     crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some()
         || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+        || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
 }
 
 fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
@@ -565,9 +569,12 @@ mod tests {
     }
 
     #[test]
-    fn browser_secret_paste_uses_the_slice_dispatch_path() {
+    fn secret_paste_tools_use_the_slice_dispatch_path() {
         assert!(super::is_slice_runtime_tool(
             crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
         ));
     }
 
@@ -595,6 +602,9 @@ mod tests {
         }
         assert!(!super::is_room_browser_controller_runtime_tool(
             PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(!super::is_room_browser_controller_runtime_tool(
+            PASTE_SECRET_TO_COMPUTER_TOOL
         ));
         assert!(!super::is_room_browser_controller_runtime_tool(
             SLICE_SCREENSHOT_TOOL

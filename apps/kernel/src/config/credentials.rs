@@ -202,6 +202,7 @@ pub enum UserCredentialUse {
     Pty,
     Connector,
     Browser,
+    Computer,
     Mcp,
 }
 
@@ -227,6 +228,7 @@ pub enum UserCredentialInjectionConfig {
     },
     Pty,
     Browser,
+    Computer,
 }
 
 fn default_hmac_timestamp_header() -> String {
@@ -279,6 +281,7 @@ pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), 
             }
             UserCredentialInjectionConfig::Pty => {}
             UserCredentialInjectionConfig::Browser => {}
+            UserCredentialInjectionConfig::Computer => {}
         }
     }
     Ok(())

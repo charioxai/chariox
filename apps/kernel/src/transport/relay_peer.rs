@@ -69,8 +69,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 35 preserves the owning document index for browser snapshot nodes.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 35;
+/// Version 36 adds approval-gated Computer credential injection.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 36;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -237,7 +237,34 @@ impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteCredentialSecretInjection {
     Browser { target_url: String },
+    Computer,
     Pty,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteCredentialSecretInput(String);
+
+impl RemoteCredentialSecretInput {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RemoteCredentialSecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RemoteCredentialSecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted remote credential secret input]")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -835,7 +862,7 @@ pub enum RelayPeerResponse {
     },
     HomeCredentialSecretResolved {
         credential_id: String,
-        secret_input: String,
+        secret_input: RemoteCredentialSecretInput,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,

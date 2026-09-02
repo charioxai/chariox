@@ -441,7 +441,8 @@ done
     std::fs::write(
         &one_shot,
         format!(
-            "#!/bin/sh\nprintf 'called %s\\n' \"$*\" >> '{}'\nexit 91\n",
+            "#!/bin/sh\nset -eu\nprintf 'called %s\\n' \"$*\" >> '{}'\nif [ \"${{1:-}}\" = computer-secret-paste-stdin ]; then\n  input=$(cat)\n  [ \"$input\" = \"$CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET\" ]\n  printf 'computer-secret-match\\n' >> '{}'\n  exit 0\nfi\nexit 91\n",
+            one_shot_log.display(),
             one_shot_log.display()
         ),
     )
@@ -461,6 +462,10 @@ done
     std::env::set_var(
         "CHARIOX_CONTROLLER_MCP_TEST_SECRET",
         "controller-mcp-secret-value",
+    );
+    std::env::set_var(
+        "CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET",
+        "controller-mcp-computer-secret-value",
     );
     crate::credential::CharioxCredentialRegistry::new(fixture.root.join("credentials"))
         .upsert(crate::config::UserCredentialConfig {
@@ -501,6 +506,19 @@ done
             metadata: None,
         })
         .expect("unmasked-field credential should be registered");
+    crate::credential::CharioxCredentialRegistry::new(fixture.root.join("credentials"))
+        .upsert(crate::config::UserCredentialConfig {
+            id: "desktop-login".to_string(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Env {
+                name: "CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET".to_string(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![crate::config::UserCredentialUse::Computer],
+            injection: crate::config::UserCredentialInjectionConfig::Computer,
+            metadata: None,
+        })
+        .expect("computer credential should be registered");
 
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
@@ -730,6 +748,190 @@ done
             .as_str()
             .is_some_and(|action_id| action_id.starts_with("action-")));
     }
+    router
+        .runtime_state()
+        .transition_room_environment(&session_id, crate::session::EnvironmentLifecycle::Ready)
+        .expect("Computer input requires the Room Environment to be ready");
+    let one_shot_before_denial = std::fs::read_to_string(&one_shot_log).unwrap_or_default();
+    let denied_computer_secret_router = router.clone();
+    let denied_computer_secret_auth = auth_token.clone();
+    let denied_computer_secret_call = tokio::spawn(async move {
+        handle_json_rpc_value(
+            denied_computer_secret_router,
+            &denied_computer_secret_auth,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 80,
+                "method": "tools/call",
+                "params": {
+                    "name": "paste_secret_to_computer",
+                    "arguments": {"credential_id": "desktop-login"}
+                }
+            }),
+        )
+        .await
+    });
+    let denied_interaction_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let session = router
+                .runtime_state()
+                .session_snapshot_projection(&session_id, 0)
+                .expect("session projection should remain available")
+                .session;
+            if let Some(interaction) = session
+                .active_interactions()
+                .iter()
+                .find(|interaction| interaction.title() == Some("Computer credential input"))
+            {
+                break interaction.id().to_string();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("computer credential denial interaction should appear");
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(&session_id, &denied_interaction_id, "deny", None)
+        .await
+        .expect("computer credential denial should resolve");
+    let denied_computer_secret_response = denied_computer_secret_call
+        .await
+        .expect("denied computer secret task should join")
+        .expect("denied computer secret paste should return an MCP response");
+    let denied_computer_secret_body = denied_computer_secret_response
+        .into_body()
+        .collect()
+        .await
+        .expect("denied computer secret response body should collect")
+        .to_bytes();
+    let denied_computer_secret_value: Value = serde_json::from_slice(&denied_computer_secret_body)
+        .expect("denied computer secret body json");
+    assert!(denied_computer_secret_value["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("denied or timed out")));
+    assert!(
+        !denied_computer_secret_value
+            .to_string()
+            .contains("controller-mcp-computer-secret-value"),
+        "denied computer secret material must not escape through MCP"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&one_shot_log).unwrap_or_default(),
+        one_shot_before_denial,
+        "denial must not reach the desktop input helper"
+    );
+    assert!(
+        router
+            .runtime_state()
+            .room_environment_snapshot(&session_id)
+            .expect("Room Environment should remain available after denial")
+            .actions
+            .iter()
+            .all(|action| action.kind != "secret_input"),
+        "denial must not create a secret-input action"
+    );
+    let computer_secret_router = router.clone();
+    let computer_secret_auth = auth_token.clone();
+    let computer_secret_call = tokio::spawn(async move {
+        handle_json_rpc_value(
+            computer_secret_router,
+            &computer_secret_auth,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "tools/call",
+                "params": {
+                    "name": "paste_secret_to_computer",
+                    "arguments": {"credential_id": "desktop-login"}
+                }
+            }),
+        )
+        .await
+    });
+    let interaction_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let session = router
+                .runtime_state()
+                .session_snapshot_projection(&session_id, 0)
+                .expect("session projection should remain available")
+                .session;
+            if let Some(interaction) = session
+                .active_interactions()
+                .iter()
+                .find(|interaction| interaction.title() == Some("Computer credential input"))
+            {
+                break interaction.id().to_string();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("computer credential approval should appear");
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(&session_id, &interaction_id, "allow", None)
+        .await
+        .expect("computer credential approval should resolve");
+    let computer_secret_response = computer_secret_call
+        .await
+        .expect("computer secret task should join")
+        .expect("computer secret paste should return an MCP response");
+    let computer_secret_body = computer_secret_response
+        .into_body()
+        .collect()
+        .await
+        .expect("computer secret response body should collect")
+        .to_bytes();
+    let computer_secret_value: Value =
+        serde_json::from_slice(&computer_secret_body).expect("computer secret body json");
+    assert_eq!(
+        computer_secret_value["result"]["isError"], false,
+        "{computer_secret_value:#}"
+    );
+    assert_eq!(
+        computer_secret_value["result"]["structuredContent"]["target"],
+        "desktop_focus"
+    );
+    assert_eq!(
+        computer_secret_value["result"]["structuredContent"]["actor_id"],
+        crate::session::agent_environment_actor_id(&agent_id)
+    );
+    assert!(
+        computer_secret_value["result"]["structuredContent"]["action_id"]
+            .as_str()
+            .is_some_and(|action_id| action_id.starts_with("action-"))
+    );
+    assert!(
+        !computer_secret_value
+            .to_string()
+            .contains("controller-mcp-computer-secret-value"),
+        "computer secret material must not escape through MCP"
+    );
+    let one_shot_after_computer =
+        std::fs::read_to_string(&one_shot_log).expect("one-shot log should remain readable");
+    assert!(one_shot_after_computer.contains("computer-secret-match"));
+    assert!(!one_shot_after_computer.contains("controller-mcp-computer-secret-value"));
+    let environment_after_computer = router
+        .runtime_state()
+        .room_environment_snapshot(&session_id)
+        .expect("Room Environment should remain available");
+    let computer_action = environment_after_computer
+        .actions
+        .iter()
+        .find(|action| action.kind == "secret_input")
+        .expect("computer secret input should be recorded in the action ledger");
+    assert_eq!(
+        computer_action.state,
+        crate::session::EnvironmentActionState::Completed
+    );
+    assert_eq!(computer_action.arguments, None);
+    assert!(
+        !serde_json::to_string(computer_action)
+            .expect("computer action should serialize")
+            .contains("controller-mcp-computer-secret-value"),
+        "computer action history must not contain secret material"
+    );
     let first_controller_pid = std::fs::read_to_string(&controller_pid)
         .expect("controller pid should exist")
         .trim()
@@ -817,7 +1019,7 @@ done
     );
     assert!(recovered_actor_ids
         .contains(crate::session::agent_environment_actor_id(&agent_id).as_str()));
-    assert_eq!(recovered_environment.actions.len(), 3);
+    assert_eq!(recovered_environment.actions.len(), 4);
     assert!(recovered_environment
         .actions
         .iter()
@@ -1043,6 +1245,7 @@ done
         .expect("controller log should be readable after secret insertion");
     assert!(controller_log_after_secret.contains("secret-frame-target"));
     assert!(!controller_log_after_secret.contains("controller-mcp-secret-value"));
+
     let dialog_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
@@ -1238,7 +1441,15 @@ done
             .iter()
             .map(|action| action.kind.as_str())
             .collect::<Vec<_>>(),
-        vec!["fill", "click", "submit", "fill", "dialog", "navigate"]
+        vec![
+            "fill",
+            "click",
+            "submit",
+            "secret_input",
+            "fill",
+            "dialog",
+            "navigate"
+        ]
     );
     assert!(environment.actions.iter().all(|action| {
         action.actor_id == crate::session::agent_environment_actor_id(&agent_id)
@@ -1254,8 +1465,11 @@ done
             .contains("controller-mcp-secret-value"),
         "secret material must not be written to the controller log"
     );
-    assert!(
-        !one_shot_log.exists(),
-        "the one-shot browser command must not run when the controller is enabled"
-    );
+    let one_shot_output =
+        std::fs::read_to_string(&one_shot_log).expect("computer input log should exist");
+    assert!(one_shot_output.contains("called computer-secret-paste-stdin"));
+    assert!(one_shot_output.contains("computer-secret-match"));
+    assert!(!one_shot_output.contains("browser-"));
+    std::env::remove_var("CHARIOX_CONTROLLER_MCP_TEST_SECRET");
+    std::env::remove_var("CHARIOX_CONTROLLER_MCP_COMPUTER_SECRET");
 }

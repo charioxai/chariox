@@ -91,10 +91,10 @@ impl KernelRuntimeState {
                     credentials,
                     &user_config.credential_vault,
                 )?;
-                service.browser_secret_input_for_target_url(
+                zeroize::Zeroizing::new(service.browser_secret_input_for_target_url(
                     &args.credential_id,
                     &target_document_url,
-                )?
+                )?)
             }
         };
         let result = self
@@ -103,7 +103,7 @@ impl KernelRuntimeState {
                 agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
-                    text: secret,
+                    text: secret.to_string(),
                     append: false,
                     submit: args.submit,
                     expected_document_url: Some(target_document_url),

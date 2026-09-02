@@ -197,7 +197,7 @@ Remote-agent note:
 - a home kernel remains the only session authority even when some agents execute on remote machines
 - worker kernels host leased execution for those remote agents but do not become session authorities
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
-- home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, keeps credentials local to home, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for local browser/PTY targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
+- home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, keeps credentials local to home, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for local browser/Computer/PTY targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
 
 Runtime authority invariants:
 
@@ -535,6 +535,8 @@ Tab rules:
 - an old target ID, URL, title, or tab index is never sufficient authority to mutate a Tab
 
 Browser mode exposes structured tab, accessibility, document, lifecycle, console, and network observations. Computer mode exposes the same Environment through its graphical display and desktop input. Switching modes does not create a browser, move state, or change authority.
+
+Vault-backed Computer credential input uses that same desktop-input authority. The agent supplies only a credential handle; the home kernel validates the Computer-specific credential policy and requires user confirmation, and the worker types through stdin into the existing desktop focus without using the clipboard. The action ledger records a redacted `secret_input` action. Browser credential input remains DOM-bound and automatically rejects unmasked targets; Computer input relies on explicit user verification because arbitrary X11 controls do not expose a universal password-field contract.
 
 #### Canonical viewport
 

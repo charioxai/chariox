@@ -243,6 +243,11 @@ async fn execute_local(
                     )
                     .await?;
                 }
+                crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
+                    input,
+                } => {
+                    super::tool_dispatch::run_room_secret_text_input(input).await?;
+                }
             }
             return Ok(Response::ComputerInputApplied { action_id });
         }
