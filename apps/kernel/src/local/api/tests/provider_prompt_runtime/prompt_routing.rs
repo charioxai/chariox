@@ -532,6 +532,120 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
 }
 
 #[test]
+fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let exhausted_account = harness.with_app(|app| {
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "opencode",
+                "Exhausted Go account",
+            )
+            .expect("exhausted account profile should register");
+        let now_ms = crate::session::unix_epoch_ms();
+        app.provider_account_profile_registry()
+            .update_observation(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "opencode",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                Some(crate::account_profile::ProviderAccountUsageSnapshot {
+                    profile_id: profile.profile_id.clone(),
+                    provider: "opencode".to_string(),
+                    availability:
+                        crate::account_profile::ProviderAccountUsageAvailability::Available,
+                    meters: vec![crate::account_profile::ProviderAccountUsageMeter {
+                        meter_id: "go/monthly".to_string(),
+                        label: "Monthly".to_string(),
+                        kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
+                        scope: crate::account_profile::ProviderAccountUsageMeterScope::Plan,
+                        used_percent: Some(100.0),
+                        used: None,
+                        remaining: None,
+                        total: None,
+                        unit: None,
+                        window_duration_minutes: None,
+                        resets_at_ms: Some(now_ms + 60_000),
+                        state: crate::account_profile::ProviderAccountUsageMeterState::Exhausted,
+                        source: "test".to_string(),
+                        observed_at_ms: now_ms,
+                    }],
+                    observed_at_ms: Some(now_ms),
+                    source: "test".to_string(),
+                    management_url: None,
+                }),
+            )
+            .expect("exhausted account observation should persist")
+    });
+
+    harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                provider: Some("opencode".to_string()),
+                account_profile: Some(exhausted_account.profile_id.clone()),
+                model: Some("opencode-go/deepseek-v4-pro".to_string()),
+                effort: Some("high".to_string()),
+                clear_effort: false,
+            },
+        ))
+        .expect("an exhausted account should remain assignable for later refresh");
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "must not launch an exhausted provider".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect_err("a fresh exhausted account must block a new prompt");
+    let message = error.to_string();
+    assert!(message.contains("Exhausted Go account"), "{message}");
+    assert!(message.contains("usage is exhausted"), "{message}");
+    assert!(message.contains("refresh"), "{message}");
+    assert!(
+        !message.contains(&exhausted_account.profile_id),
+        "the public error must not expose the stable internal account id: {message}"
+    );
+    assert!(
+        harness
+            .with_app(|app| app
+                .providers()
+                .get_latest_run_for_agent(session.id(), agent.id()))
+            .is_none(),
+        "usage rejection must happen before provider launch"
+    );
+}
+
+#[test]
 fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavailable() {
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
