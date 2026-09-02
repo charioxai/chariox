@@ -29,3 +29,18 @@ test("Room TUI notices retain pane-scoped identity across focus changes", () => 
   assert.deepEqual(automationNoticeIds(snapshot), ["agent-1:1", "agent-2:1"])
   assert.deepEqual(automationNoticeTexts(snapshot), ["focused notice", "other pane notice"])
 })
+
+test("Room TUI notices use authoritative pane identity when the visible transcript has no agent ID", () => {
+  const snapshot = {
+    transcript: {
+      entries: [{ id: 1, role: "notice", text: "focused notice" }],
+    },
+    agentPanes: {
+      "agent-1": [{ id: 1, role: "notice", text: "focused notice" }],
+    },
+  }
+
+  assert.deepEqual(automationNoticeEntries(snapshot), [
+    { id: "agent-1:1", text: "focused notice" },
+  ])
+})

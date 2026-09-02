@@ -32,7 +32,7 @@ export async function waitForRoomDrillCompanionResult(directory, options) {
     } catch (error) {
       if (error?.code !== "ENOENT") {
         lastReadError = error
-        if (!isRetryableParseError(error)) throw error
+        if (error instanceof CompanionFailureError) throw error
       }
     }
     await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())))
@@ -53,7 +53,12 @@ function validateResult(result, options) {
     throw new Error(`Room drill companion environment mismatch: expected ${options.environmentId}, got ${String(result.environmentId)}`)
   }
   if (result.status !== "passed") {
-    throw new Error(`Room drill companion failed: ${typeof result.error === "string" ? result.error : "unknown error"}`)
+    if (result.status === "failed") {
+      throw new CompanionFailureError(
+        `Room drill companion failed: ${typeof result.error === "string" ? result.error : "unknown error"}`,
+      )
+    }
+    throw new Error(`Room drill companion result status is incomplete: ${String(result.status)}`)
   }
 }
 
@@ -70,8 +75,11 @@ function positiveInteger(value, label) {
   return value
 }
 
-function isRetryableParseError(error) {
-  return error instanceof SyntaxError
+class CompanionFailureError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = "CompanionFailureError"
+  }
 }
 
 function sleep(ms) {
