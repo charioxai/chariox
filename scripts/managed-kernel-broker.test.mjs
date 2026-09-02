@@ -97,6 +97,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
       action: "provision",
       environment: {
         CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-dev-a1b2c3d4e5f6",
         CHARIOX_SLICE_ID: "slice-dev",
         CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
         CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
@@ -107,6 +108,24 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     share,
   )
   assert.equal(provision.status, 0, provision.stderr)
+
+  const existingMixedCaseHostname = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-Production-1",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-Production-1",
+        CHARIOX_SLICE_ID: "slice-production-1",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-Production-1-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_WORKSPACE: workspace,
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(existingMixedCaseHostname.status, 0, existingMixedCaseHostname.stderr)
 
   const namedAppArmorProfile = validate(
     {
@@ -298,6 +317,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     { CHARIOX_SLICE_DOCKER_MEMORY: "1g --privileged" },
     { CHARIOX_SLICE_DOCKER_CPUS: "2 --volume=/etc:/vault" },
     { CHARIOX_SLICE_WORKSPACE_MOUNT_MODE: "rw,bind" },
+    { CHARIOX_SLICE_HOSTNAME: "chariox_slice_dev" },
   ]) {
     const injected = validate({
       kind: "provisioner",

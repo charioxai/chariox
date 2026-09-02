@@ -80,18 +80,28 @@ def public_status(record):
     return result
 
 
+def wait_until_not_owned(record, timeout):
+    deadline = time.monotonic() + timeout
+    while owned_process(record) is not None:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 def stop(directory):
     record = read_state(directory)
     process = owned_process(record)
     forced = False
     if process is not None:
         process.terminate()
-        try:
-            process.wait(timeout=10)
-        except psutil.TimeoutExpired:
+        if not wait_until_not_owned(record, 10):
             forced = True
-            process.kill()
-            process.wait(timeout=5)
+            process = owned_process(record)
+            if process is not None:
+                process.kill()
+            if not wait_until_not_owned(record, 5):
+                raise RuntimeError("Selkies did not stop after forced termination")
     (directory / "process.json").unlink(missing_ok=True)
     return {"stopped": True, "forced": forced}
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import http from "node:http"
 import { access, mkdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
@@ -9,12 +8,14 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { browserStateCleanupFailure } from "./lib/browser-state-drill-cleanup.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
+import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
+const startedAt = new Date().toISOString()
+const stamp = startedAt.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
 const runId = `m20-docker-state-${process.pid}-${stamp}`
 const { artifactDir, tempRoot } = resolveBrowserStateDrillPaths({
   homeDir: os.homedir(),
@@ -24,6 +25,9 @@ const { artifactDir, tempRoot } = resolveBrowserStateDrillPaths({
 })
 const kernelPort = Number.parseInt(process.env.M20_KERNEL_PORT ?? "", 10) || 55000 + Math.floor(Math.random() * 2000)
 const kernelUrl = `ws://127.0.0.1:${kernelPort}/kernel`
+// The slice marks this deterministic fixture origin as trustworthy so Chromium
+// can exercise service workers without weakening arbitrary HTTP origins.
+const fixturePort = 4321
 const sliceName = `m20-${process.pid}`
 const containerName = `chariox-slice-${sliceName}`
 const homeVolume = `${containerName}-home`
@@ -34,6 +38,10 @@ const markers = {
   stateCookie: `cookie-${process.pid}-${Date.now()}`,
   stateLocalStorage: `local-${process.pid}-${Date.now()}`,
   stateIndexedDb: `idb-${process.pid}-${Date.now()}`,
+  stateCacheStorage: `cache-${process.pid}-${Date.now()}`,
+  downloadedFile: "CHARIOX_FIXTURE_DOWNLOAD",
+  appConfig: `app-config-${process.pid}-${Date.now()}`,
+  appUserData: `app-data-${process.pid}-${Date.now()}`,
   firstSubject: `M20 first ${process.pid}`,
   secondSubject: `M20 second ${process.pid}`,
 }
@@ -43,9 +51,12 @@ let client = null
 let requests = null
 let slice = null
 let fixture = null
-let fixturePort = null
 let savedState = null
 let cleanupResult = null
+let sourceIdentity = null
+const sliceRuntime = {}
+const persistenceIdentity = {}
+const resources = []
 
 await mkdir(artifactDir, { recursive: true })
 await mkdir(tempRoot, { recursive: true })
@@ -92,23 +103,25 @@ if (failure) {
 async function run() {
   log("checking Docker")
   await assertDockerReady()
+  resources.push(await resourceSnapshot("before"))
   log("writing disposable config")
   await seedConfig()
   log("starting local webmail fixture")
   fixture = await startFixture()
-  fixturePort = fixture.port
+  assert.equal(Number(new URL(fixture.origin).port), fixturePort)
   await assertFixtureAlive()
   log(`fixture listening on ${fixturePort}`)
 
   log("building kernel")
   const kernel = await buildKernel()
+  sourceIdentity = await captureSourceIdentity(kernel)
   log("building kernel client")
   await buildKernelClient()
   log("starting disposable kernel")
   start("kernel", kernel, [], {
     env: {
       ...process.env,
-      CHARIOX_HOME: tempRoot,
+      CHARIOX_HOME: path.join(tempRoot, "home"),
       XDG_CONFIG_HOME: path.join(tempRoot, "config"),
       CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: "1",
       CHARIOX_KERNEL_PORT: String(kernelPort),
@@ -119,6 +132,9 @@ async function run() {
       CHARIOX_DAEMON_ID: `m20-daemon-${process.pid}`,
       CHARIOX_DAEMON_ALIAS: `m20-${process.pid}`,
       CHARIOX_SESSION_HISTORY_DIR: path.join(tempRoot, "session-history"),
+      // Exact-head dev binaries keep the Docker-side link within laptop memory
+      // while exercising the same slice lifecycle and runtime protocol.
+      CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: "dev",
     },
   })
 
@@ -145,22 +161,47 @@ async function run() {
     name: sliceName,
     backend: "local_docker",
     displayMode: "headed",
+    displayBackend: "selkies",
     workspaceMount: repoRoot,
     workerKernelRef: `m20-worker-${process.pid}`,
   })), "SliceCreated").slice
   log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  const initialSlicePorts = structuredClone(slice.local_docker_ports)
+  const initialDisplayUrl = slice.display_endpoint?.url
+  assert.ok(initialSlicePorts?.novnc, "slice must retain its allocated display port")
+  assert.equal(
+    initialDisplayUrl,
+    `http://127.0.0.1:${initialSlicePorts.novnc}/`,
+    "Selkies display endpoint must use the slice's durable port assignment",
+  )
+  sliceRuntime.initial = await inspectSliceRuntime()
+  assert.match(
+    sliceRuntime.initial.installedRuntimeSourceRevision,
+    /^[a-f0-9]{64}$/,
+    "initial slice must report an installed runtime source revision",
+  )
+  assert.equal(
+    sliceRuntime.initial.runtimeSourceRevision,
+    sliceRuntime.initial.installedRuntimeSourceRevision,
+    "initial slice image and installed runtime revisions must match",
+  )
+  assertSliceResourceLimits(sliceRuntime.initial.containerLimits, "initial slice")
   log("slice is running")
 
   await writeFile(path.join(artifactDir, "container-before-save.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("initial")
+  persistenceIdentity.initial = await inspectPersistenceIdentity()
+  assertInitialPersistenceIdentity(persistenceIdentity.initial)
   log("installing program marker")
   await installProgramMarker()
   log("running local browser state phase")
   await runLocalBrowserStatePhase("before")
   log("running first webmail phase")
   await runWebmailPhase("first", markers.firstSubject)
+  log("creating browser download and application state")
+  await seedUserPersistenceMarkers()
   await screenshot("01-before-save")
 
   log("saving slice state")
@@ -174,11 +215,41 @@ async function run() {
   log("starting restored slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  assert.deepEqual(
+    slice.local_docker_ports,
+    initialSlicePorts,
+    "restoring the same slice must retain every durable port assignment",
+  )
+  assert.equal(
+    slice.display_endpoint?.url,
+    initialDisplayUrl,
+    "restoring the same slice must retain its display endpoint",
+  )
+  sliceRuntime.restored = await inspectSliceRuntime()
+  assert.equal(
+    sliceRuntime.restored.runtimeSourceRevision,
+    sliceRuntime.restored.installedRuntimeSourceRevision,
+    "restored slice image and installed runtime revisions must match",
+  )
+  assert.equal(
+    sliceRuntime.restored.installedRuntimeSourceRevision,
+    sliceRuntime.initial.installedRuntimeSourceRevision,
+    "restored slice must retain the same installed runtime source revision",
+  )
+  assertSliceResourceLimits(sliceRuntime.restored.containerLimits, "restored slice")
   log("restored slice is running")
   await writeFile(path.join(artifactDir, "container-after-restore.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("restored")
+  persistenceIdentity.restored = await inspectPersistenceIdentity()
+  assert.deepEqual(
+    persistenceIdentity.restored,
+    persistenceIdentity.initial,
+    "slice identity, display, browser profile, and password-store policy should survive restore",
+  )
   log("verifying program marker")
   await verifyProgramMarker()
+  log("verifying downloaded file and application state after restore")
+  await verifyUserPersistenceMarkers()
   log("verifying local browser state after restore")
   await verifyLocalBrowserStateAfterRestore()
   log("running second webmail phase after restore")
@@ -188,10 +259,20 @@ async function run() {
   assert.equal(fixture.messages.filter((message) => message.subject === markers.firstSubject).length, 1)
   assert.equal(fixture.messages.filter((message) => message.subject === markers.secondSubject).length, 1)
   await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(fixture.messages, null, 2))
+  log("verifying restored service worker serves cached content while the fixture is offline")
+  await fixture.close()
+  await sliceScreen(["open-url", fixtureUrl("/offline-marker")])
+  await waitForBrowserText(
+    "CHARIOX_FIXTURE_OFFLINE_MARKER",
+    30_000,
+    "restored service worker did not serve the cached offline marker",
+  )
+  await screenshot("03-service-worker-offline-after-restore")
+  resources.push(await resourceSnapshot("restored-active"))
 }
 
 async function seedConfig() {
-  const configDir = path.join(tempRoot, "config", "chariox")
+  const configDir = path.join(tempRoot, "home")
   await mkdir(configDir, { recursive: true })
   await writeFile(path.join(configDir, "config.toml"), [
     "version = 1",
@@ -218,209 +299,66 @@ async function seedConfig() {
 }
 
 async function startFixture() {
-  const sessions = new Map()
-  const messages = []
-  const server = http.createServer(async (request, response) => {
-    const url = new URL(request.url ?? "/", `http://${request.headers.host}`)
-    const cookies = parseCookies(request.headers.cookie ?? "")
-    const send = (status, body, headers = {}) => {
-      response.writeHead(status, { "content-type": "text/html; charset=utf-8", ...headers })
-      response.end(body)
-    }
-    if (url.pathname === "/state") {
-      send(200, statePage())
-      return
-    }
-    if (url.pathname === "/state-check") {
-      send(200, stateCheckPage())
-      return
-    }
-    if (url.pathname === "/mail/login" && request.method === "GET") {
-      send(200, loginPage())
-      return
-    }
-    if (url.pathname === "/mail/login" && request.method === "POST") {
-      const form = new URLSearchParams(await readRequestBody(request))
-      if (form.get("email") !== email || form.get("password") !== password) {
-        send(401, loginPage("Invalid credentials"))
-        return
-      }
-      const sid = `sid-${process.pid}-${Date.now()}`
-      sessions.set(sid, email)
-      send(302, "", {
-        "set-cookie": `m20_session=${sid}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
-        location: "/mail/inbox",
-      })
-      return
-    }
-    if (url.pathname === "/mail/inbox") {
-      if (!sessions.has(cookies.m20_session)) {
-        send(302, "", { location: "/mail/login" })
-        return
-      }
-      send(200, inboxPage())
-      return
-    }
-    if (url.pathname === "/mail/compose") {
-      if (!sessions.has(cookies.m20_session)) {
-        send(302, "", { location: "/mail/login" })
-        return
-      }
-      send(200, composePage())
-      return
-    }
-    if (url.pathname === "/mail/send" && request.method === "POST") {
-      if (!sessions.has(cookies.m20_session)) {
-        send(403, "not authenticated")
-        return
-      }
-      const form = new URLSearchParams(await readRequestBody(request))
-      messages.push({
-        from: email,
-        to: form.get("to"),
-        subject: form.get("subject"),
-        body: form.get("body"),
-        sentAt: new Date().toISOString(),
-      })
-      send(200, sentPage(form.get("subject") ?? ""))
-      return
-    }
-    if (url.pathname === "/api/messages") {
-      response.writeHead(200, { "content-type": "application/json" })
-      response.end(JSON.stringify({ messages }))
-      return
-    }
-    send(404, "not found")
+  return await startBrowserComputerFixture({
+    host: "0.0.0.0",
+    port: fixturePort,
+    account: email,
+    password,
   })
-  const port = await listen(server)
-  return { server, port, messages }
-}
-
-function statePage() {
-  return html("M20 state seed", `
-    <h1>M20 state seed</h1>
-    <p id="status">seeding</p>
-    <script>
-      const values = ${JSON.stringify(markers)};
-      document.cookie = "m20_state_cookie=" + encodeURIComponent(values.stateCookie) + "; Path=/; Max-Age=86400; SameSite=Lax";
-      localStorage.setItem("m20_state_local", values.stateLocalStorage);
-      const request = indexedDB.open("m20_state_db", 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("state");
-      request.onsuccess = () => {
-        const tx = request.result.transaction("state", "readwrite");
-        tx.objectStore("state").put(values.stateIndexedDb, "marker");
-        tx.oncomplete = () => {
-          document.querySelector("#status").textContent = "M20_STATE_SEEDED";
-        };
-      };
-    </script>
-  `)
-}
-
-function stateCheckPage() {
-  return html("M20 state check", `
-    <h1>M20 state check</h1>
-    <pre id="result">checking</pre>
-    <script>
-      const cookie = document.cookie.split("; ").find((item) => item.startsWith("m20_state_cookie="))?.split("=")[1] || "";
-      const request = indexedDB.open("m20_state_db", 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("state");
-      request.onsuccess = () => {
-        const tx = request.result.transaction("state", "readonly");
-        const get = tx.objectStore("state").get("marker");
-        get.onsuccess = () => {
-          document.querySelector("#result").textContent = JSON.stringify({
-            cookie: decodeURIComponent(cookie),
-            localStorage: localStorage.getItem("m20_state_local"),
-            indexedDb: get.result || null,
-          });
-        };
-      };
-    </script>
-  `)
-}
-
-function loginPage(error = "") {
-  return html("M20 webmail login", `
-    <h1>M20 webmail login</h1>
-    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
-    <form method="post" action="/mail/login">
-      <label>Email <input id="email" name="email" autocomplete="username"></label>
-      <label>Password <input id="password" name="password" type="password" autocomplete="current-password"></label>
-      <button id="login" type="submit">Sign in</button>
-    </form>
-  `)
-}
-
-function inboxPage() {
-  return html("M20 webmail inbox", `
-    <h1>M20_WEBMAIL_INBOX</h1>
-    <p>Signed in as ${email}</p>
-    <a id="compose" href="/mail/compose">Compose</a>
-  `)
-}
-
-function composePage() {
-  return html("M20 webmail compose", `
-    <h1>M20 compose</h1>
-    <form method="post" action="/mail/send">
-      <label>To <input id="to" name="to"></label>
-      <label>Subject <input id="subject" name="subject"></label>
-      <label>Body <textarea id="body" name="body"></textarea></label>
-      <button id="send" type="submit">Send</button>
-    </form>
-  `)
-}
-
-function sentPage(subject) {
-  return html("M20 sent", `<h1>M20_MESSAGE_SENT</h1><p>${escapeHtml(subject)}</p><a id="inbox" href="/mail/inbox">Inbox</a>`)
-}
-
-function html(title, body) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-    body { font-family: system-ui, sans-serif; margin: 40px; max-width: 720px; }
-    label { display: block; margin: 12px 0; }
-    input, textarea { display: block; width: 520px; max-width: 100%; padding: 8px; }
-    button, a { display: inline-block; margin-top: 12px; padding: 8px 12px; }
-  </style></head><body>${body}</body></html>`
 }
 
 async function runLocalBrowserStatePhase(label) {
   await assertFixtureAlive()
-  await sliceScreen(["open-url", fixtureUrl("/state")])
-  await waitForBrowserText("M20_STATE_SEEDED", 30_000, `${label} state seed did not complete`)
+  const query = new URLSearchParams({
+    cookie: markers.stateCookie,
+    local: markers.stateLocalStorage,
+    idb: markers.stateIndexedDb,
+    cache: markers.stateCacheStorage,
+  })
+  await sliceScreen(["open-url", fixtureUrl(`/state/seed?${query}`)])
+  await waitForBrowserText(
+    "CHARIOX_FIXTURE_STATE_SEEDED",
+    30_000,
+    `${label} state seed did not complete`,
+  )
   await screenshot(`state-seeded-${label}`)
 }
 
 async function verifyLocalBrowserStateAfterRestore() {
   await assertFixtureAlive()
-  await sliceScreen(["open-url", fixtureUrl("/state-check")])
+  await sliceScreen(["open-url", fixtureUrl("/state/check")])
   const text = await waitForBrowserText(markers.stateIndexedDb, 30_000, "browser persisted state not visible after restore")
   assert.match(text, new RegExp(escapeRegExp(markers.stateCookie)), "cookie marker should persist")
   assert.match(text, new RegExp(escapeRegExp(markers.stateLocalStorage)), "localStorage marker should persist")
   assert.match(text, new RegExp(escapeRegExp(markers.stateIndexedDb)), "IndexedDB marker should persist")
+  assert.match(text, new RegExp(escapeRegExp(markers.stateCacheStorage)), "Cache Storage marker should persist")
+  assert.match(text, /"serviceWorker":true/, "service-worker registration should persist")
   await screenshot("state-check-after-restore")
 }
 
 async function runWebmailPhase(label, subject, options = {}) {
   await assertFixtureAlive()
   await sliceScreen(["open-url", fixtureUrl(options.expectAuthenticated ? "/mail/inbox" : "/mail/login")])
-  const pageText = await waitForBrowserText(options.expectAuthenticated ? "M20_WEBMAIL_INBOX" : "M20 webmail login", 30_000, `${label} webmail did not open`)
+  const pageText = await waitForBrowserText(
+    options.expectAuthenticated ? "CHARIOX_FIXTURE_INBOX" : "Fixture mail login",
+    30_000,
+    `${label} webmail did not open`,
+  )
   if (options.expectAuthenticated) {
-    assert.ok(!pageText.includes("M20 webmail login"), "restored browser should not return to login page")
+    assert.ok(!pageText.includes("Fixture mail login"), "restored browser should not return to login page")
   } else {
     await sliceScreen(["browser-fill", "#email", email])
     await sliceScreenWithStdin(["secret-paste-stdin", "#password"], password)
     await sliceScreen(["browser-submit", "#password"])
-    await waitForBrowserText("M20_WEBMAIL_INBOX", 30_000, "webmail login did not reach inbox")
+    await waitForBrowserText("CHARIOX_FIXTURE_INBOX", 30_000, "webmail login did not reach inbox")
   }
   await sliceScreen(["browser-click", "#compose"])
-  await waitForBrowserText("M20 compose", 30_000, `${label} compose did not open`)
+  await waitForBrowserText("Fixture compose", 30_000, `${label} compose did not open`)
   await sliceScreen(["browser-fill", "#to", recipient])
   await sliceScreen(["browser-fill", "#subject", subject])
   await sliceScreen(["browser-fill", "#body", `${label} message sent from restored Docker slice drill`])
   await sliceScreen(["browser-click", "#send"])
-  await waitForBrowserText("M20_MESSAGE_SENT", 30_000, `${label} message was not sent`)
+  await waitForBrowserText("CHARIOX_FIXTURE_MESSAGE_SENT", 30_000, `${label} message was not sent`)
   await screenshot(`webmail-${label}-sent`)
 }
 
@@ -431,6 +369,111 @@ async function installProgramMarker() {
 async function verifyProgramMarker() {
   const output = await dockerText(["exec", containerName, "m20-state-tool"])
   assert.match(output, /M20_PROGRAM_SURVIVED/)
+}
+
+async function seedUserPersistenceMarkers() {
+  await writeSliceFile("/home/slice/.config/m20-state-app/config.txt", `${markers.appConfig}\n`)
+  await writeSliceFile("/home/slice/.local/share/m20-state-app/user-data.txt", `${markers.appUserData}\n`)
+
+  await sliceScreen(["open-url", fixtureUrl("/interactions")])
+  await waitForBrowserText("Fixture interactions", 30_000, "download fixture did not open")
+  await sliceScreen(["browser-click", "#download"])
+  const downloaded = await waitFor(
+    async () => await readSliceFile("/home/slice/Downloads/chariox-fixture.txt").catch(() => false),
+    30_000,
+    "browser download did not complete",
+  )
+  assert.equal(downloaded.trim(), markers.downloadedFile)
+}
+
+async function verifyUserPersistenceMarkers() {
+  assert.equal(
+    (await readSliceFile("/home/slice/Downloads/chariox-fixture.txt")).trim(),
+    markers.downloadedFile,
+    "browser download should survive saved-state restore",
+  )
+  assert.equal(
+    (await readSliceFile("/home/slice/.config/m20-state-app/config.txt")).trim(),
+    markers.appConfig,
+    "application configuration should survive saved-state restore",
+  )
+  assert.equal(
+    (await readSliceFile("/home/slice/.local/share/m20-state-app/user-data.txt")).trim(),
+    markers.appUserData,
+    "application user data should survive saved-state restore",
+  )
+}
+
+async function readSliceFile(filePath) {
+  return await dockerText(["exec", "-u", "slice", containerName, "cat", filePath])
+}
+
+async function writeSliceFile(filePath, contents) {
+  await docker(["exec", "-u", "slice", containerName, "mkdir", "-p", path.posix.dirname(filePath)])
+  await dockerText(["exec", "-i", "-u", "slice", containerName, "tee", filePath], { stdin: contents })
+}
+
+async function inspectPersistenceIdentity() {
+  // A running headed slice is not ready until slice-screen.sh has started and
+  // health-checked Chromium, so absence here is a lifecycle regression rather
+  // than a lazy-browser state the persistence drill should tolerate.
+  const [user, uid, gid, home, hostname, machineId, dbusMachineId, displayBackend, screenStatus, chromiumCommand] = await Promise.all([
+    dockerText(["exec", "-u", "slice", containerName, "id", "-un"]),
+    dockerText(["exec", "-u", "slice", containerName, "id", "-u"]),
+    dockerText(["exec", "-u", "slice", containerName, "id", "-g"]),
+    dockerText(["exec", "-u", "slice", containerName, "sh", "-lc", "printf %s \"$HOME\""]),
+    dockerText(["exec", containerName, "hostname"]),
+    dockerText(["exec", containerName, "cat", "/etc/machine-id"]),
+    dockerText(["exec", containerName, "cat", "/var/lib/dbus/machine-id"]),
+    dockerText(["exec", containerName, "printenv", "CHARIOX_SLICE_VIEWER_BACKEND"]),
+    sliceScreen(["status"]),
+    dockerText([
+      "exec",
+      containerName,
+      "bash",
+      "-lc",
+      "pid=$(pgrep -o -f '^/usr/lib/chromium/chromium .*--user-data-dir=/home/slice/.chariox/browser/chromium' || true); test -n \"$pid\"; tr '\\0' ' ' </proc/$pid/cmdline",
+    ]),
+  ])
+  const display = Object.fromEntries(
+    screenStatus.trim().split("\n").map((line) => {
+      const separator = line.indexOf("=")
+      return separator < 0 ? [line, ""] : [line.slice(0, separator), line.slice(separator + 1)]
+    }),
+  )
+  return {
+    user: user.trim(),
+    uid: Number(uid.trim()),
+    gid: Number(gid.trim()),
+    home: home.trim(),
+    hostname: hostname.trim(),
+    machineId: machineId.trim(),
+    dbusMachineId: dbusMachineId.trim(),
+    displayMode: display.mode,
+    screen: display.screen,
+    displayBackend: displayBackend.trim(),
+    viewerUrl: display.viewer,
+    browserProfile: chromiumCommand.includes("--user-data-dir=/home/slice/.chariox/browser/chromium")
+      ? "/home/slice/.chariox/browser/chromium"
+      : null,
+    passwordStore: chromiumCommand.includes("--password-store=basic") ? "basic" : null,
+  }
+}
+
+function assertInitialPersistenceIdentity(identity) {
+  assert.equal(identity.user, "slice")
+  assert.equal(identity.uid, 1001)
+  assert.equal(identity.gid, 1001)
+  assert.equal(identity.home, "/home/slice")
+  assert.match(identity.hostname, /^chariox-slice-m20-/)
+  assert.match(identity.machineId, /^[a-f0-9]{32}$/)
+  assert.equal(identity.dbusMachineId, identity.machineId)
+  assert.equal(identity.displayMode, "headed")
+  assert.equal(identity.screen, "1280x800")
+  assert.equal(identity.displayBackend, "selkies")
+  assert.match(identity.viewerUrl, /^http:\/\/127\.0\.0\.1:\d+\/$/)
+  assert.equal(identity.browserProfile, "/home/slice/.chariox/browser/chromium")
+  assert.equal(identity.passwordStore, "basic")
 }
 
 async function inspectState(label) {
@@ -495,6 +538,86 @@ async function buildKernel() {
 async function buildKernelClient() {
   const result = await runCommand("pnpm", ["--workspace-root", "run", "build:kernel-client"], { timeoutMs: 180_000 })
   if (result.code !== 0) throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
+}
+
+async function captureSourceIdentity(kernelBinary) {
+  const [commit, trackedStatus, kernelHash] = await Promise.all([
+    runCommand("git", ["rev-parse", "HEAD"], { timeoutMs: 10_000 }),
+    runCommand("git", ["status", "--porcelain", "--untracked-files=no"], { timeoutMs: 10_000 }),
+    runCommand("shasum", ["-a", "256", kernelBinary], { timeoutMs: 20_000 }),
+  ])
+  assert.equal(commit.code, 0, `git rev-parse failed: ${commit.stderr}`)
+  assert.equal(trackedStatus.code, 0, `git status failed: ${trackedStatus.stderr}`)
+  assert.equal(kernelHash.code, 0, `kernel hash failed: ${kernelHash.stderr}`)
+  return {
+    gitCommit: commit.stdout.trim(),
+    trackedWorktreeClean: trackedStatus.stdout.trim().length === 0,
+    kernelBinary,
+    kernelSha256: kernelHash.stdout.trim().split(/\s+/)[0],
+  }
+}
+
+async function inspectSliceRuntime() {
+  const container = JSON.parse((await docker(["container", "inspect", containerName])).stdout)[0]
+  const image = JSON.parse((await docker(["image", "inspect", container.Image])).stdout)[0]
+  const labels = image?.Config?.Labels ?? {}
+  const installedRevision = await dockerText([
+    "exec",
+    "-u",
+    "slice",
+    containerName,
+    "cat",
+    "/opt/chariox-slice/runtime-source-revision",
+  ])
+  const kernelHash = await dockerText([
+    "exec",
+    "-u",
+    "slice",
+    containerName,
+    "sha256sum",
+    "/opt/chariox-slice/bin/chariox-kernel",
+  ])
+  return {
+    imageId: container.Image,
+    imageTag: container.Config?.Image ?? null,
+    runtimeSourceRevision: labels["io.chariox.runtime-source-revision"] ?? null,
+    installedRuntimeSourceRevision: installedRevision.trim(),
+    relayPeerProtocolVersion: labels["io.chariox.relay-peer-protocol-version"] ?? null,
+    workerKernelSha256: kernelHash.trim().split(/\s+/)[0],
+    containerLimits: {
+      memoryBytes: container.HostConfig?.Memory ?? null,
+      memorySwapBytes: container.HostConfig?.MemorySwap ?? null,
+      nanoCpus: container.HostConfig?.NanoCpus ?? null,
+    },
+  }
+}
+
+function assertSliceResourceLimits(limits, label) {
+  assert.equal(limits.memoryBytes, 2048 * 1024 * 1024, `${label} memory limit`)
+  assert.equal(limits.memorySwapBytes, limits.memoryBytes, `${label} swap must not exceed memory`)
+  assert.equal(limits.nanoCpus, 1_000_000_000, `${label} CPU limit`)
+}
+
+async function resourceSnapshot(label) {
+  const [pressure, swap, disk, container] = await Promise.all([
+    runCommand("memory_pressure", [], { timeoutMs: 10_000 }).catch(() => null),
+    runCommand("sysctl", ["vm.swapusage"], { timeoutMs: 10_000 }).catch(() => null),
+    runCommand("df", ["-k", os.homedir()], { timeoutMs: 10_000 }).catch(() => null),
+    runCommand(
+      "docker",
+      ["stats", "--no-stream", "--format", "{{json .}}", containerName],
+      { timeoutMs: 20_000 },
+    ).catch(() => null),
+  ])
+  return {
+    label,
+    at: new Date().toISOString(),
+    freeMemoryBytes: os.freemem(),
+    memoryPressure: pressure?.code === 0 ? pressure.stdout.trim() : null,
+    swapUsage: swap?.code === 0 ? swap.stdout.trim() : null,
+    disk: disk?.code === 0 ? disk.stdout.trim().split("\n").at(-1) : null,
+    dockerStats: container?.code === 0 ? container.stdout.trim() : null,
+  }
 }
 
 async function assertDockerReady() {
@@ -609,6 +732,9 @@ async function cleanup() {
     listenersReleased: occupiedPorts.length === 0,
     occupiedPorts,
   }
+  const afterResource = await resourceSnapshot("after-cleanup")
+  resources.push(afterResource)
+  result.resource = afterResource
   cleanupResult = result
   await writeFile(path.join(artifactDir, "cleanup.json"), `${JSON.stringify(result, null, 2)}\n`)
   const cleanupFailure = browserStateCleanupFailure(result)
@@ -618,23 +744,40 @@ async function cleanup() {
 
 async function writeManifest(ok, error = null) {
   await writeFile(path.join(artifactDir, "manifest.json"), JSON.stringify({
+    schema: "chariox.browser_computer.persistence_drill.v2",
     ok,
+    startedAt,
+    finishedAt: new Date().toISOString(),
     error: error ? String(error?.stack ?? error) : null,
+    command: "pnpm --dir apps/cli browser-computer:persistence-drill",
+    topology: "local kernel with one headed local Docker slice",
+    source: sourceIdentity,
+    sliceRuntime,
+    persistenceIdentity,
     sliceName,
     containerName,
     homeVolume,
     fixturePort,
     markers,
     screenshots,
+    resources,
+    assertions: [
+      "initial and restored slices retained the 2 GiB memory, no-extra-swap, and one-CPU caps",
+      "installed program survived committed-image restore",
+      "browser download, application configuration, and application user data survived",
+      "durable slice port assignments and the projected Selkies endpoint remained stable",
+      "machine id, hostname, user, UID/GID, home, display, browser profile, and password-store policy remained stable",
+      "cookie, localStorage, IndexedDB, Cache Storage, and service-worker registration survived",
+      "restored service worker served cached content while the fixture was offline",
+      "authenticated browser session survived complete container and home-volume removal",
+      "message before save and message after restore were each submitted exactly once",
+    ],
     cleanup: cleanupResult,
   }, null, 2))
 }
 
 async function closeFixtureServer() {
-  if (!fixture?.server) return
-  fixture.server.closeAllConnections?.()
-  fixture.server.closeIdleConnections?.()
-  await new Promise((resolve) => fixture.server.close(resolve))
+  await fixture?.close?.()
 }
 
 async function terminateChild(child) {
@@ -683,30 +826,6 @@ function unwrap(value, variant) {
   return value[variant]
 }
 
-function listen(server) {
-  return new Promise((resolve, reject) => {
-    server.once("error", reject)
-    server.listen(0, "0.0.0.0", () => {
-      const address = server.address()
-      resolve(address.port)
-    })
-  })
-}
-
-async function readRequestBody(request) {
-  const chunks = []
-  for await (const chunk of request) chunks.push(Buffer.from(chunk))
-  return Buffer.concat(chunks).toString("utf8")
-}
-
-function parseCookies(header) {
-  return Object.fromEntries(header.split(";").map((part) => {
-    const index = part.indexOf("=")
-    if (index === -1) return null
-    return [part.slice(0, index).trim(), decodeURIComponent(part.slice(index + 1))]
-  }).filter(Boolean))
-}
-
 async function waitFor(predicate, timeoutMs, message) {
   const startedAt = Date.now()
   let lastError = null
@@ -724,16 +843,6 @@ async function waitFor(predicate, timeoutMs, message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (ch) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[ch])
 }
 
 function escapeRegExp(value) {
