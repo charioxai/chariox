@@ -277,22 +277,25 @@ impl KernelRuntimeState {
         let provider = provider.to_string();
         let account_profile = account_profile.to_string();
         let model = model.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).launch_leased_native_provider_run(
-                &leased_agent_id,
-                &adapter_key,
-                &provider,
-                &account_profile,
-                &model,
-                variant,
-                structured_endpoint,
-                provider_session_id,
-                required_mcps,
-                required_skills,
-                remote_extension_manifest,
-            )
-        })
-        .await
+        let launch_request = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).prepare_leased_native_provider_launch(
+                    &leased_agent_id,
+                    &adapter_key,
+                    &provider,
+                    &account_profile,
+                    &model,
+                    variant,
+                    structured_endpoint,
+                    provider_session_id,
+                    required_mcps,
+                    required_skills,
+                    remote_extension_manifest,
+                )
+            })
+            .await?;
+        self.launch_provider_for_remote_lease_detached(launch_request)
+            .await
     }
 
     pub(crate) async fn send_relay_leased_native_provider_input(

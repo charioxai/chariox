@@ -17,7 +17,7 @@ fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str
 
 impl<'a> RemoteLeaseRuntime<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn launch_leased_native_provider_run(
+    pub(crate) fn prepare_leased_native_provider_launch(
         &mut self,
         leased_agent_id: &str,
         adapter_key: &str,
@@ -30,7 +30,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_mcps: Vec<RequiredRemoteMcp>,
         required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
+    ) -> Result<LaunchProviderRequest, DaemonError> {
         let leased_agent = self
             .app
             .leased_agents
@@ -108,6 +108,37 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 request = request.with_resume_state(resume_state);
             }
         }
+        Ok(request)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn launch_leased_native_provider_run(
+        &mut self,
+        leased_agent_id: &str,
+        adapter_key: &str,
+        provider: &str,
+        account_profile: &str,
+        model: &str,
+        variant: Option<String>,
+        structured_endpoint: Option<String>,
+        provider_session_id: Option<String>,
+        required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let request = self.prepare_leased_native_provider_launch(
+            leased_agent_id,
+            adapter_key,
+            provider,
+            account_profile,
+            model,
+            variant,
+            structured_endpoint,
+            provider_session_id,
+            required_mcps,
+            required_skills,
+            remote_extension_manifest,
+        )?;
         self.app.launch_leased_provider(request)
     }
 
