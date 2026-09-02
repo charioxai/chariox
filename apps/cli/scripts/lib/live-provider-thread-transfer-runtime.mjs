@@ -146,6 +146,16 @@ export function printHelp() {
   ].join("\n"))
 }
 
+export function providerThreadSliceOptLevel(env = process.env) {
+  const level = env.CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL ?? "1"
+  if (!["0", "1", "2", "3", "s", "z"].includes(level)) {
+    throw new Error(
+      "CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL must be a Cargo optimization level: 0, 1, 2, 3, s, or z",
+    )
+  }
+  return level
+}
+
 export function variant(response, name) {
   if (!response || !(name in response)) {
     throw new Error(`expected ${name}, got ${JSON.stringify(response)}`)
@@ -782,10 +792,13 @@ async function readLogTail(filePath) {
 
 export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeoutMs) {
   if (policy !== "always") return null
+  const optLevel = providerThreadSliceOptLevel()
   const stdoutPath = path.join(root, "slice-image-build.stdout.log")
   const stderrPath = path.join(root, "slice-image-build.stderr.log")
   await runLoggedCommand("docker", [
     "build",
+    "--build-arg",
+    `CARGO_PROFILE_RELEASE_OPT_LEVEL=${optLevel}`,
     "-f",
     path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "-t",
@@ -798,7 +811,7 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
     stderrPath,
     timeoutMs,
   })
-  return { image: defaultLocalDockerSliceImage, stdoutPath, stderrPath }
+  return { image: defaultLocalDockerSliceImage, optLevel, stdoutPath, stderrPath }
 }
 
 export async function waitForProviderRun({ client, providerRunId, timeoutMs, pollMs, requireThreadId = true }) {

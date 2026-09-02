@@ -15,6 +15,7 @@ import {
 import {
   cleanupSliceModeProviderCredentials,
   normalizeProviderOutputText,
+  providerThreadSliceOptLevel,
   providersNeedClaudeCredentials,
   sliceProviderAuthImportRequest,
   terminalProviderHistoryError,
@@ -232,4 +233,16 @@ test("slice provider auth import includes the required managed account profile",
       account_profile: "default",
     },
   })
+})
+
+test("provider thread slice builds use a bounded optimization level", () => {
+  assert.equal(providerThreadSliceOptLevel({}), "1")
+  assert.equal(
+    providerThreadSliceOptLevel({ CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL: "0" }),
+    "0",
+  )
+  assert.throws(
+    () => providerThreadSliceOptLevel({ CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL: "fast" }),
+    /optimization level/,
+  )
 })
