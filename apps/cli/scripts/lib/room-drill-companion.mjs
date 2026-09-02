@@ -32,7 +32,9 @@ export async function waitForRoomDrillCompanionResult(directory, options) {
     } catch (error) {
       if (error?.code !== "ENOENT") {
         lastReadError = error
-        if (error instanceof CompanionFailureError) throw error
+        if (!(error instanceof SyntaxError) && !(error instanceof CompanionIncompleteError)) {
+          throw error
+        }
       }
     }
     await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())))
@@ -42,15 +44,27 @@ export async function waitForRoomDrillCompanionResult(directory, options) {
 }
 
 function validateResult(result, options) {
-  requireRecord(result, "Room drill companion result")
+  requireRecord(result, "Room drill companion result", CompanionIncompleteError)
+  if (typeof result.schema !== "string") {
+    throw new CompanionIncompleteError("Room drill companion result schema is incomplete")
+  }
   if (result.schema !== resultSchema) {
     throw new Error(`Room drill companion result schema must be ${resultSchema}`)
+  }
+  if (typeof result.sessionId !== "string") {
+    throw new CompanionIncompleteError("Room drill companion result session is incomplete")
   }
   if (result.sessionId !== options.sessionId) {
     throw new Error(`Room drill companion session mismatch: expected ${options.sessionId}, got ${String(result.sessionId)}`)
   }
+  if (typeof result.environmentId !== "string") {
+    throw new CompanionIncompleteError("Room drill companion result environment is incomplete")
+  }
   if (result.environmentId !== options.environmentId) {
     throw new Error(`Room drill companion environment mismatch: expected ${options.environmentId}, got ${String(result.environmentId)}`)
+  }
+  if (typeof result.status !== "string") {
+    throw new CompanionIncompleteError("Room drill companion result status is incomplete")
   }
   if (result.status !== "passed") {
     if (result.status === "failed") {
@@ -58,13 +72,13 @@ function validateResult(result, options) {
         `Room drill companion failed: ${typeof result.error === "string" ? result.error : "unknown error"}`,
       )
     }
-    throw new Error(`Room drill companion result status is incomplete: ${String(result.status)}`)
+    throw new Error(`Room drill companion result status is unsupported: ${result.status}`)
   }
 }
 
-function requireRecord(value, label) {
+function requireRecord(value, label, ErrorType = Error) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`)
+    throw new ErrorType(`${label} must be an object`)
   }
 }
 
@@ -79,6 +93,13 @@ class CompanionFailureError extends Error {
   constructor(message) {
     super(message)
     this.name = "CompanionFailureError"
+  }
+}
+
+class CompanionIncompleteError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = "CompanionIncompleteError"
   }
 }
 

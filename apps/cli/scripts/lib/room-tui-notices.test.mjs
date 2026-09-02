@@ -44,3 +44,20 @@ test("Room TUI notices use authoritative pane identity when the visible transcri
     { id: "agent-1:1", text: "focused notice" },
   ])
 })
+
+test("Room TUI notices fall back to the transcript when pane snapshots contain no notices", () => {
+  const snapshot = {
+    transcript: {
+      visibleAgentId: "agent-1",
+      entries: [{ id: 1, role: "notice", text: "visible-only notice" }],
+    },
+    agentPanes: {
+      "agent-1": [],
+      "agent-2": [{ id: 2, role: "assistant", text: "not a notice" }],
+    },
+  }
+
+  assert.deepEqual(automationNoticeEntries(snapshot), [
+    { id: "agent-1:1", text: "visible-only notice" },
+  ])
+})

@@ -7,32 +7,30 @@ export function automationNoticeIds(snapshot) {
 }
 
 export function automationNoticeEntries(snapshot) {
-  const candidates = []
-  let paneCandidates = 0
+  const notices = new Map()
   if (snapshot?.agentPanes && typeof snapshot.agentPanes === "object") {
     for (const [agentId, entries] of Object.entries(snapshot.agentPanes)) {
       if (!Array.isArray(entries)) continue
-      candidates.push([agentId, entries])
-      paneCandidates += 1
+      collectNotices(notices, agentId, entries)
     }
   }
-  if (paneCandidates === 0 && Array.isArray(snapshot?.transcript?.entries)) {
+  if (notices.size === 0 && Array.isArray(snapshot?.transcript?.entries)) {
     const visibleAgentId = typeof snapshot.transcript.visibleAgentId === "string"
       ? snapshot.transcript.visibleAgentId
       : "visible"
-    candidates.push([visibleAgentId, snapshot.transcript.entries])
-  }
-  const notices = new Map()
-  for (const [agentId, entries] of candidates) {
-    for (const entry of entries) {
-      if (
-        entry?.role !== "notice"
-        || (typeof entry.id !== "string" && typeof entry.id !== "number")
-        || typeof entry.text !== "string"
-      ) continue
-      const id = `${agentId}:${entry.id}`
-      notices.set(id, { id, text: entry.text })
-    }
+    collectNotices(notices, visibleAgentId, snapshot.transcript.entries)
   }
   return [...notices.values()]
+}
+
+function collectNotices(notices, agentId, entries) {
+  for (const entry of entries) {
+    if (
+      entry?.role !== "notice"
+      || (typeof entry.id !== "string" && typeof entry.id !== "number")
+      || typeof entry.text !== "string"
+    ) continue
+    const id = `${agentId}:${entry.id}`
+    notices.set(id, { id, text: entry.text })
+  }
 }
