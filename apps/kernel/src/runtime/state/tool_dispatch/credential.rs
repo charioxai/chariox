@@ -713,6 +713,12 @@ impl KernelRuntimeState {
                             .to_string(),
                 })
             }
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL => {
+                self.dispatch_forwarded_home_computer_secret_input_tool(
+                    &context, &agent, arguments,
+                )
+                .await
+            }
             crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::ManageCredentialVaultArgs,
