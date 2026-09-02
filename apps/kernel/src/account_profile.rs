@@ -49,38 +49,6 @@ pub(crate) fn provider_account_authority_owner_user_id(
     }
 }
 
-fn provider_account_unavailability_error(
-    profile: &ProviderAccountProfile,
-    operation: &'static str,
-) -> DaemonError {
-    let action = match profile.auth_state {
-        ProviderAccountAuthState::Expired => "reconnect",
-        ProviderAccountAuthState::Error => "test or reconnect",
-        ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured => {
-            "authenticate"
-        }
-        ProviderAccountAuthState::Authenticated => unreachable!(),
-    };
-    DaemonError::LocalTransport {
-        operation,
-        message: format!(
-            "selected {} account `{}` is not authenticated; {action} it in Provider Accounts before starting new work",
-            profile.provider, profile.label
-        ),
-    }
-}
-
-fn require_profile_authenticated(
-    profile: ProviderAccountProfile,
-    operation: &'static str,
-) -> Result<ProviderAccountProfile, DaemonError> {
-    if profile.auth_state == ProviderAccountAuthState::Authenticated {
-        Ok(profile)
-    } else {
-        Err(provider_account_unavailability_error(&profile, operation))
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountMaterializationFile {
     pub relative_path: String,
@@ -833,7 +801,24 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
-        require_profile_authenticated(profile, operation)
+        if profile.auth_state == ProviderAccountAuthState::Authenticated {
+            return Ok(profile);
+        }
+        let action = match profile.auth_state {
+            ProviderAccountAuthState::Expired => "reconnect",
+            ProviderAccountAuthState::Error => "test or reconnect",
+            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured => {
+                "authenticate"
+            }
+            ProviderAccountAuthState::Authenticated => unreachable!(),
+        };
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "selected {} account `{}` is not authenticated; {action} it in Provider Accounts before starting new work",
+                profile.provider, profile.label
+            ),
+        })
     }
 
     pub(crate) fn require_agent_authenticated(
@@ -842,27 +827,17 @@ impl ProviderAccountProfileRegistry {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        if let Some(error) = self.agent_unavailability_error(config, agent, operation)? {
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn agent_unavailability_error(
-        &self,
-        config: &crate::config::DaemonConfig,
-        agent: &crate::agent::AgentInstance,
-        operation: &'static str,
-    ) -> Result<Option<DaemonError>, DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
-            return Ok(None);
+            return Ok(());
         };
         let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
-        let profile = self.get(&owner_user_id, provider, agent.provider_account_profile())?;
-        Ok(
-            (profile.auth_state != ProviderAccountAuthState::Authenticated)
-                .then(|| provider_account_unavailability_error(&profile, operation)),
-        )
+        self.require_authenticated(
+            &owner_user_id,
+            provider,
+            agent.provider_account_profile(),
+            operation,
+        )?;
+        Ok(())
     }
 
     /// Test-only view of the stored (unprojected) profile.

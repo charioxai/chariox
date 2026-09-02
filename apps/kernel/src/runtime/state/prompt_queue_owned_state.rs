@@ -26,14 +26,14 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
-    ) -> Result<bool, DaemonError> {
-        let Some(error) = self.provider_account_profiles.agent_unavailability_error(
+    ) -> bool {
+        let error = self.provider_account_profiles.require_agent_authenticated(
             &self.config_projection.snapshot(),
             agent,
             operation,
-        )?
-        else {
-            return Ok(true);
+        );
+        let Err(error) = error else {
+            return true;
         };
         crate::logging::warn_with_fields(
             "daemon.prompt_queue",
@@ -44,7 +44,7 @@ impl KernelRuntimeOwnedState {
                 "error": error.to_string(),
             }),
         );
-        Ok(false)
+        false
     }
 
     pub(super) fn prompt_source_attribution(
@@ -501,7 +501,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             &agent,
             "activate queued prompt",
-        )? {
+        ) {
             return Ok(None);
         }
         let prompt = self
@@ -570,7 +570,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             &agent,
             "advance queued prompt",
-        )? {
+        ) {
             return Ok(None);
         }
         if self

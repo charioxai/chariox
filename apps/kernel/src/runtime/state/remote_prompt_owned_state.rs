@@ -32,7 +32,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             &agent,
             "advance remote queued prompt",
-        )? {
+        ) {
             return Ok(None);
         }
         let started = self

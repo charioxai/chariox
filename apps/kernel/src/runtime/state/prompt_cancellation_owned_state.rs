@@ -110,7 +110,7 @@ impl KernelRuntimeOwnedState {
                 session_id,
                 &agent,
                 "advance queued prompt after cancellation",
-            )?
+            )
         };
         let started_next = if provider_account_available
             && !hold_queued_prompts

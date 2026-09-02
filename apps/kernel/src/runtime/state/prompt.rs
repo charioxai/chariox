@@ -291,7 +291,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             &target_agent,
             "advance queued prompt after completion",
-        )? {
+        ) {
             return self.finalize_local_completion_without_queued_advance(
                 session_id,
                 agent_id,

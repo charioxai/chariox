@@ -107,6 +107,25 @@ async fn unavailable_provider_account_defers_explicit_queue_advances_without_los
         .advance_next_queued_prompt_dispatch(session.id(), agent.id(), &provider_run_id)
         .expect("unavailable account should defer provider queue dispatch")
         .is_none());
+    app.lock()
+        .await
+        .provider_account_profile_registry()
+        .remove_registration(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &account.profile_id,
+        )
+        .expect("fixture should simulate a missing bound account");
+    assert!(runtime
+        .owned
+        .activate_next_queued_prompt_for_agent(session.id(), agent.id(), None)
+        .expect("missing account should fail closed and defer queue activation")
+        .is_none());
+    assert!(runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), &provider_run_id)
+        .expect("missing account should fail closed and defer provider dispatch")
+        .is_none());
 
     let snapshot = runtime
         .owned
