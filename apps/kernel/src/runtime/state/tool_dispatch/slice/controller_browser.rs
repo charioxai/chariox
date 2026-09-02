@@ -3,7 +3,8 @@ use crate::runtime::state::KernelRuntimeState;
 
 use super::controller_browser_projection::*;
 use super::slice_browser::{
-    browser_status_url, ensure_browser_fill_target, ensure_browser_target_matches_expectations,
+    browser_status_url, ensure_browser_fill_target, ensure_browser_secret_target_is_masked,
+    ensure_browser_target_matches_expectations,
 };
 
 impl KernelRuntimeState {
@@ -51,6 +52,7 @@ impl KernelRuntimeState {
             Err(error) => return Err(error),
         };
         ensure_browser_fill_target(browser, Some(&element_ref))?;
+        ensure_browser_secret_target_is_masked(browser, Some(&element_ref))?;
         let target_document_url = status
             .structured_snapshot
             .as_ref()

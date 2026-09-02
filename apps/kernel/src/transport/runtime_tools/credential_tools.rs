@@ -431,7 +431,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
-            description: "Paste a browser credential into a Chariox slice browser field after validating the current browser target. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
+            description: "Paste a browser credential into an editable password field after validating the current Chariox slice browser target. Unmasked fields are rejected before the secret is resolved, and the secret value is not returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],

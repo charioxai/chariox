@@ -303,6 +303,49 @@ test("secret fill distinguishes a focus failure from a document URL change", asy
   assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
 });
 
+test("secret fill rejects a password field that becomes unmasked while focusing", async () => {
+  const connection = new FakeActionConnection([
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+  ]);
+  connection.documentUrl = "https://example.test/login";
+  connection.secureFillMaskedAfterFocus = false;
+
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:104",
+      action: {
+        kind: "fill",
+        text: "secret-canary",
+        append: false,
+        submit: false,
+        expected_document_url: "https://example.test/login",
+      },
+      timeoutMs: 500,
+      sleep: async () => {},
+    }),
+    (error) =>
+      error instanceof BrowserActionError &&
+      error.code === "browser_secret_target_not_masked",
+  );
+
+  const secureFill = connection.calls.find(
+    (call) =>
+      call.method === "Runtime.callFunctionOn" &&
+      call.params.functionDeclaration.includes("expectedDocumentUrl"),
+  );
+  assert.equal(
+    secureFill.params.functionDeclaration.match(/reason: "target_not_masked"/g)?.length,
+    2,
+    "the operation must verify masking both before and after focus handlers run",
+  );
+  assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
+});
+
 for (const dialogEventType of ["mousePressed", "mouseReleased"]) {
   test(`click returns when ${dialogEventType} opens a dialog without waiting for its blocked response`, async () => {
     const connection = new FakeActionConnection([
@@ -436,6 +479,8 @@ class FakeActionConnection {
               ? { ok: false, reason: "target_url_changed" }
               : this.secureFillFocusSucceeded === false
                 ? { ok: false, reason: "target_not_focusable" }
+                : this.secureFillMaskedAfterFocus === false
+                  ? { ok: false, reason: "target_not_masked" }
                 : { ok: true },
           },
         };

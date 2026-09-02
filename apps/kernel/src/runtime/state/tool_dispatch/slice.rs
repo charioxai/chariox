@@ -182,6 +182,7 @@ impl KernelRuntimeState {
                 ensure_browser_target_matches_expectations(&browser_status, &args)?;
                 let selector = browser_selector(args.selector.as_deref(), args.field_id.as_deref());
                 ensure_browser_fill_target(&browser_status, selector.as_deref())?;
+                ensure_browser_secret_target_is_masked(&browser_status, selector.as_deref())?;
                 let secret = match self
                     .resolve_remote_home_credential_secret(
                         provider_run,
