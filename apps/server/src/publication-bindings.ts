@@ -177,11 +177,7 @@ function bindingForAgent(
 }
 
 function availableProviderProfile(catalog: ProviderCatalogIndex, profile: PublicationProviderModelProfile): PublicationProviderModelProfile | null {
-  if (profile.model === "default" || profile.model === `${profile.provider}/default`) {
-    return { ...profile, model: null }
-  }
-  if (!profile.model) return profile
-  if (profile.provider === "opencode" && profile.model.startsWith("opencode-go/")) {
+  if (profile.provider === "opencode" && profile.model?.startsWith("opencode-go/")) {
     const models = catalog.providers.get("opencode-go")
     if (!models) return null
     const model = profile.model.slice("opencode-go/".length)
@@ -189,6 +185,10 @@ function availableProviderProfile(catalog: ProviderCatalogIndex, profile: Public
   }
   const models = providerFamilyModels(catalog, profile.provider)
   if (!models) return null
+  if (profile.model === "default" || profile.model === `${profile.provider}/default`) {
+    return { ...profile, model: null }
+  }
+  if (!profile.model) return profile
   const canonicalProfile = canonicalProviderModelProfile(profile)
   if (models.size === 0 || models.has(profile.model)) return canonicalProfile
   const providerPrefixedModel = `${profile.provider}/`
