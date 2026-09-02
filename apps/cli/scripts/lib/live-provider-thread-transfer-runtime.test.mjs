@@ -18,6 +18,7 @@ import {
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
   providerThreadSliceBuildEnv,
+  providerThreadSliceConfigLines,
   providersNeedClaudeCredentials,
   terminalProviderHistoryError,
   workerResumeDaemonEnv,
@@ -279,4 +280,24 @@ test("provider thread slice builds delegate bounded settings to the provisioner"
       CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "2",
     },
   )
+})
+
+test("provider thread slice drills enable the explicit nested-namespace compatibility boundary", () => {
+  const lines = providerThreadSliceConfigLines({
+    sliceRoot: "/tmp/provider-thread-slices",
+    image: "chariox-slice-linux:test",
+    buildImage: "never",
+  })
+
+  assert.deepEqual(lines, [
+    "[slices]",
+    'root = "/tmp/provider-thread-slices"',
+    "",
+    "[slices.linux]",
+    'docker_image = "chariox-slice-linux:test"',
+    'build_image = "never"',
+    "memory_mb = 2048",
+    'cpus = "1.0"',
+    "allow_unconfined_seccomp = true",
+  ])
 })
