@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
 import { createWriteStream } from "node:fs"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -19,7 +20,6 @@ import { writeIsolatedKernelConfig } from "./lib/drill-kernel-storage.mjs"
 import {
   RELAY_ISSUER,
   RELAY_SECRET,
-  artifactsRoot,
   cleanupSliceModeProviderCredentials,
   defaultLocalDockerSliceImage,
   kernelBinary,
@@ -39,6 +39,7 @@ import {
   waitForRelayTarget,
   workerResumeDaemonEnv,
 } from "./lib/live-provider-thread-transfer-runtime.mjs"
+import { resolveProviderThreadDrillPaths } from "./lib/provider-thread-drill-paths.mjs"
 import {
   runLocalReloadScenario,
   runWorkerResumeScenario,
@@ -49,7 +50,7 @@ import {
   runSliceRestartScenario,
 } from "./lib/live-provider-thread-transfer-slice-scenarios.mjs"
 
-async function runWorkerResumeMatrix({ options, root, ports }) {
+async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports }) {
   await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
@@ -103,7 +104,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
 
   const homeEnv = workerResumeDaemonEnv({
     ports,
-    root,
+    root: runtimeRoot,
     relayToken: homeRelayToken,
     daemonId: homeDaemonId,
     daemonAlias: "home",
@@ -119,7 +120,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   })
   const workerEnv = workerResumeDaemonEnv({
     ports,
-    root,
+    root: runtimeRoot,
     relayToken: workerRelayToken,
     daemonId: workerDaemonId,
     daemonAlias: "worker",
@@ -136,11 +137,11 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   await Promise.all([
     writeIsolatedKernelConfig({
       xdgConfigHome: homeEnv.XDG_CONFIG_HOME,
-      storageRoot: path.join(root, "home-kernel-storage"),
+      storageRoot: path.join(runtimeRoot, "home-kernel-storage"),
     }),
     writeIsolatedKernelConfig({
       xdgConfigHome: workerEnv.XDG_CONFIG_HOME,
-      storageRoot: path.join(root, "worker-kernel-storage"),
+      storageRoot: path.join(runtimeRoot, "worker-kernel-storage"),
     }),
   ])
 
@@ -150,7 +151,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   const matrix = {
     goal: "provider-thread-transfer",
     drill: options.drill,
-    run_id: path.basename(root),
+    run_id: path.basename(runtimeRoot),
     relay_url: relayUrl,
     home_kernel_url: homeKernelUrl,
     worker_kernel_url: workerKernelUrl,
@@ -176,24 +177,24 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
     relayChild = spawnLogged(relayBinary, [], {
       cwd: repoRoot,
       env: relayEnv,
-      stdoutPath: path.join(root, "relay.stdout.log"),
-      stderrPath: path.join(root, "relay.stderr.log"),
+      stdoutPath: path.join(runtimeRoot, "relay.stdout.log"),
+      stderrPath: path.join(runtimeRoot, "relay.stderr.log"),
     })
     homeChild = spawnLogged(kernelBinary, [], {
       cwd: repoRoot,
       env: homeEnv,
-      stdoutPath: path.join(root, "home-kernel.stdout.log"),
-      stderrPath: path.join(root, "home-kernel.stderr.log"),
+      stdoutPath: path.join(runtimeRoot, "home-kernel.stdout.log"),
+      stderrPath: path.join(runtimeRoot, "home-kernel.stderr.log"),
     })
     workerChild = spawnLogged(kernelBinary, [], {
       cwd: repoRoot,
       env: workerEnv,
-      stdoutPath: path.join(root, "worker-kernel.stdout.log"),
-      stderrPath: path.join(root, "worker-kernel.stderr.log"),
+      stdoutPath: path.join(runtimeRoot, "worker-kernel.stdout.log"),
+      stderrPath: path.join(runtimeRoot, "worker-kernel.stderr.log"),
     })
 
-    await waitForLocalDaemon(homeKernelUrl, root, root)
-    await waitForLocalDaemon(workerKernelUrl, root, root)
+    await waitForLocalDaemon(homeKernelUrl, runtimeRoot, runtimeRoot)
+    await waitForLocalDaemon(workerKernelUrl, runtimeRoot, runtimeRoot)
     await waitForRelayTarget(relayUrl, clientRelayToken, "home", Math.min(options.timeoutMs, 120_000), options.pollMs)
     await waitForRelayTarget(relayUrl, clientRelayToken, "worker", Math.min(options.timeoutMs, 120_000), options.pollMs)
 
@@ -213,7 +214,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
         )
         const result = await runWorkerResumeScenario({
           provider,
-          root,
+          root: runtimeRoot,
           kernelUrl: homeKernelUrl,
           historyDir: homeEnv.CHARIOX_SESSION_HISTORY_DIR,
           workerMachineId,
@@ -224,7 +225,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
           options,
         })
         matrix.results.push(result)
-        await writeFile(path.join(root, `${provider}-worker-resume-result.json`), `${JSON.stringify(result, null, 2)}\n`, "utf8")
+        await writeFile(path.join(evidenceRoot, `${provider}-worker-resume-result.json`), `${JSON.stringify(result, null, 2)}\n`, "utf8")
         console.log(`${provider}: ${result.status}`)
         if (result.status !== "passed") {
           console.log(result.errors.join("\n"))
@@ -236,7 +237,6 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   } finally {
     matrix.finished_at_ms = Date.now()
     matrix.passed = matrix.results.length > 0 && matrix.results.every((result) => result.status === "passed")
-    await writeFile(path.join(root, "matrix.json"), `${JSON.stringify(matrix, null, 2)}\n`, "utf8")
     await terminateChild(workerChild)
     await terminateChild(homeChild)
     await terminateChild(relayChild)
@@ -258,6 +258,16 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   return matrix
 }
 
+async function pathIsMissing(target) {
+  try {
+    await access(target)
+    return false
+  } catch (error) {
+    if (error?.code === "ENOENT") return true
+    throw error
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -267,146 +277,170 @@ async function main() {
   await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "chariox-kernel")
 
   const runId = `${Date.now()}-${process.pid}`
-  const root = path.join(artifactsRoot, runId)
-  await mkdir(root, { recursive: true })
-  const ports = options.drill === "worker-resume"
-    ? await makeWorkerResumePorts()
-    : await makeAvailablePorts()
-  const kernelUrl = options.kernel ?? `ws://127.0.0.1:${ports.kernelPort}`
-  const historyDir = path.join(root, "history")
-  const capabilityRoot = path.join(root, "capabilities")
-  const sliceMode = options.drill === "slice-restart"
-    || options.drill === "live-migrate-to-slice"
-    || options.drill === "live-migrate-roundtrip-slice"
-  const sliceXdgConfigHome = path.join(root, "xdg-config")
-  const sliceXdgStateHome = path.join(root, "xdg-state")
-  const sliceXdgDataHome = path.join(root, "xdg-data")
-  const sliceXdgCacheHome = path.join(root, "xdg-cache")
-  const sliceRoot = path.join(root, "slices")
-  await mkdir(historyDir, { recursive: true })
-  await mkdir(capabilityRoot, { recursive: true })
-  options.historyDir = historyDir
-  let sliceImageBuild = null
-  if (sliceMode) {
-    await mkdir(sliceXdgStateHome, { recursive: true })
-    await mkdir(sliceXdgDataHome, { recursive: true })
-    await mkdir(sliceXdgCacheHome, { recursive: true })
-    await mkdir(sliceRoot, { recursive: true })
-    await writeIsolatedKernelConfig({
-      xdgConfigHome: sliceXdgConfigHome,
-      storageRoot: path.join(root, "home-kernel-storage"),
-      extraToml: [
-        "[slices]",
-        `root = ${JSON.stringify(sliceRoot)}`,
-        "",
-        "[slices.linux]",
-        `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
-        `build_image = ${JSON.stringify(options.sliceBuildImage === "always" ? "auto" : options.sliceBuildImage)}`,
-      ],
-    })
-    console.log(`slice-restart: prebuild image policy ${options.sliceBuildImage}`)
-    sliceImageBuild = await prebuildLocalDockerSliceImageIfNeeded(root, options.sliceBuildImage, options.timeoutMs)
-  }
-  const sliceModeProviderEnv = sliceMode
-    ? await prepareSliceModeProviderEnv(root, options.providers)
-    : null
-  if (sliceModeProviderEnv) {
-    options.providerStateSourceEnv = sliceModeProviderEnv
-  }
-
-  if (options.drill === "worker-resume") {
-    const matrix = await runWorkerResumeMatrix({ options, root, ports })
-    console.log(`provider thread transfer drill artifacts: ${root}`)
-    if (!matrix.passed) {
-      throw new Error(`provider thread transfer drill failed; see ${path.join(root, "matrix.json")}`)
-    }
-    if (options.cleanupOnSuccess) {
-      await rm(root, { recursive: true, force: true })
-    }
-    return
-  }
-
+  const { evidenceRoot, runtimeRoot } = resolveProviderThreadDrillPaths({
+    homeDir: os.homedir(),
+    runId,
+  })
+  await mkdir(evidenceRoot, { recursive: true })
+  await mkdir(runtimeRoot, { recursive: true })
   let daemonChild = null
-  const matrix = {
+  let sliceModeProviderEnv = null
+  let fatalError = null
+  let matrix = {
     goal: "provider-thread-transfer",
     drill: options.drill,
     run_id: runId,
-    kernel_url: kernelUrl,
     providers: options.providers,
-    ...(sliceMode ? {
-      slice_image: defaultLocalDockerSliceImage,
-      slice_build_image: options.sliceBuildImage,
-      slice_root: sliceRoot,
-      slice_image_build: sliceImageBuild,
-    } : {}),
     started_at_ms: Date.now(),
     results: [],
+    cleanup: {},
   }
 
   try {
-    if (options.spawnDaemon) {
-      const stdout = createWriteStream(path.join(root, "kernel.stdout.log"), { flags: "a" })
-      const stderr = createWriteStream(path.join(root, "kernel.stderr.log"), { flags: "a" })
-      const daemonEnv = {
-        ...process.env,
-        ...(sliceModeProviderEnv ? {
-          ...sliceModeProviderEnv,
-          CHARIOX_LOG_DIR: path.join(root, "logs"),
-        } : {}),
-        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
-        CHARIOX_MCP_PORT: String(ports.mcpPort),
-        CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
-        CHARIOX_CODEX_PORT: String(ports.codexPort),
-        CHARIOX_DAEMON_ID: `provider-thread-transfer-${runId}`,
-        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        CHARIOX_SESSION_HISTORY_DIR: historyDir,
-        CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
-        CHARIOX_PROVIDER_RUNTIME_INIT_DELAY_MS: "250",
-      }
+    const ports = options.drill === "worker-resume"
+      ? await makeWorkerResumePorts()
+      : await makeAvailablePorts()
+    const kernelUrl = options.kernel ?? `ws://127.0.0.1:${ports.kernelPort}`
+    const historyDir = path.join(runtimeRoot, "history")
+    const capabilityRoot = path.join(runtimeRoot, "capabilities")
+    const sliceMode = options.drill === "slice-restart"
+      || options.drill === "live-migrate-to-slice"
+      || options.drill === "live-migrate-roundtrip-slice"
+    matrix.kernel_url = kernelUrl
+    await mkdir(historyDir, { recursive: true })
+    await mkdir(capabilityRoot, { recursive: true })
+    options.historyDir = historyDir
+
+    if (options.drill === "worker-resume") {
+      matrix = await runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports })
+      matrix.cleanup ??= {}
+    } else {
       if (sliceMode) {
-        delete daemonEnv.CHARIOX_RELAY_URL
-        delete daemonEnv.CHARIOX_RELAY_TOKEN
-        delete daemonEnv.CHARIOX_CLOUD_RELAY_URL
-        delete daemonEnv.CHARIOX_CLOUD_RELAY_TOKEN
+        const sliceXdgConfigHome = path.join(runtimeRoot, "xdg-config")
+        const sliceXdgStateHome = path.join(runtimeRoot, "xdg-state")
+        const sliceXdgDataHome = path.join(runtimeRoot, "xdg-data")
+        const sliceXdgCacheHome = path.join(runtimeRoot, "xdg-cache")
+        const sliceRoot = path.join(runtimeRoot, "slices")
+        await mkdir(sliceXdgStateHome, { recursive: true })
+        await mkdir(sliceXdgDataHome, { recursive: true })
+        await mkdir(sliceXdgCacheHome, { recursive: true })
+        await mkdir(sliceRoot, { recursive: true })
+        await writeIsolatedKernelConfig({
+          xdgConfigHome: sliceXdgConfigHome,
+          storageRoot: path.join(runtimeRoot, "home-kernel-storage"),
+          extraToml: [
+            "[slices]",
+            `root = ${JSON.stringify(sliceRoot)}`,
+            "",
+            "[slices.linux]",
+            `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
+            `build_image = ${JSON.stringify(options.sliceBuildImage === "always" ? "auto" : options.sliceBuildImage)}`,
+            "memory_mb = 2048",
+            `cpus = ${JSON.stringify("1.0")}`,
+          ],
+        })
+        console.log(`slice-restart: prebuild image policy ${options.sliceBuildImage}`)
+        const sliceImageBuild = await prebuildLocalDockerSliceImageIfNeeded(
+          runtimeRoot,
+          options.sliceBuildImage,
+          options.timeoutMs,
+        )
+        matrix.slice_image = defaultLocalDockerSliceImage
+        matrix.slice_build_image = options.sliceBuildImage
+        matrix.slice_image_build = sliceImageBuild
+          ? { image: sliceImageBuild.image, performed: true }
+          : { image: defaultLocalDockerSliceImage, performed: false }
+        sliceModeProviderEnv = await prepareSliceModeProviderEnv(runtimeRoot, options.providers)
+        options.providerStateSourceEnv = sliceModeProviderEnv
       }
-      daemonChild = spawn(kernelBinary, [], {
-        cwd: repoRoot,
-        env: daemonEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-      daemonChild.stdout?.pipe(stdout)
-      daemonChild.stderr?.pipe(stderr)
-      await waitForLocalDaemon(kernelUrl, root, root)
-    }
 
-    const runScenario = options.drill === "slice-restart"
-      ? runSliceRestartScenario
-      : options.drill === "live-migrate-to-slice" || options.drill === "live-migrate-roundtrip-slice"
-        ? runLiveMigrateToSliceScenario
-        : runLocalReloadScenario
-    for (const provider of options.providers) {
-      const result = await runScenario({ provider, root, kernelUrl, options })
-      matrix.results.push(result)
-      await writeFile(path.join(root, `${provider}-${options.drill}-result.json`), `${JSON.stringify(result, null, 2)}\n`, "utf8")
-      console.log(`${provider}: ${result.status}`)
-      if (result.status !== "passed") {
-        console.log(result.errors.join("\n"))
+      if (options.spawnDaemon) {
+        const stdout = createWriteStream(path.join(runtimeRoot, "kernel.stdout.log"), { flags: "a" })
+        const stderr = createWriteStream(path.join(runtimeRoot, "kernel.stderr.log"), { flags: "a" })
+        const daemonEnv = {
+          ...process.env,
+          ...(sliceModeProviderEnv ? {
+            ...sliceModeProviderEnv,
+            CHARIOX_LOG_DIR: path.join(runtimeRoot, "logs"),
+          } : {}),
+          CHARIOX_HOME: runtimeRoot,
+          CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+          CHARIOX_MCP_PORT: String(ports.mcpPort),
+          CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
+          CHARIOX_CODEX_PORT: String(ports.codexPort),
+          CHARIOX_DAEMON_ID: `provider-thread-transfer-${runId}`,
+          CHARIOX_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
+          CHARIOX_SESSION_HISTORY_DIR: historyDir,
+          CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+          CHARIOX_PROVIDER_RUNTIME_INIT_DELAY_MS: "250",
+        }
+        if (sliceMode) {
+          delete daemonEnv.CHARIOX_RELAY_URL
+          delete daemonEnv.CHARIOX_RELAY_TOKEN
+          delete daemonEnv.CHARIOX_CLOUD_RELAY_URL
+          delete daemonEnv.CHARIOX_CLOUD_RELAY_TOKEN
+        }
+        daemonChild = spawn(kernelBinary, [], {
+          cwd: repoRoot,
+          env: daemonEnv,
+          stdio: ["ignore", "pipe", "pipe"],
+        })
+        daemonChild.stdout?.pipe(stdout)
+        daemonChild.stderr?.pipe(stderr)
+        await waitForLocalDaemon(kernelUrl, runtimeRoot, runtimeRoot)
+      }
+
+      const runScenario = options.drill === "slice-restart"
+        ? runSliceRestartScenario
+        : options.drill === "live-migrate-to-slice" || options.drill === "live-migrate-roundtrip-slice"
+          ? runLiveMigrateToSliceScenario
+          : runLocalReloadScenario
+      for (const provider of options.providers) {
+        const result = await runScenario({ provider, root: runtimeRoot, kernelUrl, options })
+        matrix.results.push(result)
+        await writeFile(path.join(evidenceRoot, `${provider}-${options.drill}-result.json`), `${JSON.stringify(result, null, 2)}\n`, "utf8")
+        console.log(`${provider}: ${result.status}`)
+        if (result.status !== "passed") {
+          console.log(result.errors.join("\n"))
+        }
       }
     }
+  } catch (error) {
+    fatalError = error
+    matrix.fatal_error = error.stack ?? error.message ?? String(error)
   } finally {
-    matrix.finished_at_ms = Date.now()
-    matrix.passed = matrix.results.length > 0 && matrix.results.every((result) => result.status === "passed")
-    await writeFile(path.join(root, "matrix.json"), `${JSON.stringify(matrix, null, 2)}\n`, "utf8")
     await terminateChild(daemonChild)
-    await cleanupSliceModeProviderCredentials(sliceModeProviderEnv)
+    const claudeSecretRoot = sliceModeProviderEnv?.CHARIOX_PROVIDER_THREAD_CLAUDE_SECRET_ROOT ?? null
+    try {
+      await cleanupSliceModeProviderCredentials(sliceModeProviderEnv)
+      matrix.cleanup.provider_credentials_removed = !claudeSecretRoot
+        || await pathIsMissing(claudeSecretRoot)
+    } catch (error) {
+      fatalError ??= error
+      matrix.cleanup.provider_credentials_removed = false
+      matrix.cleanup.provider_credentials_cleanup_error = error.message ?? String(error)
+    }
+    try {
+      await rm(runtimeRoot, { recursive: true, force: true })
+      matrix.cleanup.runtime_root_removed = await pathIsMissing(runtimeRoot)
+    } catch (error) {
+      fatalError ??= error
+      matrix.cleanup.runtime_root_removed = false
+      matrix.cleanup.runtime_root_cleanup_error = error.message ?? String(error)
+    }
+    matrix.finished_at_ms = Date.now()
+    matrix.passed = !fatalError
+      && matrix.results.length > 0
+      && matrix.results.every((result) => result.status === "passed")
+      && matrix.cleanup.runtime_root_removed
+      && matrix.cleanup.provider_credentials_removed
+    await writeFile(path.join(evidenceRoot, "matrix.json"), `${JSON.stringify(matrix, null, 2)}\n`, "utf8")
   }
 
-  console.log(`provider thread transfer drill artifacts: ${root}`)
+  console.log(`provider thread transfer drill evidence: ${evidenceRoot}`)
+  if (fatalError) throw fatalError
   if (!matrix.passed) {
-    throw new Error(`provider thread transfer drill failed; see ${path.join(root, "matrix.json")}`)
-  }
-  if (options.cleanupOnSuccess) {
-    await rm(root, { recursive: true, force: true })
+    throw new Error(`provider thread transfer drill failed; see ${path.join(evidenceRoot, "matrix.json")}`)
   }
 }
 

@@ -357,6 +357,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
       await cleanupSliceRuntime(client, sliceId, result.evidence, { resetSavedState: true })
+      failResultOnSliceCleanupErrors(result, { resetSavedState: true })
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
@@ -862,6 +863,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
       await cleanupSliceRuntime(client, sliceId, result.evidence)
+      failResultOnSliceCleanupErrors(result)
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
@@ -883,4 +885,14 @@ export async function cleanupSliceRuntime(
   await client.send(deleteSliceRequest(sliceId)).catch((error) => {
     evidence.slice_cleanup_error = error.message ?? String(error)
   })
+}
+
+export function failResultOnSliceCleanupErrors(result, { resetSavedState = false } = {}) {
+  const errors = [
+    ...(resetSavedState ? [result.evidence.slice_state_cleanup_error] : []),
+    result.evidence.slice_cleanup_error,
+  ].filter(Boolean)
+  if (errors.length === 0) return
+  result.status = "failed"
+  result.errors.push(`slice cleanup failed: ${errors.join(": ")}`)
 }
