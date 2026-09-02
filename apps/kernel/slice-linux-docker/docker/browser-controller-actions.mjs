@@ -371,12 +371,37 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
+        const isMaskedEditableInput = () => {
+          const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
+          const elementPrototype = ownerWindow.Element?.prototype;
+          const getAttribute = elementPrototype?.getAttribute;
+          const hasAttribute = elementPrototype?.hasAttribute;
+          if (
+            !inputPrototype ||
+            !Object.prototype.isPrototypeOf.call(inputPrototype, this) ||
+            typeof getAttribute !== "function" ||
+            typeof hasAttribute !== "function"
+          ) {
+            return false;
+          }
+          return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password" &&
+            !hasAttribute.call(this, "disabled") &&
+            !hasAttribute.call(this, "readonly") &&
+            String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
+            String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
+        };
+        if (!isMaskedEditableInput()) {
+          return { ok: false, reason: "target_not_masked" };
+        }
         this.focus();
         if (ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
         if (!(ownerDocument.activeElement === this || this.contains?.(ownerDocument.activeElement))) {
           return { ok: false, reason: "target_not_focusable" };
+        }
+        if (!isMaskedEditableInput()) {
+          return { ok: false, reason: "target_not_masked" };
         }
         const currentValue = this.isContentEditable
           ? String(this.textContent || "")
@@ -427,6 +452,12 @@ async function secureFillElement(connection, sessionId, objectId, action) {
       throw new BrowserActionError(
         "browser_secret_target_not_focusable",
         "browser secret target could not receive focus before insertion",
+      );
+    }
+    if (outcome?.reason === "target_not_masked") {
+      throw new BrowserActionError(
+        "browser_secret_target_not_masked",
+        "browser secret target must remain an editable password field during insertion",
       );
     }
     throw new BrowserActionError(

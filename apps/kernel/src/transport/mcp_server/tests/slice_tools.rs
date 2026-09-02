@@ -369,7 +369,7 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '{}'
-      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"textbox","name":"Email","description":"","value":"","ignored":false,"disabled":false,"focused":true}},{{"node_ref":"backend:104","parent_ref":null,"child_refs":[],"role":"button","name":"Continue","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:105","parent_ref":null,"child_refs":[],"role":"link","name":"Help","description":"","value":"","ignored":false,"disabled":false,"focused":false}}],"dom_documents":[{{"document_index":0,"url":"https://example.test/dashboard","owner_node_ref":null}},{{"document_index":1,"url":"https://frame.test/login","owner_node_ref":null}}],"dom_nodes":[{{"node_ref":"backend:103","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"email","name":"email","type":"email","placeholder":"Email"}},"bounds":{{"x":10,"y":20,"width":200,"height":30}}}},{{"node_ref":"backend:104","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON","text":"Continue","attributes":{{"id":"continue"}},"bounds":{{"x":10,"y":60,"width":100,"height":30}}}},{{"node_ref":"backend:105","parent_ref":null,"document_index":0,"node_type":1,"node_name":"A","text":"Help","attributes":{{"id":"help","href":"/help"}},"bounds":{{"x":10,"y":100,"width":50,"height":20}}}}]}}}}\n' "$id"
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"textbox","name":"Email","description":"","value":"","ignored":false,"disabled":false,"focused":true}},{{"node_ref":"backend:104","parent_ref":null,"child_refs":[],"role":"button","name":"Continue","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:105","parent_ref":null,"child_refs":[],"role":"link","name":"Help","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:106","parent_ref":null,"child_refs":[],"role":"textbox","name":"Password","description":"","value":"","ignored":false,"disabled":false,"focused":false}}],"dom_documents":[{{"document_index":0,"url":"https://example.test/dashboard","owner_node_ref":null}},{{"document_index":1,"url":"https://frame.test/login","owner_node_ref":null}}],"dom_nodes":[{{"node_ref":"backend:103","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"email","name":"email","type":"email","placeholder":"Email"}},"bounds":{{"x":10,"y":20,"width":200,"height":30}}}},{{"node_ref":"backend:104","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON","text":"Continue","attributes":{{"id":"continue"}},"bounds":{{"x":10,"y":60,"width":100,"height":30}}}},{{"node_ref":"backend:105","parent_ref":null,"document_index":0,"node_type":1,"node_name":"A","text":"Help","attributes":{{"id":"help","href":"/help"}},"bounds":{{"x":10,"y":100,"width":50,"height":20}}}},{{"node_ref":"backend:106","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"password","name":"password","type":"password","placeholder":"Password"}},"bounds":{{"x":10,"y":55,"width":200,"height":30}}}}]}}}}\n' "$id"
       ;;
     *'"method":"browser.action"'*)
       if printf '%s' "$request" | grep -q '"kind":"fill"'; then action=fill;
@@ -488,6 +488,19 @@ done
             metadata: None,
         })
         .expect("top-level-only credential should be registered");
+    crate::credential::CharioxCredentialRegistry::new(fixture.root.join("credentials"))
+        .upsert(crate::config::UserCredentialConfig {
+            id: "unmasked-field-login".to_string(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Env {
+                name: "CHARIOX_CONTROLLER_MCP_UNMASKED_SECRET_MISSING".to_string(),
+            },
+            allowed_hosts: vec!["frame.test".to_string()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        })
+        .expect("unmasked-field credential should be registered");
 
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
@@ -767,6 +780,11 @@ done
         .as_str()
         .expect("recovered status should expose a new opaque field id")
         .to_string();
+    let recovered_password_field_id = recovered_value["result"]["structuredContent"]["browser"]
+        ["fields"][1]["field_id"]
+        .as_str()
+        .expect("recovered status should expose the password field id")
+        .to_string();
     assert_ne!(recovered_field_id, field_id);
     assert!(matches!(
         router
@@ -885,6 +903,50 @@ done
         .expect("controller log should be readable before denied secret insertion")
         .matches("secret-frame-target")
         .count();
+    let unmasked_secret_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 78,
+            "method": "tools/call",
+            "params": {
+                "name": "paste_secret_to_slice",
+                "arguments": {
+                    "credential_id": "unmasked-field-login",
+                    "field_id": field_id.clone(),
+                    "expected_url": "https://example.test/dashboard",
+                    "expected_host": "example.test",
+                    "submit": false
+                }
+            }
+        }),
+    )
+    .await
+    .expect("unmasked secret paste should return an MCP response");
+    let unmasked_secret_body = unmasked_secret_response
+        .into_body()
+        .collect()
+        .await
+        .expect("unmasked secret body should collect")
+        .to_bytes();
+    let unmasked_secret_value: Value =
+        serde_json::from_slice(&unmasked_secret_body).expect("unmasked secret body json");
+    assert_eq!(
+        unmasked_secret_value["error"]["code"], -32000,
+        "{unmasked_secret_value:#}"
+    );
+    assert!(unmasked_secret_value["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("editable password field")));
+    assert_eq!(
+        std::fs::read_to_string(&controller_log)
+            .expect("controller log should be readable after unmasked secret rejection")
+            .matches("secret-frame-target")
+            .count(),
+        secret_actions_before_denial,
+        "unmasked target rejection must happen before vault resolution and browser action"
+    );
     let denied_secret_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
@@ -896,7 +958,7 @@ done
                 "name": "paste_secret_to_slice",
                 "arguments": {
                     "credential_id": "top-level-only-login",
-                    "field_id": field_id.clone(),
+                    "field_id": recovered_password_field_id.clone(),
                     "expected_url": "https://example.test/dashboard",
                     "expected_host": "example.test",
                     "submit": false
@@ -941,7 +1003,7 @@ done
                 "name": "paste_secret_to_slice",
                 "arguments": {
                     "credential_id": "browser-login",
-                    "field_id": field_id,
+                    "field_id": recovered_password_field_id,
                     "expected_url": "https://example.test/dashboard",
                     "expected_host": "example.test",
                     "submit": true
@@ -1184,7 +1246,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

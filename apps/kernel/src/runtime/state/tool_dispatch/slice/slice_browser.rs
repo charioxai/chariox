@@ -123,6 +123,51 @@ pub(super) fn ensure_browser_fill_target(
     })
 }
 
+pub(super) fn ensure_browser_secret_target_is_masked(
+    status: &serde_json::Value,
+    target: Option<&str>,
+) -> Result<(), DaemonError> {
+    let target = target.map(str::trim).filter(|value| !value.is_empty());
+    let field = match target {
+        Some(target) => status
+            .get("fields")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|fields| {
+                fields.iter().find(|field| {
+                    ["selector", "field_id"].iter().any(|key| {
+                        field
+                            .get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| value == target)
+                    })
+                })
+            }),
+        None => status.get("focusedElement"),
+    };
+    let is_editable_password = field.is_some_and(|field| {
+        field.get("kind").and_then(serde_json::Value::as_str) == Some("field")
+            && field
+                .get("tag")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+            && field
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("password"))
+            && field.get("disabled").and_then(serde_json::Value::as_bool) != Some(true)
+            && field.get("readOnly").and_then(serde_json::Value::as_bool) != Some(true)
+    });
+    if is_editable_password {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "runtime_tool_paste_secret_to_slice",
+        message:
+            "paste_secret_to_slice requires an editable password field so the secret remains masked"
+                .to_string(),
+    })
+}
+
 pub(super) fn browser_selector(selector: Option<&str>, field_id: Option<&str>) -> Option<String> {
     selector
         .or(field_id)
@@ -181,5 +226,61 @@ mod tests {
         ensure_browser_fill_target(&status, Some("field:1"))
             .expect("known fillable field id should pass");
         assert!(ensure_browser_fill_target(&status, None).is_err());
+    }
+
+    #[test]
+    fn browser_secret_target_requires_an_editable_password_field() {
+        let status = serde_json::json!({
+            "focusedElement": {
+                "kind": "field",
+                "selector": "#password",
+                "field_id": "field:password",
+                "tag": "input",
+                "type": "password",
+                "disabled": false,
+                "readOnly": false
+            },
+            "fields": [
+                {
+                    "kind": "field",
+                    "selector": "#email",
+                    "field_id": "field:email",
+                    "tag": "input",
+                    "type": "email",
+                    "disabled": false,
+                    "readOnly": false
+                },
+                {
+                    "kind": "field",
+                    "selector": "#password",
+                    "field_id": "field:password",
+                    "tag": "input",
+                    "type": "password",
+                    "disabled": false,
+                    "readOnly": false
+                },
+                {
+                    "kind": "field",
+                    "selector": "#readonly-password",
+                    "field_id": "field:readonly-password",
+                    "tag": "input",
+                    "type": "password",
+                    "disabled": false,
+                    "readOnly": true
+                }
+            ]
+        });
+
+        ensure_browser_secret_target_is_masked(&status, None)
+            .expect("focused password field should be accepted");
+        ensure_browser_secret_target_is_masked(&status, Some("#password"))
+            .expect("password selector should be accepted");
+        ensure_browser_secret_target_is_masked(&status, Some("field:password"))
+            .expect("opaque password field id should be accepted");
+        assert!(ensure_browser_secret_target_is_masked(&status, Some("field:email")).is_err());
+        assert!(
+            ensure_browser_secret_target_is_masked(&status, Some("field:readonly-password"))
+                .is_err()
+        );
     }
 }
