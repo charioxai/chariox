@@ -50,6 +50,7 @@ import {
 import {
   runLiveMigrateToSliceScenario,
   runSliceRestartScenario,
+  runSliceShutdownScenario,
 } from "./lib/live-provider-thread-transfer-slice-scenarios.mjs"
 
 async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports }) {
@@ -310,6 +311,7 @@ async function main() {
     const historyDir = path.join(runtimeRoot, "history")
     const capabilityRoot = path.join(runtimeRoot, "capabilities")
     const sliceMode = options.drill === "slice-restart"
+      || options.drill === "slice-shutdown"
       || options.drill === "live-migrate-to-slice"
       || options.drill === "live-migrate-roundtrip-slice"
     const daemonHome = sliceMode
@@ -344,7 +346,7 @@ async function main() {
           }),
         })
         const sliceBuildEnv = providerThreadSliceBuildEnv()
-        console.log(`slice-restart: provisioner image policy ${options.sliceBuildImage}`)
+        console.log(`${options.drill}: provisioner image policy ${options.sliceBuildImage}`)
         matrix.slice_image = defaultLocalDockerSliceImage
         matrix.slice_build_image = options.sliceBuildImage
         matrix.slice_image_build = {
@@ -393,11 +395,12 @@ async function main() {
         await waitForLocalDaemon(kernelUrl, runtimeRoot, runtimeRoot)
       }
 
-      const runScenario = options.drill === "slice-restart"
-        ? runSliceRestartScenario
-        : options.drill === "live-migrate-to-slice" || options.drill === "live-migrate-roundtrip-slice"
-          ? runLiveMigrateToSliceScenario
-          : runLocalReloadScenario
+      let runScenario = runLocalReloadScenario
+      if (options.drill === "slice-restart") runScenario = runSliceRestartScenario
+      if (options.drill === "slice-shutdown") runScenario = runSliceShutdownScenario
+      if (options.drill === "live-migrate-to-slice" || options.drill === "live-migrate-roundtrip-slice") {
+        runScenario = runLiveMigrateToSliceScenario
+      }
       for (const provider of options.providers) {
         const result = await runScenario({ provider, root: runtimeRoot, kernelUrl, options })
         matrix.results.push(result)

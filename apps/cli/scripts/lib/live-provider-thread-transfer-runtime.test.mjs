@@ -17,6 +17,7 @@ import {
   cleanupSliceModeProviderCredentials,
   loadRawHistoryOutputText,
   normalizeProviderOutputText,
+  parseArgs,
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
   providerThreadSliceBuildEnv,
@@ -26,9 +27,27 @@ import {
   providersNeedClaudeCredentials,
   terminalProviderHistoryError,
   sliceRestartContinuityChecks,
+  sliceShutdownCheckpointChecks,
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
 } from "./live-provider-thread-transfer-runtime.mjs"
+
+test("provider thread drill accepts the explicit slice shutdown scenario", () => {
+  assert.equal(parseArgs(["--drill", "slice-shutdown"]).drill, "slice-shutdown")
+})
+
+test("slice shutdown checkpoint requires a stopped slice and parked provider", () => {
+  assert.deepEqual(sliceShutdownCheckpointChecks({
+    savedSlice: { status: "stopped" },
+    parkedRun: { state: "ended" },
+    stoppedSession: { active_provider_run_id: null },
+  }), {
+    slice_shutdown_left_stopped: true,
+    slice_shutdown_parked_provider_run: true,
+    slice_shutdown_cleared_active_provider_run: true,
+    slice_shutdown_checkpoint_valid: true,
+  })
+})
 
 test("provider thread evidence redacts credentials from kernel events", () => {
   assert.deepEqual(
