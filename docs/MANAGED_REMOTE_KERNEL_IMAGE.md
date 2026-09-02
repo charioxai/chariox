@@ -130,6 +130,14 @@ namespaces, and exposes only the approved provider profile and repository
 roots. Ordinary local Docker slices retain Docker's defaults unless the user
 enables the advanced compatibility option.
 
+Ubuntu hosts with `kernel.apparmor_restrict_unprivileged_userns=1` must load
+`apps/kernel/slice-linux-docker/chariox-slice-provider.apparmor` and set
+`CHARIOX_SLICE_APPARMOR_PROFILE=chariox-slice-provider` for the worker kernel.
+The policy keeps the outer container unconfined as compatibility mode already
+requires, while explicitly permitting Bubblewrap to create its nested user
+namespace. Compatibility-mode startup always runs the real provider isolation
+probe and rejects the slice before use if the namespace cannot be created.
+
 The first managed Docker slice builds its runtime image lazily from the complete
 signed context, using the builder-attested kernel and relay binaries rather than
 compiling them again on the managed host. Ordinary local source builds retain

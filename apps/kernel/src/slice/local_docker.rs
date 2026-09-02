@@ -994,6 +994,11 @@ fn configure_local_docker_slice_command(
         )
         .env("CHARIOX_SLICE_MACHINE_ID", format!("slice:{}", record.id))
         .env("CHARIOX_SLICE_MACHINE_ALIAS", record.name.clone());
+    if let Some(profile) =
+        std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE").filter(|value| !value.is_empty())
+    {
+        command.env("CHARIOX_SLICE_APPARMOR_PROFILE", profile);
+    }
     // Do not inherit a parent worker's Room when it provisions another slice.
     for name in [
         "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
@@ -1016,9 +1021,10 @@ fn configure_local_docker_slice_command(
             .env("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", session_id)
             .env("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", &record.id);
     }
-    if std::env::var("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE")
-        .ok()
-        .is_some_and(|value| value == "1")
+    if options.allow_unconfined_seccomp
+        || std::env::var("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE")
+            .ok()
+            .is_some_and(|value| value == "1")
     {
         command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
     }

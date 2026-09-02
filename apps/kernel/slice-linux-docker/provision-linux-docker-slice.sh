@@ -66,6 +66,7 @@ SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
 SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
+SLICE_APPARMOR_PROFILE="${CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
@@ -132,6 +133,9 @@ case "$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" in
   0|1|2|3|s|z) ;;
   *) fail "CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL is invalid" ;;
 esac
+if [[ ! "$SLICE_APPARMOR_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]]; then
+  fail "CHARIOX_SLICE_APPARMOR_PROFILE is invalid"
+fi
 
 run_with_timeout() {
   local seconds="$1"
@@ -595,7 +599,7 @@ ensure_container() {
       # dedicated rootless daemon; ordinary local slices must opt in.
       docker_create_args+=(
         --security-opt seccomp=unconfined
-        --security-opt apparmor=unconfined
+        --security-opt apparmor="$SLICE_APPARMOR_PROFILE"
         --security-opt systempaths=unconfined
       )
     fi

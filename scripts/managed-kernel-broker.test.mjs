@@ -108,6 +108,41 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   )
   assert.equal(provision.status, 0, provision.stderr)
 
+  const namedAppArmorProfile = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_APPARMOR_PROFILE: "chariox-slice-provider",
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(namedAppArmorProfile.status, 0, namedAppArmorProfile.stderr)
+
+  const injectedAppArmorProfile = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_APPARMOR_PROFILE: "unconfined --privileged",
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(injectedAppArmorProfile.status, 1)
+  assert.match(injectedAppArmorProfile.stderr, /CHARIOX_SLICE_APPARMOR_PROFILE is invalid/)
+
   const malformedOwnerKey = validate(
     {
       kind: "provisioner",
