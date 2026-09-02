@@ -578,8 +578,10 @@ ensure_container() {
     restore_saved_home_volume
     local docker_create_args=(
       --name "$SLICE_NAME"
+      --hostname "$SLICE_NAME"
       --ulimit core=0:0
       -e "CHARIOX_SLICE_VIEWER_BACKEND=${CHARIOX_SLICE_VIEWER_BACKEND:-novnc}"
+      -e "CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
       -p "127.0.0.1:$SLICE_CODEX_PORT:$SLICE_CODEX_PORT"
       -p "127.0.0.1:$SLICE_OPENCODE_PORT:$SLICE_OPENCODE_PORT"
       -p "127.0.0.1:$SLICE_CODEX_PORT_RANGE:$SLICE_CODEX_PORT_RANGE"

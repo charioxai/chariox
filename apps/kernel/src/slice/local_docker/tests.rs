@@ -497,6 +497,10 @@ fn local_docker_slice_mounts_only_development_repositories() {
         script.contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount\"")
     );
     assert!(script.contains("local docker_create_args=("));
+    assert!(script.contains("--hostname \"$SLICE_NAME\""));
+    assert!(script.contains(
+        "-e \"CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}\""
+    ));
     assert!(script.contains("docker create \"${docker_create_args[@]}\" \"$SLICE_IMAGE\""));
     assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
 }
