@@ -12,7 +12,7 @@ use crate::transport::room_browser_controller::{
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 33);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 34);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -54,8 +54,8 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 297);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 33);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 298);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 34);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -67,12 +67,13 @@ fn room_controller_protocol_shapes_are_versioned() {
                     text: "sensitive-fill-fixture".into(),
                     append: false,
                     submit: false,
+                    expected_document_url: Some("https://example.test/login".into()),
                 },
                 timeout_ms: 500,
             },
             serde_json::json!({"kind":"action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
-                "append":false,"submit":false},"timeout_ms":500}),
+                "append":false,"submit":false,"expected_document_url":"https://example.test/login"},"timeout_ms":500}),
         ),
         (
             RoomBrowserControllerCommand::RecoverAction {
@@ -84,6 +85,7 @@ fn room_controller_protocol_shapes_are_versioned() {
                     text: "sensitive-fill-fixture".into(),
                     append: false,
                     submit: false,
+                    expected_document_url: None,
                 },
                 timeout_ms: 500,
             },

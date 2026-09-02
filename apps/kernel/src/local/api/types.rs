@@ -66,6 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 297 combines managed-context transport with bounded Room
-/// Environment screenshot artifact transfer.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 297;
+/// Version 298 binds browser secret fill actions to the inspected document URL.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 298;

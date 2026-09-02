@@ -105,12 +105,25 @@ function normalizeAction(action) {
       text: action.text,
       append: action.append === true,
       submit: action.submit === true,
+      expectedDocumentUrl: normalizeExpectedDocumentUrl(action.expected_document_url),
     };
   }
   if (action?.kind === "submit") {
     return { kind: "submit" };
   }
   throw invalidAction(`unsupported browser action ${JSON.stringify(action?.kind ?? null)}`);
+}
+
+function normalizeExpectedDocumentUrl(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.length === 0 || utf8ByteLength(value) > 2_048) {
+    throw invalidAction("secret fill expected document URL is invalid");
+  }
+  try {
+    return new URL(value).href;
+  } catch {
+    throw invalidAction("secret fill expected document URL is invalid");
+  }
 }
 
 function normalizeTimeout(timeoutMs) {
@@ -329,6 +342,10 @@ async function executeAction(
     await submitNearestForm(connection, sessionId, objectId);
     return { dialogOpened: false };
   }
+  if (action.expectedDocumentUrl !== null) {
+    await secureFillElement(connection, sessionId, objectId, action);
+    return { dialogOpened: false };
+  }
   await focusElement(connection, sessionId, objectId, !action.append);
   assertNotCancelled(signal);
   if (action.text) {
@@ -341,6 +358,83 @@ async function executeAction(
     await submitNearestForm(connection, sessionId, objectId);
   }
   return { dialogOpened: false };
+}
+
+async function secureFillElement(connection, sessionId, objectId, action) {
+  const response = await connection.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      functionDeclaration: `function(text, append, expectedDocumentUrl, submit) {
+        const ownerDocument = this.ownerDocument;
+        const ownerWindow = ownerDocument?.defaultView;
+        if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
+          return { ok: false, reason: "target_url_changed" };
+        }
+        this.focus();
+        if (ownerWindow.location.href !== expectedDocumentUrl) {
+          return { ok: false, reason: "target_url_changed" };
+        }
+        if (!(ownerDocument.activeElement === this || this.contains?.(ownerDocument.activeElement))) {
+          return { ok: false, reason: "target_not_focusable" };
+        }
+        const currentValue = this.isContentEditable
+          ? String(this.textContent || "")
+          : String(this.value || "");
+        const nextValue = append ? currentValue + text : text;
+        if (this.isContentEditable) {
+          this.textContent = nextValue;
+        } else {
+          const prototype = this.matches?.("textarea")
+            ? ownerWindow.HTMLTextAreaElement?.prototype
+            : ownerWindow.HTMLInputElement?.prototype;
+          const setter = prototype && Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+          if (typeof setter !== "function") {
+            return { ok: false, reason: "value_setter_unavailable" };
+          }
+          setter.call(this, nextValue);
+        }
+        this.dispatchEvent(new ownerWindow.Event("input", { bubbles: true, composed: true }));
+        this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
+        if (submit) {
+          const form = this.form || this.closest?.("form");
+          if (!form) return { ok: false, reason: "form_not_found" };
+          if (typeof form.requestSubmit === "function") form.requestSubmit();
+          else form.submit();
+        }
+        return { ok: true };
+      }`,
+      arguments: [
+        { value: action.text },
+        { value: action.append },
+        { value: action.expectedDocumentUrl },
+        { value: action.submit },
+      ],
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  const outcome = response?.result?.value;
+  if (response?.exceptionDetails || outcome?.ok !== true) {
+    if (outcome?.reason === "target_url_changed") {
+      throw new BrowserActionError(
+        "browser_secret_target_changed",
+        "browser secret target changed before insertion",
+      );
+    }
+    if (outcome?.reason === "target_not_focusable") {
+      throw new BrowserActionError(
+        "browser_secret_target_not_focusable",
+        "browser secret target could not receive focus before insertion",
+      );
+    }
+    throw new BrowserActionError(
+      "browser_action_failed",
+      "browser secret target could not receive secure input",
+      { reason: outcome?.reason ?? "secure_fill_failed" },
+    );
+  }
 }
 
 async function submitNearestForm(connection, sessionId, objectId) {

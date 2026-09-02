@@ -69,9 +69,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 33 combines managed-context transport with bounded Room Environment
-/// screenshot transfer and managed slice activation confirmation.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 33;
+/// Version 34 binds browser secret fill actions to the inspected document URL.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 34;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -84,6 +84,7 @@ impl KernelRuntimeState {
                     text: secret,
                     append: false,
                     submit: args.submit,
+                    expected_document_url: Some(browser_url),
                 },
                 crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
             )
@@ -161,6 +162,7 @@ impl KernelRuntimeState {
                     text: args.text,
                     append: false,
                     submit: false,
+                    expected_document_url: None,
                 },
                 crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
             )
