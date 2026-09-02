@@ -272,6 +272,20 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.checks.provider_thread_id_before = beforeThreadId
     result.checks.provider_thread_id_after = afterThreadId
     result.checks.provider_thread_id_preserved = beforeThreadId === afterThreadId
+    result.checks.provider_run_relaunched = beforeRun.id !== afterRun.id
+    result.checks.account_profile_preserved = beforeRun.account_profile === afterRun.account_profile
+    result.checks.execution_mode_preserved = beforeRun.execution_mode === afterRun.execution_mode
+    result.checks.permission_level_preserved = beforeRun.permission_level === afterRun.permission_level
+    const beforeBinding = agent.remote_execution ?? null
+    const afterBinding = afterAgent?.remote_execution ?? null
+    result.checks.agent_binding_repaired = Boolean(
+      beforeBinding
+      && afterBinding
+      && afterBinding.worker_kernel_id === savedState.slice.worker_kernel_id
+      && afterBinding.worker_machine_id === savedState.slice.worker_machine_id
+      && afterBinding.execution_lease_id !== beforeBinding.execution_lease_id
+      && afterBinding.leased_agent_id !== beforeBinding.leased_agent_id,
+    )
     result.checks.slice_worker_restarted = (
       result.evidence.slice_before_restart.worker_kernel_id
       && result.evidence.slice_state_saved.slice.worker_kernel_id
@@ -287,6 +301,22 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     }
     if (!result.checks.provider_thread_id_preserved) {
       throw new Error(`provider thread id changed across slice restart: before=${beforeThreadId} after=${afterThreadId}`)
+    }
+    if (!result.checks.provider_run_relaunched) {
+      throw new Error(`slice restart reused stale provider run ${beforeRun.id}`)
+    }
+    if (!result.checks.account_profile_preserved) {
+      throw new Error(
+        `provider account changed across slice restart: before=${beforeRun.account_profile ?? "<unset>"} after=${afterRun.account_profile ?? "<unset>"}`,
+      )
+    }
+    if (!result.checks.execution_mode_preserved || !result.checks.permission_level_preserved) {
+      throw new Error(
+        `provider execution authority changed across slice restart: mode ${beforeRun.execution_mode ?? "<unset>"}->${afterRun.execution_mode ?? "<unset>"}, permission ${beforeRun.permission_level ?? "<unset>"}->${afterRun.permission_level ?? "<unset>"}`,
+      )
+    }
+    if (!result.checks.agent_binding_repaired) {
+      throw new Error(`slice restart did not replace the remote execution binding for ${agent.id}`)
     }
 
     const recallMarker = `${rememberMarker}_SLICE_RECALLED`

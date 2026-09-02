@@ -21,11 +21,41 @@ import {
   providerThreadSliceBuildProfile,
   providerThreadSliceBuildEnv,
   providerThreadSliceConfigLines,
+  providerRunSnapshot,
   providersNeedClaudeCredentials,
   terminalProviderHistoryError,
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
 } from "./live-provider-thread-transfer-runtime.mjs"
+
+test("provider run evidence retains account and execution authority", () => {
+  assert.deepEqual(
+    providerRunSnapshot({
+      id: "run-1",
+      provider: "codex",
+      adapter_key: "codex",
+      account_profile: "work",
+      execution_mode: "plan",
+      permission_level: "required",
+    }),
+    {
+      id: "run-1",
+      provider: "codex",
+      adapter_key: "codex",
+      account_profile: "work",
+      state: null,
+      provider_session_id: null,
+      resume_state: null,
+      mcp_servers: [],
+      execution_mode: "plan",
+      permission_level: "required",
+      write_access_mode: null,
+      working_directory: null,
+      started_at_ms: null,
+      last_activity_at_ms: null,
+    },
+  )
+})
 
 test("raw history fallback joins fragmented provider output from current SQLite layouts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-provider-history-test-"))

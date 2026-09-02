@@ -285,6 +285,7 @@ export function providerRunSnapshot(run) {
     id: run?.id ?? null,
     provider: run?.provider ?? null,
     adapter_key: run?.adapter_key ?? null,
+    account_profile: run?.account_profile ?? null,
     state: run?.state ?? null,
     provider_session_id: run?.provider_session_id ?? null,
     resume_state: run?.resume_state ?? null,
