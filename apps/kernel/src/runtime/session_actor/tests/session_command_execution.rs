@@ -39,7 +39,7 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '__LOG__'
-      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"button","name":"Save","description":"","value":"","ignored":false,"disabled":false,"focused":true}],"dom_nodes":[{"node_ref":"backend:103","parent_ref":"backend:102","node_type":1,"node_name":"BUTTON","text":"","attributes":{"id":"save"},"bounds":{"x":10,"y":20,"width":100,"height":30}}]}}\n' "$id"
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"button","name":"Save","description":"","value":"","ignored":false,"disabled":false,"focused":true}],"dom_documents":[{"document_index":0,"url":"https://example.test/","owner_node_ref":null}],"dom_nodes":[{"node_ref":"backend:103","parent_ref":"backend:102","document_index":0,"node_type":1,"node_name":"BUTTON","text":"","attributes":{"id":"save"},"bounds":{"x":10,"y":20,"width":100,"height":30}}]}}\n' "$id"
       ;;
     *'"method":"browser.action"'*)
       printf 'action\n' >> '__LOG__'

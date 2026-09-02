@@ -69,8 +69,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 34 binds browser secret fill actions to the inspected document URL.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 34;
+/// Version 35 preserves the owning document index for browser snapshot nodes.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 35;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

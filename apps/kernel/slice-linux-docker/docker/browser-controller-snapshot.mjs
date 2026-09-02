@@ -191,6 +191,7 @@ function compactDomSnapshot(rawSnapshot, options) {
       compacted.push({
         node_ref: nodeRef,
         parent_ref: parentRef,
+        document_index: documentIndex,
         node_type: Number.isSafeInteger(nodeType) ? nodeType : 0,
         node_name: nodeName,
         text,

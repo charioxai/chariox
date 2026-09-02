@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 298 binds browser secret fill actions to the inspected document URL.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 298;
+/// Version 299 preserves the owning document index for browser snapshot nodes.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 299;

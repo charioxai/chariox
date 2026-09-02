@@ -13,7 +13,7 @@ import {
 } from "./kernel-types.js"
 
 test("credential enrollment requests match current protocol", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 298)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 299)
   assert.equal(
     deploymentCredentialEnrollmentServiceSubject("enrollment-1"),
     "deployment-credential-enrollment:enrollment-1",

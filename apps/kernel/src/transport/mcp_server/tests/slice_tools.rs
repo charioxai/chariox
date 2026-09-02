@@ -369,12 +369,19 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '{}'
-      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"textbox","name":"Email","description":"","value":"","ignored":false,"disabled":false,"focused":true}},{{"node_ref":"backend:104","parent_ref":null,"child_refs":[],"role":"button","name":"Continue","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:105","parent_ref":null,"child_refs":[],"role":"link","name":"Help","description":"","value":"","ignored":false,"disabled":false,"focused":false}}],"dom_nodes":[{{"node_ref":"backend:103","parent_ref":null,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"email","name":"email","type":"email","placeholder":"Email"}},"bounds":{{"x":10,"y":20,"width":200,"height":30}}}},{{"node_ref":"backend:104","parent_ref":null,"node_type":1,"node_name":"BUTTON","text":"Continue","attributes":{{"id":"continue"}},"bounds":{{"x":10,"y":60,"width":100,"height":30}}}},{{"node_ref":"backend:105","parent_ref":null,"node_type":1,"node_name":"A","text":"Help","attributes":{{"id":"help","href":"/help"}},"bounds":{{"x":10,"y":100,"width":50,"height":20}}}}]}}}}\n' "$id"
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"textbox","name":"Email","description":"","value":"","ignored":false,"disabled":false,"focused":true}},{{"node_ref":"backend:104","parent_ref":null,"child_refs":[],"role":"button","name":"Continue","description":"","value":"","ignored":false,"disabled":false,"focused":false}},{{"node_ref":"backend:105","parent_ref":null,"child_refs":[],"role":"link","name":"Help","description":"","value":"","ignored":false,"disabled":false,"focused":false}}],"dom_documents":[{{"document_index":0,"url":"https://example.test/dashboard","owner_node_ref":null}},{{"document_index":1,"url":"https://frame.test/login","owner_node_ref":null}}],"dom_nodes":[{{"node_ref":"backend:103","parent_ref":null,"document_index":1,"node_type":1,"node_name":"INPUT","text":"","attributes":{{"id":"email","name":"email","type":"email","placeholder":"Email"}},"bounds":{{"x":10,"y":20,"width":200,"height":30}}}},{{"node_ref":"backend:104","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON","text":"Continue","attributes":{{"id":"continue"}},"bounds":{{"x":10,"y":60,"width":100,"height":30}}}},{{"node_ref":"backend:105","parent_ref":null,"document_index":0,"node_type":1,"node_name":"A","text":"Help","attributes":{{"id":"help","href":"/help"}},"bounds":{{"x":10,"y":100,"width":50,"height":20}}}}]}}}}\n' "$id"
       ;;
     *'"method":"browser.action"'*)
       if printf '%s' "$request" | grep -q '"kind":"fill"'; then action=fill;
       elif printf '%s' "$request" | grep -q '"kind":"submit"'; then action=submit;
       else action=click; fi
+      if printf '%s' "$request" | grep -q '"expected_document_url":"https://'; then
+        if ! printf '%s' "$request" | grep -q '"expected_document_url":"https://frame.test/login"'; then
+          printf '{{"id":%s,"ok":false,"error":{{"code":"wrong_secret_target","message":"wrong secret target"}}}}\n' "$id"
+          continue
+        fi
+        printf 'secret-frame-target\n' >> '{}'
+      fi
       printf '%s\n' "$action" >> '{}'
       printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action_kind":"%s","dialog_opened":false,"attempts":1,"elapsed_ms":7}}}}\n' "$id" "$action"
       ;;
@@ -427,6 +434,7 @@ done
         controller_log.display(),
         controller_log.display(),
         controller_log.display(),
+        controller_log.display(),
         controller_log.display()
     );
     std::fs::write(&controller, controller_script).expect("controller should be written");
@@ -461,12 +469,25 @@ done
             source: crate::config::UserCredentialSourceConfig::Env {
                 name: "CHARIOX_CONTROLLER_MCP_TEST_SECRET".to_string(),
             },
-            allowed_hosts: vec!["example.test".to_string()],
+            allowed_hosts: vec!["frame.test".to_string()],
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
             injection: crate::config::UserCredentialInjectionConfig::Browser,
             metadata: None,
         })
         .expect("test credential should be registered");
+    crate::credential::CharioxCredentialRegistry::new(fixture.root.join("credentials"))
+        .upsert(crate::config::UserCredentialConfig {
+            id: "top-level-only-login".to_string(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Env {
+                name: "CHARIOX_CONTROLLER_MCP_TEST_SECRET".to_string(),
+            },
+            allowed_hosts: vec!["example.test".to_string()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        })
+        .expect("top-level-only credential should be registered");
 
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
@@ -600,6 +621,10 @@ done
     assert!(
         !value.to_string().contains("backend:"),
         "controller-local node references must not escape through MCP"
+    );
+    assert!(
+        !value.to_string().contains("frame.test"),
+        "iframe target URLs should remain internal to credential authorization"
     );
     let find_response = handle_json_rpc_value(
         router.clone(),
@@ -856,6 +881,55 @@ done
         missing_wait_value["result"]["structuredContent"]["browser"]["ok"],
         false
     );
+    let secret_actions_before_denial = std::fs::read_to_string(&controller_log)
+        .expect("controller log should be readable before denied secret insertion")
+        .matches("secret-frame-target")
+        .count();
+    let denied_secret_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 79,
+            "method": "tools/call",
+            "params": {
+                "name": "paste_secret_to_slice",
+                "arguments": {
+                    "credential_id": "top-level-only-login",
+                    "field_id": field_id.clone(),
+                    "expected_url": "https://example.test/dashboard",
+                    "expected_host": "example.test",
+                    "submit": false
+                }
+            }
+        }),
+    )
+    .await
+    .expect("disallowed iframe secret paste should return an MCP response");
+    let denied_secret_body = denied_secret_response
+        .into_body()
+        .collect()
+        .await
+        .expect("disallowed iframe secret body should collect")
+        .to_bytes();
+    let denied_secret_value: Value =
+        serde_json::from_slice(&denied_secret_body).expect("disallowed iframe secret body json");
+    assert_eq!(
+        denied_secret_value["error"]["code"], -32000,
+        "{denied_secret_value:#}"
+    );
+    assert!(denied_secret_value["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("not allowed for host `frame.test`")));
+    assert_eq!(
+        std::fs::read_to_string(&controller_log)
+            .expect("controller log should be readable after denied secret insertion")
+            .matches("secret-frame-target")
+            .count(),
+        secret_actions_before_denial,
+        "credential host rejection must happen before the secret action reaches the controller"
+    );
+
     let secret_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
@@ -903,6 +977,10 @@ done
             .contains("controller-mcp-secret-value"),
         "secret material must not escape through MCP"
     );
+    let controller_log_after_secret = std::fs::read_to_string(&controller_log)
+        .expect("controller log should be readable after secret insertion");
+    assert!(controller_log_after_secret.contains("secret-frame-target"));
+    assert!(!controller_log_after_secret.contains("controller-mcp-secret-value"));
     let dialog_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
@@ -1106,7 +1184,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

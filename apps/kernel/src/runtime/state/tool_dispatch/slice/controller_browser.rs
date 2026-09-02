@@ -15,17 +15,20 @@ impl KernelRuntimeState {
         args: crate::transport::runtime_tools::PasteSecretToSliceArgs,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let status =
-            run_controller_browser_status_tool(self, provider_run.session_id(), slice_id, agent_id)
+            capture_controller_browser_status(self, provider_run.session_id(), slice_id, agent_id)
                 .await?;
-        let browser = status
-            .payload
-            .get("browser")
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "runtime_tool_paste_secret_to_slice",
-                message: "controller-backed browser status omitted its compatibility projection"
-                    .to_string(),
-            })?;
-        let browser_url = browser_status_url(browser)?;
+        let browser =
+            status
+                .result
+                .payload
+                .get("browser")
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_paste_secret_to_slice",
+                    message:
+                        "controller-backed browser status omitted its compatibility projection"
+                            .to_string(),
+                })?;
+        browser_status_url(browser)?;
         ensure_browser_target_matches_expectations(browser, &args)?;
         let element_ref = match controller_browser_element_ref(
             args.selector.as_deref(),
@@ -48,12 +51,26 @@ impl KernelRuntimeState {
             Err(error) => return Err(error),
         };
         ensure_browser_fill_target(browser, Some(&element_ref))?;
+        let target_document_url = status
+            .structured_snapshot
+            .as_ref()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message: "browser snapshot is unavailable for secret target authorization"
+                    .to_string(),
+            })?
+            .document_url_for_element(&element_ref)
+            .map(str::to_string)
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message,
+            })?;
         let secret = match self
             .resolve_remote_home_credential_secret(
                 provider_run,
                 &args.credential_id,
                 crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
-                    target_url: browser_url.clone(),
+                    target_url: target_document_url.clone(),
                 },
             )
             .await?
@@ -72,7 +89,10 @@ impl KernelRuntimeState {
                     credentials,
                     &user_config.credential_vault,
                 )?;
-                service.browser_secret_input_for_target_url(&args.credential_id, &browser_url)?
+                service.browser_secret_input_for_target_url(
+                    &args.credential_id,
+                    &target_document_url,
+                )?
             }
         };
         let result = self
@@ -84,7 +104,7 @@ impl KernelRuntimeState {
                     text: secret,
                     append: false,
                     submit: args.submit,
-                    expected_document_url: Some(browser_url),
+                    expected_document_url: Some(target_document_url),
                 },
                 crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
             )
@@ -433,6 +453,25 @@ pub(super) async fn run_controller_browser_status_tool(
     slice_id: &str,
     agent_id: &str,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    Ok(
+        capture_controller_browser_status(state, session_id, slice_id, agent_id)
+            .await?
+            .result,
+    )
+}
+
+struct ControllerBrowserStatusCapture {
+    result: crate::transport::runtime_tools::RuntimeToolResult,
+    structured_snapshot:
+        Option<crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot>,
+}
+
+async fn capture_controller_browser_status(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    slice_id: &str,
+    agent_id: &str,
+) -> Result<ControllerBrowserStatusCapture, DaemonError> {
     let environment = ensure_controller_browser_environment(
         state,
         session_id,
@@ -479,7 +518,10 @@ pub(super) async fn run_controller_browser_status_tool(
         "tabs": environment.tabs,
         "browser": browser,
     });
-    Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    Ok(ControllerBrowserStatusCapture {
+        result: crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
+        structured_snapshot,
+    })
 }
 
 pub(super) async fn ensure_controller_browser_environment(

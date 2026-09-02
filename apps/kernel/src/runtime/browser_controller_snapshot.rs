@@ -51,6 +51,7 @@ pub(crate) struct BrowserControllerAccessibilityNode {
 pub(crate) struct BrowserControllerDomNode {
     pub(crate) node_ref: String,
     pub(crate) parent_ref: Option<String>,
+    pub(crate) document_index: usize,
     pub(crate) node_type: u32,
     pub(crate) node_name: String,
     pub(crate) text: String,
@@ -112,6 +113,7 @@ pub(crate) struct RoomBrowserAccessibilityNode {
 pub(crate) struct RoomBrowserDomNode {
     pub(crate) element_ref: String,
     pub(crate) parent_ref: Option<String>,
+    pub(crate) document_index: usize,
     pub(crate) node_type: u32,
     pub(crate) node_name: String,
     pub(crate) text: String,
@@ -186,6 +188,7 @@ impl BrowserControllerStructuredSnapshot {
                 Ok(RoomBrowserDomNode {
                     element_ref: required_reference(references, &node.node_ref)?.to_string(),
                     parent_ref: optional_reference(references, node.parent_ref.as_deref()),
+                    document_index: node.document_index,
                     node_type: node.node_type,
                     node_name: node.node_name,
                     text: node.text,
@@ -229,6 +232,23 @@ impl BrowserControllerStructuredSnapshot {
             shadow_roots,
             dom_nodes,
         })
+    }
+}
+
+impl RoomBrowserStructuredSnapshot {
+    pub(crate) fn document_url_for_element(&self, element_ref: &str) -> Result<&str, String> {
+        let document_index = self
+            .dom_nodes
+            .iter()
+            .find(|node| node.element_ref == element_ref)
+            .map(|node| node.document_index)
+            .ok_or_else(|| "browser element has no DOM document association".to_string())?;
+        self.dom_documents
+            .get(document_index)
+            .filter(|document| document.document_index == document_index)
+            .map(|document| document.url.as_str())
+            .filter(|url| !url.is_empty() && url::Url::parse(url).is_ok())
+            .ok_or_else(|| "browser element document URL is unavailable or invalid".to_string())
     }
 }
 
@@ -354,6 +374,12 @@ fn validate_dom_surfaces(
             }
         }
     }
+    if nodes
+        .iter()
+        .any(|node| node.document_index >= documents.len())
+    {
+        return Err("browser controller DOM node document is missing".to_string());
+    }
     for root in shadow_roots {
         validate_node_reference(&root.node_ref)?;
         if !node_refs.contains(root.node_ref.as_str()) {
@@ -473,6 +499,41 @@ mod tests {
         assert_eq!(room.shadow_roots[0].shadow_root_type, "open");
     }
 
+    #[test]
+    fn room_snapshot_resolves_the_document_that_owns_an_element() {
+        let mut snapshot = valid_snapshot();
+        snapshot.dom_documents = vec![
+            BrowserControllerDomDocument {
+                document_index: 0,
+                url: "https://top.test".to_string(),
+                owner_node_ref: None,
+            },
+            BrowserControllerDomDocument {
+                document_index: 1,
+                url: "https://frame.test/login".to_string(),
+                owner_node_ref: None,
+            },
+        ];
+        snapshot.dom_nodes[0].document_index = 1;
+        let room = snapshot
+            .into_room_snapshot(
+                "room-1".to_string(),
+                "environment-1".to_string(),
+                1,
+                "tab-1".to_string(),
+                1,
+                &BTreeMap::from([("backend:1".to_string(), "element-1".to_string())]),
+            )
+            .expect("snapshot should map");
+
+        assert_eq!(
+            room.document_url_for_element("element-1")
+                .expect("element document should resolve"),
+            "https://frame.test/login"
+        );
+        assert!(room.document_url_for_element("element-missing").is_err());
+    }
+
     fn valid_snapshot() -> BrowserControllerStructuredSnapshot {
         BrowserControllerStructuredSnapshot {
             browser_generation: 1,
@@ -480,11 +541,16 @@ mod tests {
             document_id: "loader-a".to_string(),
             snapshot_revision: 1,
             accessibility_nodes: Vec::new(),
-            dom_documents: Vec::new(),
+            dom_documents: vec![BrowserControllerDomDocument {
+                document_index: 0,
+                url: "https://top.test".to_string(),
+                owner_node_ref: None,
+            }],
             shadow_roots: Vec::new(),
             dom_nodes: vec![BrowserControllerDomNode {
                 node_ref: "backend:1".to_string(),
                 parent_ref: None,
+                document_index: 0,
                 node_type: 1,
                 node_name: "INPUT".to_string(),
                 text: String::new(),
