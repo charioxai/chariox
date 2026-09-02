@@ -28,6 +28,11 @@ impl KernelRuntimeState {
             );
             let started = owned.start_provider_launch(launch_request)?;
             let run = started.run.clone();
+            // Lease identity must be visible before the provider's first MCP
+            // request, which can arrive immediately after the PTY is spawned.
+            owned
+                .provider_run_projection
+                .mark_leased_provider_run(run.id());
             if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
                 if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
                     owned.provider_run_projection.update(previous_run);
