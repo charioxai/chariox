@@ -54,11 +54,20 @@ export async function runRoomEnvironmentCompanion(input) {
 }
 
 function validateCompanionResult(companion) {
+  assert.equal(companion.status, "passed", "companion status must be passed")
+  assert.ok(
+    typeof companion.client === "string" && companion.client.trim().length > 0,
+    "companion client must be a non-empty string",
+  )
   assert.equal(typeof companion.actionId, "string")
   assert.ok(companion.actionId.length > 0)
   assert.equal(typeof companion.actorId, "string")
   assert.ok(companion.actorId.length > 0)
   assert.match(companion.physicalEffect, /^POINTER_CLICK_COUNT=\d+$/)
+  assert.ok(
+    typeof companion.screenshot === "string" && path.isAbsolute(companion.screenshot),
+    "companion screenshot must be an absolute path",
+  )
 }
 
 function companionTimeoutMs(value) {

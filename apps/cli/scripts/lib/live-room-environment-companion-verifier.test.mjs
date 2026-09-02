@@ -34,6 +34,8 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
       actionId: action.action_id,
       actorId: action.actor_id,
       physicalEffect: "POINTER_CLICK_COUNT=2",
+      client: "production-local-web-view",
+      screenshot: path.join(root, "web-room-tui-shared.png"),
     }))
   })()
 
@@ -67,6 +69,51 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
     })
 
     assert.equal(verified.actionId, action.action_id)
+    assert.equal(verified.status, "passed")
+    assert.equal(verified.client, "production-local-web-view")
+    assert.equal(verified.screenshot, path.join(root, "web-room-tui-shared.png"))
+    await resultWriter
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Room companion verifier rejects incomplete evidence metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-verifier-"))
+  const resultWriter = (async () => {
+    const readyPath = path.join(root, "ready.json")
+    while (true) {
+      try {
+        await access(readyPath)
+        break
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    }
+    await writeFile(path.join(root, "result.json"), JSON.stringify({
+      schema: "chariox.room_environment.companion_result.v1",
+      status: "passed",
+      sessionId: "session-1",
+      environmentId: "environment-1",
+      actionId: "action-web",
+      actorId: "user:local",
+      physicalEffect: "POINTER_CLICK_COUNT=2",
+    }))
+  })()
+
+  try {
+    await assert.rejects(runRoomEnvironmentCompanion({
+      env: {
+        CHARIOX_ROOM_DRILL_COORDINATION_DIR: root,
+        CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000",
+      },
+      ready: {
+        schema: "chariox.room_environment.companion_ready.v1",
+        sessionId: "session-1",
+        environmentId: "environment-1",
+      },
+      waitForPhysicalEffect: async () => undefined,
+    }), /companion client/i)
     await resultWriter
   } finally {
     await rm(root, { recursive: true, force: true })

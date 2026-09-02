@@ -42,6 +42,34 @@ test("Room drill companion handoff is private and validates the matching result"
   }
 })
 
+test("Room drill companion retries a valid but incomplete result write", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  try {
+    const resultPath = path.join(root, "result.json")
+    await writeFile(resultPath, JSON.stringify({
+      schema: "chariox.room_environment.companion_result.v1",
+    }))
+    const resultPromise = waitForRoomDrillCompanionResult(root, {
+      sessionId: "session-1",
+      environmentId: "environment-1",
+      timeoutMs: 1_000,
+      pollIntervalMs: 5,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await writeFile(resultPath, JSON.stringify({
+      schema: "chariox.room_environment.companion_result.v1",
+      status: "passed",
+      sessionId: "session-1",
+      environmentId: "environment-1",
+      actionId: "action-1",
+    }))
+
+    assert.equal((await resultPromise).actionId, "action-1")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("Room drill companion rejects a stale or failed result", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
   try {
