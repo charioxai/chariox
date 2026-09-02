@@ -731,8 +731,6 @@ impl AgentInstance {
         self.clear_publication_runtime_state();
         self.controlled_by_metaagent_id = None;
         self.meta_mode = None;
-        self.active_substitute_index = None;
-        self.last_substitution = None;
         self.visible_in_freeform = false;
         self.created_at_ms = crate::session::unix_epoch_ms();
         self.last_activity_at_ms = self.created_at_ms;

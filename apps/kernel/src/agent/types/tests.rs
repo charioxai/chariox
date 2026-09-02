@@ -371,6 +371,11 @@ fn workflow_runtime_materialization_preserves_config_without_live_state() {
     source.set_execution_mode_override(Some(crate::provider::AgentExecutionMode::Build));
     source.set_permission_level_override(Some(crate::provider::AgentPermissionLevel::Yolo));
     source.grant_mcp("github");
+    source.add_substitute(
+        AgentSubstituteProfile::new("codex", "gpt-5.6-sol", Some("high".to_string()))
+            .with_account_profile(Some("codex-work".to_string())),
+    );
+    source.activate_substitute(0, "resource exhausted");
     source.set_provider_resume_state(
         crate::provider::ProviderResumeState::from_opencode_session_id("provider-session-secret"),
     );
@@ -384,10 +389,17 @@ fn workflow_runtime_materialization_preserves_config_without_live_state() {
         "/isolated",
     );
 
-    assert_eq!(runtime.provider(), "opencode");
-    assert_eq!(runtime.model(), Some("x-preview-f-free"));
+    assert_eq!(runtime.provider(), "codex");
+    assert_eq!(runtime.model(), Some("gpt-5.6-sol"));
     assert_eq!(runtime.effort(), Some("high"));
-    assert_eq!(runtime.account_profile(), Some("zen"));
+    assert_eq!(runtime.account_profile(), Some("codex-work"));
+    assert_eq!(runtime.active_substitute_index(), Some(0));
+    assert_eq!(
+        runtime
+            .last_substitution()
+            .map(|record| record.reason.as_str()),
+        Some("resource exhausted")
+    );
     assert_eq!(
         runtime.execution_mode_override(),
         Some(crate::provider::AgentExecutionMode::Build)

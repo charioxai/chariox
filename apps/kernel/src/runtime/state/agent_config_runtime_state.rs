@@ -1045,8 +1045,11 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         action: crate::local::AgentSubstituteAction,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.owned
-            .update_agent_substitutes(session_id, agent_id, caller_user_id, action)
+        let agent =
+            self.owned
+                .update_agent_substitutes(session_id, agent_id, caller_user_id, action)?;
+        self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
+        Ok(agent)
     }
 
     pub(crate) async fn ensure_agent_owner(
