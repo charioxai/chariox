@@ -354,6 +354,7 @@ async function main() {
         ? {
             image: sliceImageBuild.image,
             performed: true,
+            cargo_build_profile: sliceImageBuild.buildProfile,
             cargo_opt_level: sliceImageBuild.optLevel,
           }
         : { image: defaultLocalDockerSliceImage, performed: false }
