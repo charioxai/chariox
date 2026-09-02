@@ -16,6 +16,7 @@ import {
   cleanupSliceModeProviderCredentials,
   normalizeProviderOutputText,
   providerThreadSliceOptLevel,
+  providerThreadSliceBuildProfile,
   providersNeedClaudeCredentials,
   sliceProviderAuthImportRequest,
   terminalProviderHistoryError,
@@ -244,5 +245,19 @@ test("provider thread slice builds use a bounded optimization level", () => {
   assert.throws(
     () => providerThreadSliceOptLevel({ CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL: "fast" }),
     /optimization level/,
+  )
+})
+
+test("provider thread slice builds use a low-memory development profile", () => {
+  assert.equal(providerThreadSliceBuildProfile({}), "dev")
+  assert.equal(
+    providerThreadSliceBuildProfile({ CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE: "release" }),
+    "release",
+  )
+  assert.throws(
+    () => providerThreadSliceBuildProfile({
+      CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE: "benchmark",
+    }),
+    /build profile/,
   )
 })

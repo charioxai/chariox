@@ -25,15 +25,29 @@ COPY packages/event-protocol packages/event-protocol
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 ARG CHARIOX_PREBUILT_RUNTIME=0
 ARG CARGO_PROFILE_RELEASE_OPT_LEVEL=3
-RUN if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
+ARG CHARIOX_RUNTIME_BUILD_PROFILE=release
+RUN mkdir -p /opt/chariox-runtime-bin \
+  && if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
       test -x /opt/chariox-prebuilt/chariox-kernel \
       && test -x /opt/chariox-prebuilt/chariox-relay \
-      && mkdir -p target/release \
-      && install -m 0755 /opt/chariox-prebuilt/chariox-kernel target/release/chariox-kernel \
-      && install -m 0755 /opt/chariox-prebuilt/chariox-relay target/release/chariox-relay; \
+      && install -m 0755 /opt/chariox-prebuilt/chariox-kernel /opt/chariox-runtime-bin/chariox-kernel \
+      && install -m 0755 /opt/chariox-prebuilt/chariox-relay /opt/chariox-runtime-bin/chariox-relay; \
     else \
-      CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
-      && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay; \
+      case "$CHARIOX_RUNTIME_BUILD_PROFILE" in \
+        release) \
+          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
+          && profile_dir="release" \
+          ;; \
+        dev) \
+          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --package chariox-relay --bin chariox-relay \
+          && profile_dir="debug" \
+          ;; \
+        *) echo "unsupported runtime build profile: $CHARIOX_RUNTIME_BUILD_PROFILE" >&2; exit 2 ;; \
+      esac \
+      && install -m 0755 "target/$profile_dir/chariox-kernel" /opt/chariox-runtime-bin/chariox-kernel \
+      && install -m 0755 "target/$profile_dir/chariox-relay" /opt/chariox-runtime-bin/chariox-relay; \
     fi
 
 FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS selkies-build
@@ -136,8 +150,8 @@ RUN groupadd --gid 1001 slice \
   && mkdir -p /opt/chariox-slice/bin /opt/chariox-slice/logs \
   && chown -R slice:slice /opt/chariox-slice
 
-COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
-COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-relay /opt/chariox-slice/bin/chariox-relay
+COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
+COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
