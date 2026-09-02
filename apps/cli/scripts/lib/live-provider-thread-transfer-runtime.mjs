@@ -16,7 +16,6 @@ import {
   getSessionHistoryBlobContentRequest,
   getSessionHistoryOutlineRequest,
   getSessionStateRequest,
-  importSliceProviderAuthRequest,
   listProviderProcessesRequest,
   listSessionsRequest,
 } from "../../dist/ipc-requests.js"
@@ -919,15 +918,6 @@ export async function waitForPromptIdle({ client, sessionId, attachmentId, agent
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for agent ${agentId} to become idle; last=${JSON.stringify(last)}`)
-}
-
-export function providerAuthName(provider) {
-  if (provider === "claude-p" || provider === "claude-headless") return "claude"
-  return provider
-}
-
-export function sliceProviderAuthImportRequest(sliceId, provider) {
-  return importSliceProviderAuthRequest(sliceId, providerAuthName(provider), "default")
 }
 
 export async function waitForSliceWorkerProvider({ client, sliceRef, provider, timeoutMs, pollMs }) {

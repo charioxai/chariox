@@ -19,7 +19,6 @@ import {
   providerThreadSliceBuildProfile,
   providerThreadSliceBuildEnv,
   providersNeedClaudeCredentials,
-  sliceProviderAuthImportRequest,
   terminalProviderHistoryError,
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
@@ -227,14 +226,13 @@ test("worker resume daemons keep Chariox state inside the drill runtime root", (
   assert.equal(env.CHARIOX_DAEMON_SOCKET, "/tmp/provider-runtime/worker.sock")
 })
 
-test("slice provider auth import includes the required managed account profile", () => {
-  assert.deepEqual(sliceProviderAuthImportRequest("slice-1", "codex"), {
-    ImportSliceProviderAuth: {
-      slice_ref: "slice-1",
-      provider: "codex",
-      account_profile: "default",
-    },
-  })
+test("slice provider drills leave account publication to execution-lease materialization", async () => {
+  const source = await readFile(
+    new URL("./live-provider-thread-transfer-slice-scenarios.mjs", import.meta.url),
+    "utf8",
+  )
+  assert.doesNotMatch(source, /sliceProviderAuthImportRequest|import-slice-provider-auth/)
+  assert.match(source, /kernel_execution_lease_materialization/)
 })
 
 test("provider thread slice builds use a bounded optimization level", () => {
