@@ -185,6 +185,12 @@ fn claude_normalized_text_reports_resource_limit_dialog(normalized: &str) -> boo
         || normalized
             .trim_start()
             .starts_with("you have hit your usage limit")
+        || normalized
+            .trim_start()
+            .starts_with("you've hit your session limit")
+        || normalized
+            .trim_start()
+            .starts_with("you have hit your session limit")
         || (normalized
             .trim_start()
             .starts_with("fable 5 now uses usage credits")
@@ -335,6 +341,20 @@ mod tests {
         let substitute_failure =
             classify_provider_substitutable_failure_text("claude", "You've hit your usage limit.")
                 .expect("Claude usage limit should activate an available substitute");
+        assert!(substitute_failure.contains("substitutable resource limit"));
+    }
+
+    #[test]
+    fn substitute_classifier_detects_claude_session_limit_dialog() {
+        let dialog = "You've hit your session limit · resets 3:50am (Europe/Madrid)";
+
+        let terminal_failure = classify_provider_terminal_failure_output_text("claude", dialog)
+            .expect("Claude's session-limit dialog should terminate the provider turn");
+        assert!(terminal_failure.contains("substitutable resource limit"));
+        assert!(terminal_failure.contains("session limit"));
+
+        let substitute_failure = classify_provider_substitutable_failure_text("claude", dialog)
+            .expect("Claude's session-limit dialog should advance the substitute chain");
         assert!(substitute_failure.contains("substitutable resource limit"));
     }
 
