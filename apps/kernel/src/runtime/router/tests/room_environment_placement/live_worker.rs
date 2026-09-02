@@ -50,6 +50,14 @@ impl LiveWorker {
     }
 
     async fn start_configured(private_relay: bool, browser_controller: bool) -> Self {
+        Self::start_configured_with_home_vault(private_relay, browser_controller, None).await
+    }
+
+    async fn start_configured_with_home_vault(
+        private_relay: bool,
+        browser_controller: bool,
+        home_vault_backend: Option<crate::config::CredentialVaultBackend>,
+    ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
         const SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
@@ -87,6 +95,9 @@ impl LiveWorker {
 
         let mut home_state = TestState::new();
         let mut worker_state = TestState::new();
+        if let Some(backend) = home_vault_backend {
+            home_state.config.user_config.credential_vault.backend = backend;
+        }
         for state in [&mut home_state, &mut worker_state] {
             state.config.relay_url = Some(format!("ws://{address}"));
             state.config.relay_token = Some("environment-worker-fixture".to_string());

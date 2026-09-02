@@ -374,18 +374,12 @@ impl KernelRuntimeState {
                     )
                     .await;
             }
-            if matches!(
-                canonical_tool_name,
-                crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
-                    | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
-                    | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
-                    | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
-                    | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
-                    | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
-            ) {
+            if is_home_credential_runtime_tool(canonical_tool_name) {
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
                 if let Some(result) = self
                     .try_dispatch_remote_home_credential_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
+                        provider_run,
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -393,9 +387,25 @@ impl KernelRuntimeState {
                 {
                     return Ok(result);
                 }
+                if canonical_tool_name
+                    == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+                {
+                    let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_paste_secret_to_computer",
+                            message: "provider run is not bound to an agent".to_string(),
+                        }
+                    })?;
+                    return Box::pin(self.dispatch_computer_secret_input_tool(
+                        provider_run,
+                        agent_id,
+                        arguments,
+                    ))
+                    .await;
+                }
                 return self
                     .dispatch_credential_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
+                        provider_run,
                         canonical_tool_name,
                         arguments,
                     )
@@ -485,10 +495,22 @@ impl KernelRuntimeState {
     }
 }
 
+fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
+            | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
+            | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+            | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+            | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
+    )
+}
+
 fn is_slice_runtime_tool(tool_name: &str) -> bool {
     crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some()
         || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
-        || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
 }
 
 fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
@@ -569,11 +591,14 @@ mod tests {
     }
 
     #[test]
-    fn secret_paste_tools_use_the_slice_dispatch_path() {
+    fn browser_secret_paste_uses_slice_dispatch_and_computer_secret_uses_home_authority() {
         assert!(super::is_slice_runtime_tool(
             crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
         ));
-        assert!(super::is_slice_runtime_tool(
+        assert!(!super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
+        assert!(super::is_home_credential_runtime_tool(
             crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
         ));
     }

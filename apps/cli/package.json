@@ -34,6 +34,7 @@
     "browser-computer:fixture": "node scripts/live-browser-computer-fixture.mjs",
     "computer-secret-input:drill": "node scripts/computer-secret-input-protocol-drill.mjs",
     "computer-secret-input:x11-drill": "node scripts/live-computer-secret-input-x11-drill.mjs",
+    "computer-secret-input:room-e2e-drill": "pnpm run build && node scripts/live-room-environment-pointer-click-drill.mjs",
     "room-environment:m1-drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-room-environment-m1-drill.mjs",
     "room-environment:pointer-click-drill": "pnpm run build && node scripts/live-room-environment-pointer-click-drill.mjs",
     "script-extension:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-drill.mjs",

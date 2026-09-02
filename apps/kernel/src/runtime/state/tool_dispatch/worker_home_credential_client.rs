@@ -4,6 +4,7 @@ use std::time::Duration;
 use super::*;
 
 const REMOTE_CREDENTIAL_PROMPT_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
+const REMOTE_COMPUTER_SECRET_RESPONSE_TIMEOUT: Duration = Duration::from_secs(345);
 
 impl KernelRuntimeState {
     pub(super) async fn try_dispatch_remote_home_credential_runtime_tool_call(
@@ -149,6 +150,11 @@ fn remote_home_credential_tool_response_timeout(
     arguments: &serde_json::Value,
 ) -> Duration {
     let default_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    if tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL {
+        // The home may need both the 30-second Computer approval and the
+        // 300-second encrypted-vault unlock interaction before it can act.
+        return std::cmp::max(default_timeout, REMOTE_COMPUTER_SECRET_RESPONSE_TIMEOUT);
+    }
     if tool_name != crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL {
         return default_timeout;
     }
@@ -203,5 +209,16 @@ mod tests {
             }),
         );
         assert_eq!(timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn computer_secret_waits_for_home_approval_and_vault_unlock() {
+        let config = config_with_timeout(60_000);
+        let timeout = remote_home_credential_tool_response_timeout(
+            &config,
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL,
+            &serde_json::json!({"credential_id": "desktop-login"}),
+        );
+        assert_eq!(timeout, Duration::from_secs(345));
     }
 }
