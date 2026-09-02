@@ -3,7 +3,7 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -253,6 +253,16 @@ async function cleanup(tempRoot) {
   await rm(tempRoot, { recursive: true, force: true })
 }
 
+async function pathMissing(target) {
+  try {
+    await access(target)
+    return false
+  } catch (error) {
+    if (error?.code === "ENOENT") return true
+    throw error
+  }
+}
+
 async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-computer-secret-x11-"))
   const secret = `cxs-${randomUUID().replaceAll("-", "")}-Z9`
@@ -266,10 +276,34 @@ async function main() {
   const report = {
     schema: "chariox.computer_secret_input_x11_drill.v1",
     startedAt: new Date().toISOString(),
-    sourceCommit: sourceCommit.stdout.trim(),
+    command: "pnpm --dir apps/cli computer-secret-input:x11-drill",
+    sourceCommits: {
+      oss: sourceCommit.stdout.trim(),
+      cloud: null,
+    },
     drillScriptSha256: createHash("sha256").update(await readFile(drillScript)).digest("hex"),
     screenToolSha256: createHash("sha256").update(await readFile(screenTool)).digest("hex"),
     image,
+    topology: {
+      kind: "local-docker-x11",
+      host: os.hostname(),
+      hostPlatform: process.platform,
+      hostRelease: os.release(),
+      hostArchitecture: os.arch(),
+      containerNetwork: "none",
+    },
+    components: {
+      node: process.version,
+      provider: "not exercised",
+      kernel: "not exercised; covered by the companion protocol drill",
+      relay: "not exercised",
+      cloud: "not exercised",
+      selkies: "not exercised",
+    },
+    artifacts: {
+      screenshot: "masked-field.png",
+      ocr: "masked-field-ocr.txt",
+    },
     resourceLimits: {
       memoryBytes: 805_306_368,
       memorySwapBytes: 805_306_368,
@@ -284,8 +318,13 @@ async function main() {
   await writeFile(pagePath, testPage(expectedDigest, secret.length), "utf8")
   resources.push(await resourceSnapshot("before"))
 
+  let failure = null
   try {
-    await docker(["info", "--format", "{{json .ServerVersion}}"], { timeoutMs: 20_000 })
+    const dockerVersion = await docker(
+      ["version", "--format", "client={{.Client.Version}} server={{.Server.Version}}"],
+      { timeoutMs: 20_000 },
+    )
+    report.components.docker = dockerVersion.stdout.trim()
     const imageInspect = await docker(
       ["image", "inspect", "--format", "{{.Id}}", image],
       { timeoutMs: 20_000 },
@@ -332,6 +371,18 @@ async function main() {
       pidsLimit: hostConfig.PidsLimit,
       networkMode: hostConfig.NetworkMode,
     }
+    const containerVersions = await docker([
+      "exec",
+      "-u",
+      "slice",
+      containerName,
+      "/bin/bash",
+      "-lc",
+      ". /etc/os-release; printf 'os=%s-%s\\n' \"$ID\" \"$VERSION_ID\"; chromium --version",
+    ])
+    const [containerOs, browser] = containerVersions.stdout.trim().split("\n")
+    report.components.containerOs = containerOs
+    report.components.browser = browser
     await docker(["exec", "-u", "root", containerName, "mkdir", "-p", "/tmp/chariox-secret-x11"])
     await docker(["cp", pagePath, `${containerName}:/tmp/chariox-secret-x11/index.html`])
     await docker(["cp", screenTool, `${containerName}:/tmp/chariox-secret-x11/slice-screen.sh`])
@@ -551,16 +602,11 @@ async function main() {
     report.diagnostics = await collectDiagnostics(secret).catch((diagnosticError) =>
       redact(diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError), secret),
     )
-    throw error
-  } finally {
-    await cleanup(tempRoot)
-    resources.push(await resourceSnapshot("after"))
-    report.completedAt = new Date().toISOString()
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+    failure = error
   }
 
-  const evidence = await readFile(reportPath, "utf8")
-  assert.equal(evidence.includes(secret), false, "retained report leaked the secret")
+  await cleanup(tempRoot)
+  resources.push(await resourceSnapshot("after"))
   const leftovers = await run("docker", [
     "ps",
     "-a",
@@ -569,7 +615,21 @@ async function main() {
     "--format",
     "{{.Names}}",
   ])
-  assert.equal(leftovers.stdout.trim(), "", "drill container was not removed")
+  const containerRemoved = leftovers.stdout.trim() === ""
+  const tempRootRemoved = await pathMissing(tempRoot)
+  report.cleanup = { containerRemoved, tempRootRemoved }
+  if (!containerRemoved || !tempRootRemoved) {
+    const cleanupError = new Error("drill cleanup left a container or temporary directory")
+    report.status = "failed"
+    report.error ??= cleanupError.message
+    failure ??= cleanupError
+  }
+  report.completedAt = new Date().toISOString()
+  const serializedReport = `${JSON.stringify(report, null, 2)}\n`
+  const safeReport = redact(serializedReport, secret)
+  assert.equal(safeReport.includes(secret), false, "retained report leaked the secret")
+  await writeFile(reportPath, safeReport, "utf8")
+  if (failure) throw failure
   console.log(`[computer-secret-input-x11-drill] PASS evidence=${evidenceRoot}`)
 }
 
