@@ -81,15 +81,17 @@ test("Room drill companion rejects a stale or failed result", async () => {
       error: "browser failed",
     }))
 
+    const startedAt = Date.now()
     await assert.rejects(
       waitForRoomDrillCompanionResult(root, {
         sessionId: "session-1",
         environmentId: "environment-1",
-        timeoutMs: 100,
+        timeoutMs: 1_000,
         pollIntervalMs: 10,
       }),
       /session mismatch/,
     )
+    assert.ok(Date.now() - startedAt < 200, "a complete stale result should fail without polling to timeout")
   } finally {
     await rm(root, { recursive: true, force: true })
   }
