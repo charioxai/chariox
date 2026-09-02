@@ -793,6 +793,53 @@ impl ProviderAccountProfileRegistry {
             .map(|profile| project_usage_freshness(profile.public.clone()))
     }
 
+    pub(crate) fn require_authenticated(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        operation: &'static str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let profile = self.get(owner_user_id, provider, profile_id)?;
+        if profile.auth_state == ProviderAccountAuthState::Authenticated {
+            return Ok(profile);
+        }
+        let action = match profile.auth_state {
+            ProviderAccountAuthState::Expired => "reconnect",
+            ProviderAccountAuthState::Error => "test or reconnect",
+            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured => {
+                "authenticate"
+            }
+            ProviderAccountAuthState::Authenticated => unreachable!(),
+        };
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "selected {} account `{}` is not authenticated; {action} it in Provider Accounts before starting new work",
+                profile.provider, profile.label
+            ),
+        })
+    }
+
+    pub(crate) fn require_agent_authenticated(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
+            return Ok(());
+        };
+        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
+        self.require_authenticated(
+            &owner_user_id,
+            provider,
+            agent.provider_account_profile(),
+            operation,
+        )?;
+        Ok(())
+    }
+
     /// Test-only view of the stored (unprojected) profile.
     #[cfg(test)]
     fn get_raw_for_test(

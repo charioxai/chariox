@@ -463,6 +463,19 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: Option<&str>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let agent = self.agent_store.get_agent(agent_id)?;
+        self.provider_account_profiles.require_agent_authenticated(
+            &self.config_projection.snapshot(),
+            &agent,
+            "activate queued prompt",
+        )?;
         let prompt = self
             .prompt_state_owner
             .activate_next_queued_prompt_with_prompt_id(
@@ -524,6 +537,12 @@ impl KernelRuntimeOwnedState {
                 queued_prompts,
             )?;
         };
+        let agent = self.agent_store.get_agent(agent_id)?;
+        self.provider_account_profiles.require_agent_authenticated(
+            &self.config_projection.snapshot(),
+            &agent,
+            "advance queued prompt",
+        )?;
         if self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)

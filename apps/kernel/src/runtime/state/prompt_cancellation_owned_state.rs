@@ -99,7 +99,35 @@ impl KernelRuntimeOwnedState {
                     prompt.prompt()
                         == crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
                 });
-        let started_next = if !hold_queued_prompts
+        let provider_account_available = if self
+            .prompt_state_owner
+            .peek_next_queued_prompt(&current_session, agent_id)
+            .is_none()
+        {
+            true
+        } else {
+            match self.provider_account_profiles.require_agent_authenticated(
+                &self.config_projection.snapshot(),
+                &agent,
+                "advance queued prompt after cancellation",
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.prompt_queue",
+                        "deferred queued prompt because its provider account is unavailable",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    false
+                }
+            }
+        };
+        let started_next = if provider_account_available
+            && !hold_queued_prompts
             && self
                 .prompt_state_owner
                 .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)

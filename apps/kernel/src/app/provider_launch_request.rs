@@ -52,11 +52,20 @@ impl DaemonApp {
                     &self.config,
                     &request.owner_user_id,
                 );
-            let profile = self.provider_account_profiles.get(
-                &account_owner_user_id,
-                &request.provider,
-                &request.account_profile,
-            )?;
+            let profile = if request.client_interface.is_chariox() {
+                self.provider_account_profiles.require_authenticated(
+                    &account_owner_user_id,
+                    &request.provider,
+                    &request.account_profile,
+                    operation,
+                )?
+            } else {
+                self.provider_account_profiles.get(
+                    &account_owner_user_id,
+                    &request.provider,
+                    &request.account_profile,
+                )?
+            };
             let provider_account_env = self.provider_account_profiles.resolve_environment(
                 &account_owner_user_id,
                 &request.provider,
