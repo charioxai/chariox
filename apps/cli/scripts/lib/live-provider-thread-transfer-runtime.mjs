@@ -172,6 +172,20 @@ export function providerThreadSliceBuildEnv(env = process.env) {
   }
 }
 
+export function providerThreadSliceConfigLines({ sliceRoot, image, buildImage }) {
+  return [
+    "[slices]",
+    `root = ${JSON.stringify(sliceRoot)}`,
+    "",
+    "[slices.linux]",
+    `docker_image = ${JSON.stringify(image)}`,
+    `build_image = ${JSON.stringify(buildImage)}`,
+    "memory_mb = 2048",
+    `cpus = ${JSON.stringify("1.0")}`,
+    "allow_unconfined_seccomp = true",
+  ]
+}
+
 export function variant(response, name) {
   if (!response || !(name in response)) {
     throw new Error(`expected ${name}, got ${JSON.stringify(response)}`)

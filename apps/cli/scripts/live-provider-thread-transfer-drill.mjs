@@ -27,6 +27,7 @@ import {
   parseArgs,
   printHelp,
   providerThreadSliceBuildEnv,
+  providerThreadSliceConfigLines,
   prepareIsolatedWorkerProviderEnv,
   prepareSliceModeProviderEnv,
   realProviderEnv,
@@ -331,16 +332,11 @@ async function main() {
         await writeIsolatedKernelConfig({
           xdgConfigHome: sliceXdgConfigHome,
           storageRoot: path.join(runtimeRoot, "home-kernel-storage"),
-          extraToml: [
-            "[slices]",
-            `root = ${JSON.stringify(sliceRoot)}`,
-            "",
-            "[slices.linux]",
-            `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
-            `build_image = ${JSON.stringify(options.sliceBuildImage)}`,
-            "memory_mb = 2048",
-            `cpus = ${JSON.stringify("1.0")}`,
-          ],
+          extraToml: providerThreadSliceConfigLines({
+            sliceRoot,
+            image: defaultLocalDockerSliceImage,
+            buildImage: options.sliceBuildImage,
+          }),
         })
         const sliceBuildEnv = providerThreadSliceBuildEnv()
         console.log(`slice-restart: provisioner image policy ${options.sliceBuildImage}`)
