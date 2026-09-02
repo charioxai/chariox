@@ -60,9 +60,13 @@ test("scopes OpenCode Go exhaustion to Go rather than Zen or arbitrary upstream 
   assert.equal(providerAccountCapacity(openCode, nowMs, "opencode-go/deepseek-v4-pro").state, "exhausted")
   assert.equal(providerAccountCapacity(openCode, nowMs, "opencode/gpt-5.2").state, "unknown")
   assert.equal(providerAccountCapacity(openCode, nowMs, "opencode/gpt-5.2").detail, "OpenCode Zen balance not reported")
+  assert.equal(providerAccountCapacity(openCode, nowMs, "gpt-5.2").detail, "OpenCode Zen balance not reported")
   assert.equal(providerAccountCapacity(openCode, nowMs, "openai/gpt-5.2").state, "unknown")
   assert.equal(providerAccountCapacityLabel(openCode, nowMs, "opencode-go/deepseek-v4-pro"), "Account · OpenCode Go (exhausted)")
   assert.equal(providerAccountCapacity(openCode, nowMs).state, "warning")
+
+  const zenExhausted = profile("opencode", [{ ...usage, service_id: "opencode" }])
+  assert.equal(providerAccountCapacity(zenExhausted, nowMs, "gpt-5.2").state, "exhausted")
 })
 
 function profile(provider: string, meters: ProviderAccountUsageMeter[]): ProviderAccountProfile {

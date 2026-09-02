@@ -81,9 +81,11 @@ export function providerAccountCapacityLabel(profile: ProviderAccountProfile, no
 }
 
 function openCodeServiceFromModel(model?: string | null): string | null {
-  if (!model) return null
-  const separator = model.indexOf("/")
-  return separator > 0 && separator < model.length - 1 ? model.slice(0, separator) : null
+  const normalized = model?.trim()
+  if (!normalized || normalized === "default") return null
+  const separator = normalized.indexOf("/")
+  if (separator === -1) return "opencode"
+  return separator > 0 && separator < normalized.length - 1 ? normalized.slice(0, separator) : null
 }
 
 function openCodeMeterService(meter: ProviderAccountUsageMeter): string | null {

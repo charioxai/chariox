@@ -415,7 +415,15 @@ fn provider_account_usage_block(
 }
 
 fn opencode_service_from_model(model: &str) -> Option<&str> {
-    let (service, model_id) = model.split_once('/')?;
+    let model = model.trim();
+    if model.is_empty() || model == "default" {
+        return None;
+    }
+    let Some((service, model_id)) = model.split_once('/') else {
+        // OpenCode's runtime parser treats an unqualified model as a Zen
+        // model. Capacity admission must resolve it the same way.
+        return Some("opencode");
+    };
     (!service.is_empty() && !model_id.is_empty()).then_some(service)
 }
 
@@ -3572,8 +3580,31 @@ mod tests {
                 .is_none()
         );
         assert!(
+            provider_account_usage_block("opencode", Some("gpt-5.2"), &usage, now_ms,).is_none()
+        );
+        assert!(
             provider_account_usage_block("opencode", Some("openai/gpt-5.2"), &usage, now_ms,)
                 .is_none()
+        );
+
+        let zen_usage = capacity_snapshot(
+            "opencode",
+            ProviderAccountUsageAvailability::Available,
+            vec![ProviderAccountUsageMeter {
+                service_id: Some("opencode".to_string()),
+                ..capacity_meter(
+                    "Credits",
+                    ProviderAccountUsageMeterKind::CreditBalance,
+                    ProviderAccountUsageMeterState::Exhausted,
+                    now_ms,
+                    None,
+                )
+            }],
+            now_ms,
+        );
+        assert!(
+            provider_account_usage_block("opencode", Some("gpt-5.2"), &zen_usage, now_ms,)
+                .is_some()
         );
     }
 
