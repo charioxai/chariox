@@ -117,7 +117,7 @@ async function run() {
   start("kernel", kernel, [], {
     env: {
       ...process.env,
-      CHARIOX_HOME: tempRoot,
+      CHARIOX_HOME: path.join(tempRoot, "home"),
       XDG_CONFIG_HOME: path.join(tempRoot, "config"),
       CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: "1",
       CHARIOX_KERNEL_PORT: String(kernelPort),
