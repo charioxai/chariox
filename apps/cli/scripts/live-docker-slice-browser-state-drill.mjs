@@ -171,6 +171,7 @@ async function run() {
     sliceRuntime.initial.installedRuntimeSourceRevision,
     "initial slice image and installed runtime revisions must match",
   )
+  assertSliceResourceLimits(sliceRuntime.initial.containerLimits, "initial slice")
   log("slice is running")
 
   await writeFile(path.join(artifactDir, "container-before-save.inspect.json"), await dockerText(["inspect", containerName]))
@@ -205,6 +206,7 @@ async function run() {
     sliceRuntime.initial.installedRuntimeSourceRevision,
     "restored slice must retain the same installed runtime source revision",
   )
+  assertSliceResourceLimits(sliceRuntime.restored.containerLimits, "restored slice")
   log("restored slice is running")
   await writeFile(path.join(artifactDir, "container-after-restore.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("restored")
@@ -232,7 +234,7 @@ async function run() {
 }
 
 async function seedConfig() {
-  const configDir = path.join(tempRoot, "config", "chariox")
+  const configDir = path.join(tempRoot, "home")
   await mkdir(configDir, { recursive: true })
   await writeFile(path.join(configDir, "config.toml"), [
     "version = 1",
@@ -439,7 +441,18 @@ async function inspectSliceRuntime() {
     installedRuntimeSourceRevision: installedRevision.trim(),
     relayPeerProtocolVersion: labels["io.chariox.relay-peer-protocol-version"] ?? null,
     workerKernelSha256: kernelHash.trim().split(/\s+/)[0],
+    containerLimits: {
+      memoryBytes: container.HostConfig?.Memory ?? null,
+      memorySwapBytes: container.HostConfig?.MemorySwap ?? null,
+      nanoCpus: container.HostConfig?.NanoCpus ?? null,
+    },
   }
+}
+
+function assertSliceResourceLimits(limits, label) {
+  assert.equal(limits.memoryBytes, 2048 * 1024 * 1024, `${label} memory limit`)
+  assert.equal(limits.memorySwapBytes, limits.memoryBytes, `${label} swap must not exceed memory`)
+  assert.equal(limits.nanoCpus, 1_000_000_000, `${label} CPU limit`)
 }
 
 async function resourceSnapshot(label) {
@@ -605,6 +618,7 @@ async function writeManifest(ok, error = null) {
     screenshots,
     resources,
     assertions: [
+      "initial and restored slices retained the 2 GiB memory, no-extra-swap, and one-CPU caps",
       "installed graphical program survived committed-image restore",
       "cookie, localStorage, IndexedDB, Cache Storage, and service-worker registration survived",
       "restored service worker served cached content while the fixture was offline",
