@@ -30,7 +30,6 @@ export const cliRoot = path.resolve(scriptDir, "..")
 export const repoRoot = path.resolve(cliRoot, "..", "..")
 export const kernelBinary = resolveBinaryPath("kernel", "chariox-kernel")
 export const relayBinary = resolveBinaryPath("relay", "chariox-relay")
-export const artifactsRoot = path.join(repoRoot, ".artifacts", "provider-thread-transfer")
 export const defaultLocalDockerSliceImage = process.env.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"
 
 export const DEFAULT_PROVIDERS = ["opencode", "codex"]
@@ -142,7 +141,7 @@ export function printHelp() {
     "  --worker-state shared|isolated",
     `  --slice-build-image always|auto|never (default ${DEFAULT_SLICE_BUILD_IMAGE_POLICY})`,
     "  --keep-slice-on-failure",
-    "  --cleanup-on-success",
+    "  --cleanup-on-success (accepted for compatibility; disposable runtime is always cleaned)",
   ].join("\n"))
 }
 
@@ -710,6 +709,7 @@ export function workerResumeDaemonEnv({
   return {
     ...process.env,
     ...providerEnv,
+    CHARIOX_HOME: path.join(root, `${daemonId}-chariox-home`),
     XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
     XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
     CHARIOX_KERNEL_PORT: String(kernelPort),

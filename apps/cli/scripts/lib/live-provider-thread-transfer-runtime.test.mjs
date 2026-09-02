@@ -4,7 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import { cleanupSliceRuntime } from "./live-provider-thread-transfer-slice-scenarios.mjs"
+import {
+  cleanupSliceRuntime,
+  failResultOnSliceCleanupErrors,
+} from "./live-provider-thread-transfer-slice-scenarios.mjs"
 import {
   providerStateCopySpecs,
   transferProviderStateToWorker,
@@ -14,6 +17,7 @@ import {
   normalizeProviderOutputText,
   providersNeedClaudeCredentials,
   terminalProviderHistoryError,
+  workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
 } from "./live-provider-thread-transfer-runtime.mjs"
 
@@ -158,6 +162,19 @@ test("slice restart cleanup resets saved state before deleting the slice", async
   assert.equal(evidence.slice_cleanup_error, undefined)
 })
 
+test("slice cleanup errors fail an otherwise passing drill result", () => {
+  const result = {
+    status: "passed",
+    evidence: { slice_state_cleanup_error: "state image remained" },
+    errors: [],
+  }
+
+  failResultOnSliceCleanupErrors(result, { resetSavedState: true })
+
+  assert.equal(result.status, "failed")
+  assert.deepEqual(result.errors, ["slice cleanup failed: state image remained"])
+})
+
 test("provider thread transfer fails fast on terminal provider history", () => {
   const failure = terminalProviderHistoryError([
     { kind: "notice", text: "provider is starting" },
@@ -181,4 +198,27 @@ test("provider thread transfer ignores nonterminal provider history", () => {
     { kind: "notice", text: "provider is starting" },
     { kind: "provider_output", text: "done" },
   ]), null)
+})
+
+test("worker resume daemons keep Chariox state inside the drill runtime root", () => {
+  const env = workerResumeDaemonEnv({
+    ports: { relayPort: 4000 },
+    root: "/tmp/provider-runtime",
+    relayToken: "token",
+    daemonId: "worker-1",
+    daemonAlias: "worker",
+    machineId: "machine-1",
+    machineAlias: "machine",
+    acceptRemoteLeases: true,
+    socketName: "worker.sock",
+    kernelPort: 4001,
+    mcpPort: 4002,
+    openCodePort: 4003,
+    codexPort: 4004,
+    providerEnv: {},
+  })
+
+  assert.equal(env.CHARIOX_HOME, "/tmp/provider-runtime/worker-1-chariox-home")
+  assert.equal(env.CHARIOX_SESSION_HISTORY_DIR, "/tmp/provider-runtime/worker-1-history")
+  assert.equal(env.CHARIOX_DAEMON_SOCKET, "/tmp/provider-runtime/worker.sock")
 })
