@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { createHmac } from "node:crypto"
 import { createWriteStream, existsSync } from "node:fs"
 import { chmod, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -178,11 +178,18 @@ export function providerThreadSliceTargetArch(
   )
 }
 
-export function providerThreadSliceBuildEnv(env = process.env) {
-  return {
-    ...env,
-    DOCKER_BUILDKIT: "1",
+export function providerThreadSliceBuildCommand(
+  probe = (command, args) => spawnSync(command, args, { stdio: "ignore" }).status === 0,
+) {
+  if (probe("docker", ["buildx", "version"])) {
+    return { command: "docker", prefixArgs: ["buildx", "build", "--load"] }
   }
+  if (probe("docker-buildx", ["version"])) {
+    return { command: "docker-buildx", prefixArgs: ["build", "--load"] }
+  }
+  throw new Error(
+    "provider thread slice image builds require Docker Buildx (plugin or standalone command)",
+  )
 }
 
 export function variant(response, name) {
@@ -824,10 +831,11 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
   const optLevel = providerThreadSliceOptLevel()
   const buildProfile = providerThreadSliceBuildProfile()
   const targetArch = providerThreadSliceTargetArch()
+  const buildCommand = providerThreadSliceBuildCommand()
   const stdoutPath = path.join(root, "slice-image-build.stdout.log")
   const stderrPath = path.join(root, "slice-image-build.stderr.log")
-  await runLoggedCommand("docker", [
-    "build",
+  await runLoggedCommand(buildCommand.command, [
+    ...buildCommand.prefixArgs,
     "--build-arg",
     `CARGO_PROFILE_RELEASE_OPT_LEVEL=${optLevel}`,
     "--build-arg",
@@ -841,7 +849,7 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
     repoRoot,
   ], {
     cwd: repoRoot,
-    env: providerThreadSliceBuildEnv(),
+    env: process.env,
     stdoutPath,
     stderrPath,
     timeoutMs,
