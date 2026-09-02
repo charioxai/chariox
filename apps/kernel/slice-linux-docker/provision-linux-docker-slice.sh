@@ -47,6 +47,7 @@ SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
+SLICE_APPARMOR_PROFILE="${CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
@@ -107,6 +108,9 @@ case "$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" in
   0|1|2|3|s|z) ;;
   *) fail "CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL is invalid" ;;
 esac
+if [[ ! "$SLICE_APPARMOR_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]]; then
+  fail "CHARIOX_SLICE_APPARMOR_PROFILE is invalid"
+fi
 
 run_with_timeout() {
   local seconds="$1"
@@ -531,7 +535,16 @@ ensure_container() {
       --add-host "host.docker.internal:host-gateway"
     )
     if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
-      docker_create_args+=(--security-opt seccomp=unconfined)
+      # The worker kernel launches providers through an inner bubblewrap user,
+      # PID, and mount namespace. Docker's default seccomp, AppArmor, and
+      # system-path masks block that setup before bubblewrap can install the
+      # narrower provider boundary. Managed hosts run this container in the
+      # dedicated rootless daemon; ordinary local slices must opt in.
+      docker_create_args+=(
+        --security-opt seccomp=unconfined
+        --security-opt apparmor="$SLICE_APPARMOR_PROFILE"
+        --security-opt systempaths=unconfined
+      )
     fi
     if [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
       docker_create_args+=(-v "$SLICE_WORKSPACE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")

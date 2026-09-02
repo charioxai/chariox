@@ -248,6 +248,36 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
 }
 
 #[test]
+fn local_docker_slice_compatibility_mode_probes_the_named_apparmor_boundary() {
+    let _guard = crate::env_lock::lock();
+    let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
+    std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");
+    let record = test_record();
+    let mut options = test_options();
+    options.allow_unconfined_seccomp = true;
+    let mut command = Command::new("slice-provisioner");
+
+    configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
+
+    match previous_profile {
+        Some(value) => std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", value),
+        None => std::env::remove_var("CHARIOX_SLICE_APPARMOR_PROFILE"),
+    }
+    let envs: std::collections::BTreeMap<_, _> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+        .collect();
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_APPARMOR_PROFILE"),
+        Some(&"chariox-slice-provider")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE"),
+        Some(&"1")
+    );
+}
+
+#[test]
 fn local_docker_default_saved_state_round_trips_through_pointer_manifest() {
     let root = test_root("slice-default-state");
     let state_dir = root.join("states").join("gmail-ready");
