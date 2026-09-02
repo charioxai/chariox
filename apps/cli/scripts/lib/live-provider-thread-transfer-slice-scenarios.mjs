@@ -29,14 +29,12 @@ import {
 import {
   collectProviderProcesses,
   logStep,
-  providerAuthName,
   providerEffort,
   providerModel,
   providerRunSnapshot,
   providerThreadId,
   realProviderEnv,
   sendControlRequest,
-  sliceProviderAuthImportRequest,
   sliceRecordSnapshot,
   sliceSavedStateSnapshot,
   variant,
@@ -123,16 +121,10 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     })
     result.evidence.slice_ready_before_restart = sliceRecordSnapshot(readySlice)
 
-    logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
-    const authImported = variant(
-      await withTimeout(
-        client.send(sliceProviderAuthImportRequest(sliceId, provider)),
-        `import slice provider auth for ${provider}`,
-        Math.min(options.timeoutMs, 120_000),
-      ),
-      "SliceProviderAuthImported",
-    ).slice
-    result.evidence.slice_auth_imported = sliceRecordSnapshot(authImported)
+    result.evidence.provider_account_transfer = {
+      path: "kernel_execution_lease_materialization",
+      account_profile: "default",
+    }
 
     logStep(result, provider, "create-session", { workspace })
     const session = variant(
@@ -550,16 +542,10 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       providerEnv: options.providerStateSourceEnv ?? realProviderEnv(),
     })
 
-    logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
-    const authImported = variant(
-      await withTimeout(
-        client.send(sliceProviderAuthImportRequest(sliceId, provider)),
-        `import slice provider auth for ${provider}`,
-        Math.min(options.timeoutMs, 120_000),
-      ),
-      "SliceProviderAuthImported",
-    ).slice
-    result.evidence.slice_auth_imported = sliceRecordSnapshot(authImported)
+    result.evidence.provider_account_transfer = {
+      path: "kernel_execution_lease_materialization",
+      account_profile: "default",
+    }
 
     const machineRef = readySlice.worker_machine_id ?? `slice:${sliceId}`
     logStep(result, provider, "move-same-agent-to-slice", { agentId: agent.id, machineRef })
