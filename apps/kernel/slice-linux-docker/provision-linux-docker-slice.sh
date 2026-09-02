@@ -54,6 +54,8 @@ SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
+SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
@@ -122,6 +124,14 @@ fi
 if [[ ! "$SLICE_DEVELOPMENT_MOUNT_COUNT" =~ ^[0-9]+$ || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 128 ]]; then
   fail "slice development mount count is invalid"
 fi
+case "$SLICE_RUNTIME_BUILD_PROFILE" in
+  dev|release) ;;
+  *) fail "CHARIOX_SLICE_RUNTIME_BUILD_PROFILE must be dev or release" ;;
+esac
+case "$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" in
+  0|1|2|3|s|z) ;;
+  *) fail "CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL is invalid" ;;
+esac
 
 run_with_timeout() {
   local seconds="$1"
@@ -416,6 +426,8 @@ build_standard_runtime_image() {
     docker_build \
       --build-arg "TARGETARCH=$target_arch" \
       --build-arg "CHARIOX_PREBUILT_RUNTIME=1" \
+      --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
+      --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
       --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
       --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
       -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
@@ -425,6 +437,8 @@ build_standard_runtime_image() {
   fi
   docker_build \
     --build-arg "TARGETARCH=$target_arch" \
+    --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
+    --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \

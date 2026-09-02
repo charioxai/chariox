@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { createHmac } from "node:crypto"
 import { createWriteStream, existsSync } from "node:fs"
 import { chmod, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -166,30 +166,11 @@ export function providerThreadSliceBuildProfile(env = process.env) {
   return profile
 }
 
-export function providerThreadSliceTargetArch(
-  env = process.env,
-  runtimeArch = process.arch,
-) {
-  const arch = env.CHARIOX_PROVIDER_THREAD_SLICE_TARGET_ARCH ?? runtimeArch
-  if (["arm64", "aarch64"].includes(arch)) return "arm64"
-  if (["x64", "x86_64", "amd64"].includes(arch)) return "amd64"
-  throw new Error(
-    `unsupported provider thread slice target architecture: ${arch}`,
-  )
-}
-
-export function providerThreadSliceBuildCommand(
-  probe = (command, args) => spawnSync(command, args, { stdio: "ignore" }).status === 0,
-) {
-  if (probe("docker", ["buildx", "version"])) {
-    return { command: "docker", prefixArgs: ["buildx", "build", "--load"] }
+export function providerThreadSliceBuildEnv(env = process.env) {
+  return {
+    CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: providerThreadSliceBuildProfile(env),
+    CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: providerThreadSliceOptLevel(env),
   }
-  if (probe("docker-buildx", ["version"])) {
-    return { command: "docker-buildx", prefixArgs: ["build", "--load"] }
-  }
-  throw new Error(
-    "provider thread slice image builds require Docker Buildx (plugin or standalone command)",
-  )
 }
 
 export function variant(response, name) {
@@ -593,6 +574,7 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
     XDG_DATA_HOME: xdgDataHome,
     XDG_STATE_HOME: xdgStateHome,
     XDG_CACHE_HOME: xdgCacheHome,
+    ...providerThreadSliceBuildEnv(),
     CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
     CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
     ...(claudeCredentialsPath ? {
@@ -823,44 +805,6 @@ async function readLogTail(filePath) {
     return (await readFile(filePath, "utf8")).split("\n").slice(-80).join("\n").trim()
   } catch {
     return ""
-  }
-}
-
-export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeoutMs) {
-  if (policy !== "always") return null
-  const optLevel = providerThreadSliceOptLevel()
-  const buildProfile = providerThreadSliceBuildProfile()
-  const targetArch = providerThreadSliceTargetArch()
-  const buildCommand = providerThreadSliceBuildCommand()
-  const stdoutPath = path.join(root, "slice-image-build.stdout.log")
-  const stderrPath = path.join(root, "slice-image-build.stderr.log")
-  await runLoggedCommand(buildCommand.command, [
-    ...buildCommand.prefixArgs,
-    "--build-arg",
-    `CARGO_PROFILE_RELEASE_OPT_LEVEL=${optLevel}`,
-    "--build-arg",
-    `CHARIOX_RUNTIME_BUILD_PROFILE=${buildProfile}`,
-    "--build-arg",
-    `TARGETARCH=${targetArch}`,
-    "-f",
-    path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
-    "-t",
-    defaultLocalDockerSliceImage,
-    repoRoot,
-  ], {
-    cwd: repoRoot,
-    env: process.env,
-    stdoutPath,
-    stderrPath,
-    timeoutMs,
-  })
-  return {
-    image: defaultLocalDockerSliceImage,
-    buildProfile,
-    optLevel,
-    targetArch,
-    stdoutPath,
-    stderrPath,
   }
 }
 

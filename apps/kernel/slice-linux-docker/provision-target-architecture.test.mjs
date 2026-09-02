@@ -45,6 +45,8 @@ process.exit(1);
         CHARIOX_TEST_DOCKER_LOG: dockerLog,
         CHARIOX_SLICE_NAME: "chariox-target-arch-fixture",
         CHARIOX_SLICE_BUILD_IMAGE: "always",
+        CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: "dev",
+        CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "1",
       },
     })
     assert.notEqual(result.status, 0, "the stubbed image build should stop provisioning")
@@ -53,6 +55,8 @@ process.exit(1);
     assert.equal(build.source, "standalone")
     assert.deepEqual(build.args.slice(0, 2), ["build", "--load"])
     assert.equal(targetArg, "TARGETARCH=arm64")
+    assert.ok(build.args.includes("CHARIOX_RUNTIME_BUILD_PROFILE=dev"))
+    assert.ok(build.args.includes("CARGO_PROFILE_RELEASE_OPT_LEVEL=1"))
   } finally {
     await rm(root, { recursive: true, force: true })
   }

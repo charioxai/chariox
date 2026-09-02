@@ -17,8 +17,7 @@ import {
   normalizeProviderOutputText,
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
-  providerThreadSliceBuildCommand,
-  providerThreadSliceTargetArch,
+  providerThreadSliceBuildEnv,
   providersNeedClaudeCredentials,
   sliceProviderAuthImportRequest,
   terminalProviderHistoryError,
@@ -264,42 +263,22 @@ test("provider thread slice builds use a low-memory development profile", () => 
   )
 })
 
-test("provider thread slice builds normalize the local Docker target architecture", () => {
-  assert.equal(providerThreadSliceTargetArch({}, "arm64"), "arm64")
-  assert.equal(providerThreadSliceTargetArch({}, "aarch64"), "arm64")
-  assert.equal(providerThreadSliceTargetArch({}, "x64"), "amd64")
-  assert.equal(providerThreadSliceTargetArch({}, "x86_64"), "amd64")
-  assert.equal(
-    providerThreadSliceTargetArch(
-      { CHARIOX_PROVIDER_THREAD_SLICE_TARGET_ARCH: "amd64" },
-      "arm64",
-    ),
-    "amd64",
-  )
-  assert.throws(
-    () => providerThreadSliceTargetArch({}, "riscv64"),
-    /target architecture/,
-  )
-})
-
-test("provider thread slice builds use the available Buildx frontend", () => {
-  const pluginProbe = (command, args) => command === "docker" && args[0] === "buildx"
+test("provider thread slice builds delegate bounded settings to the provisioner", () => {
   assert.deepEqual(
-    providerThreadSliceBuildCommand(pluginProbe),
+    providerThreadSliceBuildEnv({}),
     {
-      command: "docker",
-      prefixArgs: ["buildx", "build", "--load"],
+      CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: "dev",
+      CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "1",
     },
   )
   assert.deepEqual(
-    providerThreadSliceBuildCommand((command) => command === "docker-buildx"),
+    providerThreadSliceBuildEnv({
+      CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE: "release",
+      CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL: "2",
+    }),
     {
-      command: "docker-buildx",
-      prefixArgs: ["build", "--load"],
+      CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: "release",
+      CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "2",
     },
-  )
-  assert.throws(
-    () => providerThreadSliceBuildCommand(() => false),
-    /require Docker Buildx/,
   )
 })
