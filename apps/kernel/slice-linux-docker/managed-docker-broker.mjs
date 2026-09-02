@@ -394,7 +394,7 @@ function validateProvisioner(action, environment, files) {
   }
   validateResource(environment.CHARIOX_SLICE_NAME ?? "", "slice container")
   if (environment.CHARIOX_SLICE_HOSTNAME !== undefined
-      && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(environment.CHARIOX_SLICE_HOSTNAME)) {
+      && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(environment.CHARIOX_SLICE_HOSTNAME)) {
     fail("CHARIOX_SLICE_HOSTNAME is invalid")
   }
   if (!/^[a-zA-Z0-9_.:-]{1,180}$/.test(environment.CHARIOX_SLICE_ID ?? "")) {

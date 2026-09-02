@@ -109,6 +109,24 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   )
   assert.equal(provision.status, 0, provision.stderr)
 
+  const existingMixedCaseHostname = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-Production-1",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-Production-1",
+        CHARIOX_SLICE_ID: "slice-production-1",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-Production-1-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_WORKSPACE: workspace,
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(existingMixedCaseHostname.status, 0, existingMixedCaseHostname.stderr)
+
   const namedAppArmorProfile = validate(
     {
       kind: "provisioner",

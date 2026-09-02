@@ -153,6 +153,25 @@ fn local_docker_hostname_is_stable_rfc1123_and_bounded() {
     assert_eq!(configured_hostname, hostname);
 }
 
+#[test]
+fn local_docker_provisioning_preserves_an_existing_valid_hostname() {
+    let record = test_record();
+    let mut command = Command::new("slice-provisioner");
+
+    configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
+        .expect("slice command should configure");
+
+    let configured_hostname = command
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == "CHARIOX_SLICE_HOSTNAME")
+                .then(|| value.and_then(|value| value.to_str()))
+                .flatten()
+        })
+        .expect("slice hostname should be configured");
+    assert_eq!(configured_hostname, "chariox-slice-dev");
+}
+
 fn test_options() -> LocalDockerSliceOptions {
     LocalDockerSliceOptions {
         root: std::env::temp_dir(),

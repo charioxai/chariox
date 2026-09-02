@@ -1255,6 +1255,19 @@ pub(super) fn local_docker_hostname(record: &SliceRecord) -> String {
     const HASH_LENGTH: usize = 12;
     const MAX_HOSTNAME_LENGTH: usize = 63;
 
+    let existing_hostname = local_docker_container_name(record);
+    if existing_hostname.len() <= MAX_HOSTNAME_LENGTH
+        && existing_hostname
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && existing_hostname
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return existing_hostname;
+    }
+
     let mut slug = String::with_capacity(record.name.len());
     for character in record.name.trim().chars() {
         let character = character.to_ascii_lowercase();
