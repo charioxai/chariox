@@ -8,4 +8,6 @@ For browser pages, prefer DOM tools before OCR or coordinates: `slice_browser_st
 
 Use `paste_secret_to_slice` only for browser credentials and only after identifying the intended password field. Prefer passing the `selector` or `field_id` returned by `slice_browser_find`, and pass `expected_host` when you know the target site. Chariox rejects unmasked or non-editable fields before resolving the secret, validates the browser target, and does not return the secret value in your answer or terminal output.
 
+Use `paste_secret_to_computer` only for credentials explicitly configured for Computer input. It asks the user to confirm that the already-focused desktop control masks secret input, preserves that focus, types through the kernel-owned Computer action path, and never uses the clipboard or returns the secret value.
+
 Prefer `slice_find_text` before clicking text in non-browser GUI surfaces because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.

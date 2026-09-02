@@ -7,6 +7,9 @@ use crate::session::{
     agent_environment_actor_id, ActionAdmission, EnvironmentActionRequest, EnvironmentActionState,
     EnvironmentActionTerminal, EnvironmentError,
 };
+use crate::transport::room_browser_controller::{
+    RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerInputAction,
+};
 
 use super::KernelRuntimeState;
 
@@ -20,7 +23,117 @@ pub(crate) struct BrowserControllerActionExecution<T> {
     pub(crate) value: T,
 }
 
+#[derive(Debug)]
+pub(crate) struct ComputerControllerActionExecution {
+    pub(crate) action_id: String,
+    pub(crate) actor_id: String,
+}
+
 impl KernelRuntimeState {
+    pub(crate) async fn execute_computer_input_as_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        action_kind: &str,
+        input: RoomComputerInputAction,
+    ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        let environment = self
+            .reconcile_room_environment_actors(session_id, None)
+            .map_err(action_environment_error)?;
+        let actor_id = agent_environment_actor_id(agent_id);
+        let request = EnvironmentActionRequest::computer_mutation(
+            &actor_id,
+            environment.runtime_generation,
+            action_kind,
+            environment.focused_tab_id.as_deref(),
+        );
+        let (admission, _) = self
+            .submit_room_environment_action(session_id, request)
+            .map_err(action_environment_error)?;
+        let action_id = match admission {
+            ActionAdmission::Accepted { action_id } => action_id,
+            ActionAdmission::Queued { action_id, .. } => {
+                self.wait_for_environment_action_admission(session_id, &action_id)
+                    .await?;
+                action_id
+            }
+            ActionAdmission::Existing { action_id, state } => {
+                return Err(action_dispatch_error(format!(
+                    "unexpected existing computer action `{action_id}` in state {state:?}"
+                )));
+            }
+            ActionAdmission::RejectedSaturated { capacity } => {
+                return Err(action_dispatch_error(format!(
+                    "computer action queue reached its capacity of {capacity}"
+                )));
+            }
+            ActionAdmission::RejectedBusy {
+                target,
+                active_action_id,
+            } => {
+                return Err(action_dispatch_error(format!(
+                    "computer action target {target:?} is reserved by `{active_action_id}`"
+                )));
+            }
+            ActionAdmission::RejectedTakeover {
+                target,
+                human_actor_id,
+            } => {
+                return Err(action_dispatch_error(format!(
+                    "computer action target {target:?} belongs to `{human_actor_id}`"
+                )));
+            }
+        };
+
+        let current = self
+            .room_environment_snapshot(session_id)
+            .map_err(action_environment_error)?;
+        if current.runtime_generation != environment.runtime_generation {
+            let _ = self.finish_room_environment_action(
+                session_id,
+                &action_id,
+                EnvironmentActionTerminal::Failed,
+            );
+            return Err(action_dispatch_error(
+                "computer action runtime generation changed before execution".to_string(),
+            ));
+        }
+        let execution = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::ComputerInput {
+                    action_id: action_id.clone(),
+                    actor_id: actor_id.clone(),
+                    runtime_generation: current.runtime_generation,
+                    viewport_revision: current.viewport.revision,
+                    desktop_pixel_width: current.viewport.desktop_pixel_width,
+                    desktop_pixel_height: current.viewport.desktop_pixel_height,
+                    action: input,
+                },
+            )
+            .await;
+        let terminal = match &execution {
+            Ok(RoomBrowserControllerResult::ComputerInputApplied {
+                action_id: returned_action_id,
+            }) if returned_action_id == &action_id => EnvironmentActionTerminal::Completed,
+            _ => EnvironmentActionTerminal::Failed,
+        };
+        self.finish_room_environment_action(session_id, &action_id, terminal)
+            .map_err(action_environment_error)?;
+        match execution {
+            Ok(RoomBrowserControllerResult::ComputerInputApplied {
+                action_id: returned_action_id,
+            }) if returned_action_id == action_id => Ok(ComputerControllerActionExecution {
+                action_id,
+                actor_id,
+            }),
+            Ok(_) => Err(action_dispatch_error(
+                "computer input returned a mismatched controller response".to_string(),
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) async fn execute_browser_mutation_as_agent<T, F>(
         &self,
         session_id: &str,
@@ -51,7 +164,7 @@ impl KernelRuntimeState {
         let action_id = match admission {
             ActionAdmission::Accepted { action_id } => action_id,
             ActionAdmission::Queued { action_id, .. } => {
-                self.wait_for_browser_action_admission(session_id, &action_id)
+                self.wait_for_environment_action_admission(session_id, &action_id)
                     .await?;
                 action_id
             }
@@ -159,7 +272,7 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn wait_for_browser_action_admission(
+    async fn wait_for_environment_action_admission(
         &self,
         session_id: &str,
         action_id: &str,
@@ -175,7 +288,7 @@ impl KernelRuntimeState {
                 .find(|action| action.action_id == action_id)
                 .ok_or_else(|| {
                     action_dispatch_error(format!(
-                        "queued browser action `{action_id}` disappeared before execution"
+                        "queued environment action `{action_id}` disappeared before execution"
                     ))
                 })?;
             match action.state {
@@ -190,12 +303,12 @@ impl KernelRuntimeState {
                         EnvironmentActionTerminal::Cancelled,
                     );
                     return Err(action_dispatch_error(format!(
-                        "queued browser action `{action_id}` timed out"
+                        "queued environment action `{action_id}` timed out"
                     )));
                 }
                 state => {
                     return Err(action_dispatch_error(format!(
-                        "queued browser action `{action_id}` became {state:?} before execution"
+                        "queued environment action `{action_id}` became {state:?} before execution"
                     )));
                 }
             }

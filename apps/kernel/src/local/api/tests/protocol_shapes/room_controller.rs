@@ -7,12 +7,12 @@ use crate::transport::relay_peer::{
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 use crate::transport::room_browser_controller::{
-    RoomComputerInputAction, RoomComputerPointerButton,
+    RoomComputerInputAction, RoomComputerPointerButton, RoomComputerSecretInput,
 };
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 35);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 36);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -54,8 +54,8 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 299);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 35);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 300);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 36);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -123,6 +123,29 @@ fn room_controller_protocol_shapes_are_versioned() {
                 "desktop_pixel_width":1280,
                 "desktop_pixel_height":800,
                 "action":{"kind":"pointer_click","x":320,"y":180,"button":"right","click_count":2}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-8".into(),
+                actor_id: "agent:agent-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::SecretText {
+                    input: RoomComputerSecretInput::new("computer-secret-fixture".into()),
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input",
+                "action_id":"action-8",
+                "actor_id":"agent:agent-1",
+                "runtime_generation":4,
+                "viewport_revision":9,
+                "desktop_pixel_width":1280,
+                "desktop_pixel_height":800,
+                "action":{"kind":"secret_text","input":"computer-secret-fixture"}
             }),
         ),
         (
@@ -410,4 +433,23 @@ fn room_controller_protocol_shapes_are_versioned() {
         handled
     );
     assert!(!format!("{handled:?}").contains("sensitive-worker-result"));
+}
+
+#[test]
+fn computer_secret_input_debug_output_is_redacted() {
+    let command = RoomBrowserControllerCommand::ComputerInput {
+        action_id: "action-secret".into(),
+        actor_id: "agent:agent-1".into(),
+        runtime_generation: 1,
+        viewport_revision: 1,
+        desktop_pixel_width: 1280,
+        desktop_pixel_height: 800,
+        action: RoomComputerInputAction::SecretText {
+            input: RoomComputerSecretInput::new("must-not-appear-in-debug".into()),
+        },
+    };
+
+    let debug = format!("{command:?}");
+    assert!(debug.contains("[redacted computer secret input]"));
+    assert!(!debug.contains("must-not-appear-in-debug"));
 }

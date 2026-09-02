@@ -192,6 +192,25 @@ CARGO_TARGET_DIR=/absolute/shared/cargo-target \
 
 Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
 
+## Computer secret input protocol drill
+
+Use this after changing Computer credential policy, approval, relay resolution,
+desktop input transport, or Room Environment action recording:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run computer-secret-input:drill
+```
+
+The drill first invokes the slice desktop helper with a one-time canary and
+proves it types into the existing X11 focus without the clipboard or browser
+controller. It then runs the public runtime-MCP path, including deny and allow
+approval outcomes, exact secret delivery, redacted MCP/action history, actor
+attribution, and the versioned remote-home credential proxy shape. Disposable
+state containing the canary is always deleted. Non-secret reports and test logs
+are written under
+`~/.codex/evidence/browser-computer-use/computer-secret-input/`.
+
 ## Hosted Cloud Relay Drill
 
 Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:

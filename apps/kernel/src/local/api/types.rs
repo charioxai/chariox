@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 299 preserves the owning document index for browser snapshot nodes.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 299;
+/// Version 300 adds approval-gated Computer credential injection.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 300;

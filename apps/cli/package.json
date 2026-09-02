@@ -32,6 +32,7 @@
     "runtime-resilience:deterministic-chaos-drill": "node scripts/deterministic-runtime-chaos-drill.mjs",
     "slice:lifecycle-drill": "pnpm run build && node scripts/live-slice-lifecycle-drill.mjs",
     "browser-computer:fixture": "node scripts/live-browser-computer-fixture.mjs",
+    "computer-secret-input:drill": "node scripts/computer-secret-input-protocol-drill.mjs",
     "room-environment:m1-drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-room-environment-m1-drill.mjs",
     "room-environment:pointer-click-drill": "pnpm run build && node scripts/live-room-environment-pointer-click-drill.mjs",
     "script-extension:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-drill.mjs",

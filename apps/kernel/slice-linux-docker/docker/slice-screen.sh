@@ -485,6 +485,11 @@ secret_paste_submit_stdin() {
   node "$ROOT/browser-cdp.mjs" secret-paste-submit-stdin
 }
 
+computer_secret_paste_stdin() {
+  require_screen_available
+  run_xdotool type --clearmodifiers --delay 5 --file -
+}
+
 browser_status() {
   require_screen_available
   run_browser_cdp status
@@ -680,6 +685,7 @@ case "${1:-status}" in
   paste-stdin|paste_stdin) paste_stdin ;;
   secret-paste-stdin|secret_paste_stdin) shift; secret_paste_stdin "$@" ;;
   secret-paste-submit-stdin|secret_paste_submit_stdin) shift; secret_paste_submit_stdin "$@" ;;
+  computer-secret-paste-stdin|computer_secret_paste_stdin) computer_secret_paste_stdin ;;
   browser-status|browser_status) browser_status ;;
   browser-find|browser_find) shift; browser_find "$@" ;;
   browser-fill|browser_fill) shift; browser_fill "$@" ;;
@@ -695,7 +701,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

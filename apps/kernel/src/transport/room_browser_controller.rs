@@ -13,6 +13,36 @@ pub(crate) enum RoomComputerPointerButton {
     Right,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RoomComputerSecretInput(String);
+
+impl RoomComputerSecretInput {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
+    pub(crate) fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RoomComputerSecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RoomComputerSecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted computer secret input]")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
@@ -21,6 +51,9 @@ pub(crate) enum RoomComputerInputAction {
         y: u32,
         button: RoomComputerPointerButton,
         click_count: u8,
+    },
+    SecretText {
+        input: RoomComputerSecretInput,
     },
 }
 

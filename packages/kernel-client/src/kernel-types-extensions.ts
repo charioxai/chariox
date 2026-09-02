@@ -70,7 +70,7 @@ export type CharioxCredentialConfig = {
   description?: string | null
   source: Record<string, unknown>
   allowed_hosts?: string[]
-  allowed_uses?: ("http" | "pty" | "connector" | "browser" | "mcp" | string)[]
+  allowed_uses?: ("http" | "pty" | "connector" | "browser" | "computer" | "mcp" | string)[]
   injection: Record<string, unknown>
 }
 

@@ -408,7 +408,7 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
-    fn credential_specs_expose_browser_secret_paste_tool() {
+    fn credential_specs_expose_browser_and_computer_secret_paste_tools() {
         let specs = credential_runtime_tool_specs();
         assert!(specs
             .iter()
@@ -416,6 +416,12 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL_ALIAS));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS));
         assert!(specs
             .iter()
             .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL));
@@ -428,6 +434,22 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
+        let create = specs
+            .iter()
+            .find(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL)
+            .expect("generated credential tool spec");
+        assert!(
+            create.input_schema["properties"]["credential"]["properties"]["allowed_uses"]["items"]
+                ["enum"]
+                .as_array()
+                .is_some_and(|uses| uses.contains(&serde_json::json!("computer")))
+        );
+        assert!(
+            create.input_schema["properties"]["credential"]["properties"]["injection"]
+                ["properties"]["kind"]["enum"]
+                .as_array()
+                .is_some_and(|kinds| kinds.contains(&serde_json::json!("computer")))
+        );
     }
 
     #[test]
@@ -560,6 +582,14 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_credential_tool_name("mcp__chariox__paste_secret_to_slice"),
             Some(PASTE_SECRET_TO_SLICE_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("paste_secret_to_computer"),
+            Some(PASTE_SECRET_TO_COMPUTER_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("mcp__chariox__paste_secret_to_computer"),
+            Some(PASTE_SECRET_TO_COMPUTER_TOOL)
         );
         assert_eq!(
             canonical_credential_tool_name("manage_credential_vault"),

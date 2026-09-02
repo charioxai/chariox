@@ -58,7 +58,7 @@ impl KernelRuntimeState {
         provider_run: &crate::provider::RuntimeProviderRun,
         credential_id: &str,
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
-    ) -> Result<Option<String>, DaemonError> {
+    ) -> Result<Option<zeroize::Zeroizing<String>>, DaemonError> {
         let Some(context) = self
             .remote_credential_context_for_provider_run(provider_run)
             .await
@@ -82,7 +82,7 @@ impl KernelRuntimeState {
         .await?;
         match response {
             RelayPeerResponse::HomeCredentialSecretResolved { secret_input, .. } => {
-                Ok(Some(secret_input))
+                Ok(Some(secret_input.into_zeroizing()))
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "remote credential secret",

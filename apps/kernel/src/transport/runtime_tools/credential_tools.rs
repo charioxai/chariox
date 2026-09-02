@@ -108,6 +108,11 @@ pub struct PasteSecretToSliceArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasteSecretToComputerArgs {
+    pub credential_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupChoiceArgs {
     pub id: String,
     pub label: String,
@@ -447,6 +452,18 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: PASTE_SECRET_TO_COMPUTER_TOOL.to_string(),
+            description: "After explicit user approval, type a computer credential into the already-focused desktop control without exposing the value to the model or clipboard. Use only when the user can verify that the focused control masks secret input.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential_id"],
+                "properties": {
+                    "credential_id": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: MANAGE_CREDENTIAL_VAULT_TOOL.to_string(),
             description: "Check, lock, or request the Chariox Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
             input_schema: serde_json::json!({
@@ -544,7 +561,7 @@ fn credential_creation_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["http", "pty", "connector", "browser", "mcp"]
+                    "enum": ["http", "pty", "connector", "browser", "computer", "mcp"]
                 }
             },
             "injection": {
@@ -553,7 +570,7 @@ fn credential_creation_schema() -> Value {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["header", "query", "basic", "hmac", "pty", "browser"]
+                        "enum": ["header", "query", "basic", "hmac", "pty", "browser", "computer"]
                     },
                     "name": {"type": "string"},
                     "value": {"type": "string"},
@@ -576,6 +593,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
         PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
+        PASTE_SECRET_TO_COMPUTER_TOOL => PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS,
         MANAGE_CREDENTIAL_VAULT_TOOL => MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS,
         REQUEST_POPUP_TOOL => REQUEST_POPUP_TOOL_ALIAS,
         _ => return None,
@@ -622,6 +640,11 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_paste_secret_to_slice"
         | "mcp__chariox__paste_secret_to_slice"
         | "mcp__chariox__chariox_paste_secret_to_slice" => Some(PASTE_SECRET_TO_SLICE_TOOL),
+        PASTE_SECRET_TO_COMPUTER_TOOL
+        | PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS
+        | "chariox_paste_secret_to_computer"
+        | "mcp__chariox__paste_secret_to_computer"
+        | "mcp__chariox__chariox_paste_secret_to_computer" => Some(PASTE_SECRET_TO_COMPUTER_TOOL),
         MANAGE_CREDENTIAL_VAULT_TOOL
         | MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS
         | "chariox_manage_credential_vault"
