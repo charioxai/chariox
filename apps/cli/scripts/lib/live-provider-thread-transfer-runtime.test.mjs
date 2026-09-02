@@ -17,6 +17,7 @@ import {
   normalizeProviderOutputText,
   providerThreadSliceOptLevel,
   providerThreadSliceBuildProfile,
+  providerThreadSliceBuildEnv,
   providerThreadSliceTargetArch,
   providersNeedClaudeCredentials,
   sliceProviderAuthImportRequest,
@@ -278,5 +279,18 @@ test("provider thread slice builds normalize the local Docker target architectur
   assert.throws(
     () => providerThreadSliceTargetArch({}, "riscv64"),
     /target architecture/,
+  )
+})
+
+test("provider thread slice builds require BuildKit without losing daemon selection", () => {
+  assert.deepEqual(
+    providerThreadSliceBuildEnv({
+      DOCKER_BUILDKIT: "0",
+      DOCKER_HOST: "unix:///tmp/isolated-docker.sock",
+    }),
+    {
+      DOCKER_BUILDKIT: "1",
+      DOCKER_HOST: "unix:///tmp/isolated-docker.sock",
+    },
   )
 })
