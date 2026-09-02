@@ -206,16 +206,16 @@ pub(super) async fn execute_save_slice_state_request(
         crate::slice::set_local_docker_default_saved_state(&state, &docker_options)?;
     }
     runtime_state.record_slice_audit_event(&saved_slice, "state.save", "completed", None, None)?;
-    drop(operation_guard);
-
     if mode == SliceStateSaveMode::RestartAgents {
-        let started = execute_start_slice_request(
+        let started = execute_start_slice_request_with_relaunch_manifests(
             runtime_state,
             config_projection,
             relay_state,
             SliceRefRequest {
                 slice_ref: saved_slice.id.clone(),
             },
+            Some(relaunch_manifests),
+            operation_guard,
         )
         .await?;
         let LocalDaemonResponse::SliceStarted {
@@ -335,7 +335,26 @@ pub(super) async fn execute_start_slice_request(
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
+    let operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
+    execute_start_slice_request_with_relaunch_manifests(
+        runtime_state,
+        config_projection,
+        relay_state,
+        request,
+        None,
+        operation,
+    )
+    .await
+}
+
+async fn execute_start_slice_request_with_relaunch_manifests(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
+    request: SliceRefRequest,
+    prepared_relaunch_manifests: Option<Vec<super::super::state::SliceAgentRelaunchManifest>>,
+    _operation: crate::slice::SliceOperationGuard,
+) -> Result<LocalDaemonResponse, DaemonError> {
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
@@ -350,11 +369,17 @@ pub(super) async fn execute_start_slice_request(
         operation: "slice.start",
         message: format!("slice development materialization task failed: {error}"),
     })??;
-    let relaunch_manifests =
-        runtime_state.slice_agent_relaunch_manifests(&initial_record, "slice.start")?;
-    runtime_state
-        .park_slice_agent_provider_runs(&relaunch_manifests)
-        .await?;
+    let relaunch_manifests = match prepared_relaunch_manifests {
+        Some(manifests) => manifests,
+        None => {
+            let manifests =
+                runtime_state.slice_agent_relaunch_manifests(&initial_record, "slice.start")?;
+            runtime_state
+                .park_slice_agent_provider_runs(&manifests)
+                .await?;
+            manifests
+        }
+    };
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
     ensure_cloud_relay_connection(runtime_state, config_projection).await?;
     let relay = local_docker_slice_relay(config_projection, &initial_record).await?;
@@ -472,14 +497,63 @@ pub(super) async fn execute_start_slice_request(
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
     let mut slice = slice;
     if !relaunch_manifests.is_empty() {
+        let relaunch_agent_ids = relaunch_manifests
+            .iter()
+            .map(|manifest| manifest.agent_id.clone())
+            .collect::<Vec<_>>();
+        runtime_state.record_slice_audit_event(
+            &slice,
+            "agents.relaunch",
+            "accepted",
+            None,
+            None,
+        )?;
         let worker = relay_presence_from_started_slice(&slice, "slice.start")?;
-        runtime_state
+        if let Err(source) = runtime_state
             .rebind_and_relaunch_slice_agents(relaunch_manifests, &worker)
-            .await?;
+            .await
+        {
+            let error =
+                slice_agent_relaunch_failure(&request.slice_ref, &relaunch_agent_ids, &source);
+            let failed_slice = runtime_state
+                .mark_slice_operation_failed(&request.slice_ref, "start", &error)
+                .unwrap_or_else(|_| slice.clone());
+            let _ = runtime_state.record_slice_audit_event(
+                &failed_slice,
+                "agents.relaunch",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
         slice = runtime_state.resolve_slice(&request.slice_ref)?;
+        runtime_state.record_slice_audit_event(
+            &slice,
+            "agents.relaunch",
+            "completed",
+            None,
+            None,
+        )?;
     }
     runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
+}
+
+fn slice_agent_relaunch_failure(
+    slice_ref: &str,
+    agent_ids: &[String],
+    source: &DaemonError,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "slice.agent.relaunch",
+        message: format!(
+            "slice worker started but agents failed to relaunch: {}; retry /slice start {}: {}",
+            agent_ids.join(","),
+            slice_ref,
+            source
+        ),
+    }
 }
 
 pub(super) async fn execute_stop_slice_request(
@@ -1053,6 +1127,24 @@ fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relaunch_failure_names_every_agent_and_the_retry_action() {
+        let source = DaemonError::LocalTransport {
+            operation: "launch remote native provider run",
+            message: "worker rejected resume".to_string(),
+        };
+        let error = slice_agent_relaunch_failure(
+            "slice-1",
+            &["agent-1".to_string(), "agent-2".to_string()],
+            &source,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "local transport `slice.agent.relaunch` failed: slice worker started but agents failed to relaunch: agent-1,agent-2; retry /slice start slice-1: local transport `launch remote native provider run` failed: worker rejected resume"
+        );
+    }
 
     fn slice(agent_ids: Vec<String>) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {

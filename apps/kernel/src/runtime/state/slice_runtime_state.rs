@@ -5,11 +5,14 @@ pub(crate) struct SliceAgentRelaunchManifest {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
     pub(crate) owner_user_id: String,
+    pub(crate) source_remote_execution: crate::agent::RemoteAgentBinding,
     pub(crate) adapter_key: String,
     pub(crate) provider: String,
     pub(crate) account_profile: String,
     pub(crate) model: String,
     pub(crate) variant: Option<String>,
+    pub(crate) execution_mode: crate::provider::AgentExecutionMode,
+    pub(crate) permission_level: crate::provider::AgentPermissionLevel,
     pub(crate) structured_endpoint: Option<String>,
     pub(crate) provider_session_id: Option<String>,
     pub(crate) existing_provider_run_id: Option<String>,
@@ -179,6 +182,17 @@ impl KernelRuntimeState {
         for agent_id in &slice.agent_ids {
             let agent = self.owned.agent_store.get_agent(agent_id)?;
             let session = self.owned.session_store.get_session(agent.session_id())?;
+            let source_remote_execution = agent.remote_execution().cloned().ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation,
+                    message: format!(
+                        "cannot relaunch slice agent `{}` because its remote execution binding is missing; detach the stale agent or start it again",
+                        agent.id()
+                    ),
+                }
+            })?;
+            let effective_config =
+                crate::session::effective_agent_execution_config(&session, Some(&agent));
             if self
                 .owned
                 .prompt_state_owner
@@ -206,11 +220,14 @@ impl KernelRuntimeState {
                     session_id: session.id().to_string(),
                     agent_id: agent.id().to_string(),
                     owner_user_id: agent.owner_user_id().to_string(),
+                    source_remote_execution: source_remote_execution.clone(),
                     adapter_key: run.adapter_key().to_string(),
                     provider: run.provider().to_string(),
                     account_profile: run.account_profile().to_string(),
                     model: run.model().to_string(),
                     variant: run.variant().or_else(|| agent.effort()).map(str::to_string),
+                    execution_mode: effective_config.mode,
+                    permission_level: effective_config.permission_level,
                     // A slice restart must spawn a fresh managed provider process inside the
                     // restarted worker. The previous structured endpoint is worker-local and
                     // points at the provider server that was stopped with the old slice.
@@ -222,17 +239,25 @@ impl KernelRuntimeState {
                     existing_provider_run_id: Some(run.id().to_string()),
                 }
             } else {
+                let adapter_key =
+                    crate::provider::adapter_key_for_provider(agent.provider()).to_string();
                 SliceAgentRelaunchManifest {
                     session_id: session.id().to_string(),
                     agent_id: agent.id().to_string(),
                     owner_user_id: agent.owner_user_id().to_string(),
-                    adapter_key: agent.provider().to_string(),
+                    source_remote_execution,
+                    adapter_key: adapter_key.clone(),
                     provider: agent.provider().to_string(),
-                    account_profile: "default".to_string(),
+                    account_profile: agent.provider_account_profile().to_string(),
                     model: agent.model().unwrap_or("default").to_string(),
                     variant: agent.effort().map(str::to_string),
+                    execution_mode: effective_config.mode,
+                    permission_level: effective_config.permission_level,
                     structured_endpoint: None,
-                    provider_session_id: None,
+                    provider_session_id: agent
+                        .provider_resume_state()
+                        .provider_session_id(&adapter_key)
+                        .map(str::to_string),
                     existing_provider_run_id: None,
                 }
             };
@@ -241,10 +266,7 @@ impl KernelRuntimeState {
         if !busy_agents.is_empty() {
             return Err(DaemonError::LocalTransport {
                 operation,
-                message: format!(
-                    "cannot restart slice agents while prompts are running; wait for them to finish or stop them: {}",
-                    busy_agents.join(",")
-                ),
+                message: busy_slice_agents_message(operation, &busy_agents),
             });
         }
         Ok(manifests)
@@ -298,6 +320,44 @@ impl KernelRuntimeState {
         worker: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<(), DaemonError> {
         for manifest in manifests {
+            let source_agent = self.owned.agent_store.get_agent(&manifest.agent_id)?;
+            let source_session = self.owned.session_store.get_session(&manifest.session_id)?;
+            let current_binding = source_agent.remote_execution().ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "slice.agent.relaunch",
+                    message: format!(
+                        "cannot relaunch slice agent `{}` because its remote execution binding disappeared; retry /slice start",
+                        manifest.agent_id
+                    ),
+                }
+            })?;
+            if !same_slice_relaunch_source_binding(
+                current_binding,
+                &manifest.source_remote_execution,
+            ) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.agent.relaunch",
+                    message: format!(
+                        "cannot relaunch slice agent `{}` because its remote execution binding changed; retry /slice start",
+                        manifest.agent_id
+                    ),
+                });
+            }
+            let current_config = crate::session::effective_agent_execution_config(
+                &source_session,
+                Some(&source_agent),
+            );
+            if current_config.mode != manifest.execution_mode
+                || current_config.permission_level != manifest.permission_level
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.agent.relaunch",
+                    message: format!(
+                        "cannot relaunch slice agent `{}` because its execution permissions changed; retry /slice start",
+                        manifest.agent_id
+                    ),
+                });
+            }
             let agent_id = manifest.agent_id.clone();
             let worker = worker.clone();
             let rebound = self
@@ -856,9 +916,68 @@ impl KernelRuntimeState {
     }
 }
 
+fn same_slice_relaunch_source_binding(
+    current: &crate::agent::RemoteAgentBinding,
+    captured: &crate::agent::RemoteAgentBinding,
+) -> bool {
+    current.worker_kernel_id == captured.worker_kernel_id
+        && current.worker_machine_id == captured.worker_machine_id
+        && current.execution_lease_id == captured.execution_lease_id
+        && current.leased_agent_id == captured.leased_agent_id
+        && current.relay_url == captured.relay_url
+        && current.relay_token == captured.relay_token
+        && current.relay_peer_protocol_version == captured.relay_peer_protocol_version
+}
+
+fn busy_slice_agents_message(operation: &'static str, agent_ids: &[String]) -> String {
+    let action = if operation == "slice.state.save" {
+        "save"
+    } else {
+        "start"
+    };
+    format!(
+        "cannot {action} slice while agents are running; wait for them to finish or stop them: {}",
+        agent_ids.join(",")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_busy_agent_error_matches_the_user_recovery_contract() {
+        assert_eq!(
+            busy_slice_agents_message(
+                "slice.state.save",
+                &["agent-1".to_string(), "agent-2".to_string()]
+            ),
+            "cannot save slice while agents are running; wait for them to finish or stop them: agent-1,agent-2"
+        );
+    }
+
+    #[test]
+    fn relaunch_binding_comparison_ignores_only_the_parked_provider_run() {
+        let captured = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-1".to_string(),
+            worker_machine_id: "slice:slice-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            active_worker_provider_run_id: Some("run-before-save".to_string()),
+            relay_url: Some("ws://127.0.0.1:4100".to_string()),
+            relay_token: Some("test-token".to_string()),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        let mut parked = captured.clone();
+        parked.active_worker_provider_run_id = None;
+        assert!(same_slice_relaunch_source_binding(&parked, &captured));
+
+        let mut changed = parked;
+        changed.execution_lease_id = "different-lease".to_string();
+        assert!(!same_slice_relaunch_source_binding(&changed, &captured));
+    }
 
     #[tokio::test]
     async fn relaunch_manifests_ignore_stale_legacy_agent_busy_state() {
@@ -867,14 +986,26 @@ mod tests {
         runtime
             .owned
             .agent_store
-            .set_agent_runtime_profile(
+            .set_agent_runtime_profile_with_account_profile(
                 &agent_id,
                 "codex",
                 Some("gpt-5.6-sol".to_string()),
                 Some("low".to_string()),
-                crate::provider::ProviderResumeState::default(),
+                Some("work".to_string()),
+                crate::provider::ProviderResumeState::from_codex_thread_id("thread-before-save"),
             )
             .expect("agent runtime profile should update");
+        runtime
+            .owned
+            .agent_store
+            .update_agent_config(
+                &agent_id,
+                Some(Some(crate::provider::AgentExecutionMode::Plan)),
+                Some(Some(crate::provider::AgentPermissionLevel::Required)),
+                None,
+                None,
+            )
+            .expect("agent execution config should update");
         runtime
             .owned
             .agent_store
@@ -892,7 +1023,27 @@ mod tests {
 
         assert_eq!(manifests.len(), 1);
         assert_eq!(manifests[0].agent_id, agent_id);
+        assert_eq!(manifests[0].adapter_key, "codex");
+        assert_eq!(manifests[0].provider, "codex");
+        assert_eq!(manifests[0].account_profile, "work");
+        assert_eq!(manifests[0].model, "gpt-5.6-sol");
         assert_eq!(manifests[0].variant.as_deref(), Some("low"));
+        assert_eq!(
+            manifests[0].provider_session_id.as_deref(),
+            Some("thread-before-save")
+        );
+        assert_eq!(
+            manifests[0].source_remote_execution.worker_machine_id,
+            format!("slice:{}", slice.id)
+        );
+        assert_eq!(
+            manifests[0].execution_mode,
+            crate::provider::AgentExecutionMode::Plan
+        );
+        assert_eq!(
+            manifests[0].permission_level,
+            crate::provider::AgentPermissionLevel::Required
+        );
     }
 
     #[tokio::test]
@@ -907,11 +1058,94 @@ mod tests {
         match error {
             DaemonError::LocalTransport { operation, message } => {
                 assert_eq!(operation, "slice.start");
-                assert!(message.contains("cannot restart slice agents while prompts are running"));
+                assert!(message.contains("cannot start slice while agents are running"));
                 assert!(message.contains(&agent_id));
             }
             other => panic!("expected active prompt ownership error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn relaunch_manifests_preserve_projected_provider_selection_after_parking() {
+        let (_app, runtime, slice, session_id, agent_id) = slice_runtime().await;
+        runtime
+            .owned
+            .agent_store
+            .update_agent_config(
+                &agent_id,
+                Some(Some(crate::provider::AgentExecutionMode::Plan)),
+                Some(Some(crate::provider::AgentPermissionLevel::Required)),
+                None,
+                None,
+            )
+            .expect("agent execution config should update");
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "codex",
+            "codex",
+            "work",
+            "gpt-5.6-sol",
+        )
+        .with_agent_id(&agent_id)
+        .with_variant(Some("high".to_string()))
+        .with_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+            "thread-projected",
+        ))
+        .with_execution_mode(crate::provider::AgentExecutionMode::Plan)
+        .with_permission_level(crate::provider::AgentPermissionLevel::Required)
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut projected = crate::provider::RuntimeProviderRun::new(
+            "projected-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "projected-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(std::path::PathBuf::from("/workspace")),
+                structured_endpoint: Some("http://old-worker.invalid".to_string()),
+            },
+        );
+        projected.mark_running();
+        runtime.owned.provider_run_projection.update(projected);
+
+        let manifests = runtime
+            .slice_agent_relaunch_manifests(&slice, "slice.state.save")
+            .expect("active projected provider should be captured");
+        runtime
+            .park_slice_agent_provider_runs(&manifests)
+            .await
+            .expect("projected provider should park for slice shutdown");
+        let recaptured = runtime
+            .slice_agent_relaunch_manifests(&slice, "slice.start")
+            .expect("parked projected provider selection should remain recoverable");
+
+        assert_eq!(recaptured.len(), 1);
+        let manifest = &recaptured[0];
+        assert_eq!(manifest.adapter_key, "codex");
+        assert_eq!(manifest.provider, "codex");
+        assert_eq!(manifest.account_profile, "work");
+        assert_eq!(manifest.model, "gpt-5.6-sol");
+        assert_eq!(manifest.variant.as_deref(), Some("high"));
+        assert_eq!(
+            manifest.provider_session_id.as_deref(),
+            Some("thread-projected")
+        );
+        assert_eq!(
+            manifest.existing_provider_run_id.as_deref(),
+            Some("projected-run")
+        );
+        assert_eq!(
+            manifest.execution_mode,
+            crate::provider::AgentExecutionMode::Plan
+        );
+        assert_eq!(
+            manifest.permission_level,
+            crate::provider::AgentPermissionLevel::Required
+        );
     }
 
     #[tokio::test]
@@ -1028,6 +1262,23 @@ mod tests {
             .slices()
             .attach_agent(&slice.id, &session_id, &agent_id, 2)
             .expect("agent should attach to slice");
+        app.agents_mut()
+            .bind_remote_execution(
+                &agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: format!("slice:{}", slice.id),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("slice agent should bind to its worker");
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         (app, runtime, slice, session_id, agent_id)
