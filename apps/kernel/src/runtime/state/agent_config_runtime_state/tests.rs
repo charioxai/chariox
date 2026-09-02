@@ -588,6 +588,58 @@ async fn substitute_lifecycle_binds_stable_account_and_primary_edit_targets_snap
 }
 
 #[tokio::test]
+async fn substitute_move_updates_the_durable_order_and_active_index_atomically() {
+    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    for (provider, model) in [("provider-a", "model-a"), ("provider-b", "model-b")] {
+        runtime
+            .update_agent_substitutes(
+                &session_id,
+                &agent_id,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                crate::local::AgentSubstituteAction::Add {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    variant: None,
+                    account_profile: None,
+                    kernel_id: None,
+                    worktree_id: None,
+                },
+            )
+            .await
+            .expect("substitute should be added");
+    }
+    runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Activate {
+                index: 1,
+                reason: Some("resource exhausted".to_string()),
+            },
+        )
+        .await
+        .expect("second substitute should activate");
+
+    let agent = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Move {
+                from_index: 1,
+                to_index: 0,
+            },
+        )
+        .await
+        .expect("active substitute should move");
+
+    assert_eq!(agent.substitutes()[0].model, "model-b");
+    assert_eq!(agent.active_substitute_index(), Some(0));
+    assert_eq!(agent.model(), Some("model-b"));
+}
+
+#[tokio::test]
 async fn substitute_add_resolves_current_default_to_stable_profile_id() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     let first_default = app

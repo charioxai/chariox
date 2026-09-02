@@ -288,6 +288,73 @@ fn switching_substitutes_does_not_overwrite_stored_primary_and_removing_active_r
 }
 
 #[test]
+fn moving_substitutes_preserves_order_and_tracks_the_active_profile_identity() {
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "claude",
+        Some("claude-opus-4-8".to_string()),
+        Some("high".to_string()),
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    for (provider, model) in [
+        ("opencode", "opencode-go/deepseek-v4-pro"),
+        ("opencode", "deepseek-v4-pro"),
+        ("codex", "gpt-5.6-sol"),
+    ] {
+        agent.add_substitute(AgentSubstituteProfile::new(provider, model, None));
+    }
+    agent.activate_substitute(1, "resource exhausted");
+
+    assert!(agent.move_substitute(1, 0));
+    assert_eq!(
+        agent
+            .substitutes()
+            .iter()
+            .map(|profile| profile.model.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "deepseek-v4-pro",
+            "opencode-go/deepseek-v4-pro",
+            "gpt-5.6-sol"
+        ]
+    );
+    assert_eq!(agent.active_substitute_index(), Some(0));
+    assert_eq!(
+        agent
+            .last_substitution()
+            .map(|record| record.substitute_index),
+        Some(0)
+    );
+    assert_eq!(agent.model(), Some("deepseek-v4-pro"));
+
+    assert!(agent.move_substitute(2, 0));
+    assert_eq!(agent.active_substitute_index(), Some(1));
+    assert_eq!(
+        agent
+            .last_substitution()
+            .map(|record| record.substitute_index),
+        Some(1)
+    );
+    assert_eq!(agent.model(), Some("deepseek-v4-pro"));
+
+    agent.remove_substitute(0);
+    assert_eq!(agent.active_substitute_index(), Some(0));
+    assert_eq!(
+        agent
+            .last_substitution()
+            .map(|record| record.substitute_index),
+        Some(0)
+    );
+    assert_eq!(agent.model(), Some("deepseek-v4-pro"));
+    assert!(!agent.move_substitute(3, 0));
+    assert!(!agent.move_substitute(0, 3));
+}
+
+#[test]
 fn workflow_runtime_materialization_preserves_config_without_live_state() {
     let mut source = AgentInstance::new(
         "agent-1",

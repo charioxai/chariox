@@ -401,6 +401,12 @@ impl KernelRuntimeOwnedState {
             crate::local::AgentSubstituteAction::Remove { index } => {
                 self.agent_store.remove_agent_substitute(agent_id, index)
             }
+            crate::local::AgentSubstituteAction::Move {
+                from_index,
+                to_index,
+            } => self
+                .agent_store
+                .move_agent_substitute(agent_id, from_index, to_index),
             crate::local::AgentSubstituteAction::Clear {} => {
                 self.agent_store.clear_agent_substitutes(agent_id)
             }
