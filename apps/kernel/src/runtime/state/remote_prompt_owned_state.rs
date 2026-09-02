@@ -28,11 +28,13 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+        if !self.provider_account_allows_queued_prompt_advance(
+            session_id,
             &agent,
             "advance remote queued prompt",
-        )?;
+        )? {
+            return Ok(None);
+        }
         let started = self
             .prompt_state_owner
             .activate_next_queued_prompt_with_prompt_id(

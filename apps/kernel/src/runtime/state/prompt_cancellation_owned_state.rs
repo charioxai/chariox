@@ -106,25 +106,11 @@ impl KernelRuntimeOwnedState {
         {
             true
         } else {
-            match self.provider_account_profiles.require_agent_authenticated(
-                &self.config_projection.snapshot(),
+            self.provider_account_allows_queued_prompt_advance(
+                session_id,
                 &agent,
                 "advance queued prompt after cancellation",
-            ) {
-                Ok(()) => true,
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.prompt_queue",
-                        "deferred queued prompt because its provider account is unavailable",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "agent_id": agent_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    false
-                }
-            }
+            )?
         };
         let started_next = if provider_account_available
             && !hold_queued_prompts

@@ -21,6 +21,32 @@ struct QueuedPromptSteerContext {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn provider_account_allows_queued_prompt_advance(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<bool, DaemonError> {
+        let Some(error) = self.provider_account_profiles.agent_unavailability_error(
+            &self.config_projection.snapshot(),
+            agent,
+            operation,
+        )?
+        else {
+            return Ok(true);
+        };
+        crate::logging::warn_with_fields(
+            "daemon.prompt_queue",
+            "deferred queued prompt because its provider account is unavailable",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent.id(),
+                "error": error.to_string(),
+            }),
+        );
+        Ok(false)
+    }
+
     pub(super) fn prompt_source_attribution(
         &self,
         prompt: &crate::session::PromptQueueItem,
@@ -471,11 +497,13 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         let agent = self.agent_store.get_agent(agent_id)?;
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+        if !self.provider_account_allows_queued_prompt_advance(
+            session_id,
             &agent,
             "activate queued prompt",
-        )?;
+        )? {
+            return Ok(None);
+        }
         let prompt = self
             .prompt_state_owner
             .activate_next_queued_prompt_with_prompt_id(
@@ -538,11 +566,13 @@ impl KernelRuntimeOwnedState {
             )?;
         };
         let agent = self.agent_store.get_agent(agent_id)?;
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+        if !self.provider_account_allows_queued_prompt_advance(
+            session_id,
             &agent,
             "advance queued prompt",
-        )?;
+        )? {
+            return Ok(None);
+        }
         if self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)

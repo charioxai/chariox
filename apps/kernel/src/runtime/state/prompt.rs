@@ -287,20 +287,11 @@ impl KernelRuntimeOwnedState {
                 ),
             _ => false,
         };
-        if let Err(error) = self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+        if !self.provider_account_allows_queued_prompt_advance(
+            session_id,
             &target_agent,
             "advance queued prompt after completion",
-        ) {
-            crate::logging::warn_with_fields(
-                "daemon.prompt_queue",
-                "deferred queued prompt because its provider account is unavailable",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "agent_id": agent_id,
-                    "error": error.to_string(),
-                }),
-            );
+        )? {
             return self.finalize_local_completion_without_queued_advance(
                 session_id,
                 agent_id,
