@@ -350,9 +350,13 @@ async function main() {
         )
         matrix.slice_image = defaultLocalDockerSliceImage
         matrix.slice_build_image = options.sliceBuildImage
-        matrix.slice_image_build = sliceImageBuild
-          ? { image: sliceImageBuild.image, performed: true }
-          : { image: defaultLocalDockerSliceImage, performed: false }
+      matrix.slice_image_build = sliceImageBuild
+        ? {
+            image: sliceImageBuild.image,
+            performed: true,
+            cargo_opt_level: sliceImageBuild.optLevel,
+          }
+        : { image: defaultLocalDockerSliceImage, performed: false }
         sliceModeProviderEnv = await prepareSliceModeProviderEnv(runtimeRoot, options.providers)
         options.providerStateSourceEnv = sliceModeProviderEnv
       }
