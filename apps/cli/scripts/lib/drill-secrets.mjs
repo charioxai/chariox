@@ -1,10 +1,10 @@
 const SENSITIVE_KEY_PATTERN = /token|secret|password|credential|cookie|authorization|api[-_]?key/i
 
 const SECRET_VALUE_PATTERNS = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i,
-  /\bchariox-scoped-v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
-  /\bsk-[A-Za-z0-9_-]{16,}\b/,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+  /\bchariox-scoped-v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
 ]
 
 export function isSensitiveDrillKey(key) {
@@ -12,7 +12,7 @@ export function isSensitiveDrillKey(key) {
 }
 
 export function looksLikeDrillSecretValue(value) {
-  return typeof value === "string" && SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
+  return typeof value === "string" && SECRET_VALUE_PATTERNS.some((pattern) => value.search(pattern) !== -1)
 }
 
 export function redactDrillSecretText(value) {
