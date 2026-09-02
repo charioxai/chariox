@@ -7,6 +7,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 
@@ -14,8 +15,12 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
 const runId = `m20-docker-state-${process.pid}-${stamp}`
-const artifactDir = process.env.M20_ARTIFACT_DIR ?? path.join(repoRoot, ".artifacts", "m20-docker-slice-browser-state", stamp)
-const tempRoot = path.join(os.tmpdir(), runId)
+const { artifactDir, tempRoot } = resolveBrowserStateDrillPaths({
+  homeDir: os.homedir(),
+  runId,
+  stamp,
+  env: process.env,
+})
 const kernelPort = Number.parseInt(process.env.M20_KERNEL_PORT ?? "", 10) || 55000 + Math.floor(Math.random() * 2000)
 const kernelUrl = `ws://127.0.0.1:${kernelPort}/kernel`
 const sliceName = `m20-${process.pid}`
@@ -91,6 +96,7 @@ async function run() {
   start("kernel", kernel, [], {
     env: {
       ...process.env,
+      CHARIOX_HOME: tempRoot,
       XDG_CONFIG_HOME: path.join(tempRoot, "config"),
       CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: "1",
       CHARIOX_KERNEL_PORT: String(kernelPort),
@@ -192,6 +198,8 @@ async function seedConfig() {
     "build_image = \"auto\"",
     "screen_width = 1280",
     "screen_height = 800",
+    "memory_mb = 2048",
+    "cpus = \"1.0\"",
     "",
   ].join("\n"))
 }

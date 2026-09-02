@@ -239,7 +239,11 @@ If any drill fails:
 
 ## Evidence Requirements
 
-Store drill artifacts under `./.artifacts/m20-docker-slice-browser-state/`.
+Store drill artifacts under
+`~/.codex/evidence/browser-computer-use/persistence/<run-id>/`. Keep disposable
+kernel and slice state under
+`~/.chariox/dev/browser-computer-use-persistence/<run-id>/`; never write drill
+state or evidence into a repository.
 
 Required artifacts:
 
