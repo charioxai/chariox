@@ -18,6 +18,8 @@ The browser state that may matter includes:
 - Linux keyring or secret service state used by Chromium to decrypt stored browser data.
 - Stable machine identity such as `/etc/machine-id`.
 - Stable Linux user, home path, UID/GID, hostname, and browser profile path.
+- A durable slice display-port assignment used by both the projected endpoint
+  and every direct desktop lifecycle action.
 - Installed packages and desktop/browser dependencies.
 - Graceful shutdown of browser processes so profile SQLite databases are not captured while locked or partially flushed.
 
@@ -119,12 +121,15 @@ Drill:
    configuration and user-data markers under the slice home.
 10. Record the machine ID, hostname, user, UID/GID, home, headed display
     geometry, viewer backend, browser profile, and password-store policy.
+    The hostname must be RFC 1123-safe even when the user-facing slice name
+    contains dots, underscores, uppercase characters, or is unusually long.
 11. Verify browser cookies, localStorage, IndexedDB, Cache Storage, and the
    service-worker registration survived.
 12. Verify the browser download, application configuration, and application
     user data survived.
 13. Verify the recorded machine, user, display, profile, and password-store
-    identity remains unchanged.
+    identity remains unchanged, including the slice's durable display-port
+    assignment and projected viewer URL.
 14. Stop the fixture and verify the restored service worker serves a cached
     marker while its network origin is offline.
 15. Capture screenshots before save, after restore, and during the offline

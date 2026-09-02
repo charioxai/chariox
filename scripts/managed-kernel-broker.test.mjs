@@ -97,6 +97,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
       action: "provision",
       environment: {
         CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-dev-a1b2c3d4e5f6",
         CHARIOX_SLICE_ID: "slice-dev",
         CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
         CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
@@ -298,6 +299,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     { CHARIOX_SLICE_DOCKER_MEMORY: "1g --privileged" },
     { CHARIOX_SLICE_DOCKER_CPUS: "2 --volume=/etc:/vault" },
     { CHARIOX_SLICE_WORKSPACE_MOUNT_MODE: "rw,bind" },
+    { CHARIOX_SLICE_HOSTNAME: "chariox_slice_dev" },
   ]) {
     const injected = validate({
       kind: "provisioner",

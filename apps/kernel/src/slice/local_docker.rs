@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
 use zeroize::Zeroizing;
 
@@ -950,6 +951,7 @@ fn configure_local_docker_slice_command(
         return Ok(());
     }
     command
+        .env("CHARIOX_SLICE_HOSTNAME", local_docker_hostname(record))
         .env("CHARIOX_SLICE_DOCKER_IMAGE", &options.docker_image)
         .env(
             "CHARIOX_SLICE_BUILD_IMAGE",
@@ -1248,6 +1250,29 @@ pub(super) fn local_docker_container_name(record: &SliceRecord) -> String {
     format!("chariox-slice-{}", record.name)
 }
 
+pub(super) fn local_docker_hostname(record: &SliceRecord) -> String {
+    const PREFIX: &str = "chariox-slice-";
+    const HASH_LENGTH: usize = 12;
+    const MAX_HOSTNAME_LENGTH: usize = 63;
+
+    let mut slug = String::with_capacity(record.name.len());
+    for character in record.name.trim().chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "slice" } else { slug };
+    let digest = format!("{:x}", Sha256::digest(record.name.as_bytes()));
+    let suffix = &digest[..HASH_LENGTH];
+    let maximum_slug_length = MAX_HOSTNAME_LENGTH - PREFIX.len() - 1 - suffix.len();
+    let slug = slug[..slug.len().min(maximum_slug_length)].trim_end_matches('-');
+    format!("{PREFIX}{slug}-{suffix}")
+}
+
 pub(super) fn ensure_local_docker_slice_ports_available(
     record: &SliceRecord,
 ) -> Result<(), DaemonError> {
@@ -1298,9 +1323,24 @@ pub(super) fn run_local_docker_slice_screen(
         "CHARIOX_SLICE_VIEWER_BACKEND={}",
         record.display_backend().as_env_value()
     );
+    let viewer_port = format!(
+        "CHARIOX_SLICE_NOVNC_PORT={}",
+        LocalDockerSlicePorts::for_record(record).novnc
+    );
+    let display_mode = format!(
+        "CHARIOX_SLICE_DISPLAY_MODE={}",
+        match record.display_mode {
+            SliceDisplayMode::Headed => "headed",
+            SliceDisplayMode::Headless => "headless",
+        }
+    );
     let status = docker_command()
         .args(["exec", "-e"])
         .arg(viewer_backend)
+        .args(["-e"])
+        .arg(viewer_port)
+        .args(["-e"])
+        .arg(display_mode)
         .args([
             "-u",
             "slice",

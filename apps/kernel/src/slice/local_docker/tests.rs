@@ -111,6 +111,48 @@ fn test_record() -> SliceRecord {
         .expect("slice should create")
 }
 
+#[test]
+fn local_docker_hostname_is_stable_rfc1123_and_bounded() {
+    let mut record = test_record();
+    record.name = format!("Production.Room_{}", "A".repeat(96));
+
+    let hostname = local_docker_hostname(&record);
+    assert_eq!(hostname, local_docker_hostname(&record));
+    assert!(hostname.len() <= 63);
+    assert!(hostname
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'));
+    assert!(hostname
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric));
+    assert!(hostname
+        .as_bytes()
+        .last()
+        .is_some_and(u8::is_ascii_alphanumeric));
+
+    let mut normalized_collision = record.clone();
+    normalized_collision.name = record.name.replace(['.', '_'], "-");
+    assert_ne!(
+        hostname,
+        local_docker_hostname(&normalized_collision),
+        "different legal slice names must not collapse to one hostname"
+    );
+
+    let mut command = Command::new("slice-provisioner");
+    configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
+        .expect("slice command should configure");
+    let configured_hostname = command
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == "CHARIOX_SLICE_HOSTNAME")
+                .then(|| value.and_then(|value| value.to_str()))
+                .flatten()
+        })
+        .expect("slice hostname should be configured");
+    assert_eq!(configured_hostname, hostname);
+}
+
 fn test_options() -> LocalDockerSliceOptions {
     LocalDockerSliceOptions {
         root: std::env::temp_dir(),
@@ -497,10 +539,14 @@ fn local_docker_slice_mounts_only_development_repositories() {
         script.contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount\"")
     );
     assert!(script.contains("local docker_create_args=("));
-    assert!(script.contains("--hostname \"$SLICE_NAME\""));
+    assert!(script.contains("--hostname \"$SLICE_HOSTNAME\""));
+    assert!(script.contains("-e \"CHARIOX_SLICE_NOVNC_PORT=$SLICE_NOVNC_PORT\""));
     assert!(script.contains(
-        "-e \"CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}\""
+        "-e \"CHARIOX_SLICE_SCREEN_GEOMETRY=${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}\""
     ));
+    assert!(
+        script.contains("-e \"CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}\"")
+    );
     assert!(script.contains("docker create \"${docker_create_args[@]}\" \"$SLICE_IMAGE\""));
     assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
 }

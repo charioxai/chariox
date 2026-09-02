@@ -168,6 +168,14 @@ async function run() {
   log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  const initialSlicePorts = structuredClone(slice.local_docker_ports)
+  const initialDisplayUrl = slice.display_endpoint?.url
+  assert.ok(initialSlicePorts?.novnc, "slice must retain its allocated display port")
+  assert.equal(
+    initialDisplayUrl,
+    `http://127.0.0.1:${initialSlicePorts.novnc}/`,
+    "Selkies display endpoint must use the slice's durable port assignment",
+  )
   sliceRuntime.initial = await inspectSliceRuntime()
   assert.match(
     sliceRuntime.initial.installedRuntimeSourceRevision,
@@ -207,6 +215,16 @@ async function run() {
   log("starting restored slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  assert.deepEqual(
+    slice.local_docker_ports,
+    initialSlicePorts,
+    "restoring the same slice must retain every durable port assignment",
+  )
+  assert.equal(
+    slice.display_endpoint?.url,
+    initialDisplayUrl,
+    "restoring the same slice must retain its display endpoint",
+  )
   sliceRuntime.restored = await inspectSliceRuntime()
   assert.equal(
     sliceRuntime.restored.runtimeSourceRevision,
@@ -396,6 +414,9 @@ async function writeSliceFile(filePath, contents) {
 }
 
 async function inspectPersistenceIdentity() {
+  // A running headed slice is not ready until slice-screen.sh has started and
+  // health-checked Chromium, so absence here is a lifecycle regression rather
+  // than a lazy-browser state the persistence drill should tolerate.
   const [user, uid, gid, home, hostname, machineId, dbusMachineId, displayBackend, screenStatus, chromiumCommand] = await Promise.all([
     dockerText(["exec", "-u", "slice", containerName, "id", "-un"]),
     dockerText(["exec", "-u", "slice", containerName, "id", "-u"]),
@@ -742,8 +763,9 @@ async function writeManifest(ok, error = null) {
     resources,
     assertions: [
       "initial and restored slices retained the 2 GiB memory, no-extra-swap, and one-CPU caps",
-      "installed graphical program survived committed-image restore",
+      "installed program survived committed-image restore",
       "browser download, application configuration, and application user data survived",
+      "durable slice port assignments and the projected Selkies endpoint remained stable",
       "machine id, hostname, user, UID/GID, home, display, browser profile, and password-store policy remained stable",
       "cookie, localStorage, IndexedDB, Cache Storage, and service-worker registration survived",
       "restored service worker served cached content while the fixture was offline",
