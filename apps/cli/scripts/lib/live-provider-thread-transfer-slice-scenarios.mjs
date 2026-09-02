@@ -11,8 +11,10 @@ import {
   getProviderRunRequest,
   getSessionStateRequest,
   getSliceRequest,
+  getSliceLogsRequest,
   importSliceProviderAuthRequest,
   launchProviderRunRequest,
+  listSliceAuditRequest,
   moveAgentToLocalRequest,
   moveAgentToRemoteRequest,
   resetSliceStateRequest,
@@ -345,6 +347,12 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
   } catch (error) {
     result.errors.push(error.stack ?? error.message ?? String(error))
     result.evidence.kernel_events = kernelEvents.slice(-50)
+    if (sliceId) {
+      result.evidence.slice_failure_diagnostics = await collectSliceFailureDiagnostics(
+        client,
+        sliceId,
+      )
+    }
     result.evidence.provider_processes = await collectProviderProcesses(client, provider).catch((processError) => ({
       error: processError.message ?? String(processError),
     }))
@@ -851,6 +859,12 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
   } catch (error) {
     result.errors.push(error.stack ?? error.message ?? String(error))
     result.evidence.kernel_events = kernelEvents.slice(-80)
+    if (sliceId) {
+      result.evidence.slice_failure_diagnostics = await collectSliceFailureDiagnostics(
+        client,
+        sliceId,
+      )
+    }
     result.evidence.provider_processes = await collectProviderProcesses(client, provider).catch((processError) => ({
       error: processError.message ?? String(processError),
     }))
@@ -895,4 +909,31 @@ export function failResultOnSliceCleanupErrors(result, { resetSavedState = false
   if (errors.length === 0) return
   result.status = "failed"
   result.errors.push(`slice cleanup failed: ${errors.join(": ")}`)
+}
+
+async function collectSliceFailureDiagnostics(client, sliceId) {
+  const diagnostics = {}
+  try {
+    const logs = variant(
+      await client.send(getSliceLogsRequest(sliceId, 200)),
+      "SliceLogs",
+    )
+    diagnostics.logs = (logs.entries ?? []).map((entry) => ({
+      source: entry.source ?? null,
+      text: entry.text ?? "",
+      truncated: entry.truncated ?? false,
+    }))
+  } catch (error) {
+    diagnostics.logs_error = error.message ?? String(error)
+  }
+  try {
+    const audit = variant(
+      await client.send(listSliceAuditRequest(sliceId, 100)),
+      "SliceAuditListed",
+    )
+    diagnostics.audit = audit.events ?? []
+  } catch (error) {
+    diagnostics.audit_error = error.message ?? String(error)
+  }
+  return diagnostics
 }

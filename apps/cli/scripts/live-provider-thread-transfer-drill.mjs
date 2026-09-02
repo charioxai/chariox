@@ -306,6 +306,9 @@ async function main() {
     const sliceMode = options.drill === "slice-restart"
       || options.drill === "live-migrate-to-slice"
       || options.drill === "live-migrate-roundtrip-slice"
+    const daemonHome = sliceMode
+      ? path.join(runtimeRoot, "xdg-config", "chariox")
+      : runtimeRoot
     matrix.kernel_url = kernelUrl
     await mkdir(historyDir, { recursive: true })
     await mkdir(capabilityRoot, { recursive: true })
@@ -363,7 +366,7 @@ async function main() {
             ...sliceModeProviderEnv,
             CHARIOX_LOG_DIR: path.join(runtimeRoot, "logs"),
           } : {}),
-          CHARIOX_HOME: runtimeRoot,
+          CHARIOX_HOME: daemonHome,
           CHARIOX_KERNEL_PORT: String(ports.kernelPort),
           CHARIOX_MCP_PORT: String(ports.mcpPort),
           CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
