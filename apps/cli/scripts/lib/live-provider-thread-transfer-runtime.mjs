@@ -166,6 +166,18 @@ export function providerThreadSliceBuildProfile(env = process.env) {
   return profile
 }
 
+export function providerThreadSliceTargetArch(
+  env = process.env,
+  runtimeArch = process.arch,
+) {
+  const arch = env.CHARIOX_PROVIDER_THREAD_SLICE_TARGET_ARCH ?? runtimeArch
+  if (["arm64", "aarch64"].includes(arch)) return "arm64"
+  if (["x64", "x86_64", "amd64"].includes(arch)) return "amd64"
+  throw new Error(
+    `unsupported provider thread slice target architecture: ${arch}`,
+  )
+}
+
 export function variant(response, name) {
   if (!response || !(name in response)) {
     throw new Error(`expected ${name}, got ${JSON.stringify(response)}`)
@@ -804,6 +816,7 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
   if (policy !== "always") return null
   const optLevel = providerThreadSliceOptLevel()
   const buildProfile = providerThreadSliceBuildProfile()
+  const targetArch = providerThreadSliceTargetArch()
   const stdoutPath = path.join(root, "slice-image-build.stdout.log")
   const stderrPath = path.join(root, "slice-image-build.stderr.log")
   await runLoggedCommand("docker", [
@@ -812,6 +825,8 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
     `CARGO_PROFILE_RELEASE_OPT_LEVEL=${optLevel}`,
     "--build-arg",
     `CHARIOX_RUNTIME_BUILD_PROFILE=${buildProfile}`,
+    "--build-arg",
+    `TARGETARCH=${targetArch}`,
     "-f",
     path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "-t",
@@ -828,6 +843,7 @@ export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeou
     image: defaultLocalDockerSliceImage,
     buildProfile,
     optLevel,
+    targetArch,
     stdoutPath,
     stderrPath,
   }
