@@ -8,16 +8,19 @@ export function automationNoticeIds(snapshot) {
 
 export function automationNoticeEntries(snapshot) {
   const candidates = []
-  const visibleAgentId = typeof snapshot?.transcript?.visibleAgentId === "string"
-    ? snapshot.transcript.visibleAgentId
-    : "visible"
-  if (Array.isArray(snapshot?.transcript?.entries)) {
-    candidates.push([visibleAgentId, snapshot.transcript.entries])
-  }
+  let paneCandidates = 0
   if (snapshot?.agentPanes && typeof snapshot.agentPanes === "object") {
     for (const [agentId, entries] of Object.entries(snapshot.agentPanes)) {
-      if (Array.isArray(entries)) candidates.push([agentId, entries])
+      if (!Array.isArray(entries)) continue
+      candidates.push([agentId, entries])
+      paneCandidates += 1
     }
+  }
+  if (paneCandidates === 0 && Array.isArray(snapshot?.transcript?.entries)) {
+    const visibleAgentId = typeof snapshot.transcript.visibleAgentId === "string"
+      ? snapshot.transcript.visibleAgentId
+      : "visible"
+    candidates.push([visibleAgentId, snapshot.transcript.entries])
   }
   const notices = new Map()
   for (const [agentId, entries] of candidates) {
