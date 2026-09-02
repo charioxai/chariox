@@ -39,6 +39,9 @@ const markers = {
   stateLocalStorage: `local-${process.pid}-${Date.now()}`,
   stateIndexedDb: `idb-${process.pid}-${Date.now()}`,
   stateCacheStorage: `cache-${process.pid}-${Date.now()}`,
+  downloadedFile: "CHARIOX_FIXTURE_DOWNLOAD",
+  appConfig: `app-config-${process.pid}-${Date.now()}`,
+  appUserData: `app-data-${process.pid}-${Date.now()}`,
   firstSubject: `M20 first ${process.pid}`,
   secondSubject: `M20 second ${process.pid}`,
 }
@@ -52,6 +55,7 @@ let savedState = null
 let cleanupResult = null
 let sourceIdentity = null
 const sliceRuntime = {}
+const persistenceIdentity = {}
 const resources = []
 
 await mkdir(artifactDir, { recursive: true })
@@ -128,6 +132,9 @@ async function run() {
       CHARIOX_DAEMON_ID: `m20-daemon-${process.pid}`,
       CHARIOX_DAEMON_ALIAS: `m20-${process.pid}`,
       CHARIOX_SESSION_HISTORY_DIR: path.join(tempRoot, "session-history"),
+      // Exact-head dev binaries keep the Docker-side link within laptop memory
+      // while exercising the same slice lifecycle and runtime protocol.
+      CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: "dev",
     },
   })
 
@@ -154,6 +161,7 @@ async function run() {
     name: sliceName,
     backend: "local_docker",
     displayMode: "headed",
+    displayBackend: "selkies",
     workspaceMount: repoRoot,
     workerKernelRef: `m20-worker-${process.pid}`,
   })), "SliceCreated").slice
@@ -176,12 +184,16 @@ async function run() {
 
   await writeFile(path.join(artifactDir, "container-before-save.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("initial")
+  persistenceIdentity.initial = await inspectPersistenceIdentity()
+  assertInitialPersistenceIdentity(persistenceIdentity.initial)
   log("installing program marker")
   await installProgramMarker()
   log("running local browser state phase")
   await runLocalBrowserStatePhase("before")
   log("running first webmail phase")
   await runWebmailPhase("first", markers.firstSubject)
+  log("creating browser download and application state")
+  await seedUserPersistenceMarkers()
   await screenshot("01-before-save")
 
   log("saving slice state")
@@ -210,8 +222,16 @@ async function run() {
   log("restored slice is running")
   await writeFile(path.join(artifactDir, "container-after-restore.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("restored")
+  persistenceIdentity.restored = await inspectPersistenceIdentity()
+  assert.deepEqual(
+    persistenceIdentity.restored,
+    persistenceIdentity.initial,
+    "slice identity, display, browser profile, and password-store policy should survive restore",
+  )
   log("verifying program marker")
   await verifyProgramMarker()
+  log("verifying downloaded file and application state after restore")
+  await verifyUserPersistenceMarkers()
   log("verifying local browser state after restore")
   await verifyLocalBrowserStateAfterRestore()
   log("running second webmail phase after restore")
@@ -331,6 +351,108 @@ async function installProgramMarker() {
 async function verifyProgramMarker() {
   const output = await dockerText(["exec", containerName, "m20-state-tool"])
   assert.match(output, /M20_PROGRAM_SURVIVED/)
+}
+
+async function seedUserPersistenceMarkers() {
+  await writeSliceFile("/home/slice/.config/m20-state-app/config.txt", `${markers.appConfig}\n`)
+  await writeSliceFile("/home/slice/.local/share/m20-state-app/user-data.txt", `${markers.appUserData}\n`)
+
+  await sliceScreen(["open-url", fixtureUrl("/interactions")])
+  await waitForBrowserText("Fixture interactions", 30_000, "download fixture did not open")
+  await sliceScreen(["browser-click", "#download"])
+  const downloaded = await waitFor(
+    async () => await readSliceFile("/home/slice/Downloads/chariox-fixture.txt").catch(() => false),
+    30_000,
+    "browser download did not complete",
+  )
+  assert.equal(downloaded.trim(), markers.downloadedFile)
+}
+
+async function verifyUserPersistenceMarkers() {
+  assert.equal(
+    (await readSliceFile("/home/slice/Downloads/chariox-fixture.txt")).trim(),
+    markers.downloadedFile,
+    "browser download should survive saved-state restore",
+  )
+  assert.equal(
+    (await readSliceFile("/home/slice/.config/m20-state-app/config.txt")).trim(),
+    markers.appConfig,
+    "application configuration should survive saved-state restore",
+  )
+  assert.equal(
+    (await readSliceFile("/home/slice/.local/share/m20-state-app/user-data.txt")).trim(),
+    markers.appUserData,
+    "application user data should survive saved-state restore",
+  )
+}
+
+async function readSliceFile(filePath) {
+  return await dockerText(["exec", "-u", "slice", containerName, "cat", filePath])
+}
+
+async function writeSliceFile(filePath, contents) {
+  await docker(["exec", "-u", "slice", containerName, "mkdir", "-p", path.posix.dirname(filePath)])
+  await dockerText(["exec", "-i", "-u", "slice", containerName, "tee", filePath], { stdin: contents })
+}
+
+async function inspectPersistenceIdentity() {
+  const [user, uid, gid, home, hostname, machineId, dbusMachineId, displayBackend, screenStatus, chromiumCommand] = await Promise.all([
+    dockerText(["exec", "-u", "slice", containerName, "id", "-un"]),
+    dockerText(["exec", "-u", "slice", containerName, "id", "-u"]),
+    dockerText(["exec", "-u", "slice", containerName, "id", "-g"]),
+    dockerText(["exec", "-u", "slice", containerName, "sh", "-lc", "printf %s \"$HOME\""]),
+    dockerText(["exec", containerName, "hostname"]),
+    dockerText(["exec", containerName, "cat", "/etc/machine-id"]),
+    dockerText(["exec", containerName, "cat", "/var/lib/dbus/machine-id"]),
+    dockerText(["exec", containerName, "printenv", "CHARIOX_SLICE_VIEWER_BACKEND"]),
+    sliceScreen(["status"]),
+    dockerText([
+      "exec",
+      containerName,
+      "bash",
+      "-lc",
+      "pid=$(pgrep -o -f '^/usr/lib/chromium/chromium .*--user-data-dir=/home/slice/.chariox/browser/chromium' || true); test -n \"$pid\"; tr '\\0' ' ' </proc/$pid/cmdline",
+    ]),
+  ])
+  const display = Object.fromEntries(
+    screenStatus.trim().split("\n").map((line) => {
+      const separator = line.indexOf("=")
+      return separator < 0 ? [line, ""] : [line.slice(0, separator), line.slice(separator + 1)]
+    }),
+  )
+  return {
+    user: user.trim(),
+    uid: Number(uid.trim()),
+    gid: Number(gid.trim()),
+    home: home.trim(),
+    hostname: hostname.trim(),
+    machineId: machineId.trim(),
+    dbusMachineId: dbusMachineId.trim(),
+    displayMode: display.mode,
+    screen: display.screen,
+    displayBackend: displayBackend.trim(),
+    viewerUrl: display.viewer,
+    browserProfile: chromiumCommand.includes("--user-data-dir=/home/slice/.chariox/browser/chromium")
+      ? "/home/slice/.chariox/browser/chromium"
+      : null,
+    passwordStore: chromiumCommand.includes("--password-store=basic") ? "basic" : null,
+  }
+}
+
+function assertInitialPersistenceIdentity(identity) {
+  assert.equal(identity.user, "slice")
+  assert.equal(identity.uid, 1001)
+  assert.equal(identity.gid, 1001)
+  assert.equal(identity.home, "/home/slice")
+  assert.match(identity.hostname, /^chariox-slice-m20-/)
+  assert.match(identity.machineId, /^[a-f0-9]{32}$/)
+  assert.equal(identity.dbusMachineId, identity.machineId)
+  assert.equal(identity.displayMode, "headed")
+  assert.equal(identity.screen, "1280x800")
+  assert.equal(identity.displayBackend, "selkies")
+  assert.match(identity.viewerUrl, /^http:\/\/127\.0\.0\.1:\d+\/$/)
+  assert.equal(identity.browserProfile, "/home/slice/.chariox/browser/chromium")
+  assert.equal(identity.passwordStore, "basic")
 }
 
 async function inspectState(label) {
@@ -610,6 +732,7 @@ async function writeManifest(ok, error = null) {
     topology: "local kernel with one headed local Docker slice",
     source: sourceIdentity,
     sliceRuntime,
+    persistenceIdentity,
     sliceName,
     containerName,
     homeVolume,
@@ -620,6 +743,8 @@ async function writeManifest(ok, error = null) {
     assertions: [
       "initial and restored slices retained the 2 GiB memory, no-extra-swap, and one-CPU caps",
       "installed graphical program survived committed-image restore",
+      "browser download, application configuration, and application user data survived",
+      "machine id, hostname, user, UID/GID, home, display, browser profile, and password-store policy remained stable",
       "cookie, localStorage, IndexedDB, Cache Storage, and service-worker registration survived",
       "restored service worker served cached content while the fixture was offline",
       "authenticated browser session survived complete container and home-volume removal",

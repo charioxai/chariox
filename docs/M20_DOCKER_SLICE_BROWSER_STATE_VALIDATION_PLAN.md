@@ -115,17 +115,30 @@ Drill:
 6. Fully remove the running container.
 7. Relaunch from the saved slice.
 8. Verify the installed program still exists.
-9. Verify browser cookies, localStorage, IndexedDB, Cache Storage, and the
+9. Download a fixture file through Chromium and create application
+   configuration and user-data markers under the slice home.
+10. Record the machine ID, hostname, user, UID/GID, home, headed display
+    geometry, viewer backend, browser profile, and password-store policy.
+11. Verify browser cookies, localStorage, IndexedDB, Cache Storage, and the
    service-worker registration survived.
-10. Stop the fixture and verify the restored service worker serves a cached
+12. Verify the browser download, application configuration, and application
+    user data survived.
+13. Verify the recorded machine, user, display, profile, and password-store
+    identity remains unchanged.
+14. Stop the fixture and verify the restored service worker serves a cached
     marker while its network origin is offline.
-11. Capture screenshots before save, after restore, and during the offline
+15. Capture screenshots before save, after restore, and during the offline
     service-worker check.
 
 Pass criteria:
 
 - Browser data survives a full container destroy/recreate.
 - Cache Storage and the service worker work after restore, including offline.
+- Browser downloads plus application configuration and user data survive the
+  home-volume destroy/recreate.
+- Machine/user identity, display geometry, Selkies selection, persistent
+  Chromium profile, and deterministic `basic` password-store policy remain
+  stable.
 - Installed program survives.
 - No manual file repair is needed after restore.
 
