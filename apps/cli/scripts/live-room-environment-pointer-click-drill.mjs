@@ -1920,7 +1920,14 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
   const noticePattern = /^Room action #\d+: .+ · computer pointer_click · completed$/
   return await runRoomEnvironmentCompanion({
     env: process.env,
+    prepare: async () => {
+      // The keyboard/clipboard drills navigate away from the original click page.
+      // Give the Web companion a fresh physical page, not the last drill's form.
+      await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
+      await waitForBrowserText("POINTER_CLICK_COUNT=0", 30_000, "Web companion fixture did not reset")
+    },
     ready: {
+      pointerClickExpectedCount: 1,
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
       relayToken: remoteTuiRelayToken,

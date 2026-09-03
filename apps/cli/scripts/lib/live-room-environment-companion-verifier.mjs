@@ -13,6 +13,7 @@ export async function runRoomEnvironmentCompanion(input) {
     throw new Error("CHARIOX_ROOM_DRILL_COORDINATION_DIR must be an absolute disposable directory")
   }
   const timeoutMs = companionTimeoutMs(input.env.CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS)
+  await input.prepare?.()
   await publishRoomDrillCompanionReady(directory, {
     schema: "chariox.room_environment.companion_ready.v1",
     ...input.ready,

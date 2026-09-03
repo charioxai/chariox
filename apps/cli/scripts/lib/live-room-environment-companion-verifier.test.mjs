@@ -7,6 +7,8 @@ import test from "node:test"
 import { runRoomEnvironmentCompanion } from "./live-room-environment-companion-verifier.mjs"
 
 test("Room companion verifier uses stable TUI notice baselines", async () => {
+  let prepared = false
+  let preparedAtReady = false
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-verifier-"))
   const localNoticeIds = [1]
   const remoteNoticeIds = [2]
@@ -26,6 +28,7 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
       }
     }
+    preparedAtReady = prepared
     await writeFile(path.join(root, "result.json"), JSON.stringify({
       schema: "chariox.room_environment.companion_result.v1",
       status: "passed",
@@ -41,6 +44,7 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
 
   try {
     const verified = await runRoomEnvironmentCompanion({
+      prepare: async () => { prepared = true },
       env: {
         CHARIOX_ROOM_DRILL_COORDINATION_DIR: root,
         CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000",
@@ -70,6 +74,7 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
+    assert.equal(preparedAtReady, true, "physical fixture must be reset before Web receives its handoff")
     assert.equal(verified.client, "production-local-web-view")
     assert.equal(verified.screenshot, path.join(root, "web-room-tui-shared.png"))
     await resultWriter
