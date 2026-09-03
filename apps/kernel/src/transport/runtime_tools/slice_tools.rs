@@ -37,7 +37,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_FIND_TEXT_TOOL.to_string(),
-            description: "Locate text on the shared Chariox Computer and return its display-pixel bounding box and center point. A Room agent may reuse an opaque artifact_id returned by slice_screenshot; local slices may use image_path. If both are omitted, Chariox captures a fresh screenshot first.".to_string(),
+            description: "Locate every visible occurrence of text on the shared Chariox Computer in reading order and return native display-pixel bounding boxes and center points. The backward-compatible match field contains the first result, while matches and match_count describe the complete result. A Room agent may reuse an opaque artifact_id returned by slice_screenshot; local slices may use image_path. If both are omitted, Chariox captures a fresh screenshot first.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],

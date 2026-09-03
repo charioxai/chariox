@@ -193,7 +193,7 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
     let tool = root.join("slice-screen.sh");
     std::fs::write(
         &tool,
-        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  screenshot) printf '\\211PNG\\r\\n\\032\\nfake' > \"$2\" ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  screenshot) printf '\\211PNG\\r\\n\\032\\nfake' > \"$2\" ;;\n  find-text) printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":10,\"top\":20,\"width\":85,\"height\":20,\"center_x\":52,\"center_y\":30}' '{\"text\":\"Shared Computer\",\"left\":200,\"top\":400,\"width\":170,\"height\":40,\"center_x\":285,\"center_y\":420}' ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
     )
     .expect("fake screen tool should be written");
     let mut permissions = std::fs::metadata(&tool)
@@ -340,6 +340,36 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
         &auth_token,
     ))
     .await;
+
+    let find_text_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "slice_find_text",
+                "arguments": {"query": "Shared Computer"}
+            }
+        }),
+    )
+    .await
+    .expect("local text lookup should return an MCP response");
+    let find_text_body = find_text_response
+        .into_body()
+        .collect()
+        .await
+        .expect("local text lookup body should collect")
+        .to_bytes();
+    let find_text: Value =
+        serde_json::from_slice(&find_text_body).expect("local text lookup body json");
+    let structured = &find_text["result"]["structuredContent"];
+    assert_eq!(find_text["result"]["isError"], false, "{find_text:#}");
+    assert_eq!(structured["match_count"], 2, "{find_text:#}");
+    assert_eq!(structured["match"], structured["matches"][0]);
+    assert_eq!(structured["matches"][1]["left"], 200);
+    assert_eq!(structured["matches"][1]["center_x"], 285);
 
     for (id, name, arguments) in [
         (

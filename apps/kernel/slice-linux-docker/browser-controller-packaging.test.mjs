@@ -32,6 +32,22 @@ test("slice packaging installs every browser controller runtime module", async (
   }
 })
 
+test("slice packaging installs the Computer text finder", async () => {
+  const [dockerfile, provisioner] = await Promise.all([
+    readFile(dockerfilePath, "utf8"),
+    readFile(provisionerPath, "utf8"),
+  ])
+
+  assert.match(
+    dockerfile,
+    /docker\/slice-text-finder\.py\s+\/opt\/chariox-slice\/slice-text-finder\.py/,
+  )
+  assert.match(
+    provisioner,
+    /docker\/slice-text-finder\.py["']?\s+[^\n]*\/opt\/chariox-slice\/slice-text-finder\.py/,
+  )
+})
+
 async function reachableControllerModules(entry) {
   const pending = [entry]
   const modules = new Set()
