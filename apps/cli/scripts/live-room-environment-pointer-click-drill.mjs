@@ -465,11 +465,19 @@ async function run() {
   ])
   const computerSecretResult = await exerciseComputerSecretInput()
   const computerPointer = await exerciseRoomPointer(activityController, activityNotices)
-  const computerKeyboard = await exerciseRoomKeyboard(activityController, activityNotices)
   const computerCancellation = await exerciseRoomComputerCancellation(
     activityController,
     activityNotices,
   )
+  await writeFile(path.join(evidenceRoot, "cancellation-checkpoint.json"), JSON.stringify({
+    schema: "chariox.room_environment.computer_cancellation_checkpoint.v1",
+    completedAt: new Date().toISOString(),
+    source: sourceIdentity,
+    sliceRuntime: sliceRuntimeIdentity,
+    computerCancellation,
+    note: "Phase checkpoint only; full drill acceptance also requires result.json and successful cleanup.",
+  }, null, 2))
+  const computerKeyboard = await exerciseRoomKeyboard(activityController, activityNotices)
   const computerClipboard = await exerciseRoomClipboard(activityController, activityNotices)
   companionResult = await runCompanionIfConfigured({
     environment: computerClipboard.environment,
