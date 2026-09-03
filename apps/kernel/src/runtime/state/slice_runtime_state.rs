@@ -169,6 +169,17 @@ impl KernelRuntimeState {
                 self.append_slice_durable_event("slice.updated", &current)?;
             }
         }
+
+        for session_id in current.session_ids.clone() {
+            if self.owned.session_store.get_session(&session_id).is_err() {
+                current = self.owned.slice_store.detach_session(
+                    &current.id,
+                    &session_id,
+                    crate::session::unix_epoch_ms(),
+                )?;
+                self.append_slice_durable_event("slice.updated", &current)?;
+            }
+        }
         Ok(current)
     }
 
@@ -1061,6 +1072,49 @@ mod tests {
     #[tokio::test]
     async fn relaunch_manifests_block_when_prompt_owner_has_active_prompt() {
         let (app, runtime, slice, session_id, agent_id) = slice_runtime().await;
+        let worker_provider_run_id = "busy-worker-provider-run";
+        let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            "leased-agent-1",
+            worker_provider_run_id,
+        );
+        runtime
+            .owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                &agent_id,
+                Some(worker_provider_run_id.to_string()),
+            )
+            .expect("busy worker provider run should bind to the slice agent");
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "codex",
+            "codex",
+            "work",
+            "gpt-5.6-sol",
+        )
+        .with_agent_id(&agent_id);
+        let mut projected = crate::provider::RuntimeProviderRun::new(
+            &projected_provider_run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "busy-projected-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(std::path::PathBuf::from("/workspace")),
+                structured_endpoint: Some("http://worker.invalid".to_string()),
+            },
+        );
+        projected.mark_running();
+        runtime.owned.provider_run_projection.update(projected);
+        runtime
+            .owned
+            .session_store
+            .set_active_provider_run(&session_id, Some(projected_provider_run_id.clone()))
+            .expect("busy projected provider should be active in the home session");
         sync_active_prompt(&app, &session_id, &agent_id).await;
 
         let error = runtime
@@ -1075,6 +1129,46 @@ mod tests {
             }
             other => panic!("expected active prompt ownership error, got {other:?}"),
         }
+        assert_eq!(
+            runtime
+                .owned
+                .provider_run_projection
+                .get(&projected_provider_run_id)
+                .expect("busy provider projection should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "busy-save rejection must not stop the active provider"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should remain available")
+                .active_provider_run_id(),
+            Some(projected_provider_run_id.as_str()),
+            "busy-save rejection must not clear the active provider pointer"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .remote_execution()
+                .expect("slice binding should remain available")
+                .active_worker_provider_run_id
+                .as_deref(),
+            Some(worker_provider_run_id),
+            "busy-save rejection must not clear the worker provider binding"
+        );
+        assert!(
+            runtime
+                .active_saved_state_for_slice(&slice.id)
+                .expect("saved-state lookup should succeed")
+                .is_none(),
+            "busy-save rejection must not create partial saved state"
+        );
     }
 
     #[tokio::test]
@@ -1281,6 +1375,38 @@ mod tests {
             .reconcile_slice_agent_attachments(&detached)
             .await
             .expect("missing canonical attachment should reconcile");
+
+        assert_eq!(reconciled.session_ids, vec![session_id]);
+        assert_eq!(reconciled.agent_ids, vec![agent_id]);
+    }
+
+    #[tokio::test]
+    async fn slice_reconciliation_removes_stale_nonexistent_attachment() {
+        let (_app, runtime, slice, session_id, agent_id) = slice_runtime().await;
+        let with_stale_attachment = runtime
+            .owned
+            .slice_store
+            .attach_agents(
+                vec![crate::slice::SliceAgentAttachment {
+                    slice_ref: slice.id.clone(),
+                    session_id: "missing-session".to_string(),
+                    agent_id: "missing-agent".to_string(),
+                }],
+                3,
+            )
+            .expect("stale fixture attachment should be recorded")
+            .into_iter()
+            .next()
+            .expect("updated slice should be returned");
+        assert!(with_stale_attachment
+            .agent_ids
+            .iter()
+            .any(|id| id == "missing-agent"));
+
+        let reconciled = runtime
+            .reconcile_slice_agent_attachments(&with_stale_attachment)
+            .await
+            .expect("stale slice attachment should reconcile");
 
         assert_eq!(reconciled.session_ids, vec![session_id]);
         assert_eq!(reconciled.agent_ids, vec![agent_id]);
