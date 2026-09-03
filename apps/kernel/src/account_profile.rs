@@ -555,6 +555,16 @@ pub struct ProviderAccountProfile {
     pub materializations: Vec<ProviderAccountMaterializationStatus>,
 }
 
+impl ProviderAccountProfile {
+    /// Reuse prompt admission's plan/model and freshness policy. Missing
+    /// reporting and authentication failures are not evidence of exhaustion.
+    pub(crate) fn has_confirmed_exhaustion(&self, model: &str, now_ms: u64) -> bool {
+        self.auth_state == ProviderAccountAuthState::Authenticated
+            && provider_account_usage_block(&self.provider, Some(model), &self.usage, now_ms)
+                .is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub(crate) enum ProviderAccountLocator {

@@ -15,7 +15,7 @@ impl KernelRuntimeState {
             if current.remote_execution().is_some() {
                 return Ok(false);
             }
-            let Some(substitute_index) = next_substitute_index(&current) else {
+            let Some(substitute_index) = owned.next_available_substitute_index(&current)? else {
                 return Ok(false);
             };
             let (agent, profile) = owned.agent_store.activate_agent_substitute(
@@ -86,10 +86,40 @@ impl KernelRuntimeState {
     }
 }
 
-fn next_substitute_index(agent: &crate::agent::AgentInstance) -> Option<usize> {
-    let next = agent
-        .active_substitute_index()
-        .map(|index| index.saturating_add(1))
-        .unwrap_or(0);
-    (next < agent.substitutes().len()).then_some(next)
+impl KernelRuntimeOwnedState {
+    fn next_available_substitute_index(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Option<usize>, DaemonError> {
+        let next = agent
+            .active_substitute_index()
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        let config = self.config_projection.snapshot();
+        let owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &config,
+            agent.owner_user_id(),
+        );
+        let now_ms = crate::session::unix_epoch_ms();
+        for (index, candidate) in agent.substitutes().iter().enumerate().skip(next) {
+            if crate::provider::canonical_provider_family(&candidate.provider).is_some() {
+                let account = self.provider_account_profiles.get(
+                    &owner,
+                    &candidate.provider,
+                    candidate.account_profile.as_deref().unwrap_or("default"),
+                )?;
+                if account.has_confirmed_exhaustion(&candidate.model, now_ms) {
+                    self.record_notice(
+                        agent.session_id(),
+                        None,
+                        self.attachment_store.list_session_attachment_ids(agent.session_id()),
+                        format!("Skipping substitute {} for agent `{}`: account `{}` has exhausted capacity for `{}`.", index + 1, agent.id(), account.label, candidate.model),
+                    );
+                    continue;
+                }
+            }
+            return Ok(Some(index));
+        }
+        Ok(None)
+    }
 }

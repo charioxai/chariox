@@ -2,6 +2,9 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[path = "tests/automatic_substitutes.rs"]
+mod automatic_substitutes;
+
 #[test]
 fn remote_extension_manifest_pending_revoke_uses_explicit_intent_not_hash_change() {
     let previous = crate::extension::RemoteExtensionManifestSyncStatus::synced(
