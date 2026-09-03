@@ -209,7 +209,7 @@ run_with_file_stdin_timeout() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
@@ -683,6 +683,42 @@ ensure_container() {
   configure_slice_state_directory
   refresh_slice_support_files
   refresh_saved_state_runtime
+}
+
+recover_existing_container() {
+  container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
+  if ! container_running; then
+    log "restarting existing container $SLICE_NAME after failed state save"
+    if ! run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null \
+      && ! wait_for_container_running 24 5; then
+      fail "failed to restart existing container $SLICE_NAME after failed state save"
+    fi
+  fi
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" rm -f \
+    /home/slice/.chariox/daemon/config.json \
+    /tmp/chariox-slice-state/cloud-relay-config.json \
+    || fail "failed to scrub legacy Cloud relay credentials from the slice"
+  configure_stable_machine_identity
+  configure_chromium_browser_policy
+  configure_slice_state_directory
+  refresh_slice_support_files
+}
+
+start_slice_services() {
+  if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
+    import_provider_auth
+  fi
+  if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
+    require_slice_free_space "desktop" /home/slice /tmp
+    run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
+  fi
+  if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
+    require_slice_free_space "runtime" /home/slice /tmp
+    run_required_phase runtime exec_slice /opt/chariox-slice/start-runtime.sh
+  fi
+  if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
+    run_required_phase provider-servers exec_slice /opt/chariox-slice/start-providers.sh
+  fi
 }
 
 ensure_auth_target_container() {
@@ -1206,21 +1242,14 @@ main() {
       require_docker
       build_image
       ensure_container
-      if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
-        import_provider_auth
-      fi
-      if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
-        require_slice_free_space "desktop" /home/slice /tmp
-        run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
-      fi
-      if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
-        require_slice_free_space "runtime" /home/slice /tmp
-        run_required_phase runtime exec_slice /opt/chariox-slice/start-runtime.sh
-      fi
-      if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
-        run_required_phase provider-servers exec_slice /opt/chariox-slice/start-providers.sh
-      fi
+      start_slice_services
       log "provision completed; use status or logs actions for diagnostics"
+      ;;
+    recover)
+      require_docker
+      recover_existing_container
+      start_slice_services
+      log "failed-save recovery completed; existing container and home state preserved"
       ;;
     status)
       require_docker

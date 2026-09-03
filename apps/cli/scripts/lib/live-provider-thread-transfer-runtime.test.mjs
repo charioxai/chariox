@@ -36,6 +36,10 @@ test("provider thread drill accepts the explicit slice shutdown scenario", () =>
   assert.equal(parseArgs(["--drill", "slice-shutdown"]).drill, "slice-shutdown")
 })
 
+test("provider thread drill accepts the injected slice save failure scenario", () => {
+  assert.equal(parseArgs(["--drill", "slice-save-failure"]).drill, "slice-save-failure")
+})
+
 test("slice shutdown checkpoint requires a stopped slice and parked provider", () => {
   assert.deepEqual(sliceShutdownCheckpointChecks({
     savedSlice: { status: "stopped" },

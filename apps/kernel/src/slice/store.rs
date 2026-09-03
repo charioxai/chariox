@@ -323,7 +323,11 @@ impl SliceStore {
                     operation: "slice.state.save",
                     message: format!("unknown slice `{slice_ref}`"),
                 })?;
-        record.saved_state_status = Some(SliceSavedStateStatus::Failed);
+        record.saved_state_status = Some(if record.saved_state_ref.is_some() {
+            SliceSavedStateStatus::Saved
+        } else {
+            SliceSavedStateStatus::Failed
+        });
         record.last_operation = Some("state.save".to_string());
         record.last_operation_status = Some(SliceOperationStatus::Failed);
         record.last_error = Some(redact_slice_operation_error(&error.to_string()));

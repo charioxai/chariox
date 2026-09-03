@@ -665,6 +665,95 @@ exit 0
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+fn failed_save_recovery_starts_only_the_existing_container() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("failed-save-recovery");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    let running = root.join("running");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  exit 0
+fi
+if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
+  if [ -f "$DOCKER_RUNNING" ]; then printf 'true\n'; else printf 'false\n'; fi
+  exit 0
+fi
+if [ "$1" = "start" ] && [ "$2" = "saved-slice" ]; then
+  : > "$DOCKER_RUNNING"
+  exit 0
+fi
+for argument in "$@"; do
+  if [ "$argument" = "df" ]; then
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+    printf 'fixture 1000000 1 999999 1%% /\n'
+    exit 0
+  fi
+done
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("slice-linux-docker/provision-linux-docker-slice.sh");
+    let mut paths = vec![bin];
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("recover")
+        .env("PATH", path)
+        .env("TMPDIR", &root)
+        .env("DOCKER_LOG", &log)
+        .env("DOCKER_RUNNING", &running)
+        .env("CHARIOX_SLICE_NAME", "saved-slice")
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", "prior-saved-image")
+        .env("CHARIOX_SLICE_BASE_IMAGE", "current-runtime-image")
+        .env("CHARIOX_SLICE_START_DESKTOP", "0")
+        .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "0")
+        .env("CHARIOX_SLICE_START_RUNTIME", "1")
+        .output()
+        .expect("slice recovery command should execute");
+    assert!(
+        output.status.success(),
+        "slice recovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = std::fs::read_to_string(&log).expect("fake Docker log should read");
+    assert!(
+        calls.lines().any(|call| call == "start saved-slice"),
+        "recovery must restart the stopped current container: {calls}"
+    );
+    assert!(
+        calls
+            .lines()
+            .any(|call| call.ends_with(" saved-slice /opt/chariox-slice/start-runtime.sh")),
+        "recovery must restart the worker runtime: {calls}"
+    );
+    for forbidden in ["image inspect", "create ", "rm -f", "volume create"] {
+        assert!(
+            !calls.lines().any(|call| call.starts_with(forbidden)),
+            "recovery must not replace the current container via `{forbidden}`: {calls}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn local_docker_slice_rejects_mounting_development_control_root() {
     let mut record = SliceStore::default()

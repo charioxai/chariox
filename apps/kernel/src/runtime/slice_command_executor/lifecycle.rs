@@ -27,6 +27,12 @@ const HOSTED_SLICE_RELAY_RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SliceStartMode {
+    RestoreSavedState,
+    RecoverExistingContainer,
+}
+
 pub(super) async fn execute_list_slices_request(
     runtime_state: &KernelRuntimeState,
     _request: ListSlicesRequest,
@@ -122,6 +128,27 @@ pub(super) async fn execute_save_slice_state_request(
     let slice = runtime_state
         .reconcile_slice_agent_attachments(&slice)
         .await?;
+    if !matches!(
+        slice.status,
+        crate::slice::SliceStatus::Running | crate::slice::SliceStatus::Stopped
+    ) {
+        let error = DaemonError::LocalTransport {
+            operation: "slice.state.save",
+            message: format!(
+                "slice `{}` cannot save state while its status is {:?}",
+                slice.name, slice.status
+            ),
+        };
+        let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "state.save",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
     let mode = match (request.mode, slice.agent_ids.is_empty()) {
         (Some(mode), _) => mode,
         (None, true) => SliceStateSaveMode::Shutdown,
@@ -175,17 +202,46 @@ pub(super) async fn execute_save_slice_state_request(
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     let save_docker_options = docker_options.clone();
     let task_slice = stopping_slice.clone();
-    let save_result = tokio::task::spawn_blocking(move || {
+    let save_result = match tokio::task::spawn_blocking(move || {
         crate::slice::save_local_docker_slice_state(&task_slice, &save_docker_options)
     })
     .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.state.save",
-        message: format!("slice state save task failed: {error}"),
-    })?;
+    {
+        Ok(result) => result,
+        Err(error) => Err(DaemonError::LocalTransport {
+            operation: "slice.state.save",
+            message: format!("slice state save task failed: {error}"),
+        }),
+    };
     let state = match save_result {
         Ok(state) => state,
-        Err(error) => {
+        Err(save_error) => {
+            let error = if slice.status == crate::slice::SliceStatus::Running {
+                match execute_start_slice_request_with_relaunch_manifests(
+                    runtime_state,
+                    config_projection,
+                    relay_state,
+                    SliceRefRequest {
+                        slice_ref: slice.id.clone(),
+                    },
+                    Some(relaunch_manifests),
+                    SliceStartMode::RecoverExistingContainer,
+                    operation_guard,
+                )
+                .await
+                {
+                    Ok(_) => save_error,
+                    Err(recovery_error) => DaemonError::LocalTransport {
+                        operation: "slice.state.save",
+                        message: format!(
+                            "state capture failed and the existing slice could not be recovered: {save_error}; recovery failed: {recovery_error}"
+                        ),
+                    },
+                }
+            } else {
+                let _ = runtime_state.mark_slice_stopped(&slice.id);
+                save_error
+            };
             let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
             let _ = runtime_state.record_slice_audit_event(
                 &slice,
@@ -215,6 +271,7 @@ pub(super) async fn execute_save_slice_state_request(
                 slice_ref: saved_slice.id.clone(),
             },
             Some(relaunch_manifests),
+            SliceStartMode::RestoreSavedState,
             operation_guard,
         )
         .await?;
@@ -342,6 +399,7 @@ pub(super) async fn execute_start_slice_request(
         relay_state,
         request,
         None,
+        SliceStartMode::RestoreSavedState,
         operation,
     )
     .await
@@ -353,6 +411,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
     prepared_relaunch_manifests: Option<Vec<super::super::state::SliceAgentRelaunchManifest>>,
+    start_mode: SliceStartMode,
     _operation: crate::slice::SliceOperationGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
@@ -394,9 +453,15 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     let supervisor_relay = Some(relay.clone());
     let mut docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
-    if let Some(state) = runtime_state.active_saved_state_for_slice(&initial_slice.id)? {
-        docker_options = docker_options.with_saved_state(&state);
+    if start_mode == SliceStartMode::RestoreSavedState {
+        if let Some(state) = runtime_state.active_saved_state_for_slice(&initial_slice.id)? {
+            docker_options = docker_options.with_saved_state(&state);
+        }
     }
+    let docker_action = match start_mode {
+        SliceStartMode::RestoreSavedState => crate::slice::LocalDockerSliceAction::Provision,
+        SliceStartMode::RecoverExistingContainer => crate::slice::LocalDockerSliceAction::Recover,
+    };
     let discovery_config = match provision_and_prepare_worker_discovery(
         runtime_state,
         config_projection,
@@ -405,7 +470,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         Box::new(move || {
             crate::slice::run_local_docker_slice_action(
                 &supervisor_slice,
-                crate::slice::LocalDockerSliceAction::Provision,
+                docker_action,
                 supervisor_relay,
                 None,
                 None,

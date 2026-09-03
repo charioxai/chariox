@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { createWriteStream } from "node:fs"
 import { access, mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
+import { promisify } from "node:util"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -52,6 +53,8 @@ import {
   runSliceRestartScenario,
   runSliceShutdownScenario,
 } from "./lib/live-provider-thread-transfer-slice-scenarios.mjs"
+
+const execFileAsync = promisify(execFile)
 
 async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports }) {
   await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
@@ -292,6 +295,7 @@ async function main() {
   await mkdir(runtimeRoot, { recursive: true })
   let daemonChild = null
   let sliceModeProviderEnv = null
+  let temporarySliceImage = null
   let fatalError = null
   let matrix = {
     goal: "provider-thread-transfer",
@@ -312,6 +316,7 @@ async function main() {
     const capabilityRoot = path.join(runtimeRoot, "capabilities")
     const sliceMode = options.drill === "slice-restart"
       || options.drill === "slice-shutdown"
+      || options.drill === "slice-save-failure"
       || options.drill === "live-migrate-to-slice"
       || options.drill === "live-migrate-roundtrip-slice"
     const daemonHome = sliceMode
@@ -332,6 +337,11 @@ async function main() {
         const sliceXdgDataHome = path.join(runtimeRoot, "xdg-data")
         const sliceXdgCacheHome = path.join(runtimeRoot, "xdg-cache")
         const sliceRoot = path.join(runtimeRoot, "slices")
+        const sliceImage = options.drill === "slice-save-failure"
+          ? `chariox-slice-save-failure:${runId}`
+          : defaultLocalDockerSliceImage
+        if (options.drill === "slice-save-failure") temporarySliceImage = sliceImage
+        options.sliceImage = sliceImage
         await mkdir(sliceXdgStateHome, { recursive: true })
         await mkdir(sliceXdgDataHome, { recursive: true })
         await mkdir(sliceXdgCacheHome, { recursive: true })
@@ -341,16 +351,16 @@ async function main() {
           storageRoot: path.join(runtimeRoot, "home-kernel-storage"),
           extraToml: providerThreadSliceConfigLines({
             sliceRoot,
-            image: defaultLocalDockerSliceImage,
+            image: sliceImage,
             buildImage: options.sliceBuildImage,
           }),
         })
         const sliceBuildEnv = providerThreadSliceBuildEnv()
         console.log(`${options.drill}: provisioner image policy ${options.sliceBuildImage}`)
-        matrix.slice_image = defaultLocalDockerSliceImage
+        matrix.slice_image = sliceImage
         matrix.slice_build_image = options.sliceBuildImage
         matrix.slice_image_build = {
-          image: defaultLocalDockerSliceImage,
+          image: sliceImage,
           delegated_to: "slice-provisioner",
           cargo_build_profile: sliceBuildEnv.CHARIOX_SLICE_RUNTIME_BUILD_PROFILE,
           cargo_opt_level: sliceBuildEnv.CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL,
@@ -398,6 +408,7 @@ async function main() {
       let runScenario = runLocalReloadScenario
       if (options.drill === "slice-restart") runScenario = runSliceRestartScenario
       if (options.drill === "slice-shutdown") runScenario = runSliceShutdownScenario
+      if (options.drill === "slice-save-failure") runScenario = runSliceRestartScenario
       if (options.drill === "live-migrate-to-slice" || options.drill === "live-migrate-roundtrip-slice") {
         runScenario = runLiveMigrateToSliceScenario
       }
@@ -437,6 +448,16 @@ async function main() {
       fatalError ??= error
       matrix.cleanup.runtime_root_removed = false
       matrix.cleanup.runtime_root_cleanup_error = error.message ?? String(error)
+    }
+    if (temporarySliceImage) {
+      await execFileAsync("docker", ["image", "rm", temporarySliceImage]).catch(() => {})
+      try {
+        await execFileAsync("docker", ["image", "inspect", temporarySliceImage])
+        matrix.cleanup.temporary_slice_image_removed = false
+        fatalError ??= new Error(`temporary slice image remains after cleanup: ${temporarySliceImage}`)
+      } catch {
+        matrix.cleanup.temporary_slice_image_removed = true
+      }
     }
     matrix.finished_at_ms = Date.now()
     matrix.passed = !fatalError

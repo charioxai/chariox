@@ -160,6 +160,43 @@ mod tests {
     }
 
     #[test]
+    fn failed_resave_keeps_the_prior_saved_generation_valid() {
+        let store = SliceStore::default();
+        let mut input = create_input("dev");
+        input.from_saved_state = Some(saved_state("state-known-good"));
+        let slice = store
+            .create("kernel-1", "machine-1", input)
+            .expect("slice should create from saved state");
+        let error = crate::error::DaemonError::LocalTransport {
+            operation: "slice.state.save",
+            message: "injected capture failure".to_string(),
+        };
+
+        let failed = store
+            .mark_saved_state_failed(&slice.id, &error, 3)
+            .expect("failed save should update diagnostics");
+
+        assert_eq!(failed.saved_state_ref.as_deref(), Some("state-known-good"));
+        assert_eq!(
+            failed.saved_state_status,
+            Some(SliceSavedStateStatus::Saved)
+        );
+        assert_eq!(failed.saved_state_updated_at_ms, Some(2));
+        assert_eq!(
+            failed.last_operation_status,
+            Some(SliceOperationStatus::Failed)
+        );
+        assert_eq!(
+            store
+                .active_saved_state_for_slice(&slice.id)
+                .expect("saved state lookup should work")
+                .expect("prior state should remain active")
+                .id,
+            "state-known-good"
+        );
+    }
+
+    #[test]
     fn slice_store_restores_records_and_continues_numbering() {
         let store = SliceStore::default();
         let slice = store
