@@ -161,6 +161,8 @@ pub struct SliceScreenshotArgs {
 pub struct SliceOcrArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +170,8 @@ pub struct SliceFindTextArgs {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

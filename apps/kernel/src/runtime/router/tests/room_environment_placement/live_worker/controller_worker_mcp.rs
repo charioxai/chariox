@@ -66,7 +66,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     std::fs::write(&screenshot, &screenshot_bytes).expect("computer screenshot fixture");
     std::fs::write(
         &screen_tool,
-        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
     #[cfg(unix)]
@@ -224,6 +224,13 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         .runtime_state
         .runtime_mcp_auth_token_for_provider_run(&worker_provider_run_id)
         .expect("worker provider runtime MCP token");
+    let actions_before_observations = fixture
+        .home
+        .runtime_state
+        .room_environment_snapshot(&room)
+        .expect("home Room before provider observations")
+        .actions
+        .len();
 
     let input_token = token.clone();
     assert!(fixture
@@ -232,13 +239,134 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         .runtime_tool_specs_for_auth_token(&token)
         .iter()
         .any(|spec| spec.name == "slice_screenshot"));
-    let actions_before_screenshot = fixture
-        .home
+    assert!(fixture
+        .worker
         .runtime_state
-        .room_environment_snapshot(&room)
-        .expect("home Room before provider screenshot")
-        .actions
-        .len();
+        .runtime_tool_specs_for_auth_token(&token)
+        .iter()
+        .any(|spec| spec.name == "slice_screen_status"));
+    let screen_status = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_screen_status",
+            json!({
+                "session_id": fixture.rooms[1],
+                "slice_id": "forged-slice"
+            }),
+        )
+        .await
+        .expect("worker provider screen status should use home Room authority");
+    assert!(screen_status.ok, "{:?}", screen_status.payload);
+    assert_eq!(screen_status.payload["source"], "computer_controller");
+    assert_eq!(screen_status.payload["session_id"], room);
+    assert_eq!(screen_status.payload["slice_id"], "slice-1");
+    assert_eq!(screen_status.payload["agent_id"], home_agent_id);
+    assert_eq!(screen_status.payload["available"], true);
+    assert_eq!(screen_status.payload["screen"], "1280x800");
+    assert_eq!(
+        screen_status.payload["canonical_viewport"],
+        json!({
+            "css_width":1280,
+            "css_height":800,
+            "device_scale_factor":1,
+            "desktop_pixel_width":1280,
+            "desktop_pixel_height":800,
+            "revision":1,
+            "last_actor_id":Value::Null,
+        })
+    );
+    assert_eq!(screen_status.payload["mode"], "desktop");
+    assert_eq!(screen_status.payload["viewer"], Value::Null);
+    assert_eq!(screen_status.payload["stdout"], Value::Null);
+    assert_eq!(screen_status.payload["stderr"], Value::Null);
+    assert!(!screen_status.payload.to_string().contains("127.0.0.1:6080"));
+    assert_eq!(
+        screen_status.payload["viewer_access"],
+        "client_attachment_required"
+    );
+    assert!(fixture
+        .worker
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&token)
+        .iter()
+        .any(|spec| spec.name == "slice_ocr"));
+    let ocr = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(&token, "slice_ocr", json!({}))
+        .await
+        .expect("worker provider OCR should use home Room authority");
+    assert!(ocr.ok, "{:?}", ocr.payload);
+    assert_eq!(ocr.payload["source"], "computer_controller");
+    assert_eq!(ocr.payload["session_id"], room);
+    assert_eq!(ocr.payload["slice_id"], "slice-1");
+    assert_eq!(ocr.payload["agent_id"], home_agent_id);
+    assert_eq!(ocr.payload["text"], "Grüße 世界\nShared Computer");
+    assert_eq!(ocr.payload["stdout"], Value::Null);
+    assert_eq!(ocr.payload["stderr"], Value::Null);
+    assert!(fixture
+        .worker
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&token)
+        .iter()
+        .any(|spec| spec.name == "slice_find_text"));
+    let found = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_find_text",
+            json!({"query":"Shared Computer"}),
+        )
+        .await
+        .expect("worker provider text lookup should use home Room authority");
+    assert!(found.ok, "{:?}", found.payload);
+    assert_eq!(found.payload["source"], "computer_controller");
+    assert_eq!(found.payload["session_id"], room);
+    assert_eq!(found.payload["slice_id"], "slice-1");
+    assert_eq!(found.payload["agent_id"], home_agent_id);
+    assert_eq!(found.payload["match"]["text"], "Shared Computer");
+    assert_eq!(found.payload["match"]["left"], 320);
+    assert_eq!(found.payload["match"]["top"], 200);
+    assert_eq!(found.payload["match"]["width"], 240);
+    assert_eq!(found.payload["match"]["height"], 40);
+    assert_eq!(found.payload["match"]["center_x"], 440);
+    assert_eq!(found.payload["match"]["center_y"], 220);
+    assert_eq!(found.payload["stdout"], Value::Null);
+    assert_eq!(found.payload["stderr"], Value::Null);
+    let missing = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_find_text",
+            json!({"query":"not visible"}),
+        )
+        .await
+        .expect("a text miss is a completed observation");
+    assert!(!missing.ok);
+    assert_eq!(missing.payload["source"], "computer_controller");
+    assert_eq!(missing.payload["match"], Value::Null);
+    for query in ["   ".to_string(), "x".repeat(4097)] {
+        let error = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_find_text",
+                json!({"query":query}),
+            )
+            .await
+            .expect_err("invalid text lookup query must fail before worker execution");
+        assert!(
+            error
+                .to_string()
+                .contains("query must contain between 1 and 4096 UTF-8 bytes"),
+            "unexpected text lookup validation error: {error}"
+        );
+    }
     let observed = fixture
         .worker
         .runtime_state
@@ -272,6 +400,117 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             .expect("provider screenshot Base64"),
         screenshot_bytes,
     );
+    let screenshot_artifact_id = observed.payload["artifact_id"]
+        .as_str()
+        .expect("provider screenshot artifact ID");
+    let artifact_ocr = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_ocr",
+            json!({"artifact_id":screenshot_artifact_id}),
+        )
+        .await
+        .expect("worker provider OCR should reuse an opaque Room screenshot artifact");
+    assert!(artifact_ocr.ok, "{:?}", artifact_ocr.payload);
+    assert_eq!(artifact_ocr.payload["source"], "computer_controller");
+    assert_eq!(artifact_ocr.payload["text"], "Artifact OCR");
+    let unknown_artifact = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_ocr",
+            json!({"artifact_id":"unknown-artifact"}),
+        )
+        .await
+        .expect_err("OCR must reject an unknown Room screenshot artifact");
+    assert!(
+        unknown_artifact
+            .to_string()
+            .contains("artifact was not found"),
+        "unexpected OCR artifact error: {unknown_artifact}"
+    );
+    let foreign_screenshot = fixture._worker_state.root.join("foreign-room-screen.png");
+    let mut foreign_screenshot_bytes = screenshot_bytes.clone();
+    *foreign_screenshot_bytes
+        .last_mut()
+        .expect("foreign screenshot fixture has bytes") ^= 1;
+    std::fs::write(&foreign_screenshot, foreign_screenshot_bytes)
+        .expect("write foreign Room screenshot fixture");
+    let foreign_store = crate::artifacts::OperationalArtifactStore::open(
+        fixture._worker_state.config.operational_artifact_root(),
+        fixture
+            ._worker_state
+            .config
+            .operational_artifact_index_path(),
+    )
+    .expect("open worker artifact store for foreign Room fixture");
+    let foreign_artifact = foreign_store
+        .store_existing_file(crate::artifacts::StoreArtifactRequest {
+            source_path: foreign_screenshot,
+            display_name: "foreign-room.png".to_string(),
+            source_kind: "room_environment_screenshot".to_string(),
+            media_type: Some("image/png".to_string()),
+            enqueue_archive: false,
+            session_id: Some(fixture.rooms[1].clone()),
+            attachment_id: None,
+            workspace_id: None,
+            worktree_path: None,
+            metadata: std::collections::BTreeMap::from([(
+                "slice_id".to_string(),
+                json!("slice-1"),
+            )]),
+        })
+        .expect("store foreign Room screenshot fixture");
+    let foreign_artifact_error = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_ocr",
+            json!({"artifact_id":foreign_artifact.artifact_id}),
+        )
+        .await
+        .expect_err("OCR must reject an artifact from another Room");
+    assert!(
+        foreign_artifact_error
+            .to_string()
+            .contains("does not belong to this Room Environment"),
+        "unexpected cross-Room OCR error: {foreign_artifact_error}"
+    );
+    let forged_path = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_ocr",
+            json!({"image_path":"/tmp/forged-provider-ocr.png"}),
+        )
+        .await
+        .expect_err("Room OCR must reject a caller-supplied worker path");
+    assert!(
+        forged_path.to_string().contains("not image_path"),
+        "unexpected Room OCR path error: {forged_path}"
+    );
+    let artifact_match = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_find_text",
+            json!({
+                "query":"Shared Computer",
+                "artifact_id":screenshot_artifact_id
+            }),
+        )
+        .await
+        .expect("worker provider text lookup should reuse an opaque screenshot artifact");
+    assert!(artifact_match.ok, "{:?}", artifact_match.payload);
+    assert_eq!(artifact_match.payload["source"], "computer_controller");
+    assert_eq!(artifact_match.payload["match"]["left"], 640);
+    assert_eq!(artifact_match.payload["match"]["center_x"], 760);
     assert_eq!(
         fixture
             .home
@@ -280,8 +519,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             .expect("home Room after provider screenshot")
             .actions
             .len(),
-        actions_before_screenshot,
-        "a screenshot is an observation, not a mutating Room Action",
+        actions_before_observations,
+        "Computer observations do not enter the mutating Room Action ledger",
     );
     let runtime = fixture.worker.runtime_state.clone();
     let call = tokio::spawn(async move {

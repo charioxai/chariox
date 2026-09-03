@@ -27,9 +27,10 @@ mod script;
 mod skill_package_response;
 mod slice;
 pub(super) use slice::{
-    capture_room_environment_screenshot, reset_room_computer_input, run_room_keyboard_key,
-    run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move,
-    run_room_pointer_scroll, run_room_secret_text_input,
+    capture_room_environment_screenshot, execute_room_computer_observation,
+    reset_room_computer_input, run_room_keyboard_key, run_room_keyboard_text,
+    run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move, run_room_pointer_scroll,
+    run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
@@ -462,7 +463,10 @@ impl KernelRuntimeState {
         if !matches!(
             canonical_slice_tool_name(tool_name),
             Some(
-                SLICE_BROWSER_STATUS_TOOL
+                SLICE_SCREEN_STATUS_TOOL
+                    | SLICE_OCR_TOOL
+                    | SLICE_FIND_TEXT_TOOL
+                    | SLICE_BROWSER_STATUS_TOOL
                     | SLICE_SCREENSHOT_TOOL
                     | SLICE_MOUSE_TOOL
                     | SLICE_KEYBOARD_TOOL
@@ -523,7 +527,10 @@ fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
     matches!(
         canonical_slice_tool_name(tool_name),
         Some(
-            SLICE_BROWSER_STATUS_TOOL
+            SLICE_SCREEN_STATUS_TOOL
+                | SLICE_OCR_TOOL
+                | SLICE_FIND_TEXT_TOOL
+                | SLICE_BROWSER_STATUS_TOOL
                 | SLICE_SCREENSHOT_TOOL
                 | SLICE_MOUSE_TOOL
                 | SLICE_KEYBOARD_TOOL
@@ -615,7 +622,10 @@ mod tests {
     fn worker_room_browser_forwarding_has_one_explicit_tool_allowlist() {
         use crate::transport::runtime_tools::*;
         for tool_name in [
+            SLICE_SCREEN_STATUS_TOOL,
             SLICE_SCREENSHOT_TOOL,
+            SLICE_OCR_TOOL,
+            SLICE_FIND_TEXT_TOOL,
             SLICE_MOUSE_TOOL,
             SLICE_KEYBOARD_TOOL,
             SLICE_BROWSER_STATUS_TOOL,

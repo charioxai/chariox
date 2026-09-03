@@ -169,8 +169,16 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
+#[test]
+fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
+    run_mcp_server_large_stack_test(
+        "mcp-tools-call-dispatches-slice-screen-fallbacks",
+        mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner,
+    );
+}
+
+#[cfg(unix)]
+async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_inner() {
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = crate::env_lock::lock();
@@ -327,6 +335,12 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() 
         "image bytes should not be duplicated into structured content"
     );
 
+    Box::pin(assert_local_computer_observation_validation(
+        &router,
+        &auth_token,
+    ))
+    .await;
+
     for (id, name, arguments) in [
         (
             2,
@@ -374,6 +388,50 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() 
     }
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+async fn assert_local_computer_observation_validation(
+    router: &Arc<CommandRouter>,
+    auth_token: &str,
+) {
+    for (id, name, arguments, expected) in [
+        (
+            20,
+            "slice_ocr",
+            serde_json::json!({"artifact_id": "room-artifact-1"}),
+            "artifact_id is only valid for an opaque Room screenshot; local slices use image_path",
+        ),
+        (
+            21,
+            "slice_find_text",
+            serde_json::json!({"query": "   "}),
+            "query must contain between 1 and 4096 UTF-8 bytes",
+        ),
+    ] {
+        let response = handle_json_rpc_value(
+            router.clone(),
+            auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}
+            }),
+        )
+        .await
+        .expect("invalid local observation should return an MCP response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("invalid local observation body should collect")
+            .to_bytes();
+        let value: Value =
+            serde_json::from_slice(&body).expect("invalid local observation response json");
+        assert_eq!(value["error"]["code"], -32000, "{value:#}");
+        assert!(value.to_string().contains(expected), "{value:#}");
+    }
 }
 
 #[cfg(unix)]

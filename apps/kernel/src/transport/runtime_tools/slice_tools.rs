@@ -4,7 +4,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: SLICE_SCREEN_STATUS_TOOL.to_string(),
-            description: "Return the Chariox slice display status, including screen size and the local noVNC viewer URL when available.".to_string(),
+            description: "Return availability and display dimensions for the shared Chariox Computer. A local slice may also return its private viewer URL; a Room agent receives canonical Room dimensions and a client-attachment marker instead of worker connection details.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -25,24 +25,26 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_OCR_TOOL.to_string(),
-            description: "Extract visible text from a slice screenshot with the slice OCR engine. If image_path is omitted, Chariox captures a fresh screenshot first.".to_string(),
+            description: "Extract visible text from the shared Chariox Computer with the slice OCR engine. A Room agent may reuse an opaque artifact_id returned by slice_screenshot; local slices may use image_path. If both are omitted, Chariox captures a fresh screenshot first.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "image_path": {"type": "string"}
+                    "image_path": {"type": "string"},
+                    "artifact_id": {"type": "string", "minLength": 1}
                 },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
             name: SLICE_FIND_TEXT_TOOL.to_string(),
-            description: "Locate text on the slice screen and return its bounding box and center point. If image_path is omitted, Chariox captures a fresh screenshot first.".to_string(),
+            description: "Locate text on the shared Chariox Computer and return its display-pixel bounding box and center point. A Room agent may reuse an opaque artifact_id returned by slice_screenshot; local slices may use image_path. If both are omitted, Chariox captures a fresh screenshot first.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
                 "properties": {
-                    "query": {"type": "string"},
-                    "image_path": {"type": "string"}
+                    "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "image_path": {"type": "string"},
+                    "artifact_id": {"type": "string", "minLength": 1}
                 },
                 "additionalProperties": false
             }),

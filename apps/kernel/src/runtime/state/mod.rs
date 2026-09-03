@@ -51,6 +51,7 @@ mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
 mod room_browser_controller;
+mod room_computer_observation;
 mod room_display;
 mod room_environment_placement;
 mod room_environment_state;

@@ -35,7 +35,7 @@ async fn captures_and_reads_bound_worker_screenshot() {
     std::fs::write(&source, &expected).expect("screenshot fixture should write");
     std::fs::write(
         &helper,
-        "#!/bin/sh\n[ \"$1\" = screenshot ] || exit 2\ncp \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\" \"$2\"\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  screenshot) cp \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\" \"$2\" ;;\n  status) printf 'available=true\\nscreen=900x500\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n' ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then cmp \"$2\" \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\"; fi\n    printf 'Direct home OCR 世界\\n'\n    ;;\n  find-text)\n    if [ \"$#\" -eq 3 ]; then cmp \"$3\" \"$CHARIOX_ROOM_SCREENSHOT_FIXTURE\"; fi\n    printf '%s\\n' '{\"text\":\"Direct home\",\"left\":100,\"top\":120,\"width\":200,\"height\":40,\"center_x\":200,\"center_y\":140}'\n    ;;\n  *) exit 2 ;;\nesac\n",
     )
     .expect("screenshot helper should write");
     #[cfg(unix)]
@@ -58,6 +58,17 @@ async fn captures_and_reads_bound_worker_screenshot() {
     )
     .await
     .expect("Room should bind to the worker slice");
+    dispatch_json(
+        &fixture.home,
+        json!({"StartRoomEnvironment": {
+            "session_id":room, "viewport": {
+                "css_width":1280, "css_height":800, "device_scale_factor":1,
+                "desktop_pixel_width":1280, "desktop_pixel_height":800
+            }
+        }}),
+    )
+    .await
+    .expect("start the Room Computer before observing it");
     let (agent_id, provider_token) = {
         let mut app = fixture.home.app.lock().await;
         let agent = spawn_test_agent(&mut app, &room, "screenshot-reader", "dev-stub");
@@ -69,6 +80,54 @@ async fn captures_and_reads_bound_worker_screenshot() {
                 .to_string();
         (agent_id, token)
     };
+    let actions_before_observations = fixture
+        .home
+        .runtime_state
+        .room_environment_snapshot(&room)
+        .expect("home Room before direct provider observations")
+        .actions
+        .len();
+    let provider_specs = fixture
+        .home
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&provider_token);
+    for tool in [
+        "slice_screen_status",
+        "slice_screenshot",
+        "slice_ocr",
+        "slice_find_text",
+    ] {
+        assert!(
+            provider_specs.iter().any(|spec| spec.name == tool),
+            "home provider is missing {tool}"
+        );
+    }
+    let status = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &provider_token,
+            "slice_screen_status",
+            json!({"session_id":fixture.rooms[1],"slice_id":"forged-slice"}),
+        )
+        .await
+        .expect("home provider should observe its bound Room Computer status");
+    assert!(status.ok, "{:?}", status.payload);
+    assert_eq!(status.payload["source"], "computer_controller");
+    assert_eq!(status.payload["session_id"], room);
+    assert_eq!(status.payload["slice_id"], "slice-1");
+    assert_eq!(status.payload["agent_id"], agent_id);
+    assert_eq!(status.payload["screen"], "1280x800");
+    assert_eq!(status.payload["viewer"], Value::Null);
+    assert_eq!(status.payload["stdout"], Value::Null);
+    assert_eq!(status.payload["stderr"], Value::Null);
+    let fresh_ocr = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(&provider_token, "slice_ocr", json!({}))
+        .await
+        .expect("home provider should OCR its bound Room Computer");
+    assert_eq!(fresh_ocr.payload["text"], "Direct home OCR 世界");
     let provider_capture = fixture
         .home
         .runtime_state
@@ -99,6 +158,47 @@ async fn captures_and_reads_bound_worker_screenshot() {
             )
             .expect("provider screenshot should decode"),
         expected,
+    );
+    let provider_artifact_id = provider_capture.payload["artifact_id"]
+        .as_str()
+        .expect("home provider screenshot artifact ID");
+    let artifact_ocr = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &provider_token,
+            "slice_ocr",
+            json!({"artifact_id":provider_artifact_id}),
+        )
+        .await
+        .expect("home provider should OCR its opaque screenshot artifact");
+    assert_eq!(artifact_ocr.payload["text"], "Direct home OCR 世界");
+    let artifact_match = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &provider_token,
+            "slice_find_text",
+            json!({"query":"Direct home","artifact_id":provider_artifact_id}),
+        )
+        .await
+        .expect("home provider should locate text in its opaque screenshot artifact");
+    assert!(artifact_match.ok, "{:?}", artifact_match.payload);
+    assert_eq!(artifact_match.payload["source"], "computer_controller");
+    assert_eq!(artifact_match.payload["match"]["center_x"], 200);
+    assert_eq!(artifact_match.payload["match"]["center_y"], 140);
+    assert_eq!(artifact_match.payload["stdout"], Value::Null);
+    assert_eq!(artifact_match.payload["stderr"], Value::Null);
+    assert_eq!(
+        fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("home Room after direct provider observations")
+            .actions
+            .len(),
+        actions_before_observations,
+        "direct provider Computer observations do not enter the Action ledger",
     );
     let attached = dispatch_json(
         &fixture.home,
@@ -168,6 +268,12 @@ async fn captures_and_reads_bound_worker_screenshot() {
     assert_eq!(second_bytes, expected[131_072..]);
     assert_eq!(second["eof"], true);
 
+    dispatch_json(
+        &fixture.home,
+        json!({"StopRoomEnvironment":{"session_id":room}}),
+    )
+    .await
+    .expect("stop the Room Computer after direct provider observation");
     fixture.stop().await;
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     std::env::remove_var("CHARIOX_ROOM_SCREENSHOT_FIXTURE");

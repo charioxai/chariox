@@ -13,6 +13,14 @@ impl KernelRuntimeState {
         use crate::transport::runtime_tools::*;
 
         match tool_name {
+            SLICE_SCREEN_STATUS_TOOL => {
+                parse_controller_tool_arguments::<serde_json::Map<String, serde_json::Value>>(
+                    arguments,
+                    "runtime_tool_slice_screen_status",
+                )?;
+                self.controller_computer_screen_status_tool_result(session_id, slice_id, agent_id)
+                    .await
+            }
             SLICE_SCREENSHOT_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceScreenshotArgs>(
                     arguments,
@@ -22,6 +30,22 @@ impl KernelRuntimeState {
                     session_id, slice_id, agent_id, args,
                 )
                 .await
+            }
+            SLICE_OCR_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceOcrArgs>(
+                    arguments,
+                    "runtime_tool_slice_ocr",
+                )?;
+                self.controller_computer_ocr_tool_result(session_id, slice_id, agent_id, args)
+                    .await
+            }
+            SLICE_FIND_TEXT_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceFindTextArgs>(
+                    arguments,
+                    "runtime_tool_slice_find_text",
+                )?;
+                self.controller_computer_find_text_tool_result(session_id, slice_id, agent_id, args)
+                    .await
             }
             SLICE_MOUSE_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceMouseArgs>(

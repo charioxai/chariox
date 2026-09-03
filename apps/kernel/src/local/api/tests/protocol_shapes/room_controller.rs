@@ -3,6 +3,7 @@ use crate::local::RoomEnvironmentScreenshotChunk;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RemoteExtensionInvocationContext,
     RemoteRoomBrowserRuntimeToolCall, RemoteRoomBrowserRuntimeToolResult,
+    RemoteRoomComputerObservationCall, RemoteRoomComputerObservationResult,
     RELAY_PEER_PROTOCOL_VERSION,
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
@@ -13,7 +14,7 @@ use crate::transport::room_browser_controller::{
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 37);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 38);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -54,9 +55,101 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 }
 
 #[test]
+fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 38);
+    let request = RelayPeerRequest::ObserveRoomComputer {
+        session_id: "room-1".to_string(),
+        slice_id: "slice-1".to_string(),
+        call: RemoteRoomComputerObservationCall::ScreenStatus,
+    };
+    let request_wire = serde_json::json!({
+        "kind":"observe_room_computer",
+        "session_id":"room-1",
+        "slice_id":"slice-1",
+        "call":{"kind":"screen_status"}
+    });
+    assert_eq!(serde_json::to_value(&request).unwrap(), request_wire);
+    assert_eq!(
+        serde_json::from_value::<RelayPeerRequest>(request_wire).unwrap(),
+        request
+    );
+
+    for (call, call_wire) in [
+        (
+            RemoteRoomComputerObservationCall::Ocr {
+                artifact_id: Some("sensitive-artifact-id".to_string()),
+            },
+            serde_json::json!({
+                "kind":"ocr",
+                "artifact_id":"sensitive-artifact-id"
+            }),
+        ),
+        (
+            RemoteRoomComputerObservationCall::FindText {
+                query: "sensitive visible query".to_string(),
+                artifact_id: Some("sensitive-artifact-id".to_string()),
+            },
+            serde_json::json!({
+                "kind":"find_text",
+                "query":"sensitive visible query",
+                "artifact_id":"sensitive-artifact-id"
+            }),
+        ),
+    ] {
+        let request = RelayPeerRequest::ObserveRoomComputer {
+            session_id: "room-1".to_string(),
+            slice_id: "slice-1".to_string(),
+            call,
+        };
+        let wire = serde_json::json!({
+            "kind":"observe_room_computer",
+            "session_id":"room-1",
+            "slice_id":"slice-1",
+            "call":call_wire
+        });
+        assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(wire).unwrap(),
+            request
+        );
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("sensitive visible query"));
+        assert!(!debug.contains("sensitive-artifact-id"));
+    }
+
+    let response = RelayPeerResponse::RoomComputerObserved {
+        session_id: "room-1".to_string(),
+        slice_id: "slice-1".to_string(),
+        result: RemoteRoomComputerObservationResult(
+            crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "viewer":"http://sensitive-worker-endpoint.test/"
+                }),
+            },
+        ),
+    };
+    let response_wire = serde_json::json!({
+        "kind":"room_computer_observed",
+        "session_id":"room-1",
+        "slice_id":"slice-1",
+        "result":{
+            "ok":true,
+            "payload":{"viewer":"http://sensitive-worker-endpoint.test/"}
+        }
+    });
+    assert_eq!(serde_json::to_value(&response).unwrap(), response_wire);
+    assert_eq!(
+        serde_json::from_value::<RelayPeerResponse>(response_wire).unwrap(),
+        response
+    );
+    assert!(!format!("{response:?}").contains("sensitive-worker-endpoint"));
+}
+
+#[test]
 fn room_controller_protocol_shapes_are_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 37);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 38);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {

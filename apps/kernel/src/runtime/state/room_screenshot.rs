@@ -230,7 +230,7 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
     ) -> Result<RoomEnvironmentScreenshotArtifact, DaemonError> {
-        let config = self.authorize_bound_room_screenshot(
+        let config = self.authorize_bound_room_computer_read(
             authenticated_kernel_id,
             authenticated_public_key,
             session_id,
@@ -304,7 +304,7 @@ impl KernelRuntimeState {
         offset: u64,
         max_bytes: u32,
     ) -> Result<RoomEnvironmentScreenshotChunk, DaemonError> {
-        let config = self.authorize_bound_room_screenshot(
+        let config = self.authorize_bound_room_computer_read(
             authenticated_kernel_id,
             authenticated_public_key,
             session_id,
@@ -315,28 +315,8 @@ impl KernelRuntimeState {
                 "screenshot chunk size must be between 1 and 131072 bytes",
             ));
         }
-        let store = OperationalArtifactStore::open(
-            config.operational_artifact_root(),
-            config.operational_artifact_index_path(),
-        )?;
-        let record = store
-            .load_artifact(artifact_id)?
-            .ok_or_else(|| screenshot_error("screenshot artifact was not found"))?;
-        if record.source_kind != SCREENSHOT_SOURCE_KIND
-            || record.media_type.as_deref() != Some(SCREENSHOT_MEDIA_TYPE)
-            || record.session_id.as_deref() != Some(session_id)
-            || record.size_bytes == 0
-            || record.size_bytes > SCREENSHOT_MAX_BYTES
-            || record
-                .metadata
-                .get("slice_id")
-                .and_then(|value| value.as_str())
-                != Some(slice_id)
-        {
-            return Err(screenshot_error(
-                "screenshot artifact does not belong to this Room Environment",
-            ));
-        }
+        let (store, record) =
+            load_room_screenshot_artifact(&config, session_id, slice_id, artifact_id)?;
         let read = store.read_artifact_chunk(&record, offset, max_bytes as usize)?;
         Ok(RoomEnvironmentScreenshotChunk {
             artifact_id: record.artifact_id,
@@ -375,7 +355,10 @@ impl KernelRuntimeState {
         self.running_room_screenshot_slice(session_id)
     }
 
-    fn running_room_screenshot_slice(&self, session_id: &str) -> Result<SliceRecord, DaemonError> {
+    pub(in crate::runtime::state) fn running_room_screenshot_slice(
+        &self,
+        session_id: &str,
+    ) -> Result<SliceRecord, DaemonError> {
         let binding = self
             .room_environment_slice(session_id)?
             .ok_or_else(|| screenshot_error("Room has no bound Environment slice"))?;
@@ -384,33 +367,6 @@ impl KernelRuntimeState {
             return Err(screenshot_error("Room Environment slice is not running"));
         }
         Ok(slice)
-    }
-
-    fn authorize_bound_room_screenshot(
-        &self,
-        authenticated_kernel_id: &str,
-        authenticated_public_key: &str,
-        session_id: &str,
-        slice_id: &str,
-    ) -> Result<crate::config::DaemonConfig, DaemonError> {
-        let config = self.owned.config_projection.snapshot();
-        if !config
-            .room_environment_worker_binding
-            .as_ref()
-            .is_some_and(|binding| {
-                binding.permits(
-                    authenticated_kernel_id,
-                    authenticated_public_key,
-                    session_id,
-                    slice_id,
-                )
-            })
-        {
-            return Err(screenshot_error(
-                "Room screenshot peer or binding scope was denied",
-            ));
-        }
-        Ok(config)
     }
 
     async fn send_room_screenshot_peer_request(
@@ -435,6 +391,60 @@ impl KernelRuntimeState {
         )
         .await
     }
+}
+
+pub(in crate::runtime::state) fn room_screenshot_artifact_path(
+    config: &crate::config::DaemonConfig,
+    session_id: &str,
+    slice_id: &str,
+    artifact_id: &str,
+) -> Result<std::path::PathBuf, DaemonError> {
+    let (store, record) = load_room_screenshot_artifact(config, session_id, slice_id, artifact_id)?;
+    let signature = store.read_artifact_chunk(&record, 0, ROOM_SCREENSHOT_PNG_SIGNATURE.len())?;
+    if signature.data != ROOM_SCREENSHOT_PNG_SIGNATURE {
+        return Err(screenshot_error("screenshot artifact is not a PNG image"));
+    }
+    let path = store.blob_path_for_record(&record);
+    let metadata = std::fs::metadata(&path).map_err(|error| {
+        screenshot_error(&format!("failed to inspect screenshot artifact: {error}"))
+    })?;
+    if !metadata.is_file() || metadata.len() != record.size_bytes {
+        return Err(screenshot_error(
+            "screenshot artifact bytes do not match its index record",
+        ));
+    }
+    Ok(path)
+}
+
+fn load_room_screenshot_artifact(
+    config: &crate::config::DaemonConfig,
+    session_id: &str,
+    slice_id: &str,
+    artifact_id: &str,
+) -> Result<(OperationalArtifactStore, crate::artifacts::ArtifactRecord), DaemonError> {
+    let store = OperationalArtifactStore::open(
+        config.operational_artifact_root(),
+        config.operational_artifact_index_path(),
+    )?;
+    let record = store
+        .load_artifact(artifact_id)?
+        .ok_or_else(|| screenshot_error("screenshot artifact was not found"))?;
+    if record.source_kind != SCREENSHOT_SOURCE_KIND
+        || record.media_type.as_deref() != Some(SCREENSHOT_MEDIA_TYPE)
+        || record.session_id.as_deref() != Some(session_id)
+        || record.size_bytes == 0
+        || record.size_bytes > SCREENSHOT_MAX_BYTES
+        || record
+            .metadata
+            .get("slice_id")
+            .and_then(|value| value.as_str())
+            != Some(slice_id)
+    {
+        return Err(screenshot_error(
+            "screenshot artifact does not belong to this Room Environment",
+        ));
+    }
+    Ok((store, record))
 }
 
 fn screenshot_field(value: String, field: &str) -> Result<String, DaemonError> {

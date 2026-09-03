@@ -457,49 +457,59 @@ impl KernelRuntimeState {
             let task_slice_id = slice_id.to_string();
             let task_relay_url = relay_url.clone();
             let task_relay_token = relay_token;
-            let task = std::thread::spawn(move || {
-                crate::logging::info_with_fields(
-                    "daemon.slice_private_relay",
-                    "home connector thread starting",
-                    serde_json::json!({
-                        "slice_id": task_slice_id.clone(),
-                        "relay_url": task_relay_url.clone(),
-                    }),
-                );
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        crate::logging::warn_with_fields(
-                            "slice.private_relay",
-                            "failed to start private relay runtime",
-                            serde_json::json!({
-                                "error": error.to_string(),
-                            }),
-                        );
-                        return;
-                    }
-                };
-                runtime.block_on(
-                    crate::transport::relay_client::run_daemon_relay_connector_with_static_relay(
-                        app,
-                        task_state,
-                        shutdown_rx,
-                        task_relay_url.clone(),
-                        task_relay_token,
-                    ),
-                );
-                crate::logging::info_with_fields(
-                    "daemon.slice_private_relay",
-                    "home connector thread exited",
-                    serde_json::json!({
-                        "slice_id": task_slice_id,
-                        "relay_url": task_relay_url.clone(),
-                    }),
-                );
-            });
+            // This thread polls the complete encrypted relay request chain on a
+            // current-thread runtime. The platform default stack is too small for
+            // that chain in debug builds, so match the normal kernel runtime.
+            let task = std::thread::Builder::new()
+                .name("chariox-slice-private-relay-home".to_string())
+                .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+                .spawn(move || {
+                    crate::logging::info_with_fields(
+                        "daemon.slice_private_relay",
+                        "home connector thread starting",
+                        serde_json::json!({
+                            "slice_id": task_slice_id.clone(),
+                            "relay_url": task_relay_url.clone(),
+                        }),
+                    );
+                    let runtime = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            crate::logging::warn_with_fields(
+                                "slice.private_relay",
+                                "failed to start private relay runtime",
+                                serde_json::json!({
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            return;
+                        }
+                    };
+                    runtime.block_on(
+                        crate::transport::relay_client::run_daemon_relay_connector_with_static_relay(
+                            app,
+                            task_state,
+                            shutdown_rx,
+                            task_relay_url.clone(),
+                            task_relay_token,
+                        ),
+                    );
+                    crate::logging::info_with_fields(
+                        "daemon.slice_private_relay",
+                        "home connector thread exited",
+                        serde_json::json!({
+                            "slice_id": task_slice_id,
+                            "relay_url": task_relay_url.clone(),
+                        }),
+                    );
+                })
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "start slice private relay home connector",
+                    message: error.to_string(),
+                })?;
             connectors.insert(
                 slice_id.to_string(),
                 SlicePrivateRelayConnector {

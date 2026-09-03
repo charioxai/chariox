@@ -95,6 +95,10 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_ocr",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                reject_room_artifact_for_local_slice(
+                    args.artifact_id.as_deref(),
+                    "runtime_tool_slice_ocr",
+                )?;
                 let mut command_args = vec!["ocr".to_string()];
                 if let Some(image_path) = args.image_path {
                     command_args.push(image_path);
@@ -115,7 +119,12 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_find_text",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let mut command_args = vec!["find-text".to_string(), args.query];
+                reject_room_artifact_for_local_slice(
+                    args.artifact_id.as_deref(),
+                    "runtime_tool_slice_find_text",
+                )?;
+                let query = validated_slice_find_text_query(&args.query)?;
+                let mut command_args = vec!["find-text".to_string(), query];
                 if let Some(image_path) = args.image_path {
                     command_args.push(image_path);
                 }
@@ -461,6 +470,32 @@ impl KernelRuntimeState {
     }
 }
 
+fn reject_room_artifact_for_local_slice(
+    artifact_id: Option<&str>,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    if artifact_id.is_some() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message:
+                "artifact_id is only valid for an opaque Room screenshot; local slices use image_path"
+                    .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validated_slice_find_text_query(query: &str) -> Result<String, DaemonError> {
+    let query = query.trim();
+    if query.is_empty() || query.len() > 4096 {
+        return Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_find_text",
+            message: "query must contain between 1 and 4096 UTF-8 bytes".to_string(),
+        });
+    }
+    Ok(query.to_string())
+}
+
 fn read_slice_screenshot_for_mcp(path: &std::path::Path) -> Result<Vec<u8>, DaemonError> {
     let file = std::fs::File::open(path).map_err(|error| DaemonError::LocalTransport {
         operation: "runtime_tool_slice_screenshot",
@@ -505,6 +540,71 @@ async fn run_slice_screen_command(
     args: Vec<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     run_slice_screen_command_inner(args, None, None).await
+}
+
+pub(in crate::runtime::state) async fn execute_room_computer_observation(
+    call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
+    artifact_path: Option<std::path::PathBuf>,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let output = match &call {
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
+            run_slice_screen_command(vec!["status".to_string()]).await?
+        }
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. } => {
+            let mut args = vec!["ocr".to_string()];
+            if let Some(path) = artifact_path.as_ref() {
+                args.push(room_computer_artifact_path(path)?);
+            }
+            run_slice_screen_command(args).await?
+        }
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
+            query, ..
+        } => {
+            let query = validated_slice_find_text_query(query)?;
+            let mut args = vec!["find-text".to_string(), query];
+            if let Some(path) = artifact_path.as_ref() {
+                args.push(room_computer_artifact_path(path)?);
+            }
+            run_slice_screen_command(args).await?
+        }
+    };
+    let mut payload = slice_tool_payload("", "", &output);
+    if matches!(
+        &call,
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. }
+    ) {
+        payload["text"] = serde_json::Value::String(output.stdout.clone());
+    }
+    if matches!(
+        &call,
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
+    ) {
+        payload["match"] = output
+            .stdout
+            .lines()
+            .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .unwrap_or(serde_json::Value::Null);
+    }
+    if let Some(payload) = payload.as_object_mut() {
+        for field in [
+            "slice_id", "agent_id", "display", "viewer", "stdout", "stderr",
+        ] {
+            payload.remove(field);
+        }
+    }
+    Ok(crate::transport::runtime_tools::RuntimeToolResult {
+        ok: output.success,
+        payload,
+    })
+}
+
+fn room_computer_artifact_path(path: &std::path::Path) -> Result<String, DaemonError> {
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "environment.computer.observe",
+            message: "Room screenshot artifact path is not valid UTF-8".to_string(),
+        })
 }
 
 pub(in crate::runtime::state) async fn capture_room_environment_screenshot(

@@ -58,6 +58,34 @@ impl KernelRuntimeState {
             .map(|slice| binding(session_id, slice)))
     }
 
+    pub(in crate::runtime::state) fn authorize_bound_room_computer_read(
+        &self,
+        authenticated_kernel_id: &str,
+        authenticated_public_key: &str,
+        session_id: &str,
+        slice_id: &str,
+    ) -> Result<crate::config::DaemonConfig, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        if !config
+            .room_environment_worker_binding
+            .as_ref()
+            .is_some_and(|binding| {
+                binding.permits(
+                    authenticated_kernel_id,
+                    authenticated_public_key,
+                    session_id,
+                    slice_id,
+                )
+            })
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "environment.computer.read",
+                message: "Room Computer read peer or binding scope was denied".to_string(),
+            });
+        }
+        Ok(config)
+    }
+
     pub(crate) fn bind_room_environment_slice(
         &self,
         request: BindRoomEnvironmentSliceRequest,
