@@ -529,6 +529,12 @@ async function run() {
 async function exerciseRoomKeyboard(activityController, activityNotices) {
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/keyboard`])
   await waitForBrowserText("ROOM_COMPUTER_KEYBOARD_READY", 30_000, "keyboard fixture did not load")
+  await sliceScreen(["browser-click", "#keyboard-input"])
+  await waitForBrowserText(
+    "ROOM_COMPUTER_KEYBOARD_FOCUS_OK",
+    20_000,
+    "keyboard fixture did not establish the physical input focus",
+  )
   const typed = await executeAgentKeyboardAction({
     args: { action: "type", text: keyboardText },
     retainedInput: keyboardText,
@@ -1576,9 +1582,12 @@ async function startFixture() {
         function fnv1a64(value){let hash=14695981039346656037n;for(const byte of new TextEncoder().encode(value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}return hash.toString(16).padStart(16,"0")}
         const input=document.querySelector("#keyboard-input");
         const status=document.querySelector("#keyboard-status");
+        const confirmFocus=()=>{if(document.activeElement===input)status.textContent="ROOM_COMPUTER_KEYBOARD_FOCUS_OK"};
         input.addEventListener("input",()=>{const digest=fnv1a64(input.value);status.textContent=digest===expectedDigest?"ROOM_COMPUTER_KEYBOARD_TEXT_OK":digest===expectedReplacementDigest?"ROOM_COMPUTER_KEYBOARD_SHORTCUT_OK":digest===expectedAfterRepeatDigest?"ROOM_COMPUTER_KEYBOARD_REPEAT_OK":"ROOM_COMPUTER_KEYBOARD_WAITING"});
+        input.addEventListener("focus",confirmFocus);
         input.addEventListener("select",()=>{if(input.selectionStart===0&&input.selectionEnd===input.value.length)status.textContent="ROOM_COMPUTER_KEYBOARD_SELECT_ALL_OK"});
         input.addEventListener("blur",()=>{status.textContent="ROOM_COMPUTER_KEYBOARD_FOCUS_LOST"});
+        queueMicrotask(confirmFocus);
       </script></body></html>`)
       return
     }
