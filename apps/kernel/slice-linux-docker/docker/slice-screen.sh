@@ -32,7 +32,7 @@ log() {
 }
 
 run_xdotool() {
-  timeout 10s xdotool "$@"
+  timeout --foreground 10s xdotool "$@"
 }
 
 run_xdotool_utf8() {
