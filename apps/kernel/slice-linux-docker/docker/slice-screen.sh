@@ -491,7 +491,8 @@ type_text() {
 
 computer_type_stdin() {
   require_screen_available
-  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
+  # A 5 ms XTest cadence drops non-ASCII key events under virtualized X11 load.
+  run_xdotool_utf8 type --clearmodifiers --delay 20 --file -
 }
 
 computer_key_stdin() {
