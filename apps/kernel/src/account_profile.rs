@@ -3561,13 +3561,14 @@ mod tests {
     #[test]
     fn usage_admission_blocks_fresh_exhaustion_but_not_expired_or_stale_meters() {
         let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let exhausted = capacity_meter(
+        let mut exhausted = capacity_meter(
             "Monthly",
             ProviderAccountUsageMeterKind::RollingLimit,
             ProviderAccountUsageMeterState::Exhausted,
             now_ms,
             Some(now_ms + 60_000),
         );
+        exhausted.service_id = Some("opencode-go".to_string());
         assert!(provider_account_usage_block(
             "opencode",
             Some("opencode-go/deepseek-v4-pro"),
@@ -3603,13 +3604,7 @@ mod tests {
                 ProviderAccountUsageAvailability::Available,
                 vec![ProviderAccountUsageMeter {
                     observed_at_ms: now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
-                    ..capacity_meter(
-                        "Monthly",
-                        ProviderAccountUsageMeterKind::RollingLimit,
-                        ProviderAccountUsageMeterState::Exhausted,
-                        now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
-                        Some(now_ms + 60_000),
-                    )
+                    ..exhausted.clone()
                 }],
                 now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
             ),

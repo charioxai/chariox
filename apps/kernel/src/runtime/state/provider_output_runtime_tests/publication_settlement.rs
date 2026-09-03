@@ -6,8 +6,9 @@ async fn assert_completed_publication_output_settlement(
     client_interface: crate::provider::ProviderClientInterface,
     waits_for_provider_completion: bool,
 ) {
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-publication-claim",

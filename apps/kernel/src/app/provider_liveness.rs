@@ -324,7 +324,8 @@ mod tests {
     #[test]
     fn app_unexpected_provider_exit_marks_active_agent_error() {
         let mut app =
-            DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+            crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+                .expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-app-unexpected-exit",

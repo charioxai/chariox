@@ -3,7 +3,8 @@ use super::*;
 #[tokio::test]
 async fn unexpected_owned_provider_exit_marks_active_agent_error() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unexpected-exit",
@@ -71,7 +72,8 @@ async fn unexpected_owned_provider_exit_marks_active_agent_error() {
 #[tokio::test]
 async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_state() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-idle-exit",
@@ -120,7 +122,8 @@ async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_st
 #[tokio::test]
 async fn owned_end_session_clears_stale_prompt_runtime_state_for_already_ended_session() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-1",
@@ -185,7 +188,8 @@ async fn owned_end_session_clears_stale_prompt_runtime_state_for_already_ended_s
 #[tokio::test]
 async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-1",
@@ -266,7 +270,8 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
 #[tokio::test]
 async fn stale_provider_exit_does_not_settle_prompt_on_replacement_run() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-1",
@@ -488,7 +493,8 @@ async fn stale_provider_exit_preserves_starting_cross_agent_workflow_handoff() {
 #[tokio::test]
 async fn owned_destroy_agent_clears_stale_prompt_runtime_state_for_ended_provider_runs() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-1",

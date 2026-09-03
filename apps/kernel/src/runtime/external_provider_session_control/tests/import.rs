@@ -142,7 +142,8 @@ fn import_codex_session_without_model_uses_persisted_thread_model() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
     runtime.block_on(async {
         let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
+                .expect("app should boot"),
         ));
         let store = {
             let app = crate::runtime::app_lock::lock_app_instrumented(

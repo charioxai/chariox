@@ -3,7 +3,8 @@ use super::*;
 #[tokio::test]
 async fn unavailable_provider_account_defers_explicit_queue_advances_without_losing_work() {
     let mut app =
-        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unavailable-account-queue",
@@ -25,18 +26,13 @@ async fn unavailable_provider_account_defers_explicit_queue_advances_without_los
             "Queued work account",
         )
         .expect("account profile should register");
-    app.provider_account_profile_registry()
-        .update_observation(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            "codex",
-            &account.profile_id,
-            crate::account_profile::ProviderAccountAuthState::Authenticated,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("account should start authenticated");
+    crate::test_support::authenticate_provider_account(
+        &app.provider_account_profile_registry(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "codex",
+        &account.profile_id,
+    )
+    .expect("account should start authenticated");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;

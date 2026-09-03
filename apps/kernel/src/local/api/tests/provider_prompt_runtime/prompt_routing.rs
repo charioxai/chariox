@@ -667,18 +667,13 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
                 "Busy account",
             )
             .expect("account profile should register");
-        registry
-            .update_observation(
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                "codex",
-                &account.profile_id,
-                crate::account_profile::ProviderAccountAuthState::Authenticated,
-                None,
-                None,
-                None,
-                None,
-            )
-            .expect("account should become authenticated")
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &account.profile_id,
+        )
+        .expect("account should become authenticated")
     });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
