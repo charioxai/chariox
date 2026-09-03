@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use base64::Engine as _;
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::artifacts::{OperationalArtifactStore, StoreArtifactRequest};
@@ -16,7 +17,14 @@ const SCREENSHOT_SOURCE_KIND: &str = "room_environment_screenshot";
 const SCREENSHOT_MEDIA_TYPE: &str = "image/png";
 const SCREENSHOT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const SCREENSHOT_CHUNK_MAX_BYTES: u32 = 128 * 1024;
+pub(in crate::runtime::state) const ROOM_SCREENSHOT_INLINE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(in crate::runtime::state) const ROOM_SCREENSHOT_PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 static SCREENSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub(in crate::runtime::state) struct AgentRoomScreenshot {
+    pub artifact: RoomEnvironmentScreenshotArtifact,
+    pub image_bytes: Option<Vec<u8>>,
+}
 
 impl KernelRuntimeState {
     pub(crate) async fn capture_room_environment_screenshot(
@@ -29,16 +37,61 @@ impl KernelRuntimeState {
         let slice = self
             .authorize_room_screenshot(caller, &session_id, &attachment_id)
             .await?;
+        self.capture_room_screenshot_from_slice(&session_id, &slice)
+            .await
+    }
+
+    pub(in crate::runtime::state) async fn capture_room_environment_screenshot_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        include_image: bool,
+    ) -> Result<AgentRoomScreenshot, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let slice = self.running_room_screenshot_slice(session_id)?;
+        let artifact = self
+            .capture_room_screenshot_from_slice(session_id, &slice)
+            .await?;
+        let image_bytes = if include_image {
+            Some(
+                self.read_complete_room_screenshot(
+                    session_id,
+                    &slice,
+                    &artifact,
+                    ROOM_SCREENSHOT_INLINE_MAX_BYTES,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        Ok(AgentRoomScreenshot {
+            artifact,
+            image_bytes,
+        })
+    }
+
+    async fn capture_room_screenshot_from_slice(
+        &self,
+        session_id: &str,
+        slice: &SliceRecord,
+    ) -> Result<RoomEnvironmentScreenshotArtifact, DaemonError> {
         let _guard = self.owned.slice_store.guard_environment_use(
             &slice.id,
-            Some(&session_id),
+            Some(session_id),
             "environment.screenshot.capture",
         )?;
         let response = self
             .send_room_screenshot_peer_request(
                 &slice,
                 RelayPeerRequest::CaptureRoomScreenshot {
-                    session_id: session_id.clone(),
+                    session_id: session_id.to_string(),
                     slice_id: slice.id.clone(),
                 },
             )
@@ -76,20 +129,38 @@ impl KernelRuntimeState {
         let slice = self
             .authorize_room_screenshot(caller, &session_id, &attachment_id)
             .await?;
+        self.read_room_screenshot_chunk_from_slice(
+            &session_id,
+            &slice,
+            &artifact_id,
+            request.offset,
+            request.max_bytes,
+        )
+        .await
+    }
+
+    async fn read_room_screenshot_chunk_from_slice(
+        &self,
+        session_id: &str,
+        slice: &SliceRecord,
+        artifact_id: &str,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<RoomEnvironmentScreenshotChunk, DaemonError> {
         let _guard = self.owned.slice_store.guard_environment_use(
             &slice.id,
-            Some(&session_id),
+            Some(session_id),
             "environment.screenshot.read",
         )?;
         let response = self
             .send_room_screenshot_peer_request(
                 &slice,
                 RelayPeerRequest::ReadRoomScreenshotChunk {
-                    session_id: session_id.clone(),
+                    session_id: session_id.to_string(),
                     slice_id: slice.id.clone(),
-                    artifact_id: artifact_id.clone(),
-                    offset: request.offset,
-                    max_bytes: request.max_bytes,
+                    artifact_id: artifact_id.to_string(),
+                    offset,
+                    max_bytes,
                 },
             )
             .await?;
@@ -101,7 +172,7 @@ impl KernelRuntimeState {
             } if returned_session == session_id
                 && slice_id == slice.id
                 && chunk.artifact_id == artifact_id
-                && chunk.offset == request.offset =>
+                && chunk.offset == offset =>
             {
                 Ok(chunk)
             }
@@ -109,6 +180,47 @@ impl KernelRuntimeState {
                 "worker returned a mismatched screenshot chunk",
             )),
         }
+    }
+
+    async fn read_complete_room_screenshot(
+        &self,
+        session_id: &str,
+        slice: &SliceRecord,
+        artifact: &RoomEnvironmentScreenshotArtifact,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, DaemonError> {
+        if artifact.size_bytes > max_bytes {
+            return Err(screenshot_error(&format!(
+                "captured screenshot exceeds the {max_bytes} byte inline MCP limit"
+            )));
+        }
+        let mut bytes = Vec::with_capacity(artifact.size_bytes as usize);
+        while (bytes.len() as u64) < artifact.size_bytes {
+            let offset = bytes.len() as u64;
+            let chunk = self
+                .read_room_screenshot_chunk_from_slice(
+                    session_id,
+                    slice,
+                    &artifact.artifact_id,
+                    offset,
+                    SCREENSHOT_CHUNK_MAX_BYTES,
+                )
+                .await?;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&chunk.data_base64)
+                .map_err(|_| screenshot_error("worker returned invalid screenshot Base64"))?;
+            if decoded.is_empty()
+                || offset.saturating_add(decoded.len() as u64) > artifact.size_bytes
+                || chunk.eof != (offset + decoded.len() as u64 == artifact.size_bytes)
+            {
+                return Err(screenshot_error(
+                    "worker returned an invalid screenshot chunk boundary",
+                ));
+            }
+            bytes.extend_from_slice(&decoded);
+        }
+        validate_complete_room_screenshot(&bytes, artifact)?;
+        Ok(bytes)
     }
 
     pub(crate) async fn execute_bound_room_screenshot_capture(
@@ -260,6 +372,10 @@ impl KernelRuntimeState {
                 user_id: caller_user_id.to_string(),
             });
         }
+        self.running_room_screenshot_slice(session_id)
+    }
+
+    fn running_room_screenshot_slice(&self, session_id: &str) -> Result<SliceRecord, DaemonError> {
         let binding = self
             .room_environment_slice(session_id)?
             .ok_or_else(|| screenshot_error("Room has no bound Environment slice"))?;
@@ -345,9 +461,58 @@ fn screenshot_artifact_is_valid(artifact: &RoomEnvironmentScreenshotArtifact) ->
         && !artifact.display_name.contains(['/', '\\'])
 }
 
+fn validate_complete_room_screenshot(
+    bytes: &[u8],
+    artifact: &RoomEnvironmentScreenshotArtifact,
+) -> Result<(), DaemonError> {
+    if bytes.len() as u64 != artifact.size_bytes {
+        return Err(screenshot_error(
+            "worker screenshot bytes did not match the captured artifact size",
+        ));
+    }
+    if !bytes.starts_with(ROOM_SCREENSHOT_PNG_SIGNATURE) {
+        return Err(screenshot_error(
+            "worker screenshot is empty or is not a PNG image",
+        ));
+    }
+    if format!("{:x}", Sha256::digest(bytes)) != artifact.sha256 {
+        return Err(screenshot_error(
+            "worker screenshot bytes did not match the captured artifact digest",
+        ));
+    }
+    Ok(())
+}
+
 fn screenshot_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "environment.screenshot",
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_provider_screenshot_requires_exact_png_bytes_and_digest() {
+        let bytes = b"\x89PNG\r\n\x1a\nprovider-screen";
+        let artifact = RoomEnvironmentScreenshotArtifact {
+            artifact_id: "artifact-1".to_string(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size_bytes: bytes.len() as u64,
+            media_type: SCREENSHOT_MEDIA_TYPE.to_string(),
+            display_name: "screen.png".to_string(),
+        };
+        validate_complete_room_screenshot(bytes, &artifact).expect("valid PNG should pass");
+
+        let mut wrong_size = artifact.clone();
+        wrong_size.size_bytes += 1;
+        assert!(validate_complete_room_screenshot(bytes, &wrong_size).is_err());
+        assert!(validate_complete_room_screenshot(b"not-a-png", &artifact).is_err());
+
+        let mut wrong_digest = artifact;
+        wrong_digest.sha256 = "0".repeat(64);
+        assert!(validate_complete_room_screenshot(bytes, &wrong_digest).is_err());
     }
 }

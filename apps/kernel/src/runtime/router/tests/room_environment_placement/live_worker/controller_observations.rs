@@ -11,10 +11,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     ] {
         assert!(specs.iter().any(|spec| spec.name == name), "missing {name}");
     }
-    assert!(
-        !specs.iter().any(|spec| spec.name == "slice_screenshot"),
-        "home agents must not discover an unrouted computer tool"
-    );
+    assert!(specs.iter().any(|spec| spec.name == "slice_screenshot"));
     let found = runtime
         .dispatch_authenticated_runtime_tool_call(
             token,
@@ -92,10 +89,6 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
             "slice_browser_status",
             json!({"session_id":fixture.rooms[0],"slice_id":"slice-1"})
         )
-        .await
-        .is_err());
-    assert!(runtime
-        .dispatch_authenticated_runtime_tool_call(token, "slice_screenshot", json!({}))
         .await
         .is_err());
 }
