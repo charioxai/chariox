@@ -1218,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_legacy_binding_is_rejected_until_rebound() {
+    fn restored_stale_or_unversioned_binding_is_rejected_until_rebound() {
         let legacy = RemoteAgentBinding {
             worker_kernel_id: "worker-kernel".to_string(),
             worker_machine_id: "worker-machine".to_string(),
@@ -1230,6 +1230,11 @@ mod tests {
             relay_peer_protocol_version: None,
         };
         assert!(!legacy.relay_peer_protocol_compatible());
+        let stale = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(38),
+            ..legacy.clone()
+        };
+        assert!(!stale.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
             relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy

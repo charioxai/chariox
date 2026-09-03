@@ -64,6 +64,11 @@ export type RoomEnvironmentActionArguments =
       click_count: 1 | 2
       viewport_revision: number
     }
+  | {
+      kind: "clipboard_write"
+      utf8_byte_count: number
+      character_count: number
+    }
 
 export type RoomEnvironmentAction = {
   action_id: string
@@ -235,6 +240,12 @@ export type RoomEnvironmentTakeoverUpdatedResponse = {
 export type RoomEnvironmentInputReleasedResponse = {
   RoomEnvironmentInputReleased: {
     environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentClipboardReadResponse = {
+  RoomEnvironmentClipboardRead: {
+    content: string
   }
 }
 

@@ -1,9 +1,12 @@
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::room_browser_controller::{
-    RoomComputerInputAction, RoomComputerKeyboardInput, RoomComputerPointerButton,
+    RoomComputerClipboardText, RoomComputerInputAction, RoomComputerKeyboardInput,
+    RoomComputerPointerButton,
 };
-use crate::transport::runtime_tools::{RuntimeToolResult, SliceKeyboardArgs, SliceMouseArgs};
+use crate::transport::runtime_tools::{
+    RuntimeToolResult, SliceClipboardWriteArgs, SliceKeyboardArgs, SliceMouseArgs,
+};
 
 impl KernelRuntimeState {
     pub(super) async fn controller_computer_mouse_tool_result(
@@ -26,6 +29,18 @@ impl KernelRuntimeState {
         args: SliceKeyboardArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let action = room_computer_keyboard_action(args)?;
+        self.controller_computer_input_tool_result(session_id, slice_id, agent_id, action)
+            .await
+    }
+
+    pub(super) async fn controller_computer_clipboard_write_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: SliceClipboardWriteArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let action = room_computer_clipboard_write_action(args);
         self.controller_computer_input_tool_result(session_id, slice_id, agent_id, action)
             .await
     }
@@ -122,6 +137,12 @@ fn room_computer_keyboard_action(
     }
 }
 
+fn room_computer_clipboard_write_action(args: SliceClipboardWriteArgs) -> RoomComputerInputAction {
+    RoomComputerInputAction::ClipboardWrite {
+        text: RoomComputerClipboardText::new(args.text),
+    }
+}
+
 fn coordinate(value: Option<i64>, field: &'static str) -> Result<u32, DaemonError> {
     let value = value.ok_or_else(|| {
         computer_tool_error("missing_coordinate", format!("missing required `{field}`"))
@@ -173,6 +194,27 @@ fn computer_tool_error(code: &'static str, message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_adapter_preserves_unicode_without_exposing_a_read_tool() {
+        let action = room_computer_clipboard_write_action(SliceClipboardWriteArgs {
+            text: "Clipboard Grüße 世界".to_string(),
+        });
+        assert_eq!(
+            action,
+            RoomComputerInputAction::ClipboardWrite {
+                text: crate::transport::room_browser_controller::RoomComputerClipboardText::new(
+                    "Clipboard Grüße 世界".to_string(),
+                ),
+            }
+        );
+        assert!(
+            !crate::transport::runtime_tools::slice_runtime_tool_specs()
+                .iter()
+                .any(|spec| spec.name.contains("clipboard_read")),
+            "agent runtime tools must not expose clipboard reads"
+        );
+    }
 
     #[test]
     fn mouse_adapter_preserves_buttons_scroll_axes_and_coordinates() {

@@ -66,7 +66,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     std::fs::write(&screenshot, &screenshot_bytes).expect("computer screenshot fixture");
     std::fs::write(
         &screen_tool,
-        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin|computer-clipboard-write-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
     let multi_match_tool = fixture
@@ -663,6 +663,11 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             "pointer_scroll",
         ),
         (
+            "slice_clipboard_write",
+            json!({"text":"Clipboard Grüße 世界"}),
+            "clipboard_write",
+        ),
+        (
             "slice_keyboard",
             json!({"action":"type","text":"Grüße 世界"}),
             "keyboard_text",
@@ -738,6 +743,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         "pointer_click",
         "pointer_drag",
         "pointer_scroll",
+        "clipboard_write",
         "keyboard_text",
         "keyboard_key",
     ]) {
@@ -759,7 +765,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     let keyboard = home_environment
         .actions
         .iter()
-        .find(|action| action.action_id == action_ids[5])
+        .find(|action| action.action_id == action_ids[6])
         .expect("keyboard text Action");
     assert_eq!(
         keyboard.arguments,
@@ -771,16 +777,30 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     let key = home_environment
         .actions
         .iter()
-        .find(|action| action.action_id == action_ids[6])
+        .find(|action| action.action_id == action_ids[7])
         .expect("keyboard key Action");
     assert_eq!(
         key.arguments,
         Some(crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 })
     );
+    let clipboard = home_environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_ids[5])
+        .expect("clipboard write Action");
+    assert_eq!(
+        clipboard.arguments,
+        Some(crate::session::EnvironmentActionArguments::ClipboardWrite {
+            utf8_byte_count: 24,
+            character_count: 18,
+        })
+    );
     let environment_debug = format!("{home_environment:?}");
     assert!(
-        !environment_debug.contains("Grüße 世界") && !environment_debug.contains("ctrl+shift+p"),
-        "Room history must not retain keyboard contents"
+        !environment_debug.contains("Grüße 世界")
+            && !environment_debug.contains("Clipboard Grüße 世界")
+            && !environment_debug.contains("ctrl+shift+p"),
+        "Room history must not retain keyboard or clipboard contents"
     );
     assert!(
         fixture
@@ -800,6 +820,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             "pointer-click 320 360 left 2\n",
             "pointer-drag 120 160 720 560 middle\n",
             "pointer-scroll 640 400 -3 5\n",
+            "computer-clipboard-write-stdin|Clipboard Grüße 世界\n",
             "computer-type-stdin|Grüße 世界\n",
             "computer-key-stdin 3|ctrl+shift+p\n",
         ),

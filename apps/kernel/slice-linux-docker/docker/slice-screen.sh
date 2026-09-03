@@ -547,6 +547,29 @@ clipboard_clear() {
   put_clipboard_once ''
 }
 
+require_clipboard_available() {
+  require_screen_available
+  if command -v xclip >/dev/null 2>&1; then
+    return 0
+  fi
+  log "xclip is not available"
+  return 1
+}
+
+computer_clipboard_write_stdin() (
+  require_clipboard_available
+  local input_path
+  input_path="$(mktemp "${TMPDIR:-/tmp}/chariox-computer-clipboard.XXXXXX")"
+  trap 'rm -f "$input_path"' EXIT
+  cat >"$input_path"
+  xclip -selection clipboard -in <"$input_path" >/dev/null 2>&1
+)
+
+computer_clipboard_read() {
+  require_clipboard_available
+  xclip -selection clipboard -out 2>/dev/null || true
+}
+
 paste_stdin() {
   require_screen_available
   local input
@@ -725,6 +748,8 @@ case "${1:-status}" in
   type|type_text) shift; type_text "$@" ;;
   computer-type-stdin|computer_type_stdin) computer_type_stdin ;;
   computer-key-stdin|computer_key_stdin) shift; computer_key_stdin "$@" ;;
+  computer-clipboard-write-stdin|computer_clipboard_write_stdin) computer_clipboard_write_stdin ;;
+  computer-clipboard-read|computer_clipboard_read) computer_clipboard_read ;;
   computer-input-reset|computer_input_reset) computer_input_reset ;;
   key) shift; key "$@" ;;
   clipboard-get|clipboard_get) clipboard_get ;;
@@ -749,7 +774,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-clipboard-write-stdin|computer-clipboard-read|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

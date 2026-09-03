@@ -331,6 +331,12 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == SLICE_FIND_TEXT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_CLIPBOARD_WRITE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_CLIPBOARD_WRITE_TOOL_ALIAS));
         let mouse = specs
             .iter()
             .find(|spec| spec.name == SLICE_MOUSE_TOOL)
@@ -349,6 +355,15 @@ mod workspace_live_sync_tests {
             .expect("keyboard tool spec");
         assert_eq!(keyboard.input_schema["properties"]["repeat"]["minimum"], 1);
         assert_eq!(keyboard.input_schema["properties"]["repeat"]["maximum"], 32);
+        let clipboard_write = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_CLIPBOARD_WRITE_TOOL)
+            .expect("clipboard write tool spec");
+        assert_eq!(
+            clipboard_write.input_schema["properties"]["text"]["maxLength"],
+            262_144
+        );
+        assert!(clipboard_write.description.contains("write-only"));
         let status = specs
             .iter()
             .find(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL)
@@ -569,6 +584,10 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_slice_tool_name("mcp__chariox__chariox_slice_mouse"),
             Some(SLICE_MOUSE_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_clipboard_write"),
+            Some(SLICE_CLIPBOARD_WRITE_TOOL)
         );
         assert_eq!(
             canonical_slice_tool_name("slice_open_url"),

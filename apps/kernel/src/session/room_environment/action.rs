@@ -64,6 +64,10 @@ pub enum EnvironmentActionArguments {
     KeyboardKey {
         repeat: u16,
     },
+    ClipboardWrite {
+        utf8_byte_count: u32,
+        character_count: u32,
+    },
     PointerClick {
         x: u32,
         y: u32,

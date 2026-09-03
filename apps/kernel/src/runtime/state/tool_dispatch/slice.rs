@@ -105,7 +105,7 @@ impl KernelRuntimeState {
                 }
                 let output = run_slice_screen_command(command_args).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["text"] = serde_json::Value::String(output.stdout.clone());
+                payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
                     payload,
@@ -154,6 +154,33 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 run_slice_screen_command(slice_keyboard_command_args(args)?).await?
+            }
+            crate::transport::runtime_tools::SLICE_CLIPBOARD_WRITE_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceClipboardWriteArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_clipboard_write",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let text =
+                    crate::transport::room_browser_controller::RoomComputerClipboardText::new(
+                        args.text,
+                    );
+                let utf8_byte_count = text.as_str().len();
+                let character_count = text.as_str().chars().count();
+                run_room_clipboard_write_inner(text, None).await?;
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "source": "slice_computer",
+                        "slice_id": slice_id,
+                        "agent_id": agent_id,
+                        "action_kind": "clipboard_write",
+                        "utf8_byte_count": utf8_byte_count,
+                        "character_count": character_count,
+                    }),
+                });
             }
             crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL => {
                 let args = serde_json::from_value::<
@@ -397,7 +424,7 @@ impl KernelRuntimeState {
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
                 let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["text"] = serde_json::Value::String(output.stdout.clone());
+                payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
                     payload,
@@ -520,14 +547,36 @@ fn read_bounded_png(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, Stri
     Ok(bytes)
 }
 
-#[derive(Debug)]
 struct SliceScreenCommandOutput {
     success: bool,
     status_code: Option<i32>,
-    stdout: String,
-    stderr: String,
+    stdout: zeroize::Zeroizing<String>,
+    stderr: zeroize::Zeroizing<String>,
     stdout_truncated: bool,
     stderr_truncated: bool,
+    sensitive_output: bool,
+}
+
+impl std::fmt::Debug for SliceScreenCommandOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SliceScreenCommandOutput");
+        debug
+            .field("success", &self.success)
+            .field("status_code", &self.status_code);
+        if self.sensitive_output {
+            debug
+                .field("stdout", &"[redacted sensitive helper output]")
+                .field("stderr", &"[redacted sensitive helper output]");
+        } else {
+            debug
+                .field("stdout", &self.stdout.as_str())
+                .field("stderr", &self.stderr.as_str());
+        }
+        debug
+            .field("stdout_truncated", &self.stdout_truncated)
+            .field("stderr_truncated", &self.stderr_truncated)
+            .finish()
+    }
 }
 
 async fn run_slice_screen_command(
@@ -575,7 +624,7 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
         &call,
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. }
     ) {
-        payload["text"] = serde_json::Value::String(output.stdout.clone());
+        payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
     }
     if let Some(payload) = payload.as_object_mut() {
         for field in [
@@ -647,7 +696,16 @@ async fn run_slice_screen_command_inner(
     stdin: Option<zeroize::Zeroizing<String>>,
     timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner_with_cancellation(args, stdin, timeout_override_ms, None).await
+    run_slice_screen_command_inner_with_output_policy(args, stdin, timeout_override_ms, None, false)
+        .await
+}
+
+async fn run_slice_screen_command_inner_exact_stdout(
+    args: Vec<String>,
+    timeout_override_ms: Option<u64>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_output_policy(args, None, timeout_override_ms, None, true)
+        .await
 }
 
 async fn run_slice_screen_command_inner_with_cancellation(
@@ -656,8 +714,26 @@ async fn run_slice_screen_command_inner_with_cancellation(
     timeout_override_ms: Option<u64>,
     cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_output_policy(
+        args,
+        stdin,
+        timeout_override_ms,
+        cancellation,
+        false,
+    )
+    .await
+}
+
+async fn run_slice_screen_command_inner_with_output_policy(
+    args: Vec<String>,
+    stdin: Option<zeroize::Zeroizing<String>>,
+    timeout_override_ms: Option<u64>,
+    cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
+    preserve_stdout: bool,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
+    let sensitive_output = preserve_stdout || stdin.is_some();
     tokio::task::spawn_blocking(move || {
         let mut command = std::process::Command::new(&tool_path);
         command
@@ -738,7 +814,13 @@ async fn run_slice_screen_command_inner_with_cancellation(
                 message: "slice screen command did not expose stderr".to_string(),
             });
         };
-        let stdout_reader = std::thread::spawn(move || read_child_output(stdout));
+        let stdout_reader = std::thread::spawn(move || {
+            if preserve_stdout {
+                read_child_output_exact_utf8(stdout)
+            } else {
+                read_child_output(stdout)
+            }
+        });
         let stderr_reader = std::thread::spawn(move || read_child_output(stderr));
         let timeout_ms = timeout_override_ms.unwrap_or_else(slice_screen_command_timeout_ms);
         let status = match child.wait_timeout(std::time::Duration::from_millis(timeout_ms)) {
@@ -807,6 +889,7 @@ async fn run_slice_screen_command_inner_with_cancellation(
             stderr,
             stdout_truncated,
             stderr_truncated,
+            sensitive_output,
         })
     })
     .await
@@ -1078,6 +1161,77 @@ pub(crate) async fn run_room_keyboard_key(
     }
 }
 
+pub(crate) async fn run_room_clipboard_write(
+    text: crate::transport::room_browser_controller::RoomComputerClipboardText,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    run_room_clipboard_write_inner(text, Some(cancellation)).await
+}
+
+async fn run_room_clipboard_write_inner(
+    text: crate::transport::room_browser_controller::RoomComputerClipboardText,
+    cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
+) -> Result<(), DaemonError> {
+    if text.as_str().len()
+        > crate::transport::room_browser_controller::ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_clipboard_text",
+        ));
+    }
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec!["computer-clipboard-write-stdin".to_string()],
+        Some(text.into_zeroizing()),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        cancellation,
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer clipboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_clipboard_read(
+) -> Result<crate::transport::room_browser_controller::RoomComputerClipboardText, DaemonError> {
+    let mut output = run_slice_screen_command_inner_exact_stdout(
+        vec!["computer-clipboard-read".to_string()],
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if !output.success {
+        zeroize::Zeroize::zeroize(&mut output.stdout);
+        return Err(room_computer_input_error(&format!(
+            "slice computer clipboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )));
+    }
+    if output.stdout_truncated
+        || output.stdout.len()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES
+    {
+        zeroize::Zeroize::zeroize(&mut output.stdout);
+        return Err(room_computer_input_error(
+            "environment_invalid_clipboard_text",
+        ));
+    }
+    Ok(
+        crate::transport::room_browser_controller::RoomComputerClipboardText::new(std::mem::take(
+            &mut *output.stdout,
+        )),
+    )
+}
+
 pub(crate) async fn run_room_secret_text_input(
     input: crate::transport::room_browser_controller::RoomComputerSecretInput,
     cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
@@ -1153,13 +1307,43 @@ fn slice_screen_command_timeout_ms() -> u64 {
         .unwrap_or(DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS)
 }
 
-fn read_child_output<R: std::io::Read>(mut reader: R) -> Result<(String, bool), DaemonError> {
-    let mut stored = Vec::new();
-    let mut buffer = [0_u8; 8192];
+fn read_child_output<R: std::io::Read>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<String>, bool), DaemonError> {
+    let (stored, truncated) = read_child_output_bytes(&mut reader)?;
+    Ok((
+        zeroize::Zeroizing::new(String::from_utf8_lossy(&stored).trim().to_string()),
+        truncated,
+    ))
+}
+
+fn read_child_output_exact_utf8<R: std::io::Read>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<String>, bool), DaemonError> {
+    let (mut stored, truncated) = read_child_output_bytes(&mut reader)?;
+    let output = match String::from_utf8(std::mem::take(&mut *stored)) {
+        Ok(output) => output,
+        Err(error) => {
+            let mut invalid = error.into_bytes();
+            zeroize::Zeroize::zeroize(&mut invalid);
+            return Err(DaemonError::LocalTransport {
+                operation: "run_slice_screen_command",
+                message: "slice screen stdout is not valid UTF-8".to_string(),
+            });
+        }
+    };
+    Ok((zeroize::Zeroizing::new(output), truncated))
+}
+
+fn read_child_output_bytes<R: std::io::Read>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<Vec<u8>>, bool), DaemonError> {
+    let mut stored = zeroize::Zeroizing::new(Vec::new());
+    let mut buffer = zeroize::Zeroizing::new([0_u8; 8192]);
     let mut truncated = false;
     loop {
         let read = reader
-            .read(&mut buffer)
+            .read(&mut buffer[..])
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to read slice screen output: {error}"),
@@ -1175,10 +1359,7 @@ fn read_child_output<R: std::io::Read>(mut reader: R) -> Result<(String, bool), 
             truncated = true;
         }
     }
-    Ok((
-        String::from_utf8_lossy(&stored).trim().to_string(),
-        truncated,
-    ))
+    Ok((stored, truncated))
 }
 
 fn slice_tool_payload(
@@ -1202,14 +1383,16 @@ fn slice_tool_payload(
             .map(serde_json::Value::from)
             .unwrap_or(serde_json::Value::Null),
     );
-    payload.insert(
-        "stdout".to_string(),
-        serde_json::Value::String(output.stdout.clone()),
-    );
-    payload.insert(
-        "stderr".to_string(),
-        serde_json::Value::String(output.stderr.clone()),
-    );
+    if !output.sensitive_output {
+        payload.insert(
+            "stdout".to_string(),
+            serde_json::Value::String(output.stdout.as_str().to_string()),
+        );
+        payload.insert(
+            "stderr".to_string(),
+            serde_json::Value::String(output.stderr.as_str().to_string()),
+        );
+    }
     if output.stdout_truncated {
         payload.insert(
             "stdout_truncated".to_string(),
@@ -1449,18 +1632,21 @@ mod tests {
         let output = SliceScreenCommandOutput {
             success: false,
             status_code: Some(1),
-            stdout: [
-                "display=:99",
-                "screen=1280x800",
-                "mode=headless",
-                "available=false",
-                "missing=xvfb,novnc",
-                "message=slice screen is unavailable; missing xvfb,novnc",
-            ]
-            .join("\n"),
-            stderr: String::new(),
+            stdout: zeroize::Zeroizing::new(
+                [
+                    "display=:99",
+                    "screen=1280x800",
+                    "mode=headless",
+                    "available=false",
+                    "missing=xvfb,novnc",
+                    "message=slice screen is unavailable; missing xvfb,novnc",
+                ]
+                .join("\n"),
+            ),
+            stderr: zeroize::Zeroizing::new(String::new()),
             stdout_truncated: false,
             stderr_truncated: false,
+            sensitive_output: false,
         };
 
         let payload = slice_tool_payload("slice-1", "agent-1", &output);
@@ -1480,10 +1666,11 @@ mod tests {
         let output = SliceScreenCommandOutput {
             success: true,
             status_code: Some(0),
-            stdout: "typed super-secret-value".to_string(),
-            stderr: "debug super-secret-value".to_string(),
+            stdout: zeroize::Zeroizing::new("typed super-secret-value".to_string()),
+            stderr: zeroize::Zeroizing::new("debug super-secret-value".to_string()),
             stdout_truncated: false,
             stderr_truncated: false,
+            sensitive_output: true,
         };
 
         let payload = secret_paste_payload("slice-1", "agent-1", "gmail-password", true, &output);
@@ -1493,6 +1680,7 @@ mod tests {
         assert!(serialized.contains("\"submitted\":true"));
         assert!(!serialized.contains("super-secret-value"));
         assert!(payload.get("stdout").is_none());
+        assert!(!format!("{output:?}").contains("super-secret-value"));
         assert!(payload.get("stderr").is_none());
     }
 
@@ -1505,6 +1693,26 @@ mod tests {
 
         assert!(truncated);
         assert_eq!(output.len(), SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES);
+    }
+
+    #[test]
+    fn exact_child_output_preserves_whitespace_and_rejects_invalid_utf8() {
+        let (output, truncated) = read_child_output_exact_utf8(std::io::Cursor::new(
+            b"Clipboard Gr\xc3\xbc\xc3\x9fe \xe4\xb8\x96\xe7\x95\x8c\n\n".to_vec(),
+        ))
+        .expect("valid clipboard text should decode exactly");
+        assert_eq!(
+            output.as_str(),
+            "Clipboard Gr\u{fc}\u{df}e \u{4e16}\u{754c}\n\n"
+        );
+        assert!(!truncated);
+
+        let error = read_child_output_exact_utf8(std::io::Cursor::new(vec![0xff, 0xfe]))
+            .expect_err("invalid clipboard UTF-8 should fail closed");
+        assert_eq!(
+            error.to_string(),
+            "local transport `run_slice_screen_command` failed: slice screen stdout is not valid UTF-8"
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,8 @@ use sha2::Sha256;
 
 use crate::error::DaemonError;
 use crate::local::{
-    RoomEnvironmentHumanAction, RoomEnvironmentPointerButton, SubmitRoomEnvironmentActionRequest,
+    ReadRoomEnvironmentClipboardRequest, RoomEnvironmentClipboardText, RoomEnvironmentHumanAction,
+    RoomEnvironmentPointerButton, SubmitRoomEnvironmentActionRequest,
 };
 use crate::session::{
     ActionAdmission, EnvironmentActionArguments, EnvironmentActionRequest, EnvironmentActionState,
@@ -13,8 +14,8 @@ use crate::session::{
     RoomEnvironmentSnapshot,
 };
 use crate::transport::room_browser_controller::{
-    RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerInputAction,
-    RoomComputerKeyboardInput, RoomComputerPointerButton,
+    RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerClipboardText,
+    RoomComputerInputAction, RoomComputerKeyboardInput, RoomComputerPointerButton,
 };
 
 use super::KernelRuntimeState;
@@ -44,7 +45,7 @@ impl KernelRuntimeState {
         )
         .with_idempotency_key(request.idempotency_key.trim())
         .with_arguments(arguments);
-        if let Some(fingerprint) = self.keyboard_input_idempotency_fingerprint(&request.action) {
+        if let Some(fingerprint) = self.computer_input_idempotency_fingerprint(&request.action) {
             action_request = action_request.with_idempotency_fingerprint(fingerprint);
         }
         if let Some(ActionAdmission::Existing { action_id, .. }) = self
@@ -159,6 +160,59 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) async fn read_human_room_environment_clipboard(
+        &self,
+        request: ReadRoomEnvironmentClipboardRequest,
+        actor: EnvironmentActor,
+    ) -> Result<RoomEnvironmentClipboardText, DaemonError> {
+        let environment = self
+            .room_environment_snapshot(&request.session_id)
+            .map_err(human_clipboard_read_environment_error)?;
+        validate_human_action_authority(&environment, &actor.actor_id)
+            .map_err(human_clipboard_read_environment_error)?;
+        if request.runtime_generation != environment.runtime_generation {
+            return Err(human_clipboard_read_environment_error(
+                EnvironmentError::StaleRuntimeGeneration {
+                    expected: environment.runtime_generation,
+                    actual: request.runtime_generation,
+                },
+            ));
+        }
+        if !matches!(
+            environment.lifecycle,
+            crate::session::EnvironmentLifecycle::Ready
+                | crate::session::EnvironmentLifecycle::Degraded
+        ) {
+            return Err(human_clipboard_read_environment_error(
+                EnvironmentError::EnvironmentNotReady {
+                    lifecycle: environment.lifecycle,
+                },
+            ));
+        }
+        let result = self
+            .room_browser_controller_command(
+                &request.session_id,
+                RoomBrowserControllerCommand::ComputerClipboardRead {
+                    actor_id: actor.actor_id,
+                    runtime_generation: request.runtime_generation,
+                },
+            )
+            .await;
+        match result {
+            Ok(RoomBrowserControllerResult::ComputerClipboard { content }) => {
+                validate_human_clipboard_read_content(content)
+            }
+            Ok(_) => Err(human_clipboard_read_dispatch_error(
+                "environment_clipboard_response_mismatch",
+                "bound worker returned a mismatched Computer clipboard response".to_string(),
+            )),
+            Err(error) => Err(human_clipboard_read_dispatch_error(
+                "environment_clipboard_read_failed",
+                error.to_string(),
+            )),
+        }
+    }
+
     async fn wait_for_human_action_admission(
         &self,
         session_id: &str,
@@ -208,7 +262,7 @@ impl KernelRuntimeState {
         }
     }
 
-    fn keyboard_input_idempotency_fingerprint(
+    fn computer_input_idempotency_fingerprint(
         &self,
         action: &RoomEnvironmentHumanAction,
     ) -> Option<[u8; 32]> {
@@ -218,6 +272,9 @@ impl KernelRuntimeState {
             }
             RoomEnvironmentHumanAction::KeyboardKey { key, .. } => {
                 (b"key".as_slice(), key.as_str())
+            }
+            RoomEnvironmentHumanAction::ClipboardWrite { text } => {
+                (b"clipboard".as_slice(), text.as_str())
             }
             _ => return None,
         };
@@ -329,6 +386,11 @@ fn computer_input_action(
                 repeat: *repeat,
             }
         }
+        RoomEnvironmentHumanAction::ClipboardWrite { text } => {
+            RoomComputerInputAction::ClipboardWrite {
+                text: RoomComputerClipboardText::new(text.as_str().to_string()),
+            }
+        }
         RoomEnvironmentHumanAction::PointerClick {
             x,
             y,
@@ -370,5 +432,53 @@ fn human_action_dispatch_error(code: &'static str, message: String) -> DaemonErr
     DaemonError::LocalTransport {
         operation: "environment.action.submit",
         message: format!("{code}: {message}"),
+    }
+}
+
+fn human_clipboard_read_environment_error(error: EnvironmentError) -> DaemonError {
+    human_clipboard_read_dispatch_error(error.code(), format!("{error:?}"))
+}
+
+fn validate_human_clipboard_read_content(
+    content: RoomComputerClipboardText,
+) -> Result<RoomEnvironmentClipboardText, DaemonError> {
+    let utf8_byte_count = content.as_str().len();
+    let max_utf8_bytes =
+        crate::transport::room_browser_controller::ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES;
+    if utf8_byte_count > max_utf8_bytes {
+        return Err(human_clipboard_read_environment_error(
+            EnvironmentError::InvalidClipboardText {
+                utf8_byte_count,
+                max_utf8_bytes,
+            },
+        ));
+    }
+    Ok(RoomEnvironmentClipboardText::from_zeroizing(
+        content.into_zeroizing(),
+    ))
+}
+
+fn human_clipboard_read_dispatch_error(code: &'static str, message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "environment.clipboard.read",
+        message: format!("{code}: {message}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_worker_clipboard_result_fails_closed_without_exposing_content() {
+        let secret = "s".repeat(
+            crate::transport::room_browser_controller::ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES + 1,
+        );
+        let error =
+            validate_human_clipboard_read_content(RoomComputerClipboardText::new(secret.clone()))
+                .expect_err("an oversized worker result must not cross the home-kernel boundary");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("environment_invalid_clipboard_text"));
+        assert!(!diagnostic.contains(&secret));
     }
 }

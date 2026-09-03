@@ -205,6 +205,11 @@ pub struct SliceKeyboardArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceClipboardWriteArgs {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceOpenUrlArgs {
     pub url: String,
 }

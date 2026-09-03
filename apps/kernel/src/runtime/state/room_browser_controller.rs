@@ -166,8 +166,10 @@ impl KernelRuntimeState {
         if !permitted {
             return Err(controller_route_error("browser_controller_scope_denied: peer or Room does not match the provisioned slice binding"));
         }
-        if !matches!(&command, Command::ComputerInput { .. })
-            && !self.browser_controller_process_enabled()
+        if !matches!(
+            &command,
+            Command::ComputerInput { .. } | Command::ComputerClipboardRead { .. }
+        ) && !self.browser_controller_process_enabled()
         {
             return Err(controller_route_error(
                 "browser_controller_unavailable: slice has no configured controller",
@@ -290,6 +292,9 @@ async fn execute_local(
                 } => {
                     super::tool_dispatch::run_room_keyboard_key(input, repeat, cancellation).await
                 }
+                crate::transport::room_browser_controller::RoomComputerInputAction::ClipboardWrite {
+                    text,
+                } => super::tool_dispatch::run_room_clipboard_write(text, cancellation).await,
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
                     x,
                     y,
@@ -322,6 +327,18 @@ async fn execute_local(
             }
             input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
+        }
+        Command::ComputerClipboardRead {
+            actor_id,
+            runtime_generation,
+        } => {
+            if actor_id.trim().is_empty() || runtime_generation == 0 {
+                return Err(controller_route_error(
+                    "environment_clipboard_invalid_authority_context",
+                ));
+            }
+            let content = super::tool_dispatch::run_room_clipboard_read().await?;
+            return Ok(Response::ComputerClipboard { content });
         }
         command => command,
     };
@@ -433,6 +450,9 @@ async fn execute_local(
         ),
         Command::ComputerInput { .. } => {
             unreachable!("Computer input executes before the blocking controller path")
+        }
+        Command::ComputerClipboardRead { .. } => {
+            unreachable!("Computer clipboard reads execute before the blocking controller path")
         }
     })
     .await
