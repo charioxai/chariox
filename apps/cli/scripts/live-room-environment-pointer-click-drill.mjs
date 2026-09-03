@@ -2026,7 +2026,9 @@ async function seedConfig(tempRoot) {
     `root = ${JSON.stringify(path.join(tempRoot, "slices"))}`,
     "",
     "[slices.linux]",
-    "build_image = \"auto\"",
+    ...(process.env.CHARIOX_ROOM_DRILL_IMAGE?.trim()
+      ? [`docker_image = ${JSON.stringify(process.env.CHARIOX_ROOM_DRILL_IMAGE.trim())}`, "build_image = \"never\""]
+      : ["build_image = \"auto\""]),
     "memory_mb = 2048",
     "cpus = \"1\"",
     "screen_width = 1280",
