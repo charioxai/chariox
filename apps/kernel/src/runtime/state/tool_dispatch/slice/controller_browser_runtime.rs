@@ -13,6 +13,16 @@ impl KernelRuntimeState {
         use crate::transport::runtime_tools::*;
 
         match tool_name {
+            SLICE_SCREENSHOT_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceScreenshotArgs>(
+                    arguments,
+                    "runtime_tool_slice_screenshot",
+                )?;
+                self.controller_computer_screenshot_tool_result(
+                    session_id, slice_id, agent_id, args,
+                )
+                .await
+            }
             SLICE_MOUSE_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceMouseArgs>(
                     arguments,

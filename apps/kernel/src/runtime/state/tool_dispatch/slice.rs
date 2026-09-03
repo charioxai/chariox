@@ -10,14 +10,13 @@ mod controller_browser_compatibility;
 mod controller_browser_projection;
 mod controller_browser_runtime;
 mod controller_computer;
+mod controller_computer_observation;
 mod slice_browser;
 use slice_browser::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
 const ROOM_COMPUTER_INPUT_TIMEOUT_MS: u64 = 5_000;
 const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
-const SLICE_SCREENSHOT_MCP_MAX_BYTES: usize = 16 * 1024 * 1024;
-const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
 impl KernelRuntimeState {
     pub(super) async fn dispatch_slice_runtime_tool_call(
@@ -467,11 +466,13 @@ fn read_slice_screenshot_for_mcp(path: &std::path::Path) -> Result<Vec<u8>, Daem
         operation: "runtime_tool_slice_screenshot",
         message: format!("failed to open screenshot `{}`: {error}", path.display()),
     })?;
-    read_bounded_png(file, SLICE_SCREENSHOT_MCP_MAX_BYTES).map_err(|message| {
-        DaemonError::LocalTransport {
-            operation: "runtime_tool_slice_screenshot",
-            message: format!("screenshot `{}` {message}", path.display()),
-        }
+    read_bounded_png(
+        file,
+        super::super::room_screenshot::ROOM_SCREENSHOT_INLINE_MAX_BYTES as usize,
+    )
+    .map_err(|message| DaemonError::LocalTransport {
+        operation: "runtime_tool_slice_screenshot",
+        message: format!("screenshot `{}` {message}", path.display()),
     })
 }
 
@@ -484,7 +485,7 @@ fn read_bounded_png(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, Stri
     if bytes.len() > max_bytes {
         return Err(format!("exceeds the {max_bytes} byte runtime MCP limit"));
     }
-    if !bytes.starts_with(PNG_SIGNATURE) {
+    if !bytes.starts_with(super::super::room_screenshot::ROOM_SCREENSHOT_PNG_SIGNATURE) {
         return Err("is empty or is not a PNG image".to_string());
     }
     Ok(bytes)
@@ -1319,7 +1320,7 @@ mod tests {
 
     #[test]
     fn runtime_mcp_screenshot_reader_requires_a_bounded_png() {
-        let mut png = PNG_SIGNATURE.to_vec();
+        let mut png = super::super::super::room_screenshot::ROOM_SCREENSHOT_PNG_SIGNATURE.to_vec();
         png.extend_from_slice(b"image");
         assert_eq!(
             read_bounded_png(std::io::Cursor::new(&png), png.len()).expect("bounded PNG"),

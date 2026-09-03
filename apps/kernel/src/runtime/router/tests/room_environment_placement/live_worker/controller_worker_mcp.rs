@@ -1,6 +1,7 @@
 use super::*;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use base64::Engine as _;
 use chariox_relay::protocol::ClientTarget;
 use futures_util::FutureExt;
 
@@ -54,11 +55,18 @@ async fn worker_computer_tools_scenario() {
 
 async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     const SECRET: &str = "remote-room-computer-secret-canary";
+    let mut screenshot_bytes = vec![0_u8; 131_079];
+    for (index, byte) in screenshot_bytes.iter_mut().enumerate() {
+        *byte = (index % 251) as u8;
+    }
+    screenshot_bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
     let screen_tool = fixture._worker_state.root.join("computer-tools-screen.sh");
     let screen_log = fixture._worker_state.root.join("computer-tools-screen.log");
+    let screenshot = fixture._worker_state.root.join("computer-tools-screen.png");
+    std::fs::write(&screenshot, &screenshot_bytes).expect("computer screenshot fixture");
     std::fs::write(
         &screen_tool,
-        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
     #[cfg(unix)]
@@ -77,6 +85,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         (
             "CHARIOX_REMOTE_ROOM_COMPUTER_LOG",
             screen_log.as_os_str().to_os_string(),
+        ),
+        (
+            "CHARIOX_REMOTE_ROOM_SCREENSHOT",
+            screenshot.as_os_str().to_os_string(),
         ),
         (
             "CHARIOX_SLICE_SCREEN_TOOL",
@@ -214,6 +226,63 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         .expect("worker provider runtime MCP token");
 
     let input_token = token.clone();
+    assert!(fixture
+        .worker
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&token)
+        .iter()
+        .any(|spec| spec.name == "slice_screenshot"));
+    let actions_before_screenshot = fixture
+        .home
+        .runtime_state
+        .room_environment_snapshot(&room)
+        .expect("home Room before provider screenshot")
+        .actions
+        .len();
+    let observed = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "slice_screenshot",
+            json!({
+                "return_image_base64": true,
+                "session_id": fixture.rooms[1],
+                "slice_id": "forged-slice",
+                "path": "/tmp/forged-provider-path.png"
+            }),
+        )
+        .await
+        .expect("worker provider screenshot should use home Room authority");
+    assert!(observed.ok, "{:?}", observed.payload);
+    assert_eq!(observed.payload["source"], "computer_controller");
+    assert_eq!(observed.payload["session_id"], room);
+    assert_eq!(observed.payload["slice_id"], "slice-1");
+    assert_eq!(observed.payload["agent_id"], home_agent_id);
+    assert_eq!(observed.payload["mime_type"], "image/png");
+    assert_eq!(observed.payload["image_path"], Value::Null);
+    assert!(observed.payload["artifact_id"].as_str().is_some());
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                observed.payload["image_base64"]
+                    .as_str()
+                    .expect("inline provider screenshot"),
+            )
+            .expect("provider screenshot Base64"),
+        screenshot_bytes,
+    );
+    assert_eq!(
+        fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("home Room after provider screenshot")
+            .actions
+            .len(),
+        actions_before_screenshot,
+        "a screenshot is an observation, not a mutating Room Action",
+    );
     let runtime = fixture.worker.runtime_state.clone();
     let call = tokio::spawn(async move {
         runtime

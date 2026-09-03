@@ -58,6 +58,48 @@ async fn captures_and_reads_bound_worker_screenshot() {
     )
     .await
     .expect("Room should bind to the worker slice");
+    let (agent_id, provider_token) = {
+        let mut app = fixture.home.app.lock().await;
+        let agent = spawn_test_agent(&mut app, &room, "screenshot-reader", "dev-stub");
+        let agent_id = agent.id().to_string();
+        let token =
+            launch_test_provider(&mut app, &room, &agent_id, "dev-stub", "dev-stub", "test")
+                .runtime_mcp_auth_token()
+                .expect("provider runtime MCP token")
+                .to_string();
+        (agent_id, token)
+    };
+    let provider_capture = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &provider_token,
+            "slice_screenshot",
+            json!({
+                "return_image_base64": true,
+                "session_id": fixture.rooms[1],
+                "slice_id": "forged-slice",
+                "path": "/tmp/forged-home-provider-path.png"
+            }),
+        )
+        .await
+        .expect("home provider should capture its bound Room Computer");
+    assert!(provider_capture.ok, "{:?}", provider_capture.payload);
+    assert_eq!(provider_capture.payload["source"], "computer_controller");
+    assert_eq!(provider_capture.payload["session_id"], room);
+    assert_eq!(provider_capture.payload["slice_id"], "slice-1");
+    assert_eq!(provider_capture.payload["agent_id"], agent_id);
+    assert_eq!(provider_capture.payload["image_path"], Value::Null);
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                provider_capture.payload["image_base64"]
+                    .as_str()
+                    .expect("provider screenshot Base64"),
+            )
+            .expect("provider screenshot should decode"),
+        expected,
+    );
     let attached = dispatch_json(
         &fixture.home,
         json!({"AttachToSession": {
