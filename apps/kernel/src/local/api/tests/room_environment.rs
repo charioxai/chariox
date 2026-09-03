@@ -1060,6 +1060,320 @@ fn room_environment_keyboard_input_executes_without_persisting_input() {
 }
 
 #[test]
+fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover() {
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-human-computer-cancellation-test-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("slice-screen.sh");
+    let started = root.join("started");
+    let reset = root.join("reset");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncase \"${1:-}\" in\n  pointer-drag)\n    : > \"$CHARIOX_COMPUTER_INPUT_STARTED\"\n    while :; do sleep 1; done\n    ;;\n  computer-input-reset)\n    : > \"$CHARIOX_COMPUTER_INPUT_RESET\"\n    ;;\nesac\n",
+    )
+    .expect("screen helper should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("screen helper should be executable");
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    std::env::set_var("CHARIOX_COMPUTER_INPUT_STARTED", &started);
+    std::env::set_var("CHARIOX_COMPUTER_INPUT_RESET", &reset);
+
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-computer-cancellation",
+                "worktree-environment-computer-cancellation",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+    });
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                RequestRoomEnvironmentInputTakeoverRequest {
+                    session_id: session.id().to_string(),
+                    target: crate::session::InputTarget::Desktop,
+                },
+            ),
+        )
+        .expect("owner should take desktop input");
+
+    let runtime = harness.runtime_state();
+    let environment = runtime
+        .room_environment_snapshot(session.id())
+        .expect("Room Environment should exist");
+    let session_id = session.id().to_string();
+    let submit_runtime = runtime.clone();
+    let submit_session_id = session_id.clone();
+    let submit = harness.spawn_test_task(async move {
+        submit_runtime
+            .execute_human_room_environment_action(
+                SubmitRoomEnvironmentActionRequest {
+                    session_id: submit_session_id,
+                    runtime_generation: environment.runtime_generation,
+                    viewport_revision: environment.viewport.revision,
+                    idempotency_key: "cancel-pointer-drag-1".to_string(),
+                    action: RoomEnvironmentHumanAction::PointerDrag {
+                        from_x: 120,
+                        from_y: 160,
+                        to_x: 720,
+                        to_y: 560,
+                        button: RoomEnvironmentPointerButton::Left,
+                    },
+                },
+                crate::session::EnvironmentActor::new(
+                    "user:owner-1",
+                    crate::session::EnvironmentActorKind::Human,
+                    "owner-1",
+                ),
+            )
+            .await
+    });
+
+    let action_id = harness.block_on_test_task(async {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let snapshot = runtime
+                    .room_environment_snapshot(&session_id)
+                    .expect("Room Environment should remain available");
+                if started.exists() {
+                    if let Some(action) = snapshot
+                        .actions
+                        .iter()
+                        .find(|action| action.kind == "pointer_drag")
+                    {
+                        assert_eq!(
+                            action.state,
+                            crate::session::EnvironmentActionState::Running
+                        );
+                        return action.action_id.clone();
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("physical input should start")
+    });
+
+    let cancellation = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: session_id.clone(),
+                action_id: action_id.clone(),
+            }),
+        )
+        .expect("owner should be allowed to cancel its physical input");
+    let LocalDaemonResponse::RoomEnvironmentActionCancellationUpdated { outcome, .. } =
+        cancellation
+    else {
+        panic!("unexpected local response: {cancellation:?}");
+    };
+    assert_eq!(
+        outcome,
+        crate::session::ActionCancellationOutcome::CancellationRequested
+    );
+
+    let cancellation_started = std::time::Instant::now();
+    let submit_result = harness.block_on_test_task(async {
+        tokio::time::timeout(std::time::Duration::from_secs(6), submit)
+            .await
+            .expect("cancelled physical input should finish")
+            .expect("physical input task should join")
+    });
+    let elapsed = cancellation_started.elapsed();
+    let final_environment = runtime
+        .room_environment_snapshot(&session_id)
+        .expect("Room Environment should remain available");
+    let final_state = final_environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .map(|action| action.state);
+    let reset_performed = reset.exists();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "cancellation waited for the normal helper timeout: {elapsed:?}"
+    );
+    let error = submit_result.expect_err("cancelled physical input must not report success");
+    assert!(
+        error.to_string().to_lowercase().contains("cancel"),
+        "{error}"
+    );
+    assert_eq!(
+        final_state,
+        Some(crate::session::EnvironmentActionState::Cancelled)
+    );
+    assert!(
+        reset_performed,
+        "cancellation must reset held keys and buttons"
+    );
+
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+                session_id: session_id.clone(),
+                target: crate::session::InputTarget::Desktop,
+            }),
+        )
+        .expect("owner should release desktop input before the agent acts");
+    std::fs::remove_file(&started).expect("first input marker should be removed");
+    std::fs::remove_file(&reset).expect("first reset marker should be removed");
+
+    let agent_runtime = runtime.clone();
+    let agent_session_id = session_id.clone();
+    let agent_id = default_agent.id().to_string();
+    let agent_input = harness.spawn_test_task(async move {
+        agent_runtime
+            .execute_computer_input_as_agent(
+                &agent_session_id,
+                &agent_id,
+                "pointer_drag",
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
+                    from_x: 120,
+                    from_y: 160,
+                    to_x: 720,
+                    to_y: 560,
+                    button:
+                        crate::transport::room_browser_controller::RoomComputerPointerButton::Left,
+                },
+            )
+            .await
+    });
+    let agent_actor_id = crate::session::agent_environment_actor_id(default_agent.id());
+    let agent_action_id = harness.block_on_test_task(async {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let snapshot = runtime
+                    .room_environment_snapshot(&session_id)
+                    .expect("Room Environment should remain available");
+                if started.exists() {
+                    if let Some(action) = snapshot.actions.iter().find(|action| {
+                        action.actor_id == agent_actor_id
+                            && action.kind == "pointer_drag"
+                            && action.state == crate::session::EnvironmentActionState::Running
+                    }) {
+                        return action.action_id.clone();
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("agent physical input should start")
+    });
+
+    let takeover_started = std::time::Instant::now();
+    let takeover = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                RequestRoomEnvironmentInputTakeoverRequest {
+                    session_id: session_id.clone(),
+                    target: crate::session::InputTarget::Desktop,
+                },
+            ),
+        )
+        .expect("human takeover should request cancellation of agent Computer input");
+    let LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+        outcome,
+        environment,
+    } = takeover
+    else {
+        panic!("unexpected local response: {takeover:?}");
+    };
+    assert_eq!(
+        outcome,
+        crate::session::TakeoverOutcome::CancellationRequired {
+            action_ids: vec![agent_action_id.clone()],
+        }
+    );
+    assert!(
+        environment.input_ownership.is_empty(),
+        "human ownership must wait until physical input is stopped and reset"
+    );
+
+    let agent_result = harness.block_on_test_task(async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), agent_input)
+            .await
+            .expect("human takeover should stop agent physical input")
+            .expect("agent input task should join")
+    });
+    let takeover_elapsed = takeover_started.elapsed();
+    let final_environment = runtime
+        .room_environment_snapshot(&session_id)
+        .expect("Room Environment should remain available");
+    let human_actor_id = crate::session::human_environment_actor_id("owner-1");
+    let agent_action = final_environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == agent_action_id)
+        .expect("agent Computer Action should remain in history");
+    let reset_performed = reset.exists();
+
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_COMPUTER_INPUT_STARTED");
+    std::env::remove_var("CHARIOX_COMPUTER_INPUT_RESET");
+    std::fs::remove_dir_all(&root).expect("test root should be removed");
+
+    assert!(
+        takeover_elapsed < std::time::Duration::from_secs(1),
+        "takeover waited for the normal helper timeout: {takeover_elapsed:?}"
+    );
+    assert!(matches!(
+        agent_result,
+        Err(DaemonError::BrowserControllerActionCancelled {
+            controller_fenced: false
+        })
+    ));
+    assert_eq!(
+        agent_action.state,
+        crate::session::EnvironmentActionState::Cancelled
+    );
+    assert!(reset_performed, "takeover must reset held keys and buttons");
+    assert!(final_environment.input_ownership.iter().any(|ownership| {
+        ownership.target == crate::session::InputTarget::Desktop
+            && ownership.actor_id == human_actor_id
+    }));
+}
+
+#[test]
 fn queued_human_pointer_click_promotes_after_agent_action_finishes_outside_room_lane() {
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(

@@ -639,6 +639,16 @@ Protocol v300 and relay peer protocol v36 add approval-gated Computer credential
 
 Protocol v302 and relay peer protocol v37 complete the shared human Computer mouse and keyboard input surface. `SubmitRoomEnvironmentAction` adds `pointer_move`, `pointer_drag`, `pointer_scroll`, `keyboard_text`, and `keyboard_key` beside the v294 `pointer_click`. Every action uses the same authenticated human Actor, explicit desktop takeover, current runtime generation, canonical viewport revision, opaque idempotency key, Room Action ledger, and bound-worker controller route. Pointer coordinates are canonical desktop pixels and must remain inside the current desktop bounds. Drag identifies both endpoints and the left, middle, or right button. Scroll uses signed discrete wheel steps: negative horizontal means left, positive horizontal means right, negative vertical means up, and positive vertical means down. At least one axis must be nonzero and each axis is bounded to 120 steps per Action. Keyboard text is nonempty UTF-8 bounded to 64 KiB. Keyboard key input is a nonempty ASCII xdotool key or chord name, bounded to 128 bytes, with a repeat count from 1 through 32. Human Computer input targets whichever desktop application already owns focus; it never activates Chromium implicitly. Text and chord payloads travel to the worker helper over stdin and are redacted from Debug output. The durable Action record keeps only text byte/character counts or a key repeat count, never keyboard contents. The in-memory idempotency ledger compares a domain-separated HMAC of keyboard contents, keyed by the home kernel identity, so a reused key with different same-length input conflicts without exposing a guessable content digest. As with v294 clicks, physical input is at-most-once and has no replay command after an ambiguous delivery failure.
 
+The same v302/v37 Computer actions use the existing `CancelAction` command; the
+Room Action ID is also the worker execution identity, so no new serialized shape
+or protocol version is required. The worker registers the live screen helper
+before execution, and cancellation terminates that helper's complete process
+group. It then releases the supported modifier keys and mouse buttons before the
+original command reports `ActionCancelled`. The home keeps the Action and its
+input reservation non-terminal until that response, so a pending human takeover
+cannot be granted while physical input may still be active. A reset failure is a
+visible execution failure rather than a false cancellation acknowledgement.
+
 `pnpm --dir apps/cli computer-secret-input:x11-drill` exercises that Computer path against a real Xvfb display and focused password control in the existing slice image. It verifies the exact value by digest without retaining the secret, confirms the clipboard is unchanged, captures a masked screenshot, scans OCR, logs, and helper output for leakage, confirms no Browser Controller participates in input, enforces CPU, memory, and process limits, and removes the disposable container on success or failure.
 
 The current `session_id` is the wire identity for the product Room until a deliberate migration introduces `room_id`. New code must not create both identities for the same runtime domain. `environment_id` identifies the default shared Environment within that Room.
@@ -843,9 +853,9 @@ caller isolation, redaction, and controller cleanup. Existing clients' minimum
 versions remain unchanged because this is a home-worker transport change, not a
 new public local-daemon request.
 
-Cancellation during other operations and physical input-device reset after a
-mid-sequence controller loss still require further resiliency validation; this
-is not full cancellation acceptance for every Browser and Computer operation.
+Cancellation during other Browser operations still requires further resiliency
+validation; this is not full cancellation acceptance for every Browser and
+Computer operation.
 
 Secure viewers still require work before product enablement. Existing clients'
 minimum versions remain unchanged because their public request shapes have not

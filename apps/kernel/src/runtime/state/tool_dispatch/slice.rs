@@ -530,6 +530,15 @@ async fn run_slice_screen_command_inner(
     stdin: Option<zeroize::Zeroizing<String>>,
     timeout_override_ms: Option<u64>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_cancellation(args, stdin, timeout_override_ms, None).await
+}
+
+async fn run_slice_screen_command_inner_with_cancellation(
+    args: Vec<String>,
+    stdin: Option<zeroize::Zeroizing<String>>,
+    timeout_override_ms: Option<u64>,
+    cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     tokio::task::spawn_blocking(move || {
@@ -541,23 +550,45 @@ async fn run_slice_screen_command_inner(
         if stdin.is_some() {
             command.stdin(std::process::Stdio::piped());
         }
+        #[cfg(unix)]
+        if cancellation.is_some() {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to run `{tool_path}`: {error}"),
             })?;
+        let process_group = child.id();
+        if let Some(cancellation) = cancellation.as_ref() {
+            cancellation.register_process_group(process_group);
+        }
         if let Some(stdin) = stdin {
             use std::io::Write;
             let Some(mut child_stdin) = child.stdin.take() else {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: "slice screen command did not expose stdin".to_string(),
                 });
             };
             if let Err(error) = child_stdin.write_all(stdin.as_bytes()) {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
+                if cancellation.as_ref().is_some_and(|value| value.requested()) {
+                    return Err(computer_input_cancelled());
+                }
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: format!("failed to write slice screen stdin: {error}"),
@@ -565,38 +596,73 @@ async fn run_slice_screen_command_inner(
             }
         }
         drop(child.stdin.take());
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| DaemonError::LocalTransport {
+        let Some(stdout) = child.stdout.take() else {
+            if let Some(cancellation) = cancellation.as_ref() {
+                cancellation.terminate_process_group();
+                cancellation.clear_process_group(process_group);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: "slice screen command did not expose stdout".to_string(),
-            })?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| DaemonError::LocalTransport {
+            });
+        };
+        let Some(stderr) = child.stderr.take() else {
+            if let Some(cancellation) = cancellation.as_ref() {
+                cancellation.terminate_process_group();
+                cancellation.clear_process_group(process_group);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            drop(stdout);
+            return Err(DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: "slice screen command did not expose stderr".to_string(),
-            })?;
+            });
+        };
         let stdout_reader = std::thread::spawn(move || read_child_output(stdout));
         let stderr_reader = std::thread::spawn(move || read_child_output(stderr));
         let timeout_ms = timeout_override_ms.unwrap_or_else(slice_screen_command_timeout_ms);
-        let status = match child
-            .wait_timeout(std::time::Duration::from_millis(timeout_ms))
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "run_slice_screen_command",
-                message: format!("failed to wait for `{tool_path}`: {error}"),
-            })? {
-            Some(status) => status,
-            None => {
+        let status = match child.wait_timeout(std::time::Duration::from_millis(timeout_ms)) {
+            Ok(Some(status)) => {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.clear_process_group(process_group);
+                }
+                status
+            }
+            Ok(None) => {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
+                if cancellation.as_ref().is_some_and(|value| value.requested()) {
+                    return Err(computer_input_cancelled());
+                }
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: format!("slice screen command timed out after {timeout_ms}ms"),
+                });
+            }
+            Err(error) => {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                if cancellation.as_ref().is_some_and(|value| value.requested()) {
+                    return Err(computer_input_cancelled());
+                }
+                return Err(DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: format!("failed to wait for `{tool_path}`: {error}"),
                 });
             }
         };
@@ -614,6 +680,9 @@ async fn run_slice_screen_command_inner(
                     operation: "run_slice_screen_command",
                     message: "slice screen stderr reader panicked".to_string(),
                 })??;
+        if !status.success() && cancellation.as_ref().is_some_and(|value| value.requested()) {
+            return Err(computer_input_cancelled());
+        }
         Ok(SliceScreenCommandOutput {
             success: status.success(),
             status_code: status.code(),
@@ -637,6 +706,7 @@ pub(crate) async fn run_room_pointer_click(
     click_count: u8,
     desktop_pixel_width: u32,
     desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
     if desktop_pixel_width == 0
         || desktop_pixel_height == 0
@@ -651,7 +721,7 @@ pub(crate) async fn run_room_pointer_click(
         return Err(room_computer_input_error("environment_invalid_click_count"));
     }
     let button = room_computer_pointer_button_arg(button);
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec![
             "pointer-click".to_string(),
             x.to_string(),
@@ -661,6 +731,7 @@ pub(crate) async fn run_room_pointer_click(
         ],
         None,
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -681,6 +752,7 @@ pub(crate) async fn run_room_pointer_move(
     y: u32,
     desktop_pixel_width: u32,
     desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
     if desktop_pixel_width == 0
         || desktop_pixel_height == 0
@@ -691,10 +763,11 @@ pub(crate) async fn run_room_pointer_move(
             "environment_pointer_out_of_bounds",
         ));
     }
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec!["move".to_string(), x.to_string(), y.to_string()],
         None,
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -718,6 +791,7 @@ pub(crate) async fn run_room_pointer_drag(
     button: crate::transport::room_browser_controller::RoomComputerPointerButton,
     desktop_pixel_width: u32,
     desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
     if desktop_pixel_width == 0
         || desktop_pixel_height == 0
@@ -731,7 +805,7 @@ pub(crate) async fn run_room_pointer_drag(
         ));
     }
     let button = room_computer_pointer_button_arg(button);
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec![
             "pointer-drag".to_string(),
             from_x.to_string(),
@@ -742,6 +816,7 @@ pub(crate) async fn run_room_pointer_drag(
         ],
         None,
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -764,6 +839,7 @@ pub(crate) async fn run_room_pointer_scroll(
     vertical_steps: i16,
     desktop_pixel_width: u32,
     desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
     if desktop_pixel_width == 0
         || desktop_pixel_height == 0
@@ -784,7 +860,7 @@ pub(crate) async fn run_room_pointer_scroll(
             "environment_invalid_scroll_steps",
         ));
     }
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec![
             "pointer-scroll".to_string(),
             x.to_string(),
@@ -794,6 +870,7 @@ pub(crate) async fn run_room_pointer_scroll(
         ],
         None,
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -811,6 +888,7 @@ pub(crate) async fn run_room_pointer_scroll(
 
 pub(crate) async fn run_room_keyboard_text(
     input: crate::transport::room_browser_controller::RoomComputerKeyboardInput,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
     if input.as_str().is_empty()
         || input.as_str().len()
@@ -820,10 +898,11 @@ pub(crate) async fn run_room_keyboard_text(
             "environment_invalid_keyboard_text",
         ));
     }
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec!["computer-type-stdin".to_string()],
         Some(input.into_zeroizing()),
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -842,6 +921,7 @@ pub(crate) async fn run_room_keyboard_text(
 pub(crate) async fn run_room_keyboard_key(
     input: crate::transport::room_browser_controller::RoomComputerKeyboardInput,
     repeat: u16,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
     let key = input.as_str();
     if key.is_empty()
@@ -861,10 +941,11 @@ pub(crate) async fn run_room_keyboard_key(
             "environment_invalid_keyboard_repeat",
         ));
     }
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec!["computer-key-stdin".to_string(), repeat.to_string()],
         Some(input.into_zeroizing()),
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -882,11 +963,13 @@ pub(crate) async fn run_room_keyboard_key(
 
 pub(crate) async fn run_room_secret_text_input(
     input: crate::transport::room_browser_controller::RoomComputerSecretInput,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
 ) -> Result<(), DaemonError> {
-    let output = run_slice_screen_command_inner(
+    let output = run_slice_screen_command_inner_with_cancellation(
         vec!["computer-secret-paste-stdin".to_string()],
         Some(input.into_zeroizing()),
         Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
     )
     .await?;
     if output.success {
@@ -899,6 +982,32 @@ pub(crate) async fn run_room_secret_text_input(
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )))
+    }
+}
+
+pub(crate) async fn reset_room_computer_input() -> Result<(), DaemonError> {
+    let output = run_slice_screen_command_inner(
+        vec!["computer-input-reset".to_string()],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer input reset exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+fn computer_input_cancelled() -> DaemonError {
+    DaemonError::BrowserControllerActionCancelled {
+        controller_fenced: false,
     }
 }
 

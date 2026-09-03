@@ -122,12 +122,21 @@ impl KernelRuntimeState {
             action: input_action,
         };
         let execution = self
-            .room_browser_controller_command(&request.session_id, command)
+            .await_cancellable_browser_action(
+                &request.session_id,
+                &action_id,
+                &action_id,
+                self.room_browser_controller_command(&request.session_id, command),
+            )
             .await;
         let terminal = match &execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
             }) if returned_action_id == &action_id => EnvironmentActionTerminal::Completed,
+            Ok(RoomBrowserControllerResult::ActionCancelled { .. })
+            | Err(DaemonError::BrowserControllerActionCancelled { .. }) => {
+                EnvironmentActionTerminal::Cancelled
+            }
             _ => EnvironmentActionTerminal::Failed,
         };
         let environment = self
@@ -137,10 +146,14 @@ impl KernelRuntimeState {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
             }) if returned_action_id == action_id => Ok((action_id, environment)),
+            Ok(RoomBrowserControllerResult::ActionCancelled { controller_fenced }) => {
+                Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
+            }
             Ok(_) => Err(human_action_dispatch_error(
                 "environment_input_response_mismatch",
                 "bound worker returned a mismatched Computer input response".to_string(),
             )),
+            Err(error @ DaemonError::BrowserControllerActionCancelled { .. }) => Err(error),
             Err(error) => Err(human_action_dispatch_error(
                 "environment_input_execution_failed",
                 error.to_string(),

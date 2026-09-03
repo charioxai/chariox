@@ -99,23 +99,32 @@ impl KernelRuntimeState {
             ));
         }
         let execution = self
-            .room_browser_controller_command(
+            .await_cancellable_browser_action(
                 session_id,
-                RoomBrowserControllerCommand::ComputerInput {
-                    action_id: action_id.clone(),
-                    actor_id: actor_id.clone(),
-                    runtime_generation: current.runtime_generation,
-                    viewport_revision: current.viewport.revision,
-                    desktop_pixel_width: current.viewport.desktop_pixel_width,
-                    desktop_pixel_height: current.viewport.desktop_pixel_height,
-                    action: input,
-                },
+                &action_id,
+                &action_id,
+                self.room_browser_controller_command(
+                    session_id,
+                    RoomBrowserControllerCommand::ComputerInput {
+                        action_id: action_id.clone(),
+                        actor_id: actor_id.clone(),
+                        runtime_generation: current.runtime_generation,
+                        viewport_revision: current.viewport.revision,
+                        desktop_pixel_width: current.viewport.desktop_pixel_width,
+                        desktop_pixel_height: current.viewport.desktop_pixel_height,
+                        action: input,
+                    },
+                ),
             )
             .await;
         let terminal = match &execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
             }) if returned_action_id == &action_id => EnvironmentActionTerminal::Completed,
+            Ok(RoomBrowserControllerResult::ActionCancelled { .. })
+            | Err(DaemonError::BrowserControllerActionCancelled { .. }) => {
+                EnvironmentActionTerminal::Cancelled
+            }
             _ => EnvironmentActionTerminal::Failed,
         };
         self.finish_room_environment_action(session_id, &action_id, terminal)
@@ -127,6 +136,9 @@ impl KernelRuntimeState {
                 action_id,
                 actor_id,
             }),
+            Ok(RoomBrowserControllerResult::ActionCancelled { controller_fenced }) => {
+                Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
+            }
             Ok(_) => Err(action_dispatch_error(
                 "computer input returned a mismatched controller response".to_string(),
             )),
