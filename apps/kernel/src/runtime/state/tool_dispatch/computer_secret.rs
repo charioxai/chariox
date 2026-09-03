@@ -65,7 +65,6 @@ impl KernelRuntimeState {
             .execute_computer_input_as_agent(
                 session_id,
                 agent_id,
-                "secret_input",
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
                     input:
                         crate::transport::room_browser_controller::RoomComputerSecretInput::from_zeroizing(

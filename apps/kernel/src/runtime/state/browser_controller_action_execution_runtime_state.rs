@@ -27,6 +27,9 @@ pub(crate) struct BrowserControllerActionExecution<T> {
 pub(crate) struct ComputerControllerActionExecution {
     pub(crate) action_id: String,
     pub(crate) actor_id: String,
+    pub(crate) action_kind: &'static str,
+    pub(crate) environment_id: String,
+    pub(crate) runtime_generation: u64,
 }
 
 impl KernelRuntimeState {
@@ -34,19 +37,30 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-        action_kind: &str,
         input: RoomComputerInputAction,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
         let actor_id = agent_environment_actor_id(agent_id);
-        let request = EnvironmentActionRequest::computer_mutation(
+        crate::runtime::computer_input_action::validate_computer_input_action(
+            &environment.viewport,
+            &input,
+        )
+        .map_err(action_environment_error)?;
+        let metadata = crate::runtime::computer_input_action::computer_input_action_metadata(
+            &input,
+            environment.viewport.revision,
+        );
+        let mut request = EnvironmentActionRequest::computer_mutation(
             &actor_id,
             environment.runtime_generation,
-            action_kind,
+            metadata.kind,
             environment.focused_tab_id.as_deref(),
         );
+        if let Some(arguments) = metadata.arguments {
+            request = request.with_arguments(arguments);
+        }
         let (admission, _) = self
             .submit_room_environment_action(session_id, request)
             .map_err(action_environment_error)?;
@@ -135,6 +149,9 @@ impl KernelRuntimeState {
             }) if returned_action_id == action_id => Ok(ComputerControllerActionExecution {
                 action_id,
                 actor_id,
+                action_kind: metadata.kind,
+                environment_id: current.environment_id,
+                runtime_generation: current.runtime_generation,
             }),
             Ok(RoomBrowserControllerResult::ActionCancelled { controller_fenced }) => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })

@@ -331,6 +331,24 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == SLICE_FIND_TEXT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
+        let mouse = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_MOUSE_TOOL)
+            .expect("mouse tool spec");
+        assert_eq!(
+            mouse.input_schema["properties"]["button"]["enum"],
+            serde_json::json!(["left", "middle", "right"])
+        );
+        assert_eq!(
+            mouse.input_schema["properties"]["horizontal_steps"]["type"],
+            "integer"
+        );
+        let keyboard = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_KEYBOARD_TOOL)
+            .expect("keyboard tool spec");
+        assert_eq!(keyboard.input_schema["properties"]["repeat"]["minimum"], 1);
+        assert_eq!(keyboard.input_schema["properties"]["repeat"]["maximum"], 32);
         assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
         assert!(specs
             .iter()

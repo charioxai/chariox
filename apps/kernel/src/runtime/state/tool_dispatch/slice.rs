@@ -8,6 +8,7 @@ mod controller_browser;
 mod controller_browser_compatibility;
 mod controller_browser_projection;
 mod controller_browser_runtime;
+mod controller_computer;
 mod slice_browser;
 use slice_browser::*;
 
@@ -1265,6 +1266,8 @@ mod tests {
             to_x: Some(30),
             to_y: Some(40),
             amount: None,
+            horizontal_steps: None,
+            button: None,
         };
 
         assert_eq!(
@@ -1285,6 +1288,7 @@ mod tests {
             action: "type".to_string(),
             text: None,
             key: None,
+            repeat: None,
         };
 
         assert!(slice_keyboard_command_args(args).is_err());

@@ -183,6 +183,10 @@ pub struct SliceMouseArgs {
     pub to_y: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizontal_steps: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +196,8 @@ pub struct SliceKeyboardArgs {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
