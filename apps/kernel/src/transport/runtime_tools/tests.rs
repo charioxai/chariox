@@ -542,6 +542,29 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn clipboard_write_arguments_are_redacted_and_zeroizing() {
+        fn assert_zeroize<T: zeroize::Zeroize>() {}
+
+        assert_zeroize::<SliceClipboardWriteArgs>();
+        let mut args: SliceClipboardWriteArgs = serde_json::from_value(serde_json::json!({
+            "text": "clipboard-review-canary"
+        }))
+        .expect("clipboard write arguments");
+        let debug = format!("{args:?}");
+        assert!(debug.contains("[redacted clipboard text]"));
+        assert!(!debug.contains("clipboard-review-canary"));
+        zeroize::Zeroize::zeroize(&mut args);
+        assert!(args.text.is_empty());
+
+        let args: SliceClipboardWriteArgs = serde_json::from_value(serde_json::json!({
+            "text": "clipboard-review-canary"
+        }))
+        .expect("clipboard write arguments");
+        let text = args.into_zeroizing();
+        assert_eq!(text.as_str(), "clipboard-review-canary");
+    }
+
+    #[test]
     fn canonical_extension_tool_name_accepts_provider_aliases() {
         assert_eq!(
             canonical_extension_tool_name("mcp__chariox__list_extensions"),

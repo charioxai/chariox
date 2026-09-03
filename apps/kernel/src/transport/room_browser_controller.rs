@@ -88,6 +88,10 @@ impl RoomComputerClipboardText {
         Self(value)
     }
 
+    pub(crate) fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }

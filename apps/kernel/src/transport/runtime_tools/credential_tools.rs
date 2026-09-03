@@ -204,9 +204,36 @@ pub struct SliceKeyboardArgs {
     pub repeat: Option<u16>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceClipboardWriteArgs {
     pub text: String,
+}
+
+impl SliceClipboardWriteArgs {
+    pub(crate) fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.text))
+    }
+}
+
+impl std::fmt::Debug for SliceClipboardWriteArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SliceClipboardWriteArgs")
+            .field("text", &"[redacted clipboard text]")
+            .finish()
+    }
+}
+
+impl zeroize::Zeroize for SliceClipboardWriteArgs {
+    fn zeroize(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.text);
+    }
+}
+
+impl Drop for SliceClipboardWriteArgs {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

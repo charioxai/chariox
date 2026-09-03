@@ -164,8 +164,8 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let text =
-                    crate::transport::room_browser_controller::RoomComputerClipboardText::new(
-                        args.text,
+                    crate::transport::room_browser_controller::RoomComputerClipboardText::from_zeroizing(
+                        args.into_zeroizing(),
                     );
                 let utf8_byte_count = text.as_str().len();
                 let character_count = text.as_str().chars().count();

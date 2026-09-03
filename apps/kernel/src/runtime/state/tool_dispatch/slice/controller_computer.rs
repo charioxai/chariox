@@ -139,7 +139,7 @@ fn room_computer_keyboard_action(
 
 fn room_computer_clipboard_write_action(args: SliceClipboardWriteArgs) -> RoomComputerInputAction {
     RoomComputerInputAction::ClipboardWrite {
-        text: RoomComputerClipboardText::new(args.text),
+        text: RoomComputerClipboardText::from_zeroizing(args.into_zeroizing()),
     }
 }
 
