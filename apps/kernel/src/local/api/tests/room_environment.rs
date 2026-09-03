@@ -1264,7 +1264,6 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
             .execute_computer_input_as_agent(
                 &agent_session_id,
                 &agent_id,
-                "pointer_drag",
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
                     from_x: 120,
                     from_y: 160,

@@ -13,6 +13,22 @@ impl KernelRuntimeState {
         use crate::transport::runtime_tools::*;
 
         match tool_name {
+            SLICE_MOUSE_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceMouseArgs>(
+                    arguments,
+                    "runtime_tool_slice_mouse",
+                )?;
+                self.controller_computer_mouse_tool_result(session_id, slice_id, agent_id, args)
+                    .await
+            }
+            SLICE_KEYBOARD_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceKeyboardArgs>(
+                    arguments,
+                    "runtime_tool_slice_keyboard",
+                )?;
+                self.controller_computer_keyboard_tool_result(session_id, slice_id, agent_id, args)
+                    .await
+            }
             SLICE_OPEN_URL_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceOpenUrlArgs>(
                     arguments,

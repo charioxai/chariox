@@ -234,7 +234,6 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
                 .execute_computer_input_as_agent(
                     &action_room,
                     &agent_id,
-                    "pointer_drag",
                     crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
                         from_x: 120,
                         from_y: 160,

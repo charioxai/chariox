@@ -5,7 +5,7 @@ use chariox_relay::protocol::ClientTarget;
 use futures_util::FutureExt;
 
 #[test]
-fn worker_computer_secret_uses_home_room_authority() {
+fn worker_computer_tools_use_home_room_authority() {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {
@@ -15,22 +15,22 @@ fn worker_computer_secret_uses_home_room_authority() {
                 .thread_stack_size(64 * 1024 * 1024)
                 .enable_all()
                 .build()
-                .expect("computer secret test runtime")
-                .block_on(worker_computer_secret_scenario());
+                .expect("computer tools test runtime")
+                .block_on(worker_computer_tools_scenario());
         })
-        .expect("computer secret test thread")
+        .expect("computer tools test thread")
         .join()
-        .expect("computer secret test thread should not panic");
+        .expect("computer tools test thread should not panic");
 }
 
-async fn worker_computer_secret_scenario() {
+async fn worker_computer_tools_scenario() {
     let mut fixture = LiveWorker::start_configured_with_home_vault(
         false,
         true,
         Some(crate::config::CredentialVaultBackend::ProcessMemory),
     )
     .await;
-    let check = std::panic::AssertUnwindSafe(check_worker_computer_secret(&mut fixture))
+    let check = std::panic::AssertUnwindSafe(check_worker_computer_tools(&mut fixture))
         .catch_unwind()
         .await;
     let controller_cleanup = fixture
@@ -45,23 +45,20 @@ async fn worker_computer_secret_scenario() {
         .await
         .teardown_provider_processes(Some("managed-dev-stub"), true);
     fixture.stop().await;
-    controller_cleanup.expect("stop worker controller after computer secret test");
-    provider_cleanup.expect("stop worker provider after computer secret test");
+    controller_cleanup.expect("stop worker controller after computer tools test");
+    provider_cleanup.expect("stop worker provider after computer tools test");
     if let Err(panic) = check {
         std::panic::resume_unwind(panic);
     }
 }
 
-async fn check_worker_computer_secret(fixture: &mut LiveWorker) {
+async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     const SECRET: &str = "remote-room-computer-secret-canary";
-    let screen_tool = fixture._worker_state.root.join("computer-secret-screen.sh");
-    let screen_log = fixture
-        ._worker_state
-        .root
-        .join("computer-secret-screen.log");
+    let screen_tool = fixture._worker_state.root.join("computer-tools-screen.sh");
+    let screen_log = fixture._worker_state.root.join("computer-tools-screen.log");
     std::fs::write(
         &screen_tool,
-        "#!/bin/sh\nset -eu\n[ \"${1:-}\" = computer-secret-paste-stdin ]\ninput=$(cat)\n[ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\nprintf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n",
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
     #[cfg(unix)]
@@ -216,6 +213,7 @@ async fn check_worker_computer_secret(fixture: &mut LiveWorker) {
         .runtime_mcp_auth_token_for_provider_run(&worker_provider_run_id)
         .expect("worker provider runtime MCP token");
 
+    let input_token = token.clone();
     let runtime = fixture.worker.runtime_state.clone();
     let call = tokio::spawn(async move {
         runtime
@@ -288,13 +286,175 @@ async fn check_worker_computer_secret(fixture: &mut LiveWorker) {
         crate::session::EnvironmentActionState::Completed
     );
     assert_eq!(action.arguments, None);
+
+    let input_cases = [
+        (
+            "slice_mouse",
+            json!({"action":"move","x":120,"y":160}),
+            "pointer_move",
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260,"button":"right"}),
+            "pointer_click",
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"double_click","x":320,"y":360}),
+            "pointer_click",
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
+            "pointer_drag",
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"scroll","x":640,"y":400,"amount":5,"horizontal_steps":-3}),
+            "pointer_scroll",
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"type","text":"Grüße 世界"}),
+            "keyboard_text",
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
+            "keyboard_key",
+        ),
+    ];
+    let mut action_ids = Vec::new();
+    for (tool, arguments, action_kind) in input_cases {
+        let result = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&input_token, tool, arguments)
+            .await
+            .expect("worker Computer tool should forward through home Room authority");
+        assert!(result.ok, "{action_kind}: {:?}", result.payload);
+        assert_eq!(result.payload["source"], "computer_controller");
+        assert_eq!(result.payload["session_id"], room);
+        assert_eq!(result.payload["agent_id"], home_agent_id);
+        assert_eq!(
+            result.payload["actor_id"],
+            crate::session::agent_environment_actor_id(&home_agent_id)
+        );
+        assert_eq!(result.payload["action_kind"], action_kind);
+        action_ids.push(
+            result.payload["action_id"]
+                .as_str()
+                .expect("Computer tool result should identify its Room Action")
+                .to_string(),
+        );
+    }
+
+    let action_count_before_invalid = fixture
+        .home
+        .runtime_state
+        .room_environment_snapshot(&room)
+        .expect("home Room before invalid provider input")
+        .actions
+        .len();
+    let invalid_input = fixture
+        .worker
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &input_token,
+            "slice_keyboard",
+            json!({"action":"key","key":"ctrl+p","repeat":33}),
+        )
+        .await
+        .expect_err("home Room authority should reject an excessive key repeat");
+    assert!(
+        invalid_input
+            .to_string()
+            .contains("environment_invalid_keyboard_repeat"),
+        "unexpected invalid input error: {invalid_input}"
+    );
+
+    let home_environment = fixture
+        .home
+        .runtime_state
+        .room_environment_snapshot(&room)
+        .expect("home Room keeps all Computer Actions");
+    assert_eq!(
+        home_environment.actions.len(),
+        action_count_before_invalid,
+        "rejected provider input must not enter the home Action ledger"
+    );
+    for (action_id, expected_kind) in action_ids.iter().zip([
+        "pointer_move",
+        "pointer_click",
+        "pointer_click",
+        "pointer_drag",
+        "pointer_scroll",
+        "keyboard_text",
+        "keyboard_key",
+    ]) {
+        let action = home_environment
+            .actions
+            .iter()
+            .find(|action| &action.action_id == action_id)
+            .expect("home Room should record the provider Computer Action");
+        assert_eq!(action.kind, expected_kind);
+        assert_eq!(
+            action.actor_id,
+            crate::session::agent_environment_actor_id(&home_agent_id)
+        );
+        assert_eq!(
+            action.state,
+            crate::session::EnvironmentActionState::Completed
+        );
+    }
+    let keyboard = home_environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_ids[5])
+        .expect("keyboard text Action");
+    assert_eq!(
+        keyboard.arguments,
+        Some(crate::session::EnvironmentActionArguments::KeyboardText {
+            utf8_byte_count: 14,
+            character_count: 8,
+        })
+    );
+    let key = home_environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_ids[6])
+        .expect("keyboard key Action");
+    assert_eq!(
+        key.arguments,
+        Some(crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 })
+    );
+    let environment_debug = format!("{home_environment:?}");
+    assert!(
+        !environment_debug.contains("Grüße 世界") && !environment_debug.contains("ctrl+shift+p"),
+        "Room history must not retain keyboard contents"
+    );
     assert!(
         fixture
             .worker
             .runtime_state
             .room_environment_snapshot(&worker_session_id)
             .is_err(),
-        "worker must not create parallel Room authority"
+        "worker must not create parallel Room authority for any Computer tool"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&screen_log).expect("worker Computer tool log"),
+        concat!(
+            "computer-secret-input-ok\n",
+            "move 120 160\n",
+            "pointer-click 220 260 right 1\n",
+            "pointer-click 320 360 left 2\n",
+            "pointer-drag 120 160 720 560 middle\n",
+            "pointer-scroll 640 400 -3 5\n",
+            "computer-type-stdin|Grüße 世界\n",
+            "computer-key-stdin 3|ctrl+shift+p\n",
+        ),
+        "provider Computer tools must use the shared physical input adapter",
     );
 
     dispatch_json(
@@ -302,13 +462,13 @@ async fn check_worker_computer_secret(fixture: &mut LiveWorker) {
         json!({"DestroyAgent":{"session_id":room,"agent_id":home_agent_id}}),
     )
     .await
-    .expect("destroy the leased agent after the computer secret test");
+    .expect("destroy the leased agent after the computer tools test");
     dispatch_json(
         &fixture.home,
         json!({"StopRoomEnvironment":{"session_id":room}}),
     )
     .await
-    .expect("stop the home Room environment after the computer secret test");
+    .expect("stop the home Room environment after the computer tools test");
 }
 
 struct ScopedEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);

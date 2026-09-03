@@ -49,7 +49,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_MOUSE_TOOL.to_string(),
-            description: "Control the Chariox slice virtual mouse. Actions: move, click, double_click, scroll, drag.".to_string(),
+            description: "Control the shared Chariox Computer pointer through the Room action authority. Actions: move, click, double_click, scroll, drag. Room scroll requires x and y; amount is vertical steps and horizontal_steps is horizontal steps.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
@@ -62,14 +62,16 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "y": {"type": "integer"},
                     "to_x": {"type": "integer"},
                     "to_y": {"type": "integer"},
-                    "amount": {"type": "integer"}
+                    "amount": {"type": "integer"},
+                    "horizontal_steps": {"type": "integer"},
+                    "button": {"type": "string", "enum": ["left", "middle", "right"]}
                 },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
             name: SLICE_KEYBOARD_TOOL.to_string(),
-            description: "Control the Chariox slice virtual keyboard. Use action=type with text or action=key with an xdotool-compatible key name.".to_string(),
+            description: "Control the shared Chariox Computer keyboard through the Room action authority. Use action=type with text or action=key with an xdotool-compatible key name and optional repeat count.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
@@ -79,7 +81,8 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "enum": ["type", "key"]
                     },
                     "text": {"type": "string"},
-                    "key": {"type": "string"}
+                    "key": {"type": "string"},
+                    "repeat": {"type": "integer", "minimum": 1, "maximum": 32}
                 },
                 "additionalProperties": false
             }),

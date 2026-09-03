@@ -14,9 +14,7 @@ use crate::session::{
 };
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerInputAction,
-    RoomComputerKeyboardInput, RoomComputerPointerButton, ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
-    ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES, ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
-    ROOM_COMPUTER_SCROLL_MAX_STEPS,
+    RoomComputerKeyboardInput, RoomComputerPointerButton,
 };
 
 use super::KernelRuntimeState;
@@ -57,7 +55,7 @@ impl KernelRuntimeState {
         }
         validate_human_action_authority(&environment, &actor.actor_id)
             .map_err(human_action_environment_error)?;
-        validate_human_action_freshness(&environment, &request)
+        validate_human_action_freshness(&environment, &request, &input_action)
             .map_err(human_action_environment_error)?;
         let (admission, environment) = self
             .submit_room_environment_action(&request.session_id, action_request)
@@ -102,7 +100,7 @@ impl KernelRuntimeState {
             .room_environment_snapshot(&request.session_id)
             .map_err(human_action_environment_error)?;
         if let Err(error) = validate_human_action_authority(&current, &actor.actor_id)
-            .and_then(|_| validate_human_action_freshness(&current, &request))
+            .and_then(|_| validate_human_action_freshness(&current, &request, &input_action))
         {
             let _ = self.finish_room_environment_action(
                 &request.session_id,
@@ -264,6 +262,7 @@ fn validate_human_action_idempotency_key(
 fn validate_human_action_freshness(
     environment: &RoomEnvironmentSnapshot,
     request: &SubmitRoomEnvironmentActionRequest,
+    input: &RoomComputerInputAction,
 ) -> Result<(), EnvironmentError> {
     if request.runtime_generation != environment.runtime_generation {
         return Err(EnvironmentError::StaleRuntimeGeneration {
@@ -277,113 +276,10 @@ fn validate_human_action_freshness(
             actual: request.viewport_revision,
         });
     }
-    match &request.action {
-        RoomEnvironmentHumanAction::PointerMove { x, y } => {
-            if *x >= environment.viewport.desktop_pixel_width
-                || *y >= environment.viewport.desktop_pixel_height
-            {
-                return Err(EnvironmentError::PointerOutOfBounds {
-                    x: *x,
-                    y: *y,
-                    width: environment.viewport.desktop_pixel_width,
-                    height: environment.viewport.desktop_pixel_height,
-                });
-            }
-        }
-        RoomEnvironmentHumanAction::PointerDrag {
-            from_x,
-            from_y,
-            to_x,
-            to_y,
-            ..
-        } => {
-            for (x, y) in [(*from_x, *from_y), (*to_x, *to_y)] {
-                if x >= environment.viewport.desktop_pixel_width
-                    || y >= environment.viewport.desktop_pixel_height
-                {
-                    return Err(EnvironmentError::PointerOutOfBounds {
-                        x,
-                        y,
-                        width: environment.viewport.desktop_pixel_width,
-                        height: environment.viewport.desktop_pixel_height,
-                    });
-                }
-            }
-        }
-        RoomEnvironmentHumanAction::PointerScroll {
-            x,
-            y,
-            horizontal_steps,
-            vertical_steps,
-        } => {
-            if *x >= environment.viewport.desktop_pixel_width
-                || *y >= environment.viewport.desktop_pixel_height
-            {
-                return Err(EnvironmentError::PointerOutOfBounds {
-                    x: *x,
-                    y: *y,
-                    width: environment.viewport.desktop_pixel_width,
-                    height: environment.viewport.desktop_pixel_height,
-                });
-            }
-            if (*horizontal_steps == 0 && *vertical_steps == 0)
-                || horizontal_steps.unsigned_abs() > ROOM_COMPUTER_SCROLL_MAX_STEPS
-                || vertical_steps.unsigned_abs() > ROOM_COMPUTER_SCROLL_MAX_STEPS
-            {
-                return Err(EnvironmentError::InvalidScrollSteps {
-                    horizontal_steps: *horizontal_steps,
-                    vertical_steps: *vertical_steps,
-                    max_steps: ROOM_COMPUTER_SCROLL_MAX_STEPS,
-                });
-            }
-        }
-        RoomEnvironmentHumanAction::KeyboardText { text } => {
-            let utf8_byte_count = text.as_str().len();
-            if utf8_byte_count == 0 || utf8_byte_count > ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES
-            {
-                return Err(EnvironmentError::InvalidKeyboardText {
-                    utf8_byte_count,
-                    max_utf8_bytes: ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
-                });
-            }
-        }
-        RoomEnvironmentHumanAction::KeyboardKey { key, repeat } => {
-            let value = key.as_str();
-            if value.is_empty()
-                || value.len() > ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES
-                || value.starts_with('-')
-                || !value.bytes().all(|byte| byte.is_ascii_graphic())
-            {
-                return Err(EnvironmentError::InvalidKeyboardKey);
-            }
-            if *repeat == 0 || *repeat > ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT {
-                return Err(EnvironmentError::InvalidKeyboardRepeat {
-                    repeat: *repeat,
-                    max_repeat: ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
-                });
-            }
-        }
-        RoomEnvironmentHumanAction::PointerClick {
-            x, y, click_count, ..
-        } => {
-            if *x >= environment.viewport.desktop_pixel_width
-                || *y >= environment.viewport.desktop_pixel_height
-            {
-                return Err(EnvironmentError::PointerOutOfBounds {
-                    x: *x,
-                    y: *y,
-                    width: environment.viewport.desktop_pixel_width,
-                    height: environment.viewport.desktop_pixel_height,
-                });
-            }
-            if !matches!(*click_count, 1 | 2) {
-                return Err(EnvironmentError::InvalidClickCount {
-                    click_count: *click_count,
-                });
-            }
-        }
-    }
-    Ok(())
+    crate::runtime::computer_input_action::validate_computer_input_action(
+        &environment.viewport,
+        input,
+    )
 }
 
 fn computer_input_action(
@@ -394,107 +290,68 @@ fn computer_input_action(
     RoomComputerInputAction,
     EnvironmentActionArguments,
 ) {
-    match action {
-        RoomEnvironmentHumanAction::PointerMove { x, y } => (
-            "pointer_move",
-            RoomComputerInputAction::PointerMove { x: *x, y: *y },
-            EnvironmentActionArguments::PointerMove {
-                x: *x,
-                y: *y,
-                viewport_revision,
-            },
-        ),
+    let input = match action {
+        RoomEnvironmentHumanAction::PointerMove { x, y } => {
+            RoomComputerInputAction::PointerMove { x: *x, y: *y }
+        }
         RoomEnvironmentHumanAction::PointerDrag {
             from_x,
             from_y,
             to_x,
             to_y,
             button,
-        } => {
-            let transport_button = computer_pointer_button(*button);
-            (
-                "pointer_drag",
-                RoomComputerInputAction::PointerDrag {
-                    from_x: *from_x,
-                    from_y: *from_y,
-                    to_x: *to_x,
-                    to_y: *to_y,
-                    button: transport_button,
-                },
-                EnvironmentActionArguments::PointerDrag {
-                    from_x: *from_x,
-                    from_y: *from_y,
-                    to_x: *to_x,
-                    to_y: *to_y,
-                    button: *button,
-                    viewport_revision,
-                },
-            )
-        }
+        } => RoomComputerInputAction::PointerDrag {
+            from_x: *from_x,
+            from_y: *from_y,
+            to_x: *to_x,
+            to_y: *to_y,
+            button: computer_pointer_button(*button),
+        },
         RoomEnvironmentHumanAction::PointerScroll {
             x,
             y,
             horizontal_steps,
             vertical_steps,
-        } => (
-            "pointer_scroll",
-            RoomComputerInputAction::PointerScroll {
-                x: *x,
-                y: *y,
-                horizontal_steps: *horizontal_steps,
-                vertical_steps: *vertical_steps,
-            },
-            EnvironmentActionArguments::PointerScroll {
-                x: *x,
-                y: *y,
-                horizontal_steps: *horizontal_steps,
-                vertical_steps: *vertical_steps,
-                viewport_revision,
-            },
-        ),
-        RoomEnvironmentHumanAction::KeyboardText { text } => (
-            "keyboard_text",
+        } => RoomComputerInputAction::PointerScroll {
+            x: *x,
+            y: *y,
+            horizontal_steps: *horizontal_steps,
+            vertical_steps: *vertical_steps,
+        },
+        RoomEnvironmentHumanAction::KeyboardText { text } => {
             RoomComputerInputAction::KeyboardText {
                 input: RoomComputerKeyboardInput::new(text.as_str().to_string()),
-            },
-            EnvironmentActionArguments::KeyboardText {
-                utf8_byte_count: text.as_str().len() as u32,
-                character_count: text.as_str().chars().count() as u32,
-            },
-        ),
-        RoomEnvironmentHumanAction::KeyboardKey { key, repeat } => (
-            "keyboard_key",
+            }
+        }
+        RoomEnvironmentHumanAction::KeyboardKey { key, repeat } => {
             RoomComputerInputAction::KeyboardKey {
                 input: RoomComputerKeyboardInput::new(key.as_str().to_string()),
                 repeat: *repeat,
-            },
-            EnvironmentActionArguments::KeyboardKey { repeat: *repeat },
-        ),
+            }
+        }
         RoomEnvironmentHumanAction::PointerClick {
             x,
             y,
             button,
             click_count,
-        } => {
-            let transport_button = computer_pointer_button(*button);
-            (
-                "pointer_click",
-                RoomComputerInputAction::PointerClick {
-                    x: *x,
-                    y: *y,
-                    button: transport_button,
-                    click_count: *click_count,
-                },
-                EnvironmentActionArguments::PointerClick {
-                    x: *x,
-                    y: *y,
-                    button: *button,
-                    click_count: *click_count,
-                    viewport_revision,
-                },
-            )
-        }
-    }
+        } => RoomComputerInputAction::PointerClick {
+            x: *x,
+            y: *y,
+            button: computer_pointer_button(*button),
+            click_count: *click_count,
+        },
+    };
+    let metadata = crate::runtime::computer_input_action::computer_input_action_metadata(
+        &input,
+        viewport_revision,
+    );
+    (
+        metadata.kind,
+        input,
+        metadata
+            .arguments
+            .expect("human Computer Actions always have redacted arguments"),
+    )
 }
 
 fn computer_pointer_button(button: RoomEnvironmentPointerButton) -> RoomComputerPointerButton {

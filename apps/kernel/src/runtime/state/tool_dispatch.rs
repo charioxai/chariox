@@ -463,6 +463,8 @@ impl KernelRuntimeState {
             canonical_slice_tool_name(tool_name),
             Some(
                 SLICE_BROWSER_STATUS_TOOL
+                    | SLICE_MOUSE_TOOL
+                    | SLICE_KEYBOARD_TOOL
                     | SLICE_OPEN_URL_TOOL
                     | SLICE_BROWSER_CLICK_TOOL
                     | SLICE_BROWSER_FILL_TOOL
@@ -521,6 +523,8 @@ fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
         canonical_slice_tool_name(tool_name),
         Some(
             SLICE_BROWSER_STATUS_TOOL
+                | SLICE_MOUSE_TOOL
+                | SLICE_KEYBOARD_TOOL
                 | SLICE_OPEN_URL_TOOL
                 | SLICE_BROWSER_CLICK_TOOL
                 | SLICE_BROWSER_FILL_TOOL
@@ -609,6 +613,8 @@ mod tests {
     fn worker_room_browser_forwarding_has_one_explicit_tool_allowlist() {
         use crate::transport::runtime_tools::*;
         for tool_name in [
+            SLICE_MOUSE_TOOL,
+            SLICE_KEYBOARD_TOOL,
             SLICE_BROWSER_STATUS_TOOL,
             SLICE_OPEN_URL_TOOL,
             SLICE_BROWSER_CLICK_TOOL,
