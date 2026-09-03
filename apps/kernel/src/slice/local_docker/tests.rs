@@ -824,6 +824,87 @@ fn local_docker_default_saved_state_round_trips_through_pointer_manifest() {
 }
 
 #[test]
+fn saved_state_archives_use_distinct_generation_paths() {
+    let root = test_root("slice-state-generations");
+    let first = state::active_state_home_archive_path(&root);
+    let second = state::active_state_home_archive_path(&root);
+
+    assert_ne!(first, second);
+    assert_eq!(first.parent(), Some(root.as_path()));
+    assert_eq!(second.parent(), Some(root.as_path()));
+    assert_eq!(
+        first.extension().and_then(|value| value.to_str()),
+        Some("zst")
+    );
+    assert_eq!(
+        second.extension().and_then(|value| value.to_str()),
+        Some("zst")
+    );
+}
+
+#[test]
+fn failed_saved_state_publication_after_archive_capture_preserves_restorable_prior_generation() {
+    let root = test_root("slice-state-publication-failure");
+    std::fs::create_dir_all(&root).expect("state directory should create");
+    let manifest = root.join("manifest.json");
+    let prior_archive = root.join("home-prior.tar.zst");
+    let next_archive = root.join("home-next.tar.zst");
+    std::fs::write(&prior_archive, b"prior generation").expect("prior archive should write");
+    std::fs::write(&next_archive, b"next generation").expect("next archive should write");
+
+    let mut prior = saved_state(manifest.display().to_string());
+    prior.home_archive_path = prior_archive.display().to_string();
+    prior.image_ref = "chariox-slice-state:gmail-ready-prior".to_string();
+    let prior_manifest = serde_json::to_vec_pretty(&prior).expect("prior state should encode");
+    std::fs::write(&manifest, &prior_manifest).expect("prior manifest should write");
+
+    let mut next = prior.clone();
+    next.home_archive_path = next_archive.display().to_string();
+    next.image_ref = "chariox-slice-state:gmail-ready-next".to_string();
+    next.updated_at_ms += 1;
+
+    let error = state::publish_saved_state_generation_with(
+        &manifest,
+        &next,
+        Some(&prior),
+        |_path, _state| {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "slice.state.manifest",
+                message: "injected publication failure".to_string(),
+            })
+        },
+    )
+    .expect_err("injected manifest publication must fail");
+
+    assert!(error.to_string().contains("injected publication failure"));
+    assert_eq!(
+        std::fs::read(&manifest).expect("prior manifest should remain readable"),
+        prior_manifest
+    );
+    assert_eq!(
+        std::fs::read(&prior_archive).expect("prior archive should remain readable"),
+        b"prior generation"
+    );
+    assert!(
+        !next_archive.exists(),
+        "unpublished archive must be removed"
+    );
+
+    let restored: SliceSavedStateRecord = serde_json::from_slice(
+        &std::fs::read(&manifest).expect("prior manifest should remain readable for restore"),
+    )
+    .expect("prior manifest should remain valid");
+    let restore_options = test_options().with_saved_state(&restored);
+    assert_eq!(
+        restore_options.saved_home_archive.as_deref(),
+        Some(prior_archive.as_path())
+    );
+    assert_eq!(restore_options.docker_image, prior.image_ref);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
     let store = SliceStore::default();
     let record = store
