@@ -286,6 +286,11 @@ async function run() {
     30_000,
     "browser did not resume after live backup capture",
   )
+  assert.equal(
+    fixture.messages.filter((message) => message.subject === markers.secondSubject).length,
+    1,
+    "browser resume must not repeat the mail POST",
+  )
 
   log("creating a corrupt candidate without mutating the known-good backup")
   await writeSliceFile("/home/slice/.config/m20-state-app/config.txt", `${markers.backupMutationOne}\n`)

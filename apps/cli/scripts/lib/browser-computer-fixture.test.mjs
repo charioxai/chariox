@@ -90,9 +90,15 @@ test("fixture provides authenticated mail without exposing its password", async 
         subject: "Fixture subject",
         body: "Fixture body",
       }),
+      redirect: "manual",
     })
-    assert.equal(sent.status, 200)
-    assert.match(await sent.text(), /CHARIOX_FIXTURE_MESSAGE_SENT/)
+    assert.equal(sent.status, 303)
+    assert.equal(sent.headers.get("location"), "/mail/sent/message-1")
+    const confirmation = await fetch(new URL(sent.headers.get("location"), fixture.origin), {
+      headers: { cookie },
+    })
+    assert.equal(confirmation.status, 200)
+    assert.match(await confirmation.text(), /CHARIOX_FIXTURE_MESSAGE_SENT/)
 
     const unauthenticatedMessages = await fetch(`${fixture.origin}/api/messages`)
     assert.equal(unauthenticatedMessages.status, 403)
