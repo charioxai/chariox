@@ -13,7 +13,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_SCREENSHOT_TOOL.to_string(),
-            description: "Capture the current Chariox slice screen to a PNG file. Use return_image_base64 only when the image bytes are needed in the tool result.".to_string(),
+            description: "Capture the current Chariox slice screen to a PNG file. Set return_image_base64 to receive a native MCP image block; inline images are validated as PNG and bounded to 16 MiB.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

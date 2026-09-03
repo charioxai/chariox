@@ -1,4 +1,5 @@
 use base64::Engine;
+use std::io::Read;
 use wait_timeout::ChildExt;
 
 use crate::error::DaemonError;
@@ -15,6 +16,8 @@ use slice_browser::*;
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
 const ROOM_COMPUTER_INPUT_TIMEOUT_MS: u64 = 5_000;
 const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
+const SLICE_SCREENSHOT_MCP_MAX_BYTES: usize = 16 * 1024 * 1024;
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
 impl KernelRuntimeState {
     pub(super) async fn dispatch_slice_runtime_tool_call(
@@ -75,15 +78,7 @@ impl KernelRuntimeState {
                 payload["mime_type"] = serde_json::Value::String("image/png".to_string());
                 if output.success && args.return_image_base64 {
                     let image_path = std::path::PathBuf::from(&image_path);
-                    let image_bytes = std::fs::read(&image_path).map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_slice_screenshot",
-                            message: format!(
-                                "failed to read screenshot `{}`: {error}",
-                                image_path.display()
-                            ),
-                        }
-                    })?;
+                    let image_bytes = read_slice_screenshot_for_mcp(&image_path)?;
                     payload["image_base64"] = serde_json::Value::String(
                         base64::engine::general_purpose::STANDARD.encode(image_bytes),
                     );
@@ -465,6 +460,34 @@ impl KernelRuntimeState {
             payload: slice_tool_payload(&slice_id, agent_id, &output),
         })
     }
+}
+
+fn read_slice_screenshot_for_mcp(path: &std::path::Path) -> Result<Vec<u8>, DaemonError> {
+    let file = std::fs::File::open(path).map_err(|error| DaemonError::LocalTransport {
+        operation: "runtime_tool_slice_screenshot",
+        message: format!("failed to open screenshot `{}`: {error}", path.display()),
+    })?;
+    read_bounded_png(file, SLICE_SCREENSHOT_MCP_MAX_BYTES).map_err(|message| {
+        DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_screenshot",
+            message: format!("screenshot `{}` {message}", path.display()),
+        }
+    })
+}
+
+fn read_bounded_png(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((max_bytes + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not be read: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("exceeds the {max_bytes} byte runtime MCP limit"));
+    }
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return Err("is empty or is not a PNG image".to_string());
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug)]
@@ -1292,6 +1315,22 @@ mod tests {
         };
 
         assert!(slice_keyboard_command_args(args).is_err());
+    }
+
+    #[test]
+    fn runtime_mcp_screenshot_reader_requires_a_bounded_png() {
+        let mut png = PNG_SIGNATURE.to_vec();
+        png.extend_from_slice(b"image");
+        assert_eq!(
+            read_bounded_png(std::io::Cursor::new(&png), png.len()).expect("bounded PNG"),
+            png
+        );
+        assert!(read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
+            .expect_err("oversized PNG should fail")
+            .contains("runtime MCP limit"));
+        assert!(read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
+            .expect_err("non-PNG should fail")
+            .contains("not a PNG"));
     }
 
     #[test]
