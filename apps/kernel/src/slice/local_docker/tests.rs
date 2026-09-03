@@ -564,7 +564,7 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     write_executable("pgrep", "#!/bin/sh\nprintf '1 process\\n'\n");
     write_executable(
         "timeout",
-        "#!/bin/sh\n[ \"$1\" != --foreground ] || shift\nshift\nif [ \"$1\" = /opt/chariox-selkies/bin/python ]; then shift; exec \"$CHARIOX_KEYBOARD_STUB\" \"$@\"; fi\nexec \"$@\"\n",
+        "#!/bin/sh\nwhile [ \"${1#--}\" != \"$1\" ]; do shift; done\nshift\nif [ \"$1\" = /opt/chariox-selkies/bin/python ]; then shift; exec \"$CHARIOX_KEYBOARD_STUB\" \"$@\"; fi\nexec \"$@\"\n",
     );
     write_executable(
         "xdotool",

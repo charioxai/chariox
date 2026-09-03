@@ -24,7 +24,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
     let input_log = worker_state.root.join("computer-input-stdin.log");
     std::fs::write(
         &script,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_COMPUTER_INPUT_COMMAND_LOG\"\ncase \"${1:-}\" in computer-type-stdin|computer-key-stdin) cat >> \"$CHARIOX_COMPUTER_INPUT_STDIN_LOG\" ;; esac\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_COMPUTER_INPUT_COMMAND_LOG\"\ncase \"${1:-}\" in computer-type-stdin|computer-key-stdin) cat >> \"$CHARIOX_COMPUTER_INPUT_STDIN_LOG\" ;; esac\nif [ \"${1:-}\" = computer-type-stdin ]; then sleep 6; fi\n",
     )
     .expect("screen helper should be written");
     #[cfg(unix)]
@@ -100,7 +100,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
             "text",
             crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText {
                 input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
-                    "Grüße 世界".to_string(),
+                    "Grüße 世界 ".repeat(20),
                 ),
             },
         ),
@@ -144,7 +144,7 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
     );
     assert_eq!(
         std::fs::read_to_string(&input_log).expect("worker keyboard input should reach stdin"),
-        "Grüße 世界ctrl+shift+p"
+        format!("{}ctrl+shift+p", "Grüße 世界 ".repeat(20))
     );
 
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");

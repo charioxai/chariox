@@ -112,6 +112,15 @@ impl KernelRuntimeState {
             command,
         };
         let send = |target, command| async {
+            let timeout = match &command {
+                Command::ComputerInput {
+                    action: crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { input },
+                    ..
+                } => Duration::from_millis(
+                    crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
+                ),
+                _ => Duration::from_secs(15),
+            };
             match self.connected_relay_state_for_config(&config).await {
                 Some(relay_state) => {
                     crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -119,7 +128,7 @@ impl KernelRuntimeState {
                         &relay_state,
                         target,
                         request(command),
-                        Duration::from_secs(15),
+                        timeout,
                     )
                     .await
                 }
@@ -128,7 +137,7 @@ impl KernelRuntimeState {
                         &config,
                         target,
                         request(command),
-                        Duration::from_secs(15),
+                        timeout,
                     )
                     .await
                 }

@@ -491,7 +491,9 @@ type_text() {
 
 computer_type_stdin() {
   require_screen_available
-  timeout --foreground 10s /opt/chariox-selkies/bin/python \
+  # Kernel enforces a length-derived deadline and immediate cancellation.
+  # Standalone safety bound accommodates the full 64 KiB input contract.
+  timeout --foreground --kill-after=1s 2h /opt/chariox-selkies/bin/python \
     "${BASH_SOURCE[0]%/*}/slice-keyboard.py"
 }
 

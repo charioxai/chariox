@@ -109,10 +109,21 @@ try {
   assert.ok(ready, "keyboard fixture ready")
   report.containerStats = (await docker(["stats", "--no-stream", "--format", "{{json .}}", container])).trim()
   report.versions = (await exec(["bash", "-lc", "chromium --version; xdotool version"])).trim()
+  await exec(["xdotool", "keydown", "Shift_L"])
+  const timeoutResult = await exec(["timeout", "--foreground", "--kill-after=2s", "1.5s", "/opt/chariox-selkies/bin/python", `${root}/slice-keyboard.py`], "x".repeat(400)).then(
+    () => ({ failed: false }),
+    (error) => ({ failed: true, error: error.message }),
+  )
+  assert.ok(timeoutResult.failed && timeoutResult.error.includes("124"), "watchdog must terminate active typing")
+  const shiftRestored = (await exec(["/opt/chariox-selkies/bin/python", "-c", "from selkies.Xlib import display,XK; d=display.Display(); code=d.keysym_to_keycode(XK.string_to_keysym('Shift_L')); print(bool(d.query_keymap()[code//8] & (1<<(code%8)))); d.close()"])).trim() === "True"
+  await exec([`${root}/slice-screen.sh`, "computer-input-reset"])
+  assert.ok(shiftRestored, "SIGTERM must restore the modifier lifted during typing")
+  report.timeoutCleanup = { shiftRestored }
   for (const busy of [false, true]) {
     const values = [
       ...Array.from({ length: 5 }, (_, iteration) => `keyboard-${iteration}-Grüße 世界 áéíóú Ж`),
       Array.from({ length: 96 }, (_, index) => String.fromCodePoint(0x4e00 + index)).join(""),
+      "Long text Grüße 世界 ".repeat(18),
     ]
     for (const [iteration, value] of values.entries()) {
       if (interrupted) throw new Error("drill interrupted")

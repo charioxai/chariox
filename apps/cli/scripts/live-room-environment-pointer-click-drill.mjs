@@ -66,7 +66,9 @@ const agentClipboardText = `agent-clipboard-${runId}-Grüße 世界\nsecond line
 const blockedAgentClipboardText = `blocked-agent-clipboard-${runId}\n`
 const humanClipboardText = `human-clipboard-${runId}\t\nsecond line\n`
 const physicalClipboardText = `physical-clipboard-${runId}-áéíóú\nsecond line\n`
-const keyboardText = `keyboard-${runId}-Grüße 世界`
+// Cross the former 5-second worker and 15-second relay limits using physical
+// input, without making the acceptance dependent on clipboard insertion.
+const keyboardText = `keyboard-${runId}-Grüße 世界 ${"long-input ".repeat(38)}`
 const keyboardReplacementText = `focus-${runId}-ABC`
 const keyboardAfterRepeat = keyboardReplacementText.slice(0, -3)
 const cancellationText = `cancel-${runId}-` + "x".repeat(1_800)

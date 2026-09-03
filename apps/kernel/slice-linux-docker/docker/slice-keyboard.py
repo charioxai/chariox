@@ -2,6 +2,7 @@
 """Physical text input using the pinned Selkies XTEST keyboard implementation."""
 
 import logging
+import signal
 import sys
 import time
 
@@ -10,6 +11,9 @@ logging.disable(logging.CRITICAL)
 from selkies import Xlib
 from selkies.Xlib import display
 from selkies.Xlib.ext import xtest
+# Internal API is intentionally tied to selkies.lock.json revision
+# 3f87241fcd6abc44e205b22f6596e78ef4946670. Any pin upgrade must rerun the
+# physical keyboard X11 drill, including Unicode recycling and cancellation.
 from selkies.input_handler import (
     _XTestKeyboard,
     character_to_layout_keysym,
@@ -21,6 +25,7 @@ def type_text(text):
     connection = display.Display()
     keyboard = _XTestKeyboard(connection)
     lifted = []
+    active_keysym = None
     try:
         keysyms = []
         for character in text:
@@ -42,13 +47,21 @@ def type_text(text):
         connection.sync()
 
         for keysym in keysyms:
+            active_keysym = keysym
             keyboard.press(keysym)
             keyboard.release(keysym)
+            active_keysym = None
             # Pace on this process, not in the X server's request queue. Killing
             # the kernel-owned process group must stop future physical events.
             connection.sync()
             time.sleep(0.04)
     finally:
+        # A second termination signal must not interrupt modifier restoration.
+        # The caller retains SIGKILL as its bounded last-resort cleanup.
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, signal.SIG_IGN)
+        if active_keysym is not None:
+            keyboard.release(active_keysym)
         keyboard.release_group_lock()
         for code in lifted:
             xtest.fake_input(connection, Xlib.X.KeyPress, code)
@@ -71,6 +84,11 @@ def reset_input():
 
 
 if __name__ == "__main__":
+    def terminate(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, terminate)
     try:
         if sys.argv[1:] == ["reset"]:
             reset_input()
