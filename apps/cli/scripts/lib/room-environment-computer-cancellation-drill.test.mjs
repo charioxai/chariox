@@ -7,6 +7,7 @@ import {
   assertHumanTakeoverCancellationRequired,
   assertRoomComputerActionCancelled,
   assertRoomComputerActionRunning,
+  roomComputerCancellationLatencyMs,
 } from "./room-environment-computer-cancellation-drill.mjs"
 
 const runningAction = {
@@ -56,6 +57,18 @@ test("terminal cancelled Action clears its request and records requested outcome
     kind: "keyboard_text",
     focusedTabId: "tab-1",
   })
+})
+
+test("cancellation latency uses the authoritative terminal timestamp", () => {
+  assert.equal(roomComputerCancellationLatencyMs({ finished_at_ms: 1_450 }, 1_000), 450)
+  assert.throws(
+    () => roomComputerCancellationLatencyMs({ finished_at_ms: null }, 1_000),
+    /finish timestamp/,
+  )
+  assert.throws(
+    () => roomComputerCancellationLatencyMs({ finished_at_ms: 999 }, 1_000),
+    /before its cancellation request/,
+  )
 })
 
 test("human takeover remains pending until the blocking Action is cancelled", () => {

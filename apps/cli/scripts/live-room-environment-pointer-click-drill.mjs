@@ -28,6 +28,7 @@ import {
   assertHumanDesktopTakeoverCompleted,
   assertRoomComputerActionCancelled,
   assertRoomComputerActionRunning,
+  roomComputerCancellationLatencyMs,
 } from "./lib/room-environment-computer-cancellation-drill.mjs"
 import {
   assertRoomPointerClickAction,
@@ -1106,6 +1107,10 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
       explicit: explicitLocal.cancellationLatencyMs,
       takeover: takeoverRemote.cancellationLatencyMs,
     },
+    tuiObservationLatencyMs: {
+      explicit: explicitLocal.tuiObservationLatencyMs,
+      takeover: takeoverRemote.tuiObservationLatencyMs,
+    },
     characterCounts: {
       explicitBeforeCancellation: explicitLocal.countBeforeCancellation,
       explicitAfterCancellation: explicitLocal.countAfterCancellation,
@@ -1163,9 +1168,8 @@ async function exerciseCancellableKeyboardInput({
   const cancelStartedAt = Date.now()
   await cancel(started.action.action_id, { localNoticeBaseline, remoteNoticeBaseline })
   const settlement = await pending
-  const cancellationLatencyMs = Date.now() - cancelStartedAt
+  const tuiObservationLatencyMs = Date.now() - cancelStartedAt
   assertSettlement(settlement, input, label)
-  assert.ok(cancellationLatencyMs < 2_000, `${label} took ${cancellationLatencyMs}ms`)
 
   const terminal = await waitFor(async () => {
     const current = unwrap(
@@ -1183,6 +1187,11 @@ async function exerciseCancellableKeyboardInput({
     kind: "keyboard_text",
     focusedTabId: baseline.focused_tab_id,
   })
+  const cancellationLatencyMs = roomComputerCancellationLatencyMs(terminal, cancelStartedAt)
+  assert.ok(
+    cancellationLatencyMs < 2_000,
+    `${label} physical cancellation took ${cancellationLatencyMs}ms`,
+  )
   const stoppedCount = await cancellationFixtureCharacterCount()
   await sleep(750)
   assert.equal(
@@ -1204,6 +1213,7 @@ async function exerciseCancellableKeyboardInput({
     countBeforeCancellation: started.count,
     countAfterCancellation: stoppedCount,
     cancellationLatencyMs,
+    tuiObservationLatencyMs,
   }
 }
 

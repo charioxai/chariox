@@ -55,6 +55,16 @@ export function assertRoomComputerActionCancelled(
   )
 }
 
+export function roomComputerCancellationLatencyMs(action, requestedAtMs) {
+  assert.ok(Number.isInteger(requestedAtMs), "cancellation request timestamp")
+  assert.ok(Number.isInteger(action?.finished_at_ms), "terminal Action finish timestamp")
+  assert.ok(
+    action.finished_at_ms >= requestedAtMs,
+    "terminal Action finished before its cancellation request",
+  )
+  return action.finished_at_ms - requestedAtMs
+}
+
 export function assertHumanTakeoverCancellationRequired(
   response,
   { actionId, humanActorId },
