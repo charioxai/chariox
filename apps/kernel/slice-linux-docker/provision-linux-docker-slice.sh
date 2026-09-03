@@ -583,6 +583,7 @@ ensure_container() {
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
       --ulimit core=0:0
+      --sysctl "net.ipv4.ip_local_reserved_ports=$SLICE_CODEX_PORT_RANGE,$SLICE_OPENCODE_PORT_RANGE"
       -e "CHARIOX_SLICE_VIEWER_BACKEND=${CHARIOX_SLICE_VIEWER_BACKEND:-novnc}"
       -e "CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
       -e "CHARIOX_SLICE_NOVNC_PORT=$SLICE_NOVNC_PORT"

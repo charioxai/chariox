@@ -17,6 +17,15 @@ test("a configured slice memory limit does not acquire extra swap", async () => 
   assert.match(source, /--memory-swap \"\$SLICE_DOCKER_MEMORY\"/)
 })
 
+test("provider listener ranges are reserved from container ephemeral ports", async () => {
+  const source = await readFile(provisioner, "utf8")
+
+  assert.match(
+    source,
+    /--sysctl \"net\.ipv4\.ip_local_reserved_ports=\$SLICE_CODEX_PORT_RANGE,\$SLICE_OPENCODE_PORT_RANGE\"/,
+  )
+})
+
 test("nested provider namespaces can use a host-installed AppArmor profile", async () => {
   const [source, profile, image, launcher, seccomp, runtimeSource] = await Promise.all([
     readFile(provisioner, "utf8"),
