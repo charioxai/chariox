@@ -12,7 +12,7 @@ RUN npm ci --omit=dev \
   && test "$(node_modules/.bin/pnpm --version)" = "9.15.0" \
   && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.0" \
   && test "$(node_modules/.bin/opencode --version)" = "1.18.23" \
-  && test "$(node_modules/.bin/claude --version)" = "2.1.207 (Claude Code)"
+  && test "$(node_modules/.bin/claude --version)" = "2.1.212 (Claude Code)"
 
 FROM js-toolchain AS js-builder
 ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -54,7 +54,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 
 ARG CHARIOX_CODEX_VERSION=0.144.0
 ARG CHARIOX_OPENCODE_VERSION=1.18.23
-ARG CHARIOX_CLAUDE_VERSION=2.1.207
+ARG CHARIOX_CLAUDE_VERSION=2.1.212
 ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=286
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
