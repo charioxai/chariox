@@ -62,6 +62,12 @@ class ViewerAccess:
     def __enter__(self):
         try:
             with locked_state() as (directory, record):
+                # A recorded dead generation is a crash, not an explicit stop
+                # (which removes the record). Recover only the streamer, on its
+                # original display and port. The lock serializes viewer retries.
+                if record is not None and lifecycle.owned_process(record) is None:
+                    lifecycle.start(directory, port=record["port"], display=record["display"])
+                    record = lifecycle.read_state(directory)
                 if lifecycle.owned_process(record) is None or not lifecycle.healthy(record):
                     raise PrivateStreamError("private streamer is not healthy")
                 self.generation = (record["pid"], record["created"])
