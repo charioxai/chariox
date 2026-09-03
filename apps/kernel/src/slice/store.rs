@@ -357,6 +357,41 @@ impl SliceStore {
         transaction: SliceBackupRestoreTransactionRecord,
         persist: impl FnOnce(&SliceBackupRestoreTransactionRecord) -> Result<(), DaemonError>,
     ) -> Result<SliceBackupRestoreTransactionRecord, DaemonError> {
+        {
+            let state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slice_name = state
+                .records
+                .get(&transaction.source_slice_id)
+                .map(|record| record.name.as_str())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: format!(
+                        "unknown slice `{}` for backup restore `{}`",
+                        transaction.source_slice_id, transaction.id
+                    ),
+                })?;
+            if let Some(existing) =
+                pending_backup_restore_for_slice(&state, &transaction.source_slice_id)
+            {
+                return Err(unresolved_backup_restore_error(
+                    "slice.backup.restore",
+                    slice_name,
+                    &existing.id,
+                ));
+            }
+            if state.pending_backup_restores.contains_key(&transaction.id) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: format!(
+                        "pending slice backup restore `{}` already exists",
+                        transaction.id
+                    ),
+                });
+            }
+        }
         persist(&transaction)?;
         let mut state = self
             .inner
@@ -669,6 +704,18 @@ impl SliceStore {
                 });
             }
         };
+        if let Some(pending) = pending_backup_restore_for_slice(&state, &slice_id) {
+            let record_name = state
+                .records
+                .get(&slice_id)
+                .map(|record| record.name.as_str())
+                .unwrap_or(slice_ref);
+            return Err(unresolved_backup_restore_error(
+                operation,
+                record_name,
+                &pending.id,
+            ));
+        }
         if let Some(existing) = state.active_operations.get(&slice_id) {
             let record_name = state
                 .records
@@ -1218,5 +1265,28 @@ impl SliceStore {
                 operation: "slice.display_endpoint",
                 message: format!("slice `{}` has no display endpoint", record.name),
             })
+    }
+}
+
+fn pending_backup_restore_for_slice<'a>(
+    state: &'a SliceStoreState,
+    slice_id: &str,
+) -> Option<&'a SliceBackupRestoreTransactionRecord> {
+    state
+        .pending_backup_restores
+        .values()
+        .find(|transaction| transaction.source_slice_id == slice_id)
+}
+
+fn unresolved_backup_restore_error(
+    operation: &'static str,
+    slice_name: &str,
+    transaction_id: &str,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "slice `{slice_name}` is quarantined by unresolved backup restore `{transaction_id}`; restart the kernel to recover it before retrying"
+        ),
     }
 }

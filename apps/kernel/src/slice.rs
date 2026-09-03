@@ -245,6 +245,73 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_backup_restore_quarantines_slice_until_durable_resolution() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("restore-quarantine"))
+            .expect("slice should create");
+        let guard = store
+            .try_begin_operation(&slice.id, "slice.backup.restore")
+            .expect("restore should acquire the slice operation guard");
+        let transaction = restore_transaction("restore-quarantine-1", &slice.id);
+        store
+            .begin_backup_restore_transactionally(transaction.clone(), |_| Ok(()))
+            .expect("restore journal should persist");
+        store
+            .resolve_backup_restore_transactionally(
+                &transaction.id,
+                &slice.id,
+                saved_state("failed-restore-state"),
+                46,
+                SliceOperationStatus::Failed,
+                Some("automatic rollback failed".to_string()),
+                |_, _| {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "slice.backup.restore",
+                        message: "injected rollback publication failure".to_string(),
+                    })
+                },
+            )
+            .expect_err("failed rollback publication must retain recovery intent");
+
+        drop(guard);
+        for operation in ["slice.start", "slice.delete", "slice.backup.restore"] {
+            let error = store
+                .try_begin_operation(&slice.id, operation)
+                .expect_err("unresolved restore must quarantine every later operation");
+            assert!(error.to_string().contains(&transaction.id));
+        }
+
+        let mut duplicate_persisted = false;
+        let error = store
+            .begin_backup_restore_transactionally(
+                restore_transaction("restore-quarantine-2", &slice.id),
+                |_| {
+                    duplicate_persisted = true;
+                    Ok(())
+                },
+            )
+            .expect_err("a slice must not acquire a second pending restore");
+        assert!(error.to_string().contains(&transaction.id));
+        assert!(!duplicate_persisted);
+
+        store
+            .resolve_backup_restore_transactionally(
+                &transaction.id,
+                &slice.id,
+                saved_state("rolled-back-state"),
+                47,
+                SliceOperationStatus::Failed,
+                Some("backup restore failed; automatic rollback completed".to_string()),
+                |_, _| Ok(()),
+            )
+            .expect("durable rollback resolution should clear quarantine");
+        store
+            .try_begin_operation(&slice.id, "slice.start")
+            .expect("slice operation should resume after durable resolution");
+    }
+
+    #[test]
     fn slice_store_creates_resolves_and_exposes_display_endpoint() {
         let store = SliceStore::default();
         let slice = store
