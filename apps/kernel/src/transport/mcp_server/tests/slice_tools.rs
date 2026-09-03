@@ -185,7 +185,7 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() 
     let tool = root.join("slice-screen.sh");
     std::fs::write(
         &tool,
-        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  screenshot) printf '\\211PNG\\r\\n\\032\\nfake' > \"$2\" ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
     )
     .expect("fake screen tool should be written");
     let mut permissions = std::fs::metadata(&tool)
@@ -280,6 +280,52 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() 
     );
     assert_eq!(value["result"]["structuredContent"]["display"], ":99");
     assert_eq!(value["result"]["structuredContent"]["screen"], "1280x800");
+
+    let screenshot_path = root.join("provider-screenshot.png");
+    let screenshot_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "slice_screenshot",
+                "arguments": {
+                    "path": screenshot_path,
+                    "return_image_base64": true
+                }
+            }
+        }),
+    )
+    .await
+    .expect("slice screenshot call should succeed");
+    let screenshot_body = screenshot_response
+        .into_body()
+        .collect()
+        .await
+        .expect("slice screenshot body should collect")
+        .to_bytes();
+    let screenshot: Value =
+        serde_json::from_slice(&screenshot_body).expect("slice screenshot body json");
+    assert_eq!(
+        screenshot["result"]["content"][0],
+        serde_json::json!({
+            "type": "image",
+            "data": "iVBORw0KGgpmYWtl",
+            "mimeType": "image/png"
+        })
+    );
+    assert_eq!(screenshot["result"]["content"][1]["type"], "text");
+    assert!(!screenshot["result"]["content"][1]["text"]
+        .as_str()
+        .expect("metadata text")
+        .contains("iVBORw0KGgpmYWtl"));
+    assert_eq!(
+        screenshot["result"]["structuredContent"]["image_base64"],
+        Value::Null,
+        "image bytes should not be duplicated into structured content"
+    );
 
     for (id, name, arguments) in [
         (

@@ -811,6 +811,15 @@ remained at protocol v290 and relay peer v26. The encrypted home-to-worker drill
 through the authenticated runtime MCP route and verifies stable Tab projection,
 physical controller effects, path redaction, cursor resume, and cleanup.
 
+`slice_screenshot` returns inline PNG data as the standard MCP `image` content
+block rather than embedding Base64 in the textual result. The companion text
+and `structuredContent` retain only screenshot metadata, so provider context
+does not receive a second encoded copy. Inline screenshots must have the PNG
+signature and are read through a 16 MiB hard limit. Calls that request only a
+path retain the existing text-only response. This corrects the implementation
+to the already-negotiated MCP `2025-03-26` content model and changes no Chariox
+local-daemon or relay shape, so it requires no Chariox protocol version bump.
+
 Protocol v292 and relay peer v28 add the reverse worker-to-home path for Room
 browser runtime MCP. A provider running on a leased slice still discovers the
 normal `slice_browser_*` tools, but its worker kernel sends those calls through
