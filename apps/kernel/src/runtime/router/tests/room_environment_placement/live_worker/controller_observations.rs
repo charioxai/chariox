@@ -79,10 +79,19 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .unwrap()
         .to_string()
     };
-    assert!(!runtime
-        .runtime_tool_specs_for_auth_token(&outsider)
-        .iter()
-        .any(|spec| spec.name == "slice_browser_status"));
+    let outsider_specs = runtime.runtime_tool_specs_for_auth_token(&outsider);
+    for name in [
+        "slice_browser_status",
+        "slice_screen_status",
+        "slice_screenshot",
+        "slice_ocr",
+        "slice_find_text",
+    ] {
+        assert!(
+            !outsider_specs.iter().any(|spec| spec.name == name),
+            "Room outsider unexpectedly received {name}"
+        );
+    }
     assert!(runtime
         .dispatch_authenticated_runtime_tool_call(
             &outsider,

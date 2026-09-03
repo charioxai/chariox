@@ -72,6 +72,21 @@ impl CommandRouter {
         )
     }
 
+    pub(crate) async fn relay_observe_room_computer(
+        &self,
+        kernel_id: &str,
+        public_key: &str,
+        session_id: &str,
+        slice_id: &str,
+        call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .execute_bound_room_computer_observation(
+                kernel_id, public_key, session_id, slice_id, call,
+            )
+            .await
+    }
+
     pub(crate) fn relay_daemon_id(&self) -> String {
         self.config_projection.snapshot().daemon_id
     }

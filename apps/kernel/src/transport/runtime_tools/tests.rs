@@ -349,6 +349,36 @@ mod workspace_live_sync_tests {
             .expect("keyboard tool spec");
         assert_eq!(keyboard.input_schema["properties"]["repeat"]["minimum"], 1);
         assert_eq!(keyboard.input_schema["properties"]["repeat"]["maximum"], 32);
+        let status = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL)
+            .expect("screen status tool spec");
+        assert!(status.description.contains("canonical Room dimensions"));
+        assert!(!status.description.contains("noVNC"));
+        let ocr = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_OCR_TOOL)
+            .expect("OCR tool spec");
+        assert_eq!(
+            ocr.input_schema["properties"]["artifact_id"]["type"],
+            "string"
+        );
+        let find_text = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_FIND_TEXT_TOOL)
+            .expect("find text tool spec");
+        assert_eq!(
+            find_text.input_schema["properties"]["query"]["minLength"],
+            1
+        );
+        assert_eq!(
+            find_text.input_schema["properties"]["query"]["maxLength"],
+            4096
+        );
+        assert_eq!(
+            find_text.input_schema["properties"]["artifact_id"]["type"],
+            "string"
+        );
         assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
         assert!(specs
             .iter()
