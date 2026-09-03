@@ -27,6 +27,10 @@ export function clipboardInterruptionWindowMs(value) {
   return milliseconds
 }
 
+export function utf8TextFromChunks(chunks) {
+  return Buffer.concat(chunks).toString("utf8")
+}
+
 export function assertRetainedClipboardEvidenceIsRedacted(evidence, clipboardText) {
   if (clipboardText.length === 0) return
   const escapedClipboardText = JSON.stringify(clipboardText).slice(1, -1)

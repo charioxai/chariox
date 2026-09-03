@@ -7,6 +7,7 @@ import {
   clipboardCaseSummary,
   clipboardInterruptionWindowMs,
   redactClipboardValue,
+  utf8TextFromChunks,
 } from "./computer-clipboard-x11-drill.mjs"
 
 test("clipboard drill redaction never expands an empty value", () => {
@@ -58,4 +59,16 @@ test("clipboard drill interruption window is explicit and bounded", () => {
   for (const value of ["", "-1", "1.5", "60001", "not-a-number"]) {
     assert.throws(() => clipboardInterruptionWindowMs(value), /integer between 0 and 60000/)
   }
+})
+
+test("clipboard drill decodes UTF-8 only after process chunks are joined", () => {
+  const bytes = Buffer.from("split Grüße 世界\n", "utf8")
+  const splitInsideUmlaut = bytes.indexOf(Buffer.from("ü")) + 1
+  assert.equal(
+    utf8TextFromChunks([
+      bytes.subarray(0, splitInsideUmlaut),
+      bytes.subarray(splitInsideUmlaut),
+    ]),
+    "split Grüße 世界\n",
+  )
 })

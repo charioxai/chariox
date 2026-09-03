@@ -13,6 +13,7 @@ import {
   clipboardCaseSummary,
   clipboardInterruptionWindowMs,
   redactClipboardValue,
+  utf8TextFromChunks,
 } from "./lib/computer-clipboard-x11-drill.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -102,17 +103,17 @@ function run(
       stdio: ["pipe", "pipe", "pipe"],
     })
     children.add(child)
-    let stdout = ""
-    let stderr = ""
+    const stdoutChunks = []
+    const stderrChunks = []
     const timeout = setTimeout(() => {
       child.kill("SIGTERM")
       setTimeout(() => child.kill("SIGKILL"), 2_000).unref()
     }, timeoutMs)
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString()
+      stdoutChunks.push(chunk)
     })
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString()
+      stderrChunks.push(chunk)
     })
     child.once("error", (error) => {
       clearTimeout(timeout)
@@ -122,6 +123,8 @@ function run(
     child.once("close", (code, signal) => {
       clearTimeout(timeout)
       children.delete(child)
+      const stdout = utf8TextFromChunks(stdoutChunks)
+      const stderr = utf8TextFromChunks(stderrChunks)
       const output = `${stdout}${stderr}`
       if (
         !allowClipboardOutput &&
@@ -254,10 +257,26 @@ async function assertNoClipboardTempFiles() {
     containerName,
     "/bin/bash",
     "-lc",
-    `find ${containerTemp} -maxdepth 1 -type f -name 'chariox-computer-clipboard.*' -print`,
+    `find ${containerTemp} -mindepth 1 -print`,
   ])
-  assert.equal(result.stdout, "", "clipboard helper left plaintext temporary input")
+  assert.equal(result.stdout, "", "clipboard helper left content in its dedicated temp directory")
 }
+
+const exactLogNeedleScript = [
+  "const fs=require('node:fs');",
+  "const path=require('node:path');",
+  "const root=process.argv[1];",
+  "const chunks=[];",
+  "process.stdin.on('data',chunk=>chunks.push(chunk));",
+  "process.stdin.on('end',()=>{",
+  "const needle=Buffer.concat(chunks);",
+  "for(const name of fs.readdirSync(root)){",
+  "if(!name.endsWith('.log'))continue;",
+  "const target=path.join(root,name);",
+  "if(fs.statSync(target).isFile()&&fs.readFileSync(target).includes(needle))process.stdout.write(target+'\\n');",
+  "}",
+  "});",
+].join("")
 
 async function collectDiagnostics(clipboardValues) {
   if (!containerCreated) return "container was not created"
@@ -532,9 +551,10 @@ async function main() {
           "-u",
           "slice",
           containerName,
-          "/bin/bash",
-          "-lc",
-          `needle=$(cat); find ${containerRoot} -maxdepth 1 -type f -name '*.log' -exec grep -a -l -F -- "$needle" {} + || true`,
+          "node",
+          "-e",
+          exactLogNeedleScript,
+          containerRoot,
         ],
         { input: clipboardValue, clipboardValues: [clipboardValue] },
       )
