@@ -5,6 +5,110 @@ use crate::account_profile::{
     ProviderAccountUsageSnapshot,
 };
 
+#[tokio::test]
+async fn automatic_substitution_settles_failure_before_relaunching_queued_work() {
+    let (runtime, session_id, agent_id, profile_id) =
+        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            "opencode",
+            Some("opencode-go/deepseek-v4-pro".to_string()),
+            Some("high".to_string()),
+            Some(profile_id.clone()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "opencode",
+        "opencode",
+        &profile_id,
+        "opencode-go/deepseek-v4-pro",
+    )
+    .with_agent_id(&agent_id);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "failed-go-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-go".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-go-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    let queued_before = runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(run.id().to_string()))?;
+            let attachment = crate::app::KernelSessionService::new(app).attach(
+                crate::attachment::AttachRequest::new(
+                    &session_id,
+                    "substitute-test",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ),
+            )?;
+            for prompt_id in ["failed-prompt", "queued-prompt"] {
+                let prompt = crate::session::PromptQueueItem::new(
+                    prompt_id,
+                    attachment.id(),
+                    &agent_id,
+                    "test prompt",
+                    crate::session::PromptStatus::Queued,
+                );
+                app.prompt_owner_submit_prepared_prompt(&session_id, prompt, false)?;
+            }
+            Ok::<_, DaemonError>(
+                app.prompt_owner_peek_next_queued_prompt(&session_id, &agent_id)?
+                    .expect("second prompt has a kernel-assigned queue identity"),
+            )
+        })
+        .await
+        .unwrap();
+    let message = crate::provider::classify_provider_substitutable_failure_text(
+        "opencode",
+        "insufficient balance",
+    )
+    .unwrap();
+    runtime
+        .fail_owned_provider_prompt(&session_id, run.id(), &message, true)
+        .await
+        .expect("pending work must not relaunch the exhausted account before failover");
+    let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert_eq!(agent.active_substitute_index(), Some(0));
+    assert_eq!(agent.model(), Some("opencode/deepseek-v4-pro"));
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let queued = runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&session, &agent_id)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(queued).unwrap(),
+        serde_json::to_value(queued_before).unwrap(),
+        "existing work remains queued without replaying failed work"
+    );
+    let (active, pending) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(active.is_none());
+    assert_eq!(pending.len(), 1);
+}
+
 async fn runtime_with_substitutes(
     models: &[&str],
     reset_in_future: bool,

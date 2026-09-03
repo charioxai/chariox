@@ -72,7 +72,7 @@ impl KernelRuntimeState {
                     .list_session_attachment_ids(session_id),
                 format!(
                     "Activating substitute {} for agent `{agent_id}` after {reason}.",
-                    substitute_index
+                    substitute_index + 1
                 ),
             );
             let _ = owned.session_snapshot(session_id)?;
