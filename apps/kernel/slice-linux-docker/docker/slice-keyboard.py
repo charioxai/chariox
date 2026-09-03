@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Physical text input using the pinned Selkies XTEST keyboard implementation."""
+
+import logging
+import sys
+import time
+
+logging.disable(logging.CRITICAL)
+
+from selkies import Xlib
+from selkies.Xlib import display
+from selkies.Xlib.ext import xtest
+from selkies.input_handler import (
+    _XTestKeyboard,
+    character_to_layout_keysym,
+    universal_text_keysym,
+)
+
+
+def type_text(text):
+    connection = display.Display()
+    keyboard = _XTestKeyboard(connection)
+    lifted = []
+    try:
+        keysyms = []
+        for character in text:
+            keysym = character_to_layout_keysym(character)
+            if not keyboard.layout_carries(keysym):
+                keysym = universal_text_keysym(character)
+            if keysym is None:
+                raise ValueError("unsupported text character")
+            keysyms.append(keysym)
+
+        # Reuse Selkies' persistent overlay, including its bounded recycling
+        # when a string contains more distinct symbols than the spare pool.
+        keyboard.prebind(keysyms)
+        down = connection.query_keymap()
+        modifiers = {code for row in connection.get_modifier_mapping() for code in row if code}
+        lifted = [code for code in modifiers if down[code // 8] & (1 << (code % 8))]
+        for code in lifted:
+            xtest.fake_input(connection, Xlib.X.KeyRelease, code)
+        connection.sync()
+
+        for keysym in keysyms:
+            keyboard.press(keysym)
+            keyboard.release(keysym)
+            # Pace on this process, not in the X server's request queue. Killing
+            # the kernel-owned process group must stop future physical events.
+            connection.sync()
+            time.sleep(0.04)
+    finally:
+        keyboard.release_group_lock()
+        for code in lifted:
+            xtest.fake_input(connection, Xlib.X.KeyPress, code)
+        connection.sync()
+        connection.close()
+
+
+def reset_input():
+    connection = display.Display()
+    try:
+        down = connection.query_keymap()
+        for code in range(8, 256):
+            if down[code // 8] & (1 << (code % 8)):
+                xtest.fake_input(connection, Xlib.X.KeyRelease, code)
+        for button in range(1, 6):
+            xtest.fake_input(connection, Xlib.X.ButtonRelease, button)
+        connection.sync()
+    finally:
+        connection.close()
+
+
+if __name__ == "__main__":
+    try:
+        if sys.argv[1:] == ["reset"]:
+            reset_input()
+        elif not sys.argv[1:]:
+            type_text(sys.stdin.buffer.read().decode("utf-8", errors="strict"))
+        else:
+            raise ValueError("unsupported keyboard operation")
+    except Exception:
+        # Neither typed text nor upstream exceptions belong in helper output.
+        print("physical keyboard text input failed", file=sys.stderr)
+        sys.exit(1)

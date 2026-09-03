@@ -491,8 +491,8 @@ type_text() {
 
 computer_type_stdin() {
   require_screen_available
-  # A 20 ms XTest cadence can still drop non-ASCII key events under a loaded VM.
-  run_xdotool_utf8 type --clearmodifiers --delay 40 --file -
+  timeout --foreground 10s /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py"
 }
 
 computer_key_stdin() {
@@ -513,14 +513,8 @@ computer_key_stdin() {
 
 computer_input_reset() {
   require_screen_available
-  local key
-  local button
-  for key in Shift_L Shift_R Control_L Control_R Alt_L Alt_R Super_L Super_R; do
-    run_xdotool keyup "$key" >/dev/null 2>&1 || true
-  done
-  for button in 1 2 3; do
-    run_xdotool mouseup "$button" >/dev/null 2>&1 || true
-  done
+  timeout --foreground 10s /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py" reset
 }
 
 key() {
