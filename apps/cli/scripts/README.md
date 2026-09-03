@@ -211,6 +211,30 @@ state containing the canary is always deleted. Non-secret reports and test logs
 are written under
 `~/.codex/evidence/browser-computer-use/computer-secret-input/`.
 
+## Computer clipboard X11 drill
+
+Use this after changing the Computer clipboard helper or its container runtime:
+
+```bash
+pnpm --filter @chariox/cli run computer-clipboard:x11-drill
+```
+
+The drill reuses the existing slice image under explicit CPU, memory, process,
+and network limits. It runs the production helper against real Xvfb, Chromium,
+and `xclip`; checks exact empty, Unicode, whitespace, trailing-newline,
+repeat-read, and 256 KiB boundary behavior; forces an `xclip` write failure;
+scans helper output and slice logs; and verifies removal of the container and
+all plaintext temporary files. Retained evidence contains only digests, sizes,
+resource samples, and cleanup results under
+`~/.codex/evidence/browser-computer-use/computer-clipboard-x11/`.
+
+For an interruption-cleanup drill, set
+`CHARIOX_COMPUTER_CLIPBOARD_INTERRUPT_WINDOW_MS=30000`, start the command, and
+send `SIGINT` after the container starts. The command must fail with an
+interruption diagnostic, and its retained report must still record
+`containerRemoved: true` and `tempRootRemoved: true`. The window is test-only
+and bounded to 60 seconds.
+
 ## Hosted Cloud Relay Drill
 
 Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:
