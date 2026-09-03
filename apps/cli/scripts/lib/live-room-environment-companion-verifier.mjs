@@ -31,6 +31,9 @@ export async function runRoomEnvironmentCompanion(input) {
   if (input.ready.keyboardReplacementText) {
     assert.ok(companion.keyboard?.replacement, "Web companion omitted shortcut/IME evidence")
   }
+  if (input.ready.pointerGestures) {
+    assert.ok(companion.gestures, "Web companion omitted drag/scroll evidence")
+  }
   await input.waitForPhysicalEffect(companion.physicalEffect)
   if (companion.keyboard) {
     assert.equal(companion.keyboard.physicalEffect, "WEB_KEYBOARD_TEXT_OK")
@@ -43,6 +46,10 @@ export async function runRoomEnvironmentCompanion(input) {
     }
   }
 
+  if (companion.gestures) {
+    await input.waitForPhysicalEffect("WEB_DRAG_SELECTION_OK WINDOW_GEOMETRY_STABLE")
+    await input.waitForPhysicalEffect("WEB_SCROLL_BOTH_AXES_OK")
+  }
   const history = unwrap(
     await input.client.send(input.requests.listRoomEnvironmentActionHistoryRequest(
       input.ready.sessionId,
@@ -89,6 +96,24 @@ export async function runRoomEnvironmentCompanion(input) {
     }
   }
 
+  if (companion.gestures) {
+    for (const [id, kind] of [[companion.gestures.dragActionId, "pointer_drag"],
+      [companion.gestures.scrollActionId, "pointer_scroll"]]) {
+      assert.equal(typeof id, "string")
+      assert.ok(id.length > 0)
+      const action = history.find((item) => item.action_id === id)
+      assert.ok(action, "Web gesture was absent from kernel history")
+      assert.equal(action.kind, kind)
+      assert.equal(action.state, "completed")
+      assert.equal(action.actor_id, companion.actorId)
+      assert.ok(action.sequence > actions.at(-1).sequence, "gestures must follow typing in order")
+      actions.push(action)
+    }
+    const afterTyping = actions.at(-3).sequence
+    assert.deepEqual(history.filter((action) => action.actor_id === companion.actorId && action.sequence > afterTyping)
+      .sort((a, b) => a.sequence - b.sequence).map((action) => action.action_id),
+    [companion.gestures.dragActionId, companion.gestures.scrollActionId], "Web gestures emitted extra actions")
+  }
   await input.activityController.synchronize()
   for (const action of actions) {
     await Promise.all([

@@ -56,6 +56,7 @@ const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
   ? `web-${runId}-Grüße 世界`
   : null
 const webKeyboardReplacementText = webKeyboardText ? `ime-${runId}-日本語` : null
+const webPointerGestures = process.env.CHARIOX_ROOM_DRILL_WEB_GESTURES === "1"
 const evidenceRoot = path.join(
   os.homedir(),
   ".codex",
@@ -491,7 +492,7 @@ async function run() {
       sessionId,
       sliceId: slice.id,
       environmentId: released.environment_id,
-      coverage: `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""}${companionResult.keyboard?.replacement ? ", select-all and native IME replacement" : ""} with local and remote TUI observation`,
+      coverage: `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""}${companionResult.keyboard?.replacement ? ", select-all and native IME replacement" : ""}${companionResult.gestures ? ", physical text-selection drag and two-axis scroll" : ""} with local and remote TUI observation`,
       skipped: ["computer secret", "pointer matrix", "agent keyboard matrix", "cancellation", "clipboard",
         companionResult.keyboard?.replacement ? "remaining Web shortcuts and keyboard layouts" : "Web keyboard shortcuts and IME"],
       companion: companionResult,
@@ -618,6 +619,7 @@ async function run() {
         actorId: companionResult.actorId,
         screenshot: companionResult.screenshot,
         ...(companionResult.keyboard ? { keyboard: companionResult.keyboard } : {}),
+        ...(companionResult.gestures ? { gestures: companionResult.gestures } : {}),
       },
     } : {}),
   }
@@ -1960,10 +1962,12 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       // Give the Web companion a fresh physical page, not the last drill's form.
       await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
       await waitForBrowserText("POINTER_CLICK_READY", 30_000, "Web companion fixture did not reset")
+      resources.push(await resourceSnapshot("before-web-companion"))
     },
     ready: {
       ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
       ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
+      ...(webPointerGestures ? { pointerGestures: true } : {}),
       pointerClickExpectedCount: 1,
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
@@ -2418,11 +2422,28 @@ async function startFixture() {
     }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
     response.end(`<!doctype html><html><head><title>Room pointer drill</title><style>
-      html,body{width:100%;height:100%;margin:0}body{display:grid;place-items:center;background:#ddd;font:32px sans-serif}
+      html,body{width:100%;height:100%;margin:0}body{display:grid;place-items:center;background:#ddd;font:${webPointerGestures ? 20 : 32}px sans-serif}
       #web-keyboard{position:fixed;inset:0;width:100%;height:100%;box-sizing:border-box;border:0;background:transparent;color:transparent;caret-color:transparent;outline:none}
+      #web-selection{position:fixed;left:160px;top:40px;width:800px;height:100px;box-sizing:border-box;padding:20px;font:32px monospace;z-index:2}
+      #web-scroller{position:fixed;left:160px;top:420px;width:960px;height:160px;overflow:scroll;z-index:2;border:3px solid #333}
+      #web-scroll-content{width:2200px;height:640px;background:linear-gradient(135deg,#f7b267,#70c1b3)}
       main{pointer-events:none;z-index:1}
-    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}</main><script>
-      let clicks=0;document.addEventListener("click",()=>{clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}${webPointerGestures ? '<input data-web-gesture id="web-selection" readonly value="Select this physical text without moving the Room browser window"><div data-web-gesture id="web-scroller"><div id="web-scroll-content"></div></div>' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}${webPointerGestures ? '<div id="web-drag-status">WEB_DRAG_WAITING</div><div id="web-scroll-status">WEB_SCROLL_WAITING</div>' : ''}</main><script>
+      let clicks=0;document.addEventListener("click",(event)=>{if(event.target.closest("[data-web-gesture]"))return;clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+      ${webPointerGestures ? `
+      const selection=document.querySelector("#web-selection");
+      let geometry=null;
+      const windowGeometry=()=>[window.screenX,window.screenY,window.outerWidth,window.outerHeight].join(":");
+      selection.addEventListener("mousedown",()=>{geometry=windowGeometry()});
+      selection.addEventListener("select",()=>{
+        if(Math.abs(selection.selectionEnd-selection.selectionStart)>=8){
+          document.querySelector("#web-drag-status").textContent="WEB_DRAG_SELECTION_OK "+(geometry===windowGeometry()?"WINDOW_GEOMETRY_STABLE":"WINDOW_GEOMETRY_CHANGED");
+        }
+      });
+      const scroller=document.querySelector("#web-scroller");
+      scroller.addEventListener("scroll",()=>{
+        if(scroller.scrollLeft>0&&scroller.scrollTop>0)document.querySelector("#web-scroll-status").textContent="WEB_SCROLL_BOTH_AXES_OK";
+      });` : ''}
       ${webKeyboardText ? `
       document.querySelector("#web-keyboard").addEventListener("input",(event)=>{
         let hash=14695981039346656037n;

@@ -22,6 +22,8 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
   const keyboardAction = { ...action, action_id: "action-keyboard", kind: "keyboard_text", sequence: 8 }
   const shortcutAction = { ...action, action_id: "action-shortcut", kind: "keyboard_key", sequence: 9 }
   const replacementAction = { ...keyboardAction, action_id: "action-ime", sequence: 10 }
+  const dragAction = { ...action, action_id: "action-drag", kind: "pointer_drag", sequence: 11 }
+  const scrollAction = { ...action, action_id: "action-scroll", kind: "pointer_scroll", sequence: 12 }
   const noticed = { local: [], remote: [] }
   const physical = []
   const resultWriter = (async () => {
@@ -42,6 +44,7 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
       environmentId: "environment-1",
       actionId: action.action_id,
       actorId: action.actor_id,
+      gestures: { dragActionId: dragAction.action_id, scrollActionId: scrollAction.action_id },
       keyboard: {
         actionId: keyboardAction.action_id, physicalEffect: "WEB_KEYBOARD_TEXT_OK",
         replacement: {
@@ -69,9 +72,10 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
         environmentId: "environment-1",
         keyboardText: "fixture typing",
         keyboardReplacementText: "fixture replacement",
+        pointerGestures: true,
       },
       client: {
-        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction, shortcutAction, replacementAction] } } }),
+        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction, shortcutAction, replacementAction, dragAction, scrollAction] } } }),
       },
       observerClient: {
         send: async () => ({ RoomEnvironmentState: { environment: { input_ownership: [] } } }),
@@ -96,8 +100,9 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
-    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK"])
-    assert.deepEqual(noticed, { local: [7, 8, 9, 10], remote: [7, 8, 9, 10] })
+    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
+      "WEB_DRAG_SELECTION_OK WINDOW_GEOMETRY_STABLE", "WEB_SCROLL_BOTH_AXES_OK"])
+    assert.deepEqual(noticed, { local: [7, 8, 9, 10, 11, 12], remote: [7, 8, 9, 10, 11, 12] })
     assert.equal(preparedAtReady, true, "physical fixture must be reset before Web receives its handoff")
     assert.equal(verified.client, "production-local-web-view")
     assert.equal(verified.screenshot, path.join(root, "web-room-tui-shared.png"))
