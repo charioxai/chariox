@@ -30,7 +30,6 @@ export const cliRoot = path.resolve(scriptDir, "..")
 export const repoRoot = path.resolve(cliRoot, "..", "..")
 export const kernelBinary = resolveBinaryPath("kernel", "chariox-kernel")
 export const relayBinary = resolveBinaryPath("relay", "chariox-relay")
-export const artifactsRoot = path.join(repoRoot, ".artifacts", "provider-thread-transfer")
 export const defaultLocalDockerSliceImage = process.env.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"
 
 export const DEFAULT_PROVIDERS = ["opencode", "codex"]
@@ -65,6 +64,7 @@ export function parseArgs(argv) {
     skipRecallPrompt: false,
     workerState: "shared",
     sliceBuildImage: DEFAULT_SLICE_BUILD_IMAGE_POLICY,
+    allowProviderSandboxCompatibility: false,
     keepSliceOnFailure: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -92,6 +92,8 @@ export function parseArgs(argv) {
       options.workerState = argv[++index]
     } else if (arg === "--slice-build-image") {
       options.sliceBuildImage = argv[++index]
+    } else if (arg === "--allow-provider-sandbox-compatibility") {
+      options.allowProviderSandboxCompatibility = true
     } else if (arg === "--keep-slice-on-failure") {
       options.keepSliceOnFailure = true
     } else if (arg === "--cleanup-on-success") {
@@ -141,9 +143,59 @@ export function printHelp() {
     "  --skip-recall-prompt",
     "  --worker-state shared|isolated",
     `  --slice-build-image always|auto|never (default ${DEFAULT_SLICE_BUILD_IMAGE_POLICY})`,
+    "  --allow-provider-sandbox-compatibility",
     "  --keep-slice-on-failure",
-    "  --cleanup-on-success",
+    "  --cleanup-on-success (accepted for compatibility; disposable runtime is always cleaned)",
   ].join("\n"))
+}
+
+export function providerThreadSliceOptLevel(env = process.env) {
+  const level = env.CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL ?? "1"
+  if (!["0", "1", "2", "3", "s", "z"].includes(level)) {
+    throw new Error(
+      "CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL must be a Cargo optimization level: 0, 1, 2, 3, s, or z",
+    )
+  }
+  return level
+}
+
+export function providerThreadSliceBuildProfile(env = process.env) {
+  const profile = env.CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE ?? "dev"
+  if (!["dev", "release"].includes(profile)) {
+    throw new Error(
+      "CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE must be a supported Cargo build profile: dev or release",
+    )
+  }
+  return profile
+}
+
+export function providerThreadSliceBuildEnv(env = process.env) {
+  return {
+    CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: providerThreadSliceBuildProfile(env),
+    CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: providerThreadSliceOptLevel(env),
+  }
+}
+
+export function providerThreadSliceConfigLines({
+  sliceRoot,
+  image,
+  buildImage,
+  allowProviderSandboxCompatibility = false,
+}) {
+  const lines = [
+    "[slices]",
+    `root = ${JSON.stringify(sliceRoot)}`,
+    "",
+    "[slices.linux]",
+    `docker_image = ${JSON.stringify(image)}`,
+    `build_image = ${JSON.stringify(buildImage)}`,
+    "memory_mb = 2048",
+    `cpus = ${JSON.stringify("1.0")}`,
+  ]
+  if (allowProviderSandboxCompatibility) {
+    lines.push("allow_provider_sandbox_compatibility = true")
+  }
+  return lines
 }
 
 export function variant(response, name) {
@@ -547,6 +599,7 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
     XDG_DATA_HOME: xdgDataHome,
     XDG_STATE_HOME: xdgStateHome,
     XDG_CACHE_HOME: xdgCacheHome,
+    ...providerThreadSliceBuildEnv(),
     CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
     CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
     ...(claudeCredentialsPath ? {
@@ -707,10 +760,12 @@ export function workerResumeDaemonEnv({
   codexPort,
   providerEnv = realProviderEnv(),
 }) {
+  const xdgConfigHome = path.join(root, `${daemonId}-xdg-config`)
   return {
     ...process.env,
     ...providerEnv,
-    XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
+    CHARIOX_HOME: path.join(xdgConfigHome, "chariox"),
+    XDG_CONFIG_HOME: xdgConfigHome,
     XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(mcpPort),
@@ -776,27 +831,6 @@ async function readLogTail(filePath) {
   } catch {
     return ""
   }
-}
-
-export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeoutMs) {
-  if (policy !== "always") return null
-  const stdoutPath = path.join(root, "slice-image-build.stdout.log")
-  const stderrPath = path.join(root, "slice-image-build.stderr.log")
-  await runLoggedCommand("docker", [
-    "build",
-    "-f",
-    path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
-    "-t",
-    defaultLocalDockerSliceImage,
-    repoRoot,
-  ], {
-    cwd: repoRoot,
-    env: process.env,
-    stdoutPath,
-    stderrPath,
-    timeoutMs,
-  })
-  return { image: defaultLocalDockerSliceImage, stdoutPath, stderrPath }
 }
 
 export async function waitForProviderRun({ client, providerRunId, timeoutMs, pollMs, requireThreadId = true }) {
@@ -910,11 +944,6 @@ export async function waitForPromptIdle({ client, sessionId, attachmentId, agent
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for agent ${agentId} to become idle; last=${JSON.stringify(last)}`)
-}
-
-export function providerAuthName(provider) {
-  if (provider === "claude-p" || provider === "claude-headless") return "claude"
-  return provider
 }
 
 export async function waitForSliceWorkerProvider({ client, sliceRef, provider, timeoutMs, pollMs }) {

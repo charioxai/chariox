@@ -64,6 +64,7 @@ docker_image = "chariox-slice-linux-custom:local"
 	build_image = "never"
 	extension_dockerfile = "~/.chariox/slices/extensions/Dockerfile"
 	allow_unconfined_seccomp = true
+	allow_provider_sandbox_compatibility = true
 	memory_mb = 4096
 cpus = "2.5"
 idle_timeout_minutes = 45
@@ -84,6 +85,10 @@ screen_height = 900
         Some(SliceImageBuildPolicy::Never)
     );
     assert_eq!(config.slices.linux.allow_unconfined_seccomp, Some(true));
+    assert_eq!(
+        config.slices.linux.allow_provider_sandbox_compatibility,
+        Some(true)
+    );
     assert_eq!(config.slices.linux.memory_mb, Some(4096));
     assert_eq!(config.slices.linux.cpus.as_deref(), Some("2.5"));
     assert_eq!(config.slices.linux.screen_width, Some(1440));
@@ -101,6 +106,44 @@ fn user_config_defaults_to_versioned_slice_image() {
     assert_ne!(
         DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
         "chariox-slice-linux:local"
+    );
+}
+
+#[test]
+fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
+    let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+    config
+        .set_user_config_value("slices.linux.allow_provider_sandbox_compatibility", "true")
+        .expect("provider sandbox compatibility should be settable");
+    assert_eq!(
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(true)
+    );
+
+    let entry = DaemonConfig::user_config_schema()
+        .into_iter()
+        .find(|entry| entry.path == "slices.linux.allow_provider_sandbox_compatibility")
+        .expect("provider sandbox compatibility schema entry should exist");
+    assert!(entry.settable);
+    assert!(entry.unsettable);
+    assert!(entry.description.contains("seccomp, AppArmor"));
+    assert!(entry.description.contains("masked system paths"));
+
+    config
+        .unset_user_config_value("slices.linux.allow_provider_sandbox_compatibility")
+        .expect("provider sandbox compatibility should be unsettable");
+    assert_eq!(
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        None
     );
 }
 

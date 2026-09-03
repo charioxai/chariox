@@ -42,6 +42,8 @@ pub struct UserLinuxSliceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_unconfined_seccomp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_provider_sandbox_compatibility: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<String>,
@@ -60,6 +62,7 @@ impl Default for UserLinuxSliceConfig {
             build_image: Some(SliceImageBuildPolicy::Auto),
             extension_dockerfile: None,
             allow_unconfined_seccomp: Some(false),
+            allow_provider_sandbox_compatibility: Some(false),
             memory_mb: None,
             cpus: None,
             idle_timeout_minutes: Some(30),

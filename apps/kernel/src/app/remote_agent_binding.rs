@@ -382,6 +382,7 @@ impl DaemonApp {
             // The worker lease remains scoped to the runtime owner identity, so
             // stamp that identity on the encrypted replica envelope.
             account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
+            let expected_account = account_materialization.profile.clone();
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
                 &relay_config,
                 target.clone(),
@@ -395,11 +396,11 @@ impl DaemonApp {
                     materialization: account_materialization,
                 },
             )) {
-                Ok(RelayPeerResponse::RemoteProviderAccountEnsured {
-                    provider,
-                    account_profile,
-                }) if provider == agent.provider()
-                    && account_profile == agent.provider_account_profile() => {
+                Ok(response)
+                    if remote_provider_account_response_matches(
+                        &response,
+                        &expected_account,
+                    ) => {
                     if let Err(error) =
                         self.provider_account_profiles.update_materialization_status(
                             &account_owner_user_id,
@@ -941,6 +942,19 @@ impl DaemonApp {
     }
 }
 
+fn remote_provider_account_response_matches(
+    response: &RelayPeerResponse,
+    expected: &crate::account_profile::ProviderAccountReplicaMetadata,
+) -> bool {
+    matches!(
+        response,
+        RelayPeerResponse::RemoteProviderAccountEnsured {
+            provider,
+            account_profile,
+        } if provider == &expected.provider && account_profile == &expected.profile_id
+    )
+}
+
 fn app_mcp_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     #[cfg(not(test))]
@@ -998,6 +1012,33 @@ mod tests {
     };
     use crate::session::CreateSessionRequest;
     use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+
+    #[test]
+    fn remote_account_receipt_matches_the_materialized_profile_id_not_its_alias() {
+        let expected = crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "user-home".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "codex-1-vfx4dshw".to_string(),
+            label: "Codex".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+            is_default: true,
+        };
+
+        assert!(super::remote_provider_account_response_matches(
+            &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                provider: "codex".to_string(),
+                account_profile: "codex-1-vfx4dshw".to_string(),
+            },
+            &expected,
+        ));
+        assert!(!super::remote_provider_account_response_matches(
+            &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                provider: "codex".to_string(),
+                account_profile: "default".to_string(),
+            },
+            &expected,
+        ));
+    }
 
     #[test]
     fn restored_legacy_binding_is_rejected_until_rebound() {

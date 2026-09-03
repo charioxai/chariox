@@ -37,6 +37,8 @@ SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
+SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
@@ -45,6 +47,8 @@ SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
+SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY="${CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY:-0}"
+SLICE_APPARMOR_PROFILE="${CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
@@ -96,6 +100,17 @@ fail() {
 
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
   fail "slice account owner/profile contains an unsafe path component"
+fi
+case "$SLICE_RUNTIME_BUILD_PROFILE" in
+  dev|release) ;;
+  *) fail "CHARIOX_SLICE_RUNTIME_BUILD_PROFILE must be dev or release" ;;
+esac
+case "$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" in
+  0|1|2|3|s|z) ;;
+  *) fail "CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL is invalid" ;;
+esac
+if [[ ! "$SLICE_APPARMOR_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]]; then
+  fail "CHARIOX_SLICE_APPARMOR_PROFILE is invalid"
 fi
 
 run_with_timeout() {
@@ -370,6 +385,8 @@ build_standard_runtime_image() {
   log "building $image"
   docker_build \
     --build-arg "TARGETARCH=$target_arch" \
+    --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
+    --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
@@ -473,6 +490,25 @@ refresh_saved_state_runtime() {
   log "refreshed saved slice worker runtime to $SLICE_RUNTIME_SOURCE_REVISION"
 }
 
+probe_provider_sandbox_compatibility() {
+  [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]] || return 0
+  log "probing nested provider sandbox compatibility"
+  if ! run_with_timeout 30 docker exec -u slice "$SLICE_NAME" \
+    setpriv --no-new-privs \
+    bwrap \
+      --die-with-parent \
+      --new-session \
+      --unshare-user \
+      --unshare-pid \
+      --ro-bind / / \
+      --proc /proc \
+      --dev /dev \
+      -- /bin/true; then
+    fail "provider sandbox compatibility probe failed; the selected Docker security boundary cannot create the Bubblewrap namespace required by provider sandboxes. On restricted Ubuntu hosts, load chariox-slice-provider.apparmor and select it with CHARIOX_SLICE_APPARMOR_PROFILE"
+  fi
+  log "provider sandbox compatibility probe passed"
+}
+
 ensure_container() {
   local created_container=0
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
@@ -496,6 +532,10 @@ ensure_container() {
     0|1) ;;
     *) fail "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
   esac
+  case "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" in
+    0|1) ;;
+    *) fail "CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY must be 0 or 1" ;;
+  esac
 
   if container_exists; then
     log "container $SLICE_NAME already exists"
@@ -518,7 +558,18 @@ ensure_container() {
       -v "$SLICE_WORKSPACE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
-    if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
+    if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
+      # The worker kernel launches providers through an inner bubblewrap user,
+      # PID, and mount namespace. Docker's default seccomp, AppArmor, and
+      # system-path masks block that setup before bubblewrap can install the
+      # narrower provider boundary. Managed hosts run this container in the
+      # dedicated rootless daemon; ordinary local slices must opt in.
+      docker_create_args+=(
+        --security-opt seccomp=unconfined
+        --security-opt apparmor="$SLICE_APPARMOR_PROFILE"
+        --security-opt systempaths=unconfined
+      )
+    elif [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
       docker_create_args+=(--security-opt seccomp=unconfined)
     fi
     if [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
@@ -575,6 +626,7 @@ ensure_container() {
   configure_slice_state_directory
   refresh_slice_support_files
   refresh_saved_state_runtime
+  probe_provider_sandbox_compatibility
 }
 
 ensure_auth_target_container() {

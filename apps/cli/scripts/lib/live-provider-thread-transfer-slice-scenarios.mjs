@@ -11,8 +11,9 @@ import {
   getProviderRunRequest,
   getSessionStateRequest,
   getSliceRequest,
-  importSliceProviderAuthRequest,
+  getSliceLogsRequest,
   launchProviderRunRequest,
+  listSliceAuditRequest,
   moveAgentToLocalRequest,
   moveAgentToRemoteRequest,
   resetSliceStateRequest,
@@ -28,7 +29,6 @@ import {
 import {
   collectProviderProcesses,
   logStep,
-  providerAuthName,
   providerEffort,
   providerModel,
   providerRunSnapshot,
@@ -121,16 +121,10 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     })
     result.evidence.slice_ready_before_restart = sliceRecordSnapshot(readySlice)
 
-    logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
-    const authImported = variant(
-      await withTimeout(
-        client.send(importSliceProviderAuthRequest(sliceId, providerAuthName(provider))),
-        `import slice provider auth for ${provider}`,
-        Math.min(options.timeoutMs, 120_000),
-      ),
-      "SliceProviderAuthImported",
-    ).slice
-    result.evidence.slice_auth_imported = sliceRecordSnapshot(authImported)
+    result.evidence.provider_account_transfer = {
+      path: "kernel_execution_lease_materialization",
+      account_profile: "default",
+    }
 
     logStep(result, provider, "create-session", { workspace })
     const session = variant(
@@ -345,6 +339,12 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
   } catch (error) {
     result.errors.push(error.stack ?? error.message ?? String(error))
     result.evidence.kernel_events = kernelEvents.slice(-50)
+    if (sliceId) {
+      result.evidence.slice_failure_diagnostics = await collectSliceFailureDiagnostics(
+        client,
+        sliceId,
+      )
+    }
     result.evidence.provider_processes = await collectProviderProcesses(client, provider).catch((processError) => ({
       error: processError.message ?? String(processError),
     }))
@@ -357,6 +357,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
       await cleanupSliceRuntime(client, sliceId, result.evidence, { resetSavedState: true })
+      failResultOnSliceCleanupErrors(result, { resetSavedState: true })
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
@@ -541,16 +542,10 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       providerEnv: options.providerStateSourceEnv ?? realProviderEnv(),
     })
 
-    logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
-    const authImported = variant(
-      await withTimeout(
-        client.send(importSliceProviderAuthRequest(sliceId, providerAuthName(provider))),
-        `import slice provider auth for ${provider}`,
-        Math.min(options.timeoutMs, 120_000),
-      ),
-      "SliceProviderAuthImported",
-    ).slice
-    result.evidence.slice_auth_imported = sliceRecordSnapshot(authImported)
+    result.evidence.provider_account_transfer = {
+      path: "kernel_execution_lease_materialization",
+      account_profile: "default",
+    }
 
     const machineRef = readySlice.worker_machine_id ?? `slice:${sliceId}`
     logStep(result, provider, "move-same-agent-to-slice", { agentId: agent.id, machineRef })
@@ -850,6 +845,12 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
   } catch (error) {
     result.errors.push(error.stack ?? error.message ?? String(error))
     result.evidence.kernel_events = kernelEvents.slice(-80)
+    if (sliceId) {
+      result.evidence.slice_failure_diagnostics = await collectSliceFailureDiagnostics(
+        client,
+        sliceId,
+      )
+    }
     result.evidence.provider_processes = await collectProviderProcesses(client, provider).catch((processError) => ({
       error: processError.message ?? String(processError),
     }))
@@ -862,6 +863,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
       await cleanupSliceRuntime(client, sliceId, result.evidence)
+      failResultOnSliceCleanupErrors(result)
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
@@ -883,4 +885,41 @@ export async function cleanupSliceRuntime(
   await client.send(deleteSliceRequest(sliceId)).catch((error) => {
     evidence.slice_cleanup_error = error.message ?? String(error)
   })
+}
+
+export function failResultOnSliceCleanupErrors(result, { resetSavedState = false } = {}) {
+  const errors = [
+    ...(resetSavedState ? [result.evidence.slice_state_cleanup_error] : []),
+    result.evidence.slice_cleanup_error,
+  ].filter(Boolean)
+  if (errors.length === 0) return
+  result.status = "failed"
+  result.errors.push(`slice cleanup failed: ${errors.join(": ")}`)
+}
+
+async function collectSliceFailureDiagnostics(client, sliceId) {
+  const diagnostics = {}
+  try {
+    const logs = variant(
+      await client.send(getSliceLogsRequest(sliceId, 200)),
+      "SliceLogs",
+    )
+    diagnostics.logs = (logs.entries ?? []).map((entry) => ({
+      source: entry.source ?? null,
+      text: entry.text ?? "",
+      truncated: entry.truncated ?? false,
+    }))
+  } catch (error) {
+    diagnostics.logs_error = error.message ?? String(error)
+  }
+  try {
+    const audit = variant(
+      await client.send(listSliceAuditRequest(sliceId, 100)),
+      "SliceAuditListed",
+    )
+    diagnostics.audit = audit.events ?? []
+  } catch (error) {
+    diagnostics.audit_error = error.message ?? String(error)
+  }
+  return diagnostics
 }
