@@ -284,7 +284,7 @@ function formatActionNotice(
   if (!action) return `Room action: ${changed.action_id} · ${formatActionState(changed.state, changed.outcome)}`
   const actor = environment.actors.find((candidate) => candidate.actor_id === action.actor_id)
   return [
-    "Room action:",
+    `Room action #${action.sequence}:`,
     actor?.display_label ?? actorLabel(action.actor_id),
     "·",
     action.mode,
