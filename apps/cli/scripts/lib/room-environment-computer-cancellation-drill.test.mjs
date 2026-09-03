@@ -16,7 +16,7 @@ const runningAction = {
   runtime_generation: 4,
   mode: "computer",
   kind: "keyboard_text",
-  targets: [{ kind: "desktop" }],
+  targets: [{ kind: "desktop" }, { kind: "browser_tab", id: "tab-1" }],
   state: "running",
   cancellation_requested: false,
   submitted_at_ms: 100,
@@ -30,6 +30,7 @@ test("running Computer Action is attributable and non-terminal", () => {
     actionId: "action-17",
     actorId: "agent:agent-2",
     kind: "keyboard_text",
+    focusedTabId: "tab-1",
   })
 })
 
@@ -53,6 +54,7 @@ test("terminal cancelled Action clears its request and records requested outcome
     actionId: "action-17",
     actorId: "agent:agent-2",
     kind: "keyboard_text",
+    focusedTabId: "tab-1",
   })
 })
 
@@ -88,6 +90,7 @@ test("cancellation validators reject premature ownership and false completion", 
       actionId: "action-17",
       actorId: "agent:agent-2",
       kind: "keyboard_text",
+      focusedTabId: "tab-1",
     }),
     /state/,
   )

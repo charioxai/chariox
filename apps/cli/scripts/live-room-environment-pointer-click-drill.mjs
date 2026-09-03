@@ -1039,6 +1039,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
         actionId: cancellation.actionId,
         actorId: cancellation.actorId,
         kind: "keyboard_text",
+        focusedTabId: cancellation.focusedTabId,
       },
     )
   }
@@ -1086,6 +1087,7 @@ async function exerciseCancellableAgentKeyboardInput({
     "RoomEnvironmentState",
   ).environment
   const baselineSequence = Math.max(0, ...baseline.actions.map((action) => action.sequence))
+  assert.ok(baseline.focused_tab_id, `${label} requires a focused browser tab`)
   const localNoticeBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteNoticeBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const pending = mcpToolCall(secretProviderRun, "slice_keyboard", {
@@ -1113,6 +1115,7 @@ async function exerciseCancellableAgentKeyboardInput({
     actionId: started.action.action_id,
     actorId: `agent:${secretAgent.id}`,
     kind: "keyboard_text",
+    focusedTabId: baseline.focused_tab_id,
   })
   assert.ok(started.count > 0, `${label} did not type before cancellation`)
   assert.ok(started.count < input.length, `${label} completed before cancellation`)
@@ -1150,6 +1153,7 @@ async function exerciseCancellableAgentKeyboardInput({
     actionId: started.action.action_id,
     actorId: `agent:${secretAgent.id}`,
     kind: "keyboard_text",
+    focusedTabId: baseline.focused_tab_id,
   })
   const stoppedCount = await cancellationFixtureCharacterCount()
   await sleep(750)
@@ -1168,6 +1172,7 @@ async function exerciseCancellableAgentKeyboardInput({
   return {
     actionId: started.action.action_id,
     actorId: `agent:${secretAgent.id}`,
+    focusedTabId: baseline.focused_tab_id,
     countBeforeCancellation: started.count,
     countAfterCancellation: stoppedCount,
     cancellationLatencyMs,

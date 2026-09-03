@@ -1,12 +1,20 @@
 import assert from "node:assert/strict"
 
-export function assertRoomComputerActionRunning(action, { actionId, actorId, kind }) {
+function computerActionTargets(focusedTabId) {
+  assert.ok(focusedTabId, "focused browser tab identity")
+  return [{ kind: "desktop" }, { kind: "browser_tab", id: focusedTabId }]
+}
+
+export function assertRoomComputerActionRunning(
+  action,
+  { actionId, actorId, kind, focusedTabId },
+) {
   assert.ok(action, `Room Action ${actionId} must exist`)
   assert.equal(action.action_id, actionId, "Room Action identity")
   assert.equal(action.actor_id, actorId, "Room Action actor")
   assert.equal(action.mode, "computer", "Room Action mode")
   assert.equal(action.kind, kind, "Room Action kind")
-  assert.deepEqual(action.targets, [{ kind: "desktop" }], "Room Action target")
+  assert.deepEqual(action.targets, computerActionTargets(focusedTabId), "Room Action targets")
   assert.equal(action.state, "running", "Room Action state")
   assert.equal(action.cancellation_requested, false, "Room Action cancellation flag")
   assert.ok(Number.isInteger(action.started_at_ms), "Room Action start timestamp")
@@ -25,13 +33,16 @@ export function assertCancellationRequestedResponse(response, { actionId }) {
   assert.equal(action.finished_at_ms, null, "cancellation response must not claim completion")
 }
 
-export function assertRoomComputerActionCancelled(action, { actionId, actorId, kind }) {
+export function assertRoomComputerActionCancelled(
+  action,
+  { actionId, actorId, kind, focusedTabId },
+) {
   assert.ok(action, `Room Action ${actionId} must exist`)
   assert.equal(action.action_id, actionId, "Room Action identity")
   assert.equal(action.actor_id, actorId, "Room Action actor")
   assert.equal(action.mode, "computer", "Room Action mode")
   assert.equal(action.kind, kind, "Room Action kind")
-  assert.deepEqual(action.targets, [{ kind: "desktop" }], "Room Action target")
+  assert.deepEqual(action.targets, computerActionTargets(focusedTabId), "Room Action targets")
   assert.equal(action.state, "cancelled", "Room Action state")
   assert.equal(action.cancellation_requested, false, "terminal Action cancellation flag")
   assert.ok(Number.isInteger(action.started_at_ms), "Room Action start timestamp")
