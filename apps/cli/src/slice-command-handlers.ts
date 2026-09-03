@@ -69,7 +69,11 @@ export async function handleSliceSlashCommand(
     return
   }
   if (subcommand === "backup") {
-    await createSliceBackup(deps, args)
+    if (args[0] === "restore") {
+      await restoreSliceBackup(deps, args.slice(1))
+    } else {
+      await createSliceBackup(deps, args)
+    }
     return
   }
   if (subcommand === "start" || subcommand === "stop") {
@@ -96,7 +100,7 @@ export async function handleSliceSlashCommand(
     await startSliceAuthLogin(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [create] [slice-ref] [--name <name>] | /slice backup restore [slice-ref] <backup-ref> | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -156,6 +160,14 @@ function formatSliceBackupCreated(
     `home_archive=${backup.home_archive_path}`,
     instructions,
   ].filter(Boolean).join("\n")
+}
+
+function formatSliceBackupRestored(slice: SliceRecord, backup: SliceBackupRecord): string {
+  return [
+    `restored slice backup ${formatSliceLabel(slice)} (${slice.id})`,
+    `backup=${backup.id}`,
+    "status=stopped",
+  ].join("\n")
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
@@ -479,6 +491,29 @@ async function createSliceBackup(deps: SliceCommandHandlerDeps, args: string[]):
   }
 }
 
+async function restoreSliceBackup(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.restoreSliceBackup) {
+    deps.flashFooter("slice backup restore is unavailable in this build", "error")
+    return
+  }
+  const parsed = parseSliceBackupRestoreArgs(args)
+  if (parsed.error) {
+    deps.flashFooter(parsed.error, "error")
+    return
+  }
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, parsed.sliceRef)
+  if (await rejectSliceLifecycleWithAttachedAgents(deps, "backup restore", resolvedRef)) {
+    return
+  }
+  try {
+    const payload = await deps.restoreSliceBackup(resolvedRef, parsed.backupRef!)
+    deps.appendNotice(formatSliceBackupRestored(payload.slice, payload.backup))
+    deps.flashFooter(`restored slice backup ${payload.backup.id}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice backup restore failed", "error")
+  }
+}
+
 function parseSliceBackupArgs(args: string[]): {
   sliceRef?: string
   name?: string
@@ -501,6 +536,26 @@ function parseSliceBackupArgs(args: string[]): {
     return { error: "usage: /slice backup [slice-ref] [--name <name>]" }
   }
   return { ...(sliceRef ? { sliceRef } : {}), ...(name ? { name } : {}) }
+}
+
+function parseSliceBackupRestoreArgs(args: string[]): {
+  sliceRef?: string
+  backupRef?: string
+  error?: string
+} {
+  if (args.length === 1 && args[0] && !args[0].startsWith("--")) {
+    return { backupRef: args[0] }
+  }
+  if (
+    args.length === 2
+    && args[0]
+    && args[1]
+    && !args[0].startsWith("--")
+    && !args[1].startsWith("--")
+  ) {
+    return { sliceRef: args[0], backupRef: args[1] }
+  }
+  return { error: "usage: /slice backup restore [slice-ref] <backup-ref>" }
 }
 
 function parseSliceCreateOptions(

@@ -171,3 +171,12 @@ export function createSliceBackupRequest(sliceRef: string, name?: string | null)
     },
   }
 }
+
+export function restoreSliceBackupRequest(sliceRef: string, backupRef: string) {
+  return {
+    RestoreSliceBackup: {
+      slice_ref: sliceRef,
+      backup_ref: backupRef,
+    },
+  }
+}

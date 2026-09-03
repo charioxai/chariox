@@ -42,6 +42,8 @@ const markers = {
   downloadedFile: "CHARIOX_FIXTURE_DOWNLOAD",
   appConfig: `app-config-${process.pid}-${Date.now()}`,
   appUserData: `app-data-${process.pid}-${Date.now()}`,
+  backupMutationOne: `backup-mutation-one-${process.pid}-${Date.now()}`,
+  backupMutationTwo: `backup-mutation-two-${process.pid}-${Date.now()}`,
   firstSubject: `M20 first ${process.pid}`,
   secondSubject: `M20 second ${process.pid}`,
 }
@@ -52,8 +54,12 @@ let requests = null
 let slice = null
 let fixture = null
 let savedState = null
+let namedBackup = null
+let corruptBackup = null
 let cleanupResult = null
 let sourceIdentity = null
+let stateImagesBefore = new Set()
+let rollbackImagesBefore = new Set()
 const sliceRuntime = {}
 const persistenceIdentity = {}
 const resources = []
@@ -103,6 +109,8 @@ if (failure) {
 async function run() {
   log("checking Docker")
   await assertDockerReady()
+  stateImagesBefore = new Set(await listDockerImageRefs(`chariox-slice-state:${sliceName}-*`))
+  rollbackImagesBefore = new Set(await listDockerImageRefs("chariox-slice-backup:restore-rollback-*"))
   resources.push(await resourceSnapshot("before"))
   log("writing disposable config")
   await seedConfig()
@@ -259,6 +267,78 @@ async function run() {
   assert.equal(fixture.messages.filter((message) => message.subject === markers.firstSubject).length, 1)
   assert.equal(fixture.messages.filter((message) => message.subject === markers.secondSubject).length, 1)
   await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(fixture.messages, null, 2))
+
+  log("creating immutable named browser-state backup")
+  const namedBackupResult = unwrap(
+    await client.send(requests.createSliceBackupRequest(slice.id, "browser-baseline")),
+    "SliceBackupCreated",
+  )
+  namedBackup = namedBackupResult.backup
+  assert.match(namedBackup.home_archive_sha256 ?? "", /^[a-f0-9]{64}$/)
+  assert.match(namedBackup.image_id ?? "", /^sha256:/)
+  assert.equal(namedBackupResult.slice.status, "running")
+  await writeFile(
+    path.join(artifactDir, "named-backup-response.json"),
+    JSON.stringify(namedBackupResult, null, 2),
+  )
+  await waitForBrowserText(
+    "CHARIOX_FIXTURE_MESSAGE_SENT",
+    30_000,
+    "browser did not resume after live backup capture",
+  )
+
+  log("creating a corrupt candidate without mutating the known-good backup")
+  await writeSliceFile("/home/slice/.config/m20-state-app/config.txt", `${markers.backupMutationOne}\n`)
+  const corruptBackupResult = unwrap(
+    await client.send(requests.createSliceBackupRequest(slice.id, "corrupt-candidate")),
+    "SliceBackupCreated",
+  )
+  corruptBackup = corruptBackupResult.backup
+  assert.equal(corruptBackupResult.slice.status, "running")
+  await client.send(requests.stopSliceRequest(slice.id))
+  slice = await waitForSliceStatus(slice.id, "stopped")
+  const containerBeforeRejectedRestore = await inspectContainerId()
+  await writeFile(corruptBackup.home_archive_path, "deliberately corrupted backup archive")
+  await assert.rejects(
+    client.send(requests.restoreSliceBackupRequest(slice.id, corruptBackup.id)),
+    /archive integrity check failed/,
+  )
+  slice = await waitForSliceStatus(slice.id, "stopped")
+  assert.equal(
+    await inspectContainerId(),
+    containerBeforeRejectedRestore,
+    "corrupt backup rejection must happen before container replacement",
+  )
+
+  log("restoring the named backup by its human-readable name")
+  const firstBackupRestore = unwrap(
+    await client.send(requests.restoreSliceBackupRequest(slice.id, "browser-baseline")),
+    "SliceBackupRestored",
+  )
+  assert.equal(firstBackupRestore.backup.id, namedBackup.id)
+  assert.equal(firstBackupRestore.slice.status, "stopped")
+  await client.send(requests.startSliceRequest(slice.id))
+  slice = await waitForSliceRunning(slice.id)
+  await verifyUserPersistenceMarkers()
+  await verifyLocalBrowserStateAfterRestore()
+  await screenshot("04-after-named-backup-restore")
+
+  log("restoring the same immutable backup again by id")
+  await writeSliceFile("/home/slice/.config/m20-state-app/config.txt", `${markers.backupMutationTwo}\n`)
+  await client.send(requests.stopSliceRequest(slice.id))
+  slice = await waitForSliceStatus(slice.id, "stopped")
+  const secondBackupRestore = unwrap(
+    await client.send(requests.restoreSliceBackupRequest(slice.id, namedBackup.id)),
+    "SliceBackupRestored",
+  )
+  assert.equal(secondBackupRestore.backup.id, namedBackup.id)
+  assert.equal(secondBackupRestore.slice.status, "stopped")
+  await client.send(requests.startSliceRequest(slice.id))
+  slice = await waitForSliceRunning(slice.id)
+  await verifyUserPersistenceMarkers()
+  await verifyLocalBrowserStateAfterRestore()
+  await screenshot("05-after-repeated-backup-restore")
+
   log("verifying restored service worker serves cached content while the fixture is offline")
   await fixture.close()
   await sliceScreen(["open-url", fixtureUrl("/offline-marker")])
@@ -509,10 +589,32 @@ async function waitForBrowserText(needle, timeoutMs, message) {
 }
 
 async function waitForSliceRunning(sliceRef) {
+  return await waitForSliceStatus(sliceRef, "running", 240_000)
+}
+
+async function waitForSliceStatus(sliceRef, status, timeoutMs = 120_000) {
   return await waitFor(async () => {
     const current = unwrap(await client.send(requests.getSliceRequest(sliceRef)), "Slice").slice
-    return current.status === "running" ? current : false
-  }, 240_000, `slice ${sliceRef} did not become running`)
+    return current.status === status ? current : false
+  }, timeoutMs, `slice ${sliceRef} did not become ${status}`)
+}
+
+async function inspectContainerId() {
+  const inspected = JSON.parse((await docker(["container", "inspect", containerName])).stdout)
+  assert.ok(inspected[0]?.Id, "slice container should have an inspectable id")
+  return inspected[0].Id
+}
+
+async function listDockerImageRefs(reference) {
+  const result = await docker([
+    "image",
+    "ls",
+    "--filter",
+    `reference=${reference}`,
+    "--format",
+    "{{.Repository}}:{{.Tag}}",
+  ])
+  return result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
 }
 
 async function assertFixtureAlive() {
@@ -706,6 +808,16 @@ async function cleanup() {
   if (savedState?.image_ref) {
     await docker(["image", "rm", "-f", savedState.image_ref]).catch(() => undefined)
   }
+  for (const backup of [namedBackup, corruptBackup].filter(Boolean)) {
+    await docker(["image", "rm", "-f", backup.image_ref]).catch(() => undefined)
+  }
+  const stateImageLeaks = (await listDockerImageRefs(`chariox-slice-state:${sliceName}-*`).catch(() => []))
+    .filter((imageRef) => !stateImagesBefore.has(imageRef))
+  const rollbackImageLeaks = (await listDockerImageRefs("chariox-slice-backup:restore-rollback-*").catch(() => []))
+    .filter((imageRef) => !rollbackImagesBefore.has(imageRef))
+  for (const imageRef of [...stateImageLeaks, ...rollbackImageLeaks]) {
+    await docker(["image", "rm", "-f", imageRef]).catch(() => undefined)
+  }
   client?.close?.()
   await closeFixtureServer()
   for (const child of children.toReversed()) {
@@ -716,9 +828,16 @@ async function cleanup() {
   const dockerAvailable = (await runCommand("docker", ["info", "--format", "{{json .ServerVersion}}"], { timeoutMs: 20_000 })).code === 0
   const containerGone = (await runCommand("docker", ["container", "inspect", containerName], { timeoutMs: 20_000 })).code !== 0
   const volumeGone = (await runCommand("docker", ["volume", "inspect", homeVolume], { timeoutMs: 20_000 })).code !== 0
-  const savedImageGone = savedState?.image_ref
+  const knownSavedImageGone = savedState?.image_ref
     ? (await runCommand("docker", ["image", "inspect", savedState.image_ref], { timeoutMs: 20_000 })).code !== 0
     : true
+  const knownBackupImagesGone = await Promise.all(
+    [namedBackup, corruptBackup].filter(Boolean).map(async (backup) => (
+      (await runCommand("docker", ["image", "inspect", backup.image_ref], { timeoutMs: 20_000 })).code !== 0
+    )),
+  ).then((values) => values.every(Boolean))
+  const savedImageGone = knownSavedImageGone && stateImageLeaks.length === 0
+  const backupImagesGone = knownBackupImagesGone && rollbackImageLeaks.length === 0
   const occupiedPorts = []
   for (const port of [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, fixturePort].filter(Number.isInteger)) {
     if (!(await portIsAvailable(port))) occupiedPorts.push(port)
@@ -728,6 +847,9 @@ async function cleanup() {
     containerGone,
     volumeGone,
     savedImageGone,
+    backupImagesGone,
+    stateImageLeaks,
+    rollbackImageLeaks,
     tempRootRemoved: await access(tempRoot).then(() => false).catch(() => true),
     listenersReleased: occupiedPorts.length === 0,
     occupiedPorts,
@@ -771,6 +893,8 @@ async function writeManifest(ok, error = null) {
       "restored service worker served cached content while the fixture was offline",
       "authenticated browser session survived complete container and home-volume removal",
       "message before save and message after restore were each submitted exactly once",
+      "named backup integrity metadata was recorded and a corrupt archive was rejected before container replacement",
+      "the same immutable named backup restored browser and application state twice, once by name and once by id",
     ],
     cleanup: cleanupResult,
   }, null, 2))

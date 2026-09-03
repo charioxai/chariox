@@ -276,6 +276,10 @@ pub struct SliceBackupRecord {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_archive_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +303,7 @@ pub struct CreateSliceInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDockerSliceAction {
     Provision,
+    RestoreState,
     Recover,
     ImportProviderAuth,
     RemoveProviderAuth,

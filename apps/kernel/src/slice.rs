@@ -5,16 +5,18 @@ mod ports;
 mod store;
 
 pub(crate) use local_docker::managed_docker_broker_configured;
+pub(crate) use local_docker::remove_local_docker_slice_backup_best_effort;
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
     create_local_docker_slice_backup_live, default_local_docker_saved_state,
     initialize_managed_docker_broker, inspect_local_docker_slice_host_runtime,
     inspect_local_docker_slice_provider_auth, local_docker_private_relay,
     local_docker_private_relay_endpoint, local_docker_private_relay_token,
-    remove_local_docker_saved_state, run_local_docker_slice_action, save_local_docker_slice_state,
+    remove_local_docker_saved_state, restore_local_docker_slice_backup,
+    run_local_docker_slice_action, save_local_docker_slice_state,
     save_local_docker_slice_state_live, set_local_docker_default_saved_state,
-    start_local_docker_slice_provider_login, LocalDockerProviderAccount, LocalDockerSliceOptions,
-    LocalDockerSliceRelay,
+    start_local_docker_slice_provider_login, validate_local_docker_slice_backup,
+    LocalDockerProviderAccount, LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
 #[cfg(test)]
 use local_docker::{
@@ -76,6 +78,72 @@ mod tests {
             last_operation: Some("state.save".to_string()),
             last_operation_status: Some(SliceOperationStatus::Completed),
             last_error: None,
+        }
+    }
+
+    #[test]
+    fn saved_state_record_is_persisted_before_the_in_memory_pointer_changes() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("transactional-state"))
+            .expect("slice should create");
+        let state = saved_state("transactional-state");
+        let error = store
+            .upsert_saved_state_transactionally(&slice.id, state.clone(), 43, |_, _| {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "slice.state.save",
+                    message: "injected durable-state failure".to_string(),
+                })
+            })
+            .expect_err("failed persistence must reject the state update");
+
+        assert!(error.to_string().contains("injected durable-state failure"));
+        assert_eq!(
+            store
+                .resolve(&slice.id)
+                .expect("slice should remain available")
+                .saved_state_ref,
+            None
+        );
+        assert!(store.list_saved_states().is_empty());
+
+        store
+            .upsert_saved_state_transactionally(&slice.id, state.clone(), 44, |record, saved| {
+                assert_eq!(record.saved_state_ref.as_deref(), Some(saved.id.as_str()));
+                assert_eq!(
+                    store
+                        .resolve(&slice.id)
+                        .expect("uncommitted slice should remain readable")
+                        .saved_state_ref,
+                    None
+                );
+                Ok(())
+            })
+            .expect("persisted state should commit in memory");
+        assert_eq!(
+            store
+                .resolve(&slice.id)
+                .expect("slice should remain available")
+                .saved_state_ref
+                .as_deref(),
+            Some(state.id.as_str())
+        );
+        assert_eq!(store.list_saved_states(), vec![state]);
+    }
+
+    fn backup(id: &str, name: &str, source_slice_id: &str) -> SliceBackupRecord {
+        SliceBackupRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            source_slice_id: source_slice_id.to_string(),
+            source_state_id: "dev".to_string(),
+            image_ref: format!("chariox-slice-backup:{id}"),
+            home_archive_path: format!("/tmp/{id}-home.tar.zst"),
+            manifest_path: format!("/tmp/{id}-manifest.json"),
+            created_at_ms: 1,
+            size_bytes: Some(1024),
+            home_archive_sha256: Some("a".repeat(64)),
+            image_id: Some("sha256:fixture".to_string()),
         }
     }
 
@@ -193,6 +261,76 @@ mod tests {
                 .expect("prior state should remain active")
                 .id,
             "state-known-good"
+        );
+    }
+
+    #[test]
+    fn slice_store_resolves_backup_by_id_or_unique_name_within_source_slice() {
+        let store = SliceStore::default();
+        let first = store
+            .create("kernel-1", "machine-1", create_input("first"))
+            .expect("first slice should create");
+        let second = store
+            .create("kernel-1", "machine-1", create_input("second"))
+            .expect("second slice should create");
+        let failed_backup = backup("failed-snapshot", "snapshot", &first.id);
+        let error = store
+            .upsert_backup_transactionally(failed_backup, |_| {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "slice.backup.create",
+                    message: "injected durable-state failure".to_string(),
+                })
+            })
+            .expect_err("failed persistence must not publish the backup record");
+        assert!(error.to_string().contains("injected durable-state failure"));
+        assert!(store.list_backups().is_empty());
+
+        store
+            .upsert_backup_transactionally(
+                backup("first-snapshot-1", "snapshot", &first.id),
+                |_| Ok(()),
+            )
+            .expect("first backup should persist");
+        store
+            .upsert_backup_transactionally(
+                backup("second-snapshot-1", "snapshot", &second.id),
+                |_| Ok(()),
+            )
+            .expect("second backup should persist");
+
+        assert_eq!(
+            store
+                .resolve_backup_for_slice(&first.id, "first-snapshot-1")
+                .expect("backup id should resolve")
+                .id,
+            "first-snapshot-1"
+        );
+        assert_eq!(
+            store
+                .resolve_backup_for_slice(&first.id, "snapshot")
+                .expect("unique backup name should resolve")
+                .id,
+            "first-snapshot-1"
+        );
+        assert!(store
+            .resolve_backup_for_slice(&first.id, "second-snapshot-1")
+            .is_err());
+        store
+            .upsert_backup_transactionally(
+                backup("first-snapshot-2", "snapshot", &first.id),
+                |_| Ok(()),
+            )
+            .expect("duplicate-name backup should persist");
+        let ambiguous = store
+            .resolve_backup_for_slice(&first.id, "snapshot")
+            .expect_err("duplicate names within one slice must require a backup id");
+        assert!(ambiguous.to_string().contains("ambiguous"));
+        assert_eq!(
+            store
+                .resolve_backup_for_slice(&first.id, "first-snapshot-2")
+                .expect("an exact id must remain unambiguous")
+                .id,
+            "first-snapshot-2"
         );
     }
 

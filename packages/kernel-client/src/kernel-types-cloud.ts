@@ -206,6 +206,8 @@ export type SliceBackupRecord = {
   home_archive_path: string
   created_at_ms: number
   size_bytes?: number | null
+  home_archive_sha256?: string | null
+  image_id?: string | null
 }
 
 export type SliceLocalDockerPorts = {

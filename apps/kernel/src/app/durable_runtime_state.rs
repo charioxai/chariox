@@ -1349,6 +1349,19 @@ impl DaemonApp {
                 }
             }
             "slice.state.saved" => {
+                if event.payload.get("slice").is_some() {
+                    let slice: crate::slice::SliceRecord = decode_durable_payload_field(
+                        &event,
+                        "slice",
+                        "durable_state.restore_slice_saved_state_slice",
+                    )?;
+                    if slice.owner_kernel_id == self.config.daemon_id {
+                        let mut slices = self.slices.list();
+                        slices.retain(|record| record.id != slice.id);
+                        slices.push(slice);
+                        self.slices.restore_records(slices);
+                    }
+                }
                 let state: crate::slice::SliceSavedStateRecord = decode_durable_payload_field(
                     &event,
                     "state",
@@ -1735,6 +1748,81 @@ mod tests {
             .expect("slice should remain available");
         assert_eq!(restored.session_ids, vec![session.id().to_string()]);
         assert_eq!(restored.agent_ids, vec![agent.id().to_string()]);
+    }
+
+    #[test]
+    fn durable_restore_replays_slice_and_saved_state_as_one_committed_event() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let state_id = "transactional-slice-state";
+        let slice_id;
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            let mut slice = app
+                .slices()
+                .create(
+                    &config.daemon_id,
+                    &config.host_machine_id,
+                    crate::slice::CreateSliceInput {
+                        name: "transactional-slice".to_string(),
+                        backend: crate::slice::SliceBackendKind::LocalDocker,
+                        os: "linux".to_string(),
+                        display_mode: crate::slice::SliceDisplayMode::Headed,
+                        display_backend: Default::default(),
+                        workspace_id: None,
+                        worktree_id: None,
+                        workspace_mount: None,
+                        development: None,
+                        worker_kernel_ref: None,
+                        display_url: None,
+                        provider_auth: Vec::new(),
+                        from_saved_state: None,
+                        now_ms: 1,
+                    },
+                )
+                .expect("slice should create");
+            slice_id = slice.id.clone();
+            slice.saved_state_ref = Some(state_id.to_string());
+            slice.saved_state_status = Some(crate::slice::SliceSavedStateStatus::Saved);
+            slice.saved_state_updated_at_ms = Some(2);
+            let state = crate::slice::SliceSavedStateRecord {
+                id: state_id.to_string(),
+                slice_name: slice.name.clone(),
+                source_slice_id: slice.id.clone(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                image_ref: "chariox-slice-state:transactional-slice".to_string(),
+                home_archive_path: "/tmp/transactional-slice-home.tar.zst".to_string(),
+                manifest_path: "/tmp/transactional-slice-manifest.json".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 2,
+                size_bytes: Some(1024),
+                last_operation: Some("state.save".to_string()),
+                last_operation_status: Some(crate::slice::SliceOperationStatus::Completed),
+                last_error: None,
+            };
+            app.durable_state_store()
+                .append_event(
+                    "slice.state.saved",
+                    Some(state.id.clone()),
+                    serde_json::json!({ "slice": slice, "state": state }),
+                )
+                .expect("transactional state event should persist");
+        }
+
+        let app = DaemonApp::bootstrap(config).expect("daemon should restore");
+        let restored = app
+            .slices()
+            .resolve(&slice_id)
+            .expect("slice should restore from the state event");
+        assert_eq!(restored.saved_state_ref.as_deref(), Some(state_id));
+        assert_eq!(
+            app.slices()
+                .active_saved_state_for_slice(&slice_id)
+                .expect("saved state lookup should work")
+                .expect("saved state should restore")
+                .id,
+            state_id
+        );
     }
 
     fn default_agent_for_session(

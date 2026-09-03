@@ -101,6 +101,12 @@ pub struct CreateSliceBackupRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreSliceBackupRequest {
+    pub slice_ref: String,
+    pub backup_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSliceLogsRequest {
     pub slice_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

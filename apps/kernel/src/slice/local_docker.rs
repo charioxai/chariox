@@ -28,11 +28,13 @@ mod tests;
 
 use broker::docker_command;
 use provider_inputs::home_provider_credential_sources;
+pub(crate) use state::remove_local_docker_slice_backup_best_effort;
 pub use state::{
     create_local_docker_slice_backup, create_local_docker_slice_backup_live,
     default_local_docker_saved_state, remove_local_docker_saved_state,
-    save_local_docker_slice_state, save_local_docker_slice_state_live,
-    set_local_docker_default_saved_state,
+    restore_local_docker_slice_backup, save_local_docker_slice_state,
+    save_local_docker_slice_state_live, set_local_docker_default_saved_state,
+    validate_local_docker_slice_backup,
 };
 
 pub fn initialize_managed_docker_broker() {
@@ -132,6 +134,12 @@ impl LocalDockerSliceOptions {
         self
     }
 
+    pub fn with_backup(mut self, backup: &crate::slice::SliceBackupRecord) -> Self {
+        self.docker_image = backup.image_ref.clone();
+        self.saved_home_archive = Some(PathBuf::from(&backup.home_archive_path));
+        self
+    }
+
     fn screen_geometry(&self) -> String {
         format!("{}x{}x24", self.screen_width, self.screen_height)
     }
@@ -160,14 +168,20 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
-    if action == LocalDockerSliceAction::Provision {
+    if matches!(
+        action,
+        LocalDockerSliceAction::Provision | LocalDockerSliceAction::RestoreState
+    ) {
         ensure_host_docker_ready()?;
-        ensure_local_docker_slice_ports_available(record)?;
+        if action == LocalDockerSliceAction::Provision {
+            ensure_local_docker_slice_ports_available(record)?;
+        }
     }
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
     let action_name = match action {
         LocalDockerSliceAction::Provision => "provision",
+        LocalDockerSliceAction::RestoreState => "restore-state",
         LocalDockerSliceAction::Recover => "recover",
         LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
         LocalDockerSliceAction::RemoveProviderAuth => "remove-provider-auth",
@@ -182,7 +196,9 @@ pub fn run_local_docker_slice_action(
         options,
         matches!(
             action,
-            LocalDockerSliceAction::Provision | LocalDockerSliceAction::Recover
+            LocalDockerSliceAction::Provision
+                | LocalDockerSliceAction::RestoreState
+                | LocalDockerSliceAction::Recover
         ),
     )?;
     let mut broker_inputs = Vec::new();
@@ -765,6 +781,7 @@ pub fn collect_local_docker_slice_logs(
     let mut entries = Vec::new();
     for action in [
         LocalDockerSliceAction::Provision,
+        LocalDockerSliceAction::RestoreState,
         LocalDockerSliceAction::Recover,
         LocalDockerSliceAction::ImportProviderAuth,
         LocalDockerSliceAction::RemoveProviderAuth,
@@ -1243,6 +1260,7 @@ impl LocalDockerSliceAction {
     fn as_str(self) -> &'static str {
         match self {
             Self::Provision => "provision",
+            Self::RestoreState => "restore-state",
             Self::Recover => "recover",
             Self::ImportProviderAuth => "import-provider-auth",
             Self::RemoveProviderAuth => "remove-provider-auth",

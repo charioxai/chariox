@@ -252,6 +252,49 @@ impl SliceStore {
             .collect()
     }
 
+    pub fn resolve_backup_for_slice(
+        &self,
+        slice_ref: &str,
+        backup_ref: &str,
+    ) -> Result<SliceBackupRecord, DaemonError> {
+        let slice = self.resolve(slice_ref)?;
+        let backup_ref = backup_ref.trim();
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(backup) = state
+            .backups
+            .get(backup_ref)
+            .filter(|backup| backup.source_slice_id == slice.id)
+        {
+            return Ok(backup.clone());
+        }
+        let mut matching = state
+            .backups
+            .values()
+            .filter(|backup| backup.source_slice_id == slice.id && backup.name == backup_ref);
+        let Some(backup) = matching.next().cloned() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!(
+                    "slice backup `{backup_ref}` was not found for slice `{}`",
+                    slice.name
+                ),
+            });
+        };
+        if matching.next().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!(
+                    "slice backup name `{backup_ref}` is ambiguous for slice `{}`; use its backup id",
+                    slice.name
+                ),
+            });
+        }
+        Ok(backup)
+    }
+
     pub fn restore_saved_state_records(
         &self,
         states: Vec<SliceSavedStateRecord>,
@@ -271,29 +314,26 @@ impl SliceStore {
         }
     }
 
-    pub fn upsert_saved_state(
+    pub(crate) fn upsert_saved_state_transactionally(
         &self,
         slice_ref: &str,
         saved_state: SliceSavedStateRecord,
         now_ms: u64,
+        persist: impl FnOnce(&SliceRecord, &SliceSavedStateRecord) -> Result<(), DaemonError>,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self
+        let state = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .saved_states
-            .insert(saved_state.id.clone(), saved_state.clone());
-        let record =
-            state
-                .records
-                .get_mut(&resolved.id)
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "slice.state.save",
-                    message: format!("unknown slice `{slice_ref}`"),
-                })?;
-        record.saved_state_ref = Some(saved_state.id);
+        let mut record = state.records.get(&resolved.id).cloned().ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "slice.state.save",
+                message: format!("unknown slice `{slice_ref}`"),
+            }
+        })?;
+        drop(state);
+        record.saved_state_ref = Some(saved_state.id.clone());
         record.saved_state_status = Some(SliceSavedStateStatus::Saved);
         record.saved_state_updated_at_ms = Some(now_ms);
         record.last_operation = Some("state.save".to_string());
@@ -301,7 +341,17 @@ impl SliceStore {
         record.last_error = None;
         record.last_operation_at_ms = Some(now_ms);
         record.updated_at_ms = now_ms;
-        Ok(record.clone())
+        persist(&record, &saved_state)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state);
+        state.records.insert(record.id.clone(), record.clone());
+        Ok(record)
     }
 
     pub fn mark_saved_state_failed(
@@ -368,13 +418,18 @@ impl SliceStore {
         Ok((updated_record, removed))
     }
 
-    pub fn upsert_backup(&self, backup: SliceBackupRecord) -> SliceBackupRecord {
+    pub(crate) fn upsert_backup_transactionally(
+        &self,
+        backup: SliceBackupRecord,
+        persist: impl FnOnce(&SliceBackupRecord) -> Result<(), DaemonError>,
+    ) -> Result<SliceBackupRecord, DaemonError> {
+        persist(&backup)?;
         let mut state = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.backups.insert(backup.id.clone(), backup.clone());
-        backup
+        Ok(backup)
     }
 
     pub fn reconcile_after_kernel_restart(&self, now_ms: u64) -> Vec<SliceRecord> {

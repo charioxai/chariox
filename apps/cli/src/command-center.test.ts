@@ -420,7 +420,16 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(values.has("/slice auth "), true)
   assert.equal(items.find((item) => item.value === "/slice state ")?.description, "Show saved slice state and restart requirements")
   assert.equal(items.find((item) => item.value === "/slice save-state ")?.description, "Save reusable slice state and choose what happens to attached agents (4)")
-  assert.equal(items.find((item) => item.value === "/slice backup ")?.description, "Create a backup copy of saved slice state (1)")
+  assert.equal(items.find((item) => item.value === "/slice backup ")?.description, "Create a backup copy of saved slice state (2)")
+  const backupItems = buildCommandCenterItems("/slice backup", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  })
+  assert.equal(backupItems.some((item) => item.value === "/slice backup restore "), true)
   assert.equal(items.find((item) => item.value === "/slice reset-state ")?.description, "Reset saved slice state after agents are detached")
   const authItems = buildCommandCenterItems("/slice auth", {
     providerCatalog: fallbackProviderCatalog(),

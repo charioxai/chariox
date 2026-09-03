@@ -57,4 +57,5 @@ export type SliceCommandHandlerDeps = {
   getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
   resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
   createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
+  restoreSliceBackup?: (sliceRef: string, backupRef: string) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord }>
 }

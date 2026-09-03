@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createSliceRequest, getSliceDisplayEndpointRequest } from "./ipc-slice-requests.js"
+import {
+  createSliceRequest,
+  getSliceDisplayEndpointRequest,
+  restoreSliceBackupRequest,
+} from "./ipc-slice-requests.js"
 import type { SliceDisplayEndpoint } from "./kernel-types-cloud.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
@@ -18,8 +22,21 @@ test("legacy slice creation does not add a backend field", () => {
   assert.equal(Object.hasOwn(createSliceRequest({ name: "legacy" }).CreateSlice, "display_backend"), false)
 })
 
+test("slice backup restore uses the shared kernel lifecycle contract", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
+  assert.deepEqual(
+    restoreSliceBackupRequest("linux-dev", "gmail-ready-20260609"),
+    {
+      RestoreSliceBackup: {
+        slice_ref: "linux-dev",
+        backup_ref: "gmail-ready-20260609",
+      },
+    },
+  )
+})
+
 test("Room display admission sends the attachment and viewer identity in protocol 293", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 300)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
   assert.deepEqual(
     getSliceDisplayEndpointRequest("slice-1", {
       sessionId: "room-1",
@@ -54,7 +71,7 @@ test("Room display endpoint exposes the encrypted stream metadata", () => {
 })
 
 test("slice create serializes exact multi-repository development selection", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 300)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
   assert.deepEqual(
     createSliceRequest({
       name: "project-slice",

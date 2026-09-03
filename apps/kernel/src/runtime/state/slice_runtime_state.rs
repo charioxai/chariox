@@ -853,22 +853,57 @@ impl KernelRuntimeState {
             .active_saved_state_for_slice(slice_ref)
     }
 
+    pub(crate) fn resolve_slice_backup(
+        &self,
+        slice_ref: &str,
+        backup_ref: &str,
+    ) -> Result<crate::slice::SliceBackupRecord, DaemonError> {
+        self.owned
+            .slice_store
+            .resolve_backup_for_slice(slice_ref, backup_ref)
+    }
+
+    pub(crate) fn mark_slice_operation_completed_preserving_status(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.update_slice_operation(
+            slice_ref,
+            operation,
+            crate::slice::SliceOperationStatus::Completed,
+            None,
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
     pub(crate) fn save_slice_state_record(
         &self,
         slice_ref: &str,
         state: crate::slice::SliceSavedStateRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let slice = self.owned.slice_store.upsert_saved_state(
-            slice_ref,
-            state.clone(),
-            crate::session::unix_epoch_ms(),
-        )?;
-        self.append_slice_durable_event("slice.updated", &slice)?;
-        self.owned.durable_state_store.append_event(
-            "slice.state.saved",
-            Some(state.id.clone()),
-            serde_json::json!({ "state": state }),
-        )?;
+        let slice = self
+            .owned
+            .durable_state_store
+            .with_projection_transition_lock(|| {
+                self.owned.slice_store.upsert_saved_state_transactionally(
+                    slice_ref,
+                    state.clone(),
+                    crate::session::unix_epoch_ms(),
+                    |slice, state| {
+                        self.owned
+                            .durable_state_store
+                            .append_event(
+                                "slice.state.saved",
+                                Some(state.id.clone()),
+                                serde_json::json!({ "slice": slice, "state": state }),
+                            )
+                            .map(|_| ())
+                    },
+                )
+            })?;
+        self.owned.runtime_projection_changes.record_change();
         Ok(slice)
     }
 
@@ -915,13 +950,22 @@ impl KernelRuntimeState {
         &self,
         backup: crate::slice::SliceBackupRecord,
     ) -> Result<crate::slice::SliceBackupRecord, DaemonError> {
-        let backup = self.owned.slice_store.upsert_backup(backup);
-        self.owned.durable_state_store.append_event(
-            "slice.backup.created",
-            Some(backup.id.clone()),
-            serde_json::json!({ "backup": backup }),
-        )?;
-        Ok(backup)
+        self.owned
+            .durable_state_store
+            .with_projection_transition_lock(|| {
+                self.owned
+                    .slice_store
+                    .upsert_backup_transactionally(backup, |backup| {
+                        self.owned
+                            .durable_state_store
+                            .append_event(
+                                "slice.backup.created",
+                                Some(backup.id.clone()),
+                                serde_json::json!({ "backup": backup }),
+                            )
+                            .map(|_| ())
+                    })
+            })
     }
 
     pub(super) fn append_slice_durable_event(

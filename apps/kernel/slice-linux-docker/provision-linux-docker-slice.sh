@@ -1245,6 +1245,15 @@ main() {
       start_slice_services
       log "provision completed; use status or logs actions for diagnostics"
       ;;
+    restore-state)
+      require_docker
+      [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
+      build_image
+      destroy_container
+      ensure_container
+      stop_container
+      log "saved slice state restored; container remains stopped"
+      ;;
     recover)
       require_docker
       recover_existing_container

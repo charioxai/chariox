@@ -215,6 +215,194 @@ fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
     }
 }
 
+fn backup_record(manifest_path: String) -> crate::slice::SliceBackupRecord {
+    crate::slice::SliceBackupRecord {
+        id: "gmail-ready-1".to_string(),
+        name: "gmail-ready".to_string(),
+        source_slice_id: "slice-1".to_string(),
+        source_state_id: "gmail-ready".to_string(),
+        image_ref: "chariox-slice-backup:gmail-ready-1".to_string(),
+        home_archive_path: "/tmp/gmail-ready-home.tar.zst".to_string(),
+        manifest_path,
+        created_at_ms: 1000,
+        size_bytes: Some(4096),
+        home_archive_sha256: None,
+        image_id: None,
+    }
+}
+
+#[test]
+fn backup_restore_rejects_legacy_artifacts_without_integrity_metadata() {
+    let error = validate_local_docker_slice_backup(
+        &test_record(),
+        &backup_record("/tmp/missing-manifest.json".to_string()),
+    )
+    .expect_err("legacy backup without digests must be rejected");
+
+    assert!(error.to_string().contains("integrity metadata"));
+    assert!(error.to_string().contains("create a new backup"));
+}
+
+#[test]
+fn backup_restore_rejects_cross_slice_records_before_reading_artifacts() {
+    let mut backup = backup_record("/tmp/missing-manifest.json".to_string());
+    backup.source_slice_id = "slice-other".to_string();
+    backup.size_bytes = Some(7);
+    backup.home_archive_sha256 = Some("a".repeat(64));
+    backup.image_id = Some(format!("sha256:{}", "0".repeat(64)));
+
+    let error = validate_local_docker_slice_backup(&test_record(), &backup)
+        .expect_err("a backup from another slice must be rejected before artifact access");
+
+    assert!(error.to_string().contains("belongs to another slice"));
+    assert!(!error.to_string().contains("missing-manifest"));
+}
+
+#[test]
+fn backup_restore_rejects_a_corrupt_archive_before_inspecting_the_image() {
+    use sha2::Digest as _;
+
+    let root = test_root("backup-corrupt-archive");
+    std::fs::create_dir_all(&root).expect("backup directory should create");
+    let manifest = root.join("manifest.json");
+    let archive = root.join("home.tar.zst");
+    std::fs::write(&archive, b"corrupt").expect("corrupt archive should write");
+    let mut backup = backup_record(manifest.display().to_string());
+    backup.home_archive_path = archive.display().to_string();
+    backup.size_bytes = Some(7);
+    backup.home_archive_sha256 = Some(format!("{:x}", sha2::Sha256::digest(b"correct")));
+    backup.image_id = Some(format!("sha256:{}", "0".repeat(64)));
+    std::fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&backup).expect("backup should encode"),
+    )
+    .expect("backup manifest should write");
+
+    let error = validate_local_docker_slice_backup(&test_record(), &backup)
+        .expect_err("a corrupt archive must be rejected before destructive restore");
+
+    assert!(error.to_string().contains("archive integrity check failed"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback_fails() {
+    use std::cell::Cell;
+
+    let rollback = backup_record("/tmp/rollback-manifest.json".to_string());
+    let rollback_calls = Cell::new(0);
+    let persistence_calls = Cell::new(0);
+    let cleanup_calls = Cell::new(0);
+    let error = state::restore_local_docker_slice_backup_with_rollback::<()>(
+        &rollback,
+        || {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: "injected target restore failure".to_string(),
+            })
+        },
+        || panic!("state capture must not run after target restore failure"),
+        |_| {
+            persistence_calls.set(persistence_calls.get() + 1);
+            Ok(())
+        },
+        || {
+            rollback_calls.set(rollback_calls.get() + 1);
+            Ok(())
+        },
+        || cleanup_calls.set(cleanup_calls.get() + 1),
+    )
+    .expect_err("the original restore failure must be returned after successful rollback");
+    assert!(error
+        .to_string()
+        .contains("injected target restore failure"));
+    assert_eq!(rollback_calls.get(), 1);
+    assert_eq!(persistence_calls.get(), 1);
+    assert_eq!(cleanup_calls.get(), 1);
+
+    let cleanup_calls = Cell::new(0);
+    let error = state::restore_local_docker_slice_backup_with_rollback::<()>(
+        &rollback,
+        || {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: "injected target restore failure".to_string(),
+            })
+        },
+        || panic!("state capture must not run after target restore failure"),
+        |_| panic!("state persistence must not run when rollback capture fails"),
+        || {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: "injected rollback failure".to_string(),
+            })
+        },
+        || cleanup_calls.set(cleanup_calls.get() + 1),
+    )
+    .expect_err("a failed rollback must retain its recovery artifacts");
+    assert!(error
+        .to_string()
+        .contains("injected target restore failure"));
+    assert!(error.to_string().contains("injected rollback failure"));
+    assert!(error.to_string().contains(&rollback.manifest_path));
+    assert_eq!(cleanup_calls.get(), 0);
+
+    let rollback_calls = Cell::new(0);
+    let persistence_calls = Cell::new(0);
+    let cleanup_calls = Cell::new(0);
+    let error = state::restore_local_docker_slice_backup_with_rollback(
+        &rollback,
+        || Ok(()),
+        || Ok("restored state"),
+        |state| {
+            persistence_calls.set(persistence_calls.get() + 1);
+            if *state == "restored state" {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: "injected durable-state failure".to_string(),
+                })
+            } else {
+                Ok(())
+            }
+        },
+        || {
+            rollback_calls.set(rollback_calls.get() + 1);
+            Ok("rollback state")
+        },
+        || cleanup_calls.set(cleanup_calls.get() + 1),
+    )
+    .expect_err("durable-state failure must roll back the restored machine");
+    assert!(error.to_string().contains("injected durable-state failure"));
+    assert_eq!(rollback_calls.get(), 1);
+    assert_eq!(persistence_calls.get(), 2);
+    assert_eq!(cleanup_calls.get(), 1);
+
+    let persistence_calls = Cell::new(0);
+    let cleanup_calls = Cell::new(0);
+    let error = state::restore_local_docker_slice_backup_with_rollback(
+        &rollback,
+        || Ok(()),
+        || Ok("restored state"),
+        |_| {
+            persistence_calls.set(persistence_calls.get() + 1);
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: "injected persistent durable-state failure".to_string(),
+            })
+        },
+        || Ok("rollback state"),
+        || cleanup_calls.set(cleanup_calls.get() + 1),
+    )
+    .expect_err("failed rollback-state publication must retain recovery artifacts");
+    assert!(error
+        .to_string()
+        .contains("injected persistent durable-state failure"));
+    assert!(error.to_string().contains("automatic rollback also failed"));
+    assert!(error.to_string().contains(&rollback.manifest_path));
+    assert_eq!(persistence_calls.get(), 2);
+    assert_eq!(cleanup_calls.get(), 0);
+}
+
 #[test]
 fn linux_docker_slice_provisioner_validation_requires_an_existing_file() {
     let root = test_root("slice-provisioner");
@@ -750,6 +938,206 @@ exit 0
             "recovery must not replace the current container via `{forbidden}`: {calls}"
         );
     }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn backup_restore_replaces_the_slice_in_order_and_leaves_it_stopped() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("backup-restore-order");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    let container = root.join("container");
+    let running = root.join("running");
+    let volume = root.join("volume");
+    let archive = root.join("backup-home.tar.zst");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(&container, b"").expect("container state should write");
+    std::fs::write(&running, b"").expect("running state should write");
+    std::fs::write(&volume, b"").expect("volume state should write");
+    std::fs::write(&archive, b"backup archive").expect("backup archive should write");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [ "$1" = "info" ]; then
+  exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  case "$*" in
+    *relay-peer-protocol-version*) printf '%s\n' "$EXPECTED_PROTOCOL" ;;
+    *runtime-source-revision*) printf '%s\n' "$EXPECTED_REVISION" ;;
+    *'{{.Id}}'*) printf 'sha256:backup-image\n' ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  [ -f "$DOCKER_CONTAINER" ] || exit 1
+  if [ "${3:-}" = "-f" ]; then printf 'sha256:backup-image\n'; fi
+  exit 0
+fi
+if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
+  if [ -f "$DOCKER_RUNNING" ]; then printf 'true\n'; else printf 'false\n'; fi
+  exit 0
+fi
+if [ "$1" = "ps" ]; then
+  if [ -f "$DOCKER_CONTAINER" ]; then
+    if [ "${2:-}" = "-a" ] || [ -f "$DOCKER_RUNNING" ]; then printf 'saved-slice\n'; fi
+  fi
+  exit 0
+fi
+if [ "$1" = "stop" ] && [ "$2" = "saved-slice" ]; then
+  rm -f "$DOCKER_RUNNING"
+  exit 0
+fi
+if [ "$1" = "rm" ] && [ "${2:-}" = "saved-slice" ]; then
+  rm -f "$DOCKER_CONTAINER" "$DOCKER_RUNNING"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  [ -f "$DOCKER_VOLUME" ]
+  exit $?
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+  rm -f "$DOCKER_VOLUME"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  : > "$DOCKER_VOLUME"
+  exit 0
+fi
+if [ "$1" = "create" ]; then
+  previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--name" ] && [ "$argument" = "saved-slice" ]; then
+      : > "$DOCKER_CONTAINER"
+      break
+    fi
+    previous="$argument"
+  done
+  exit 0
+fi
+if [ "$1" = "start" ] && [ "$2" = "saved-slice" ]; then
+  : > "$DOCKER_RUNNING"
+  exit 0
+fi
+case "$*" in
+  *'cat /opt/chariox-slice/runtime-source-revision'*) printf '%s\n' "$EXPECTED_REVISION" ;;
+esac
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("slice-linux-docker/provision-linux-docker-slice.sh");
+    let mut paths = vec![bin];
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
+    let revision = format!("sha256:{}", "a".repeat(64));
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("restore-state")
+        .env("PATH", path)
+        .env("TMPDIR", &root)
+        .env("DOCKER_LOG", &log)
+        .env("DOCKER_CONTAINER", &container)
+        .env("DOCKER_RUNNING", &running)
+        .env("DOCKER_VOLUME", &volume)
+        .env(
+            "EXPECTED_PROTOCOL",
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION.to_string(),
+        )
+        .env("EXPECTED_REVISION", &revision)
+        .env("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST", &revision)
+        .env("CHARIOX_SLICE_NAME", "saved-slice")
+        .env("CHARIOX_SLICE_HOME_VOLUME", "saved-slice-home")
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", "backup-image")
+        .env("CHARIOX_SLICE_BASE_IMAGE", "runtime-image")
+        .env("CHARIOX_SLICE_BUILD_IMAGE", "never")
+        .env("CHARIOX_SLICE_SAVED_HOME_ARCHIVE", &archive)
+        .env("CHARIOX_SLICE_START_DESKTOP", "1")
+        .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "1")
+        .env("CHARIOX_SLICE_START_RUNTIME", "1")
+        .output()
+        .expect("slice restore command should execute");
+    assert!(
+        output.status.success(),
+        "slice restore failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = std::fs::read_to_string(&log).expect("fake Docker log should read");
+    let calls = calls.lines().collect::<Vec<_>>();
+    let position = |needle: &str| {
+        calls
+            .iter()
+            .position(|call| call.starts_with(needle))
+            .unwrap_or_else(|| panic!("missing Docker call `{needle}`: {calls:?}"))
+    };
+    let remove_container = position("rm saved-slice");
+    let remove_volume = position("volume rm saved-slice-home");
+    let create_volume = position("volume create saved-slice-home");
+    let create_container = position("create --name saved-slice ");
+    let start_container = calls
+        .iter()
+        .position(|call| *call == "start saved-slice")
+        .expect("replacement container should be started for configuration");
+    let stop_container = calls
+        .iter()
+        .rposition(|call| *call == "stop saved-slice")
+        .expect("restored container should be stopped");
+    assert!(
+        remove_container < remove_volume
+            && remove_volume < create_volume
+            && create_volume < create_container
+            && create_container < start_container
+            && start_container < stop_container,
+        "restore lifecycle must be ordered: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|call| {
+            call.starts_with("cp -L ")
+                && call.contains(archive.to_string_lossy().as_ref())
+                && call.contains("saved-slice-home-restore-")
+        }),
+        "restore must copy the selected archive into the replacement volume: {calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.contains("bash -lc /opt/chariox-slice/slice-screen.sh start")),
+        "restore must not start the desktop: {calls:?}"
+    );
+    for forbidden_suffix in [
+        " saved-slice /opt/chariox-slice/start-runtime.sh",
+        " saved-slice /opt/chariox-slice/start-providers.sh",
+    ] {
+        assert!(
+            !calls.iter().any(|call| call.ends_with(forbidden_suffix)),
+            "restore must leave services stopped and must not run `{forbidden_suffix}`: {calls:?}"
+        );
+    }
+    assert!(
+        container.exists(),
+        "replacement container should remain available"
+    );
+    assert!(
+        !running.exists(),
+        "replacement container must remain stopped"
+    );
+    assert!(
+        volume.exists(),
+        "replacement home volume should remain available"
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }
