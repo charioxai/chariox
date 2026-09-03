@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
 use crate::error::DaemonError;
 use crate::local::{
     RoomEnvironmentHumanAction, RoomEnvironmentPointerButton, SubmitRoomEnvironmentActionRequest,
@@ -11,7 +14,9 @@ use crate::session::{
 };
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerInputAction,
-    RoomComputerPointerButton,
+    RoomComputerKeyboardInput, RoomComputerPointerButton, ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
+    ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES, ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
+    ROOM_COMPUTER_SCROLL_MAX_STEPS,
 };
 
 use super::KernelRuntimeState;
@@ -31,16 +36,19 @@ impl KernelRuntimeState {
             .map_err(human_action_environment_error)?;
         validate_human_action_idempotency_key(&request).map_err(human_action_environment_error)?;
 
-        let (input_action, arguments) =
+        let (action_kind, input_action, arguments) =
             computer_input_action(&request.action, request.viewport_revision);
-        let action_request = EnvironmentActionRequest::computer_mutation(
+        let mut action_request = EnvironmentActionRequest::computer_mutation(
             &actor.actor_id,
             request.runtime_generation,
-            "pointer_click",
+            action_kind,
             environment.focused_tab_id.as_deref(),
         )
         .with_idempotency_key(request.idempotency_key.trim())
         .with_arguments(arguments);
+        if let Some(fingerprint) = self.keyboard_input_idempotency_fingerprint(&request.action) {
+            action_request = action_request.with_idempotency_fingerprint(fingerprint);
+        }
         if let Some(ActionAdmission::Existing { action_id, .. }) = self
             .existing_room_environment_action(&request.session_id, &action_request)
             .map_err(human_action_environment_error)?
@@ -188,6 +196,29 @@ impl KernelRuntimeState {
             }
         }
     }
+
+    fn keyboard_input_idempotency_fingerprint(
+        &self,
+        action: &RoomEnvironmentHumanAction,
+    ) -> Option<[u8; 32]> {
+        let (domain, value) = match action {
+            RoomEnvironmentHumanAction::KeyboardText { text } => {
+                (b"text".as_slice(), text.as_str())
+            }
+            RoomEnvironmentHumanAction::KeyboardKey { key, .. } => {
+                (b"key".as_slice(), key.as_str())
+            }
+            _ => return None,
+        };
+        let config = self.owned.config_projection.snapshot();
+        let mut fingerprint = Hmac::<Sha256>::new_from_slice(config.relay_private_key.as_bytes())
+            .expect("HMAC accepts relay identity keys of any length");
+        fingerprint.update(b"chariox-room-computer-keyboard-idempotency-v1\0");
+        fingerprint.update(domain);
+        fingerprint.update(b"\0");
+        fingerprint.update(value.as_bytes());
+        Some(fingerprint.finalize().into_bytes().into())
+    }
 }
 
 fn validate_human_action_authority(
@@ -234,6 +265,91 @@ fn validate_human_action_freshness(
         });
     }
     match &request.action {
+        RoomEnvironmentHumanAction::PointerMove { x, y } => {
+            if *x >= environment.viewport.desktop_pixel_width
+                || *y >= environment.viewport.desktop_pixel_height
+            {
+                return Err(EnvironmentError::PointerOutOfBounds {
+                    x: *x,
+                    y: *y,
+                    width: environment.viewport.desktop_pixel_width,
+                    height: environment.viewport.desktop_pixel_height,
+                });
+            }
+        }
+        RoomEnvironmentHumanAction::PointerDrag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            ..
+        } => {
+            for (x, y) in [(*from_x, *from_y), (*to_x, *to_y)] {
+                if x >= environment.viewport.desktop_pixel_width
+                    || y >= environment.viewport.desktop_pixel_height
+                {
+                    return Err(EnvironmentError::PointerOutOfBounds {
+                        x,
+                        y,
+                        width: environment.viewport.desktop_pixel_width,
+                        height: environment.viewport.desktop_pixel_height,
+                    });
+                }
+            }
+        }
+        RoomEnvironmentHumanAction::PointerScroll {
+            x,
+            y,
+            horizontal_steps,
+            vertical_steps,
+        } => {
+            if *x >= environment.viewport.desktop_pixel_width
+                || *y >= environment.viewport.desktop_pixel_height
+            {
+                return Err(EnvironmentError::PointerOutOfBounds {
+                    x: *x,
+                    y: *y,
+                    width: environment.viewport.desktop_pixel_width,
+                    height: environment.viewport.desktop_pixel_height,
+                });
+            }
+            if (*horizontal_steps == 0 && *vertical_steps == 0)
+                || horizontal_steps.unsigned_abs() > ROOM_COMPUTER_SCROLL_MAX_STEPS
+                || vertical_steps.unsigned_abs() > ROOM_COMPUTER_SCROLL_MAX_STEPS
+            {
+                return Err(EnvironmentError::InvalidScrollSteps {
+                    horizontal_steps: *horizontal_steps,
+                    vertical_steps: *vertical_steps,
+                    max_steps: ROOM_COMPUTER_SCROLL_MAX_STEPS,
+                });
+            }
+        }
+        RoomEnvironmentHumanAction::KeyboardText { text } => {
+            let utf8_byte_count = text.as_str().len();
+            if utf8_byte_count == 0 || utf8_byte_count > ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES
+            {
+                return Err(EnvironmentError::InvalidKeyboardText {
+                    utf8_byte_count,
+                    max_utf8_bytes: ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
+                });
+            }
+        }
+        RoomEnvironmentHumanAction::KeyboardKey { key, repeat } => {
+            let value = key.as_str();
+            if value.is_empty()
+                || value.len() > ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES
+                || value.starts_with('-')
+                || !value.bytes().all(|byte| byte.is_ascii_graphic())
+            {
+                return Err(EnvironmentError::InvalidKeyboardKey);
+            }
+            if *repeat == 0 || *repeat > ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT {
+                return Err(EnvironmentError::InvalidKeyboardRepeat {
+                    repeat: *repeat,
+                    max_repeat: ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
+                });
+            }
+        }
         RoomEnvironmentHumanAction::PointerClick {
             x, y, click_count, ..
         } => {
@@ -260,20 +376,96 @@ fn validate_human_action_freshness(
 fn computer_input_action(
     action: &RoomEnvironmentHumanAction,
     viewport_revision: u64,
-) -> (RoomComputerInputAction, EnvironmentActionArguments) {
+) -> (
+    &'static str,
+    RoomComputerInputAction,
+    EnvironmentActionArguments,
+) {
     match action {
+        RoomEnvironmentHumanAction::PointerMove { x, y } => (
+            "pointer_move",
+            RoomComputerInputAction::PointerMove { x: *x, y: *y },
+            EnvironmentActionArguments::PointerMove {
+                x: *x,
+                y: *y,
+                viewport_revision,
+            },
+        ),
+        RoomEnvironmentHumanAction::PointerDrag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            button,
+        } => {
+            let transport_button = computer_pointer_button(*button);
+            (
+                "pointer_drag",
+                RoomComputerInputAction::PointerDrag {
+                    from_x: *from_x,
+                    from_y: *from_y,
+                    to_x: *to_x,
+                    to_y: *to_y,
+                    button: transport_button,
+                },
+                EnvironmentActionArguments::PointerDrag {
+                    from_x: *from_x,
+                    from_y: *from_y,
+                    to_x: *to_x,
+                    to_y: *to_y,
+                    button: *button,
+                    viewport_revision,
+                },
+            )
+        }
+        RoomEnvironmentHumanAction::PointerScroll {
+            x,
+            y,
+            horizontal_steps,
+            vertical_steps,
+        } => (
+            "pointer_scroll",
+            RoomComputerInputAction::PointerScroll {
+                x: *x,
+                y: *y,
+                horizontal_steps: *horizontal_steps,
+                vertical_steps: *vertical_steps,
+            },
+            EnvironmentActionArguments::PointerScroll {
+                x: *x,
+                y: *y,
+                horizontal_steps: *horizontal_steps,
+                vertical_steps: *vertical_steps,
+                viewport_revision,
+            },
+        ),
+        RoomEnvironmentHumanAction::KeyboardText { text } => (
+            "keyboard_text",
+            RoomComputerInputAction::KeyboardText {
+                input: RoomComputerKeyboardInput::new(text.as_str().to_string()),
+            },
+            EnvironmentActionArguments::KeyboardText {
+                utf8_byte_count: text.as_str().len() as u32,
+                character_count: text.as_str().chars().count() as u32,
+            },
+        ),
+        RoomEnvironmentHumanAction::KeyboardKey { key, repeat } => (
+            "keyboard_key",
+            RoomComputerInputAction::KeyboardKey {
+                input: RoomComputerKeyboardInput::new(key.as_str().to_string()),
+                repeat: *repeat,
+            },
+            EnvironmentActionArguments::KeyboardKey { repeat: *repeat },
+        ),
         RoomEnvironmentHumanAction::PointerClick {
             x,
             y,
             button,
             click_count,
         } => {
-            let transport_button = match button {
-                RoomEnvironmentPointerButton::Left => RoomComputerPointerButton::Left,
-                RoomEnvironmentPointerButton::Middle => RoomComputerPointerButton::Middle,
-                RoomEnvironmentPointerButton::Right => RoomComputerPointerButton::Right,
-            };
+            let transport_button = computer_pointer_button(*button);
             (
+                "pointer_click",
                 RoomComputerInputAction::PointerClick {
                     x: *x,
                     y: *y,
@@ -289,6 +481,14 @@ fn computer_input_action(
                 },
             )
         }
+    }
+}
+
+fn computer_pointer_button(button: RoomEnvironmentPointerButton) -> RoomComputerPointerButton {
+    match button {
+        RoomEnvironmentPointerButton::Left => RoomComputerPointerButton::Left,
+        RoomEnvironmentPointerButton::Middle => RoomComputerPointerButton::Middle,
+        RoomEnvironmentPointerButton::Right => RoomComputerPointerButton::Right,
     }
 }
 

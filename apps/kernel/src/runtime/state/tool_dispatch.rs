@@ -27,7 +27,9 @@ mod script;
 mod skill_package_response;
 mod slice;
 pub(super) use slice::{
-    capture_room_environment_screenshot, run_room_pointer_click, run_room_secret_text_input,
+    capture_room_environment_screenshot, run_room_keyboard_key, run_room_keyboard_text,
+    run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move, run_room_pointer_scroll,
+    run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;

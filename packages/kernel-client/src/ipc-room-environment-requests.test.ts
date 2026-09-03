@@ -38,7 +38,7 @@ test("Room Environment placement uses shared requests", () => {
 })
 
 test("Room Environment screenshot transfer uses bounded protocol 296 requests", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 302)
   assert.deepEqual(
     captureRoomEnvironmentScreenshotRequest("session-1", "attachment-1"),
     {
@@ -69,7 +69,7 @@ test("Room Environment screenshot transfer uses bounded protocol 296 requests", 
 })
 
 test("Room Environment state request matches protocol 296", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 302)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -194,7 +194,7 @@ test("Room Environment state request matches protocol 296", () => {
 })
 
 test("Room Environment event replay request matches protocol 296", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 302)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -366,7 +366,7 @@ test("Room Environment viewport update carries only dimensions and observed revi
 })
 
 test("Room Environment pointer update carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 302)
   assert.deepEqual(updateRoomEnvironmentPointerRequest("session-1", 3, 7, { x: 320, y: 180 }), {
     UpdateRoomEnvironmentPointer: {
       session_id: "session-1",
@@ -424,7 +424,7 @@ test("Room Environment Action cancellation request cannot forge Actor identity",
 })
 
 test("Room Environment pointer click submission carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 301)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 302)
   assert.deepEqual(
     submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-1", {
       kind: "pointer_click",
@@ -450,4 +450,118 @@ test("Room Environment pointer click submission carries observed generations but
     },
   )
 
+})
+
+test("Room Environment pointer motion submissions carry canonical desktop coordinates", () => {
+  assert.deepEqual(
+    submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-move-1", {
+      kind: "pointer_move",
+      x: 640,
+      y: 400,
+    }),
+    {
+      SubmitRoomEnvironmentAction: {
+        session_id: "session-1",
+        runtime_generation: 4,
+        viewport_revision: 9,
+        idempotency_key: "input-move-1",
+        action: {
+          kind: "pointer_move",
+          x: 640,
+          y: 400,
+        },
+      },
+    },
+  )
+  assert.deepEqual(
+    submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-drag-1", {
+      kind: "pointer_drag",
+      from_x: 120,
+      from_y: 160,
+      to_x: 720,
+      to_y: 560,
+      button: "left",
+    }),
+    {
+      SubmitRoomEnvironmentAction: {
+        session_id: "session-1",
+        runtime_generation: 4,
+        viewport_revision: 9,
+        idempotency_key: "input-drag-1",
+        action: {
+          kind: "pointer_drag",
+          from_x: 120,
+          from_y: 160,
+          to_x: 720,
+          to_y: 560,
+          button: "left",
+        },
+      },
+    },
+  )
+  assert.deepEqual(
+    submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-scroll-1", {
+      kind: "pointer_scroll",
+      x: 640,
+      y: 400,
+      horizontal_steps: -3,
+      vertical_steps: 5,
+    }),
+    {
+      SubmitRoomEnvironmentAction: {
+        session_id: "session-1",
+        runtime_generation: 4,
+        viewport_revision: 9,
+        idempotency_key: "input-scroll-1",
+        action: {
+          kind: "pointer_scroll",
+          x: 640,
+          y: 400,
+          horizontal_steps: -3,
+          vertical_steps: 5,
+        },
+      },
+    },
+  )
+})
+
+test("Room Environment keyboard submissions preserve text, chords, and repeat counts", () => {
+  assert.deepEqual(
+    submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-text-1", {
+      kind: "keyboard_text",
+      text: "Grüße 世界",
+    }),
+    {
+      SubmitRoomEnvironmentAction: {
+        session_id: "session-1",
+        runtime_generation: 4,
+        viewport_revision: 9,
+        idempotency_key: "input-text-1",
+        action: {
+          kind: "keyboard_text",
+          text: "Grüße 世界",
+        },
+      },
+    },
+  )
+  assert.deepEqual(
+    submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-key-1", {
+      kind: "keyboard_key",
+      key: "ctrl+shift+p",
+      repeat: 3,
+    }),
+    {
+      SubmitRoomEnvironmentAction: {
+        session_id: "session-1",
+        runtime_generation: 4,
+        viewport_revision: 9,
+        idempotency_key: "input-key-1",
+        action: {
+          kind: "keyboard_key",
+          key: "ctrl+shift+p",
+          repeat: 3,
+        },
+      },
+    },
+  )
 })

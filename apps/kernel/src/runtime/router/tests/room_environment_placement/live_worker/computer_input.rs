@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn bound_worker_applies_authenticated_computer_input_without_a_browser_controller() {
-    run_test(applies_authenticated_computer_input_without_a_browser_controller);
+fn bound_worker_applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller() {
+    run_test(applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller);
 }
 
-async fn applies_authenticated_computer_input_without_a_browser_controller() {
+async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller() {
     let _guard = crate::env_lock::lock();
     let mut worker_state = TestState::new();
     let home = DaemonConfig::for_tests();
@@ -19,10 +19,11 @@ async fn applies_authenticated_computer_input_without_a_browser_controller() {
         });
     std::fs::create_dir_all(&worker_state.root).expect("worker state root should be created");
     let script = worker_state.root.join("slice-screen.sh");
-    let log = worker_state.root.join("pointer-click.log");
+    let command_log = worker_state.root.join("computer-input-command.log");
+    let input_log = worker_state.root.join("computer-input-stdin.log");
     std::fs::write(
         &script,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_POINTER_CLICK_LOG\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_COMPUTER_INPUT_COMMAND_LOG\"\ncase \"${1:-}\" in computer-type-stdin|computer-key-stdin) cat >> \"$CHARIOX_COMPUTER_INPUT_STDIN_LOG\" ;; esac\n",
     )
     .expect("screen helper should be written");
     #[cfg(unix)]
@@ -32,25 +33,28 @@ async fn applies_authenticated_computer_input_without_a_browser_controller() {
             .expect("screen helper should be executable");
     }
     std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
-    std::env::set_var("CHARIOX_POINTER_CLICK_LOG", &log);
+    std::env::set_var("CHARIOX_COMPUTER_INPUT_COMMAND_LOG", &command_log);
+    std::env::set_var("CHARIOX_COMPUTER_INPUT_STDIN_LOG", &input_log);
     let (worker, _) = worker_state.router();
     let command =
-        crate::transport::room_browser_controller::RoomBrowserControllerCommand::ComputerInput {
-            action_id: "action-1".to_string(),
-            actor_id: "user:owner-1".to_string(),
-            runtime_generation: 1,
-            viewport_revision: 1,
-            desktop_pixel_width: 1280,
-            desktop_pixel_height: 800,
-            action:
-                crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
-                    x: 400,
-                    y: 240,
-                    button:
-                        crate::transport::room_browser_controller::RoomComputerPointerButton::Middle,
-                    click_count: 1,
-                },
+        |action_id: &str,
+         action: crate::transport::room_browser_controller::RoomComputerInputAction| {
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::ComputerInput {
+                action_id: action_id.to_string(),
+                actor_id: "user:owner-1".to_string(),
+                runtime_generation: 1,
+                viewport_revision: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action,
+            }
         };
+    let click = crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
+        x: 400,
+        y: 240,
+        button: crate::transport::room_browser_controller::RoomComputerPointerButton::Middle,
+        click_count: 1,
+    };
 
     let denied = worker
         .relay_room_browser_controller(
@@ -58,36 +62,91 @@ async fn applies_authenticated_computer_input_without_a_browser_controller() {
             &home.relay_public_key,
             "room-1",
             "slice-1",
-            command.clone(),
+            command("denied-click", click.clone()),
         )
         .await
         .expect_err("a mismatched home kernel must be rejected");
     assert!(denied
         .to_string()
         .contains("browser_controller_scope_denied"));
-    assert!(!log.exists(), "denied input must not reach the helper");
+    assert!(
+        !command_log.exists(),
+        "denied input must not reach the helper"
+    );
 
-    let result = worker
-        .relay_room_browser_controller(
-            "home-kernel",
-            &home.relay_public_key,
-            "room-1",
-            "slice-1",
-            command,
-        )
-        .await
-        .expect("the provisioned home should apply Computer input");
+    let actions = [
+        ("click", click),
+        (
+            "drag",
+            crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
+                from_x: 120,
+                from_y: 160,
+                to_x: 720,
+                to_y: 560,
+                button: crate::transport::room_browser_controller::RoomComputerPointerButton::Left,
+            },
+        ),
+        (
+            "scroll",
+            crate::transport::room_browser_controller::RoomComputerInputAction::PointerScroll {
+                x: 640,
+                y: 400,
+                horizontal_steps: -3,
+                vertical_steps: 5,
+            },
+        ),
+        (
+            "text",
+            crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText {
+                input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                    "Grüße 世界".to_string(),
+                ),
+            },
+        ),
+        (
+            "key",
+            crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey {
+                input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                    "ctrl+shift+p".to_string(),
+                ),
+                repeat: 3,
+            },
+        ),
+    ];
+    for (action_id, action) in actions {
+        let result = worker
+            .relay_room_browser_controller(
+                "home-kernel",
+                &home.relay_public_key,
+                "room-1",
+                "slice-1",
+                command(action_id, action),
+            )
+            .await
+            .expect("the provisioned home should apply Computer input");
+        assert_eq!(
+            result,
+            crate::transport::room_browser_controller::RoomBrowserControllerResult::ComputerInputApplied {
+                action_id: action_id.to_string(),
+            }
+        );
+    }
     assert_eq!(
-        result,
-        crate::transport::room_browser_controller::RoomBrowserControllerResult::ComputerInputApplied {
-            action_id: "action-1".to_string(),
-        }
+        std::fs::read_to_string(&command_log).expect("worker input commands should be logged"),
+        concat!(
+            "pointer-click 400 240 middle 1\n",
+            "pointer-drag 120 160 720 560 left\n",
+            "pointer-scroll 640 400 -3 5\n",
+            "computer-type-stdin\n",
+            "computer-key-stdin 3\n",
+        )
     );
     assert_eq!(
-        std::fs::read_to_string(&log).expect("worker click should be logged"),
-        "pointer-click 400 240 middle 1\n"
+        std::fs::read_to_string(&input_log).expect("worker keyboard input should reach stdin"),
+        "Grüße 世界ctrl+shift+p"
     );
 
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
-    std::env::remove_var("CHARIOX_POINTER_CLICK_LOG");
+    std::env::remove_var("CHARIOX_COMPUTER_INPUT_COMMAND_LOG");
+    std::env::remove_var("CHARIOX_COMPUTER_INPUT_STDIN_LOG");
 }

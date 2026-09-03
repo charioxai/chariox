@@ -542,8 +542,8 @@ fn linux_docker_headed_browser_reopens_tabs_after_snapshot_quiescence() {
 }
 
 #[test]
-fn linux_docker_pointer_click_preserves_desktop_focus_and_button() {
-    let root = test_root("slice-pointer-click");
+fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
+    let root = test_root("slice-computer-input");
     let bin = root.join("bin");
     let home = root.join("home");
     std::fs::create_dir_all(&bin).expect("stub bin should be created");
@@ -563,34 +563,81 @@ fn linux_docker_pointer_click_preserves_desktop_focus_and_button() {
     write_executable("timeout", "#!/bin/sh\nshift\nexec \"$@\"\n");
     write_executable(
         "xdotool",
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\ncase \"$*\" in *'--file -'*) cat >> \"$CHARIOX_XDOTOOL_STDIN_LOG\" ;; esac\n",
     );
     let xdotool_log = root.join("xdotool.log");
+    let xdotool_stdin_log = root.join("xdotool-stdin.log");
     let path = format!(
         "{}:{}",
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let output = Command::new("bash")
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
-        )
-        .args(["pointer-click", "320", "180", "right", "2"])
-        .env("PATH", path)
-        .env("HOME", &home)
-        .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
-        .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
-        .output()
-        .expect("pointer helper should run");
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh");
+    let run = |args: &[&str], stdin: Option<&str>| {
+        let mut command = Command::new("bash");
+        command
+            .arg(&script)
+            .args(args)
+            .env("PATH", &path)
+            .env("HOME", &home)
+            .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
+            .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
+            .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log);
+        let output = if let Some(input) = stdin {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("computer input helper should start");
+            child
+                .stdin
+                .take()
+                .expect("computer input stdin should be piped")
+                .write_all(input.as_bytes())
+                .expect("computer input should be written");
+            child
+                .wait_with_output()
+                .expect("computer input helper should finish")
+        } else {
+            command.output().expect("computer input helper should run")
+        };
+        assert!(
+            output.status.success(),
+            "computer input helper {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
 
-    assert!(
-        output.status.success(),
-        "pointer helper failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    run(&["move", "20", "30"], None);
+    run(&["pointer-click", "320", "180", "right", "2"], None);
+    run(
+        &["pointer-drag", "120", "160", "720", "560", "middle"],
+        None,
     );
+    run(&["pointer-scroll", "640", "400", "-3", "5"], None);
+    run(&["computer-type-stdin"], Some("Grüße 世界"));
+    run(&["computer-key-stdin", "3"], Some("ctrl+shift+p"));
+
     assert_eq!(
         std::fs::read_to_string(&xdotool_log).expect("xdotool call should be logged"),
-        "mousemove 320 180 click --repeat 2 --delay 80 3\n"
+        concat!(
+            "mousemove 20 30\n",
+            "mousemove 320 180 click --repeat 2 --delay 80 3\n",
+            "mousemove 120 160 mousedown 2 mousemove --sync 720 560 mouseup 2\n",
+            "mousemove 640 400\n",
+            "click --repeat 3 --delay 20 6\n",
+            "click --repeat 5 --delay 20 5\n",
+            "type --clearmodifiers --delay 5 --file -\n",
+            "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&xdotool_stdin_log)
+            .expect("keyboard text should reach xdotool stdin"),
+        "Grüße 世界"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }

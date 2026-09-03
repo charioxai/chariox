@@ -37,6 +37,33 @@ pub enum EnvironmentPointerButton {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnvironmentActionArguments {
+    PointerMove {
+        x: u32,
+        y: u32,
+        viewport_revision: u64,
+    },
+    PointerDrag {
+        from_x: u32,
+        from_y: u32,
+        to_x: u32,
+        to_y: u32,
+        button: EnvironmentPointerButton,
+        viewport_revision: u64,
+    },
+    PointerScroll {
+        x: u32,
+        y: u32,
+        horizontal_steps: i16,
+        vertical_steps: i16,
+        viewport_revision: u64,
+    },
+    KeyboardText {
+        utf8_byte_count: u32,
+        character_count: u32,
+    },
+    KeyboardKey {
+        repeat: u16,
+    },
     PointerClick {
         x: u32,
         y: u32,
@@ -125,6 +152,7 @@ pub enum EnvironmentActionCancellationReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentActionRequest {
     pub(crate) idempotency_key: Option<String>,
+    idempotency_fingerprint: Option<[u8; 32]>,
     pub(crate) arguments: Option<EnvironmentActionArguments>,
     pub(crate) actor_id: String,
     pub(crate) runtime_generation: u64,
@@ -146,6 +174,7 @@ impl EnvironmentActionRequest {
         let tab_id = tab_id.into();
         Self {
             idempotency_key: None,
+            idempotency_fingerprint: None,
             arguments: None,
             actor_id: actor_id.into(),
             runtime_generation,
@@ -187,6 +216,7 @@ impl EnvironmentActionRequest {
         }
         Self {
             idempotency_key: None,
+            idempotency_fingerprint: None,
             arguments: None,
             actor_id: actor_id.into(),
             runtime_generation,
@@ -208,8 +238,14 @@ impl EnvironmentActionRequest {
         self
     }
 
+    pub(crate) fn with_idempotency_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
+        self.idempotency_fingerprint = Some(fingerprint);
+        self
+    }
+
     pub(crate) fn matches_idempotent_operation(&self, other: &Self) -> bool {
         self.idempotency_key == other.idempotency_key
+            && self.idempotency_fingerprint == other.idempotency_fingerprint
             && self.arguments == other.arguments
             && self.actor_id == other.actor_id
             && self.mode == other.mode

@@ -7,12 +7,13 @@ use crate::transport::relay_peer::{
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 use crate::transport::room_browser_controller::{
-    RoomComputerInputAction, RoomComputerPointerButton, RoomComputerSecretInput,
+    RoomComputerInputAction, RoomComputerKeyboardInput, RoomComputerPointerButton,
+    RoomComputerSecretInput,
 };
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 36);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 37);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -54,8 +55,8 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 37);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -123,6 +124,110 @@ fn room_controller_protocol_shapes_are_versioned() {
                 "desktop_pixel_width":1280,
                 "desktop_pixel_height":800,
                 "action":{"kind":"pointer_click","x":320,"y":180,"button":"right","click_count":2}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-move".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::PointerMove { x: 640, y: 400 },
+            },
+            serde_json::json!({
+                "kind":"computer_input","action_id":"action-move","actor_id":"user:owner-1",
+                "runtime_generation":4,"viewport_revision":9,"desktop_pixel_width":1280,
+                "desktop_pixel_height":800,"action":{"kind":"pointer_move","x":640,"y":400}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-drag".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::PointerDrag {
+                    from_x: 120,
+                    from_y: 160,
+                    to_x: 720,
+                    to_y: 560,
+                    button: RoomComputerPointerButton::Left,
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input","action_id":"action-drag","actor_id":"user:owner-1",
+                "runtime_generation":4,"viewport_revision":9,"desktop_pixel_width":1280,
+                "desktop_pixel_height":800,"action":{"kind":"pointer_drag","from_x":120,
+                "from_y":160,"to_x":720,"to_y":560,"button":"left"}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-scroll".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::PointerScroll {
+                    x: 640,
+                    y: 400,
+                    horizontal_steps: -3,
+                    vertical_steps: 5,
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input","action_id":"action-scroll","actor_id":"user:owner-1",
+                "runtime_generation":4,"viewport_revision":9,"desktop_pixel_width":1280,
+                "desktop_pixel_height":800,"action":{"kind":"pointer_scroll","x":640,"y":400,
+                "horizontal_steps":-3,"vertical_steps":5}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-text".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::KeyboardText {
+                    input: RoomComputerKeyboardInput::new(
+                        "sensitive-keyboard-text-世界".to_string(),
+                    ),
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input","action_id":"action-text","actor_id":"user:owner-1",
+                "runtime_generation":4,"viewport_revision":9,"desktop_pixel_width":1280,
+                "desktop_pixel_height":800,"action":{"kind":"keyboard_text",
+                "input":"sensitive-keyboard-text-世界"}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-key".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::KeyboardKey {
+                    input: RoomComputerKeyboardInput::new(
+                        "ctrl+shift+sensitive-keyboard-key".to_string(),
+                    ),
+                    repeat: 3,
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input","action_id":"action-key","actor_id":"user:owner-1",
+                "runtime_generation":4,"viewport_revision":9,"desktop_pixel_width":1280,
+                "desktop_pixel_height":800,"action":{"kind":"keyboard_key",
+                "input":"ctrl+shift+sensitive-keyboard-key","repeat":3}
             }),
         ),
         (
@@ -273,6 +378,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         assert!(
             !format!("{request:?}").contains("sensitive-selector-fixture"),
             "relay diagnostics must not print compatibility selectors"
+        );
+        assert!(
+            !format!("{request:?}").contains("sensitive-keyboard"),
+            "relay diagnostics must not print keyboard input"
         );
         assert_eq!(serde_json::to_value(&request).unwrap(), wire);
         assert_eq!(
@@ -436,7 +545,7 @@ fn room_controller_protocol_shapes_are_versioned() {
 }
 
 #[test]
-fn computer_secret_input_debug_output_is_redacted() {
+fn computer_secret_and_keyboard_input_debug_output_is_redacted() {
     let command = RoomBrowserControllerCommand::ComputerInput {
         action_id: "action-secret".into(),
         actor_id: "agent:agent-1".into(),
@@ -452,4 +561,18 @@ fn computer_secret_input_debug_output_is_redacted() {
     let debug = format!("{command:?}");
     assert!(debug.contains("[redacted computer secret input]"));
     assert!(!debug.contains("must-not-appear-in-debug"));
+
+    for action in [
+        RoomComputerInputAction::KeyboardText {
+            input: RoomComputerKeyboardInput::new("must-not-appear-text".into()),
+        },
+        RoomComputerInputAction::KeyboardKey {
+            input: RoomComputerKeyboardInput::new("must-not-appear-key".into()),
+            repeat: 1,
+        },
+    ] {
+        let debug = format!("{action:?}");
+        assert!(debug.contains("[redacted computer keyboard input]"));
+        assert!(!debug.contains("must-not-appear"));
+    }
 }

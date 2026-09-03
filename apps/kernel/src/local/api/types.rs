@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 301 adds integrity-verifiable slice backup restore.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 301;
+/// Version 302 adds complete human Computer mouse and keyboard input.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 302;

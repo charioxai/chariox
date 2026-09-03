@@ -12,7 +12,7 @@ mod slice_browser;
 use slice_browser::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
-const ROOM_POINTER_CLICK_TIMEOUT_MS: u64 = 5_000;
+const ROOM_COMPUTER_INPUT_TIMEOUT_MS: u64 = 5_000;
 const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 
 impl KernelRuntimeState {
@@ -643,18 +643,14 @@ pub(crate) async fn run_room_pointer_click(
         || x >= desktop_pixel_width
         || y >= desktop_pixel_height
     {
-        return Err(room_pointer_click_error(
+        return Err(room_computer_input_error(
             "environment_pointer_out_of_bounds",
         ));
     }
     if !matches!(click_count, 1 | 2) {
-        return Err(room_pointer_click_error("environment_invalid_click_count"));
+        return Err(room_computer_input_error("environment_invalid_click_count"));
     }
-    let button = match button {
-        crate::transport::room_browser_controller::RoomComputerPointerButton::Left => "left",
-        crate::transport::room_browser_controller::RoomComputerPointerButton::Middle => "middle",
-        crate::transport::room_browser_controller::RoomComputerPointerButton::Right => "right",
-    };
+    let button = room_computer_pointer_button_arg(button);
     let output = run_slice_screen_command_inner(
         vec![
             "pointer-click".to_string(),
@@ -664,14 +660,218 @@ pub(crate) async fn run_room_pointer_click(
             click_count.to_string(),
         ],
         None,
-        Some(ROOM_POINTER_CLICK_TIMEOUT_MS),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
     )
     .await?;
     if output.success {
         Ok(())
     } else {
-        Err(room_pointer_click_error(&format!(
+        Err(room_computer_input_error(&format!(
             "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_pointer_move(
+    x: u32,
+    y: u32,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || x >= desktop_pixel_width
+        || y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    let output = run_slice_screen_command_inner(
+        vec!["move".to_string(), x.to_string(), y.to_string()],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_pointer_drag(
+    from_x: u32,
+    from_y: u32,
+    to_x: u32,
+    to_y: u32,
+    button: crate::transport::room_browser_controller::RoomComputerPointerButton,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || from_x >= desktop_pixel_width
+        || from_y >= desktop_pixel_height
+        || to_x >= desktop_pixel_width
+        || to_y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    let button = room_computer_pointer_button_arg(button);
+    let output = run_slice_screen_command_inner(
+        vec![
+            "pointer-drag".to_string(),
+            from_x.to_string(),
+            from_y.to_string(),
+            to_x.to_string(),
+            to_y.to_string(),
+            button.to_string(),
+        ],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_pointer_scroll(
+    x: u32,
+    y: u32,
+    horizontal_steps: i16,
+    vertical_steps: i16,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || x >= desktop_pixel_width
+        || y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    if (horizontal_steps == 0 && vertical_steps == 0)
+        || horizontal_steps.unsigned_abs()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_SCROLL_MAX_STEPS
+        || vertical_steps.unsigned_abs()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_SCROLL_MAX_STEPS
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_scroll_steps",
+        ));
+    }
+    let output = run_slice_screen_command_inner(
+        vec![
+            "pointer-scroll".to_string(),
+            x.to_string(),
+            y.to_string(),
+            horizontal_steps.to_string(),
+            vertical_steps.to_string(),
+        ],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_keyboard_text(
+    input: crate::transport::room_browser_controller::RoomComputerKeyboardInput,
+) -> Result<(), DaemonError> {
+    if input.as_str().is_empty()
+        || input.as_str().len()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_keyboard_text",
+        ));
+    }
+    let output = run_slice_screen_command_inner(
+        vec!["computer-type-stdin".to_string()],
+        Some(input.into_zeroizing()),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer keyboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_keyboard_key(
+    input: crate::transport::room_browser_controller::RoomComputerKeyboardInput,
+    repeat: u16,
+) -> Result<(), DaemonError> {
+    let key = input.as_str();
+    if key.is_empty()
+        || key.len()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES
+        || key.starts_with('-')
+        || !key.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_keyboard_key",
+        ));
+    }
+    if repeat == 0
+        || repeat > crate::transport::room_browser_controller::ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_keyboard_repeat",
+        ));
+    }
+    let output = run_slice_screen_command_inner(
+        vec!["computer-key-stdin".to_string(), repeat.to_string()],
+        Some(input.into_zeroizing()),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer keyboard helper exited with status {}",
             output
                 .status_code
                 .map(|code| code.to_string())
@@ -686,13 +886,13 @@ pub(crate) async fn run_room_secret_text_input(
     let output = run_slice_screen_command_inner(
         vec!["computer-secret-paste-stdin".to_string()],
         Some(input.into_zeroizing()),
-        Some(ROOM_POINTER_CLICK_TIMEOUT_MS),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
     )
     .await?;
     if output.success {
         Ok(())
     } else {
-        Err(room_pointer_click_error(&format!(
+        Err(room_computer_input_error(&format!(
             "slice computer secret helper exited with status {}",
             output
                 .status_code
@@ -702,10 +902,20 @@ pub(crate) async fn run_room_secret_text_input(
     }
 }
 
-fn room_pointer_click_error(message: &str) -> DaemonError {
+fn room_computer_input_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "environment.action.execute",
         message: message.to_string(),
+    }
+}
+
+fn room_computer_pointer_button_arg(
+    button: crate::transport::room_browser_controller::RoomComputerPointerButton,
+) -> &'static str {
+    match button {
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Left => "left",
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Middle => "middle",
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Right => "right",
     }
 }
 

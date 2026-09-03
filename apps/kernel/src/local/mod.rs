@@ -142,7 +142,7 @@ pub use api::{
     RestoreProjectRequest, RestoreSliceBackupRequest, ResumeMetaagentTaskRequest,
     ResumeWorkflowRunRequest, RetryRoomEnvironmentRequest, RevokeAgentExtensionRequest,
     RevokeCloudSessionInviteRequest, RevokePairedClientRequest, RevokeSessionInviteRequest,
-    RoomEnvironmentHumanAction, RoomEnvironmentPointerButton,
+    RoomEnvironmentHumanAction, RoomEnvironmentKeyboardInput, RoomEnvironmentPointerButton,
     RoomEnvironmentPointerPositionRequest, RoomEnvironmentViewportRequest, RunAgentUtilityRequest,
     RunShellCapabilityRequest, RunWorkflowCodeArtifactRequest, RunWorkflowCodeRequest,
     RunWorkflowRegistryEntryRequest, SearchEventGeneratorCatalogRequest,
