@@ -1843,9 +1843,9 @@ async function startFixture() {
         <div id="selection-status">TEXT_SELECTION_WAITING</div>
         <div id="scroller"><div id="scroll-content"><span id="scroll-status">POINTER_SCROLL_WAITING</span></div></div>
       <script>
-        const initialGeometry=[window.screenX,window.screenY,window.outerWidth,window.outerHeight].join(":");
+        let stableGeometry=null;
         const moveTarget=document.querySelector("#move-target");
-        moveTarget.addEventListener("mousemove",()=>{moveTarget.textContent="POINTER_MOVE_OK"});
+        moveTarget.addEventListener("mousemove",()=>{stableGeometry=[window.screenX,window.screenY,window.outerWidth,window.outerHeight].join(":");moveTarget.textContent="POINTER_MOVE_OK"});
         const singleTarget=document.querySelector("#single-target");let singleClicks=0;
         singleTarget.addEventListener("click",()=>{singleClicks+=1;singleTarget.textContent=singleClicks===1?"POINTER_SINGLE_CLICK_OK":"POINTER_SINGLE_CLICK_COUNT="+singleClicks});
         const rightTarget=document.querySelector("#right-target");
@@ -1856,7 +1856,7 @@ async function startFixture() {
         const updateSelectionStatus=()=>{
           const selected=Math.abs(selectionInput.selectionEnd-selectionInput.selectionStart);
           const geometry=[window.screenX,window.screenY,window.outerWidth,window.outerHeight].join(":");
-          document.querySelector("#selection-status").textContent=selected>=8?"TEXT_SELECTION_OK "+(geometry===initialGeometry?"WINDOW_GEOMETRY_STABLE":"WINDOW_GEOMETRY_CHANGED"):"TEXT_SELECTION_WAITING";
+          document.querySelector("#selection-status").textContent=selected>=8?"TEXT_SELECTION_OK "+(stableGeometry&&geometry===stableGeometry?"WINDOW_GEOMETRY_STABLE":"WINDOW_GEOMETRY_CHANGED"):"TEXT_SELECTION_WAITING";
         };
         selectionInput.addEventListener("select",updateSelectionStatus);
         document.addEventListener("selectionchange",updateSelectionStatus);
