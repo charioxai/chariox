@@ -129,15 +129,9 @@ impl KernelRuntimeState {
                     command_args.push(image_path);
                 }
                 let output = run_slice_screen_command(command_args).await?;
-                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["match"] = output
-                    .stdout
-                    .lines()
-                    .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                    .unwrap_or(serde_json::Value::Null);
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
-                    payload,
+                    payload: slice_find_text_payload(&slice_id, agent_id, &output),
                 });
             }
             crate::transport::runtime_tools::SLICE_MOUSE_TOOL => {
@@ -568,22 +562,20 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
             run_slice_screen_command(args).await?
         }
     };
-    let mut payload = slice_tool_payload("", "", &output);
+    let is_find_text = matches!(
+        &call,
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
+    );
+    let mut payload = if is_find_text {
+        slice_find_text_payload("", "", &output)
+    } else {
+        slice_tool_payload("", "", &output)
+    };
     if matches!(
         &call,
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. }
     ) {
         payload["text"] = serde_json::Value::String(output.stdout.clone());
-    }
-    if matches!(
-        &call,
-        crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
-    ) {
-        payload["match"] = output
-            .stdout
-            .lines()
-            .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .unwrap_or(serde_json::Value::Null);
     }
     if let Some(payload) = payload.as_object_mut() {
         for field in [
@@ -1248,6 +1240,24 @@ fn slice_tool_payload(
         }
     }
     serde_json::Value::Object(payload)
+}
+
+fn slice_find_text_payload(
+    slice_id: &str,
+    agent_id: &str,
+    output: &SliceScreenCommandOutput,
+) -> serde_json::Value {
+    let matches = output
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(serde_json::Value::is_object)
+        .collect::<Vec<_>>();
+    let mut payload = slice_tool_payload(slice_id, agent_id, output);
+    payload["match"] = matches.first().cloned().unwrap_or(serde_json::Value::Null);
+    payload["match_count"] = serde_json::Value::from(matches.len());
+    payload["matches"] = serde_json::Value::Array(matches);
+    payload
 }
 
 fn secret_paste_payload(

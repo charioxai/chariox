@@ -694,57 +694,7 @@ find_text() {
     screenshot "$image" >/dev/null
   fi
   tesseract "$image" stdout -l eng tsv >"$tsv" 2>/dev/null
-  python3 - "$query" "$tsv" <<'PY'
-import csv
-import json
-import sys
-
-query = sys.argv[1].lower()
-path = sys.argv[2]
-lines = {}
-
-with open(path, newline="") as handle:
-    for row in csv.DictReader(handle, delimiter="\t"):
-        text = (row.get("text") or "").strip()
-        if not text:
-            continue
-        key = (row.get("page_num"), row.get("block_num"), row.get("par_num"), row.get("line_num"))
-        lines.setdefault(key, []).append(row)
-
-def emit(text, rows):
-    left = min(int(row["left"]) for row in rows)
-    top = min(int(row["top"]) for row in rows)
-    right = max(int(row["left"]) + int(row["width"]) for row in rows)
-    bottom = max(int(row["top"]) + int(row["height"]) for row in rows)
-    print(json.dumps({
-        "text": text,
-        "left": left,
-        "top": top,
-        "width": right - left,
-        "height": bottom - top,
-        "center_x": (left + right) // 2,
-        "center_y": (top + bottom) // 2,
-    }))
-
-for rows in lines.values():
-    words = [row for row in rows if (row.get("text") or "").strip()]
-    for start in range(len(words)):
-        for end in range(start + 1, len(words) + 1):
-            text = " ".join((row.get("text") or "").strip() for row in words[start:end])
-            if query in text.lower():
-                emit(text, words[start:end])
-                sys.exit(0)
-
-for rows in lines.values():
-    words = [row for row in rows if (row.get("text") or "").strip()]
-    text = " ".join((row.get("text") or "").strip() for row in words)
-    if query in text.lower():
-        emit(text, words)
-        sys.exit(0)
-
-print(json.dumps(None))
-sys.exit(1)
-PY
+  python3 "$ROOT/slice-text-finder.py" "$query" "$tsv"
 }
 
 open_url() {

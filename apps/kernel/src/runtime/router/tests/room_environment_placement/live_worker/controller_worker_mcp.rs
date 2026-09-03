@@ -69,11 +69,22 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  status)\n    printf 'available=true\\ndisplay=:99\\nscreen=1024x600\\nviewer=http://127.0.0.1:6080/vnc.html\\nmode=desktop\\n'\n    printf 'worker-viewer=http://127.0.0.1:6080/vnc.html\\n' >&2\n    ;;\n  screenshot)\n    cp \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\" \"$2\"\n    ;;\n  ocr)\n    if [ \"$#\" -eq 2 ]; then\n      cmp \"$2\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n      printf 'worker-path=%s\\n' \"$2\" >&2\n      printf 'Artifact OCR\\n'\n    else\n      printf 'Grüße 世界\\nShared Computer\\n'\n    fi\n    ;;\n  find-text)\n    if [ \"${2:-}\" = 'Shared Computer' ]; then\n      if [ \"$#\" -eq 3 ]; then\n        cmp \"$3\" \"$CHARIOX_REMOTE_ROOM_SCREENSHOT\"\n        printf 'worker-path=%s\\n' \"$3\" >&2\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":640,\"top\":400,\"width\":240,\"height\":40,\"center_x\":760,\"center_y\":420}'\n      else\n        printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n      fi\n    else\n      printf 'null\\n'\n      exit 1\n    fi\n    ;;\n  computer-secret-paste-stdin)\n    input=$(cat)\n    [ \"$input\" = \"$CHARIOX_REMOTE_ROOM_COMPUTER_SECRET\" ]\n    printf 'computer-secret-input-ok\\n' >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  computer-type-stdin|computer-key-stdin)\n    input=$(cat)\n    printf '%s|%s\\n' \"$*\" \"$input\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\n  *)\n    printf '%s\\n' \"$*\" >> \"$CHARIOX_REMOTE_ROOM_COMPUTER_LOG\"\n    ;;\nesac\n",
     )
     .expect("computer secret screen helper");
+    let multi_match_tool = fixture
+        ._worker_state
+        .root
+        .join("computer-tools-multi-match-screen.sh");
+    std::fs::write(
+        &multi_match_tool,
+        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = 'find-text' ] && [ \"${2:-}\" = 'Shared Computer' ] && [ \"$#\" -eq 2 ]; then\n  printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":320,\"top\":200,\"width\":240,\"height\":40,\"center_x\":440,\"center_y\":220}'\n  printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":800,\"top\":400,\"width\":480,\"height\":80,\"center_x\":1040,\"center_y\":440}'\n  exit 0\nfi\nexec \"$CHARIOX_TEST_BASE_SCREEN_TOOL\" \"$@\"\n",
+    )
+    .expect("computer multi-match screen helper");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&screen_tool, std::fs::Permissions::from_mode(0o700))
-            .expect("computer secret screen helper permissions");
+        for tool in [&screen_tool, &multi_match_tool] {
+            std::fs::set_permissions(tool, std::fs::Permissions::from_mode(0o700))
+                .expect("computer screen helper permissions");
+        }
     }
     let _environment = ScopedEnvironment::set([
         (
@@ -92,6 +103,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         ),
         (
             "CHARIOX_SLICE_SCREEN_TOOL",
+            multi_match_tool.as_os_str().to_os_string(),
+        ),
+        (
+            "CHARIOX_TEST_BASE_SCREEN_TOOL",
             screen_tool.as_os_str().to_os_string(),
         ),
     ]);
@@ -334,6 +349,30 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     assert_eq!(found.payload["match"]["height"], 40);
     assert_eq!(found.payload["match"]["center_x"], 440);
     assert_eq!(found.payload["match"]["center_y"], 220);
+    assert_eq!(found.payload["match_count"], 2);
+    assert_eq!(
+        found.payload["matches"],
+        json!([
+            {
+                "text":"Shared Computer",
+                "left":320,
+                "top":200,
+                "width":240,
+                "height":40,
+                "center_x":440,
+                "center_y":220
+            },
+            {
+                "text":"Shared Computer",
+                "left":800,
+                "top":400,
+                "width":480,
+                "height":80,
+                "center_x":1040,
+                "center_y":440
+            }
+        ])
+    );
     assert_eq!(found.payload["stdout"], Value::Null);
     assert_eq!(found.payload["stderr"], Value::Null);
     let missing = fixture
@@ -349,6 +388,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     assert!(!missing.ok);
     assert_eq!(missing.payload["source"], "computer_controller");
     assert_eq!(missing.payload["match"], Value::Null);
+    assert_eq!(missing.payload["match_count"], 0);
+    assert_eq!(missing.payload["matches"], json!([]));
     for query in ["   ".to_string(), "x".repeat(4097)] {
         let error = fixture
             .worker
