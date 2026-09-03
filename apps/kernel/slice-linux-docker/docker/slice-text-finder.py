@@ -43,6 +43,7 @@ def read_lines(path):
 
 def find_matches(query, lines):
     matches = []
+    seen_boxes = set()
     for words in lines:
         normalized_words = [
             " ".join((row.get("text") or "").strip().casefold().split())
@@ -64,7 +65,11 @@ def find_matches(query, lines):
                 if end > found and start < found_end
             ]
             if selected:
-                matches.append(match_for_rows(selected))
+                match = match_for_rows(selected)
+                box = tuple(match[field] for field in ("left", "top", "width", "height"))
+                if box not in seen_boxes:
+                    matches.append(match)
+                    seen_boxes.add(box)
             cursor = found_end
     return matches
 

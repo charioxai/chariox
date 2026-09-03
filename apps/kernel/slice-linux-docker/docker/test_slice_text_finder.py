@@ -93,6 +93,28 @@ class SliceTextFinderTests(unittest.TestCase):
         self.assertEqual(match["left"], 30)
         self.assertEqual(match["width"], 128)
 
+    def test_repeated_substrings_in_one_ocr_word_are_one_visual_target(self):
+        completed = self.run_finder(
+            "aa",
+            [word(1, 1, 30, 40, 80, 24, "aaaa")],
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            [json.loads(line) for line in completed.stdout.splitlines()],
+            [
+                {
+                    "text": "aaaa",
+                    "left": 30,
+                    "top": 40,
+                    "width": 80,
+                    "height": 24,
+                    "center_x": 70,
+                    "center_y": 52,
+                }
+            ],
+        )
+
     def test_returns_null_and_failure_for_absent_text(self):
         completed = self.run_finder(
             "Missing",
