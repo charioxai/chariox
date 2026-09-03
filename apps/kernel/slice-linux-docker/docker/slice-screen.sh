@@ -35,6 +35,10 @@ run_xdotool() {
   timeout 10s xdotool "$@"
 }
 
+run_xdotool_utf8() {
+  LC_ALL=C.UTF-8 run_xdotool "$@"
+}
+
 start_process() {
   local name="$1"
   shift
@@ -482,12 +486,12 @@ scroll() {
 type_text() {
   require_screen_available
   focus_chromium
-  run_xdotool type --clearmodifiers --delay 5 "$*"
+  run_xdotool_utf8 type --clearmodifiers --delay 5 "$*"
 }
 
 computer_type_stdin() {
   require_screen_available
-  run_xdotool type --clearmodifiers --delay 5 --file -
+  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
 }
 
 computer_key_stdin() {
@@ -578,7 +582,7 @@ paste_stdin() {
     return 0
   fi
   focus_chromium
-  printf '%s' "$input" | run_xdotool type --clearmodifiers --delay 5 --file -
+  printf '%s' "$input" | run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
 }
 
 secret_paste_stdin() {
@@ -603,7 +607,7 @@ secret_paste_submit_stdin() {
 
 computer_secret_paste_stdin() {
   require_screen_available
-  run_xdotool type --clearmodifiers --delay 5 --file -
+  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
 }
 
 browser_status() {

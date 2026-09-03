@@ -14,10 +14,16 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import {
   assertRetainedClipboardEvidenceIsRedacted,
+  assertRetainedTextIsRedacted,
   clipboardCaseSummary,
+  textCaseSummary,
   utf8TextFromChunks,
 } from "./lib/computer-clipboard-x11-drill.mjs"
 import { assertRoomClipboardAction } from "./lib/room-environment-clipboard-drill.mjs"
+import {
+  assertRoomKeyboardKeyAction,
+  assertRoomKeyboardTextAction,
+} from "./lib/room-environment-computer-input-drill.mjs"
 import {
   automationNoticeEntries,
   automationNoticeIds,
@@ -48,13 +54,23 @@ const agentClipboardText = `agent-clipboard-${runId}-Grüße 世界\nsecond line
 const blockedAgentClipboardText = `blocked-agent-clipboard-${runId}\n`
 const humanClipboardText = `human-clipboard-${runId}\t\nsecond line\n`
 const physicalClipboardText = `physical-clipboard-${runId}-áéíóú\nsecond line\n`
+const keyboardText = `keyboard-${runId}-Grüße 世界`
+const keyboardReplacementText = `focus-${runId}-ABC`
+const keyboardAfterRepeat = keyboardReplacementText.slice(0, -3)
 const clipboardValues = [
   agentClipboardText,
   blockedAgentClipboardText,
   humanClipboardText,
   physicalClipboardText,
 ]
-const sensitiveValues = [userSecret, vaultPassphrase, ...clipboardValues]
+const sensitiveValues = [
+  userSecret,
+  vaultPassphrase,
+  keyboardText,
+  keyboardReplacementText,
+  keyboardAfterRepeat,
+  ...clipboardValues,
+]
 const generatedSecretLength = 24
 const kernelPort = 51000 + Math.floor(Math.random() * 1000)
 const relayPort = 53000 + Math.floor(Math.random() * 1000)
@@ -410,6 +426,7 @@ async function run() {
     waitForRemoteNotice(/^Room input: available$/),
   ])
   const computerSecretResult = await exerciseComputerSecretInput()
+  const computerKeyboard = await exerciseRoomKeyboard(activityController, activityNotices)
   const computerClipboard = await exerciseRoomClipboard(activityController, activityNotices)
   companionResult = await runCompanionIfConfigured({
     environment: computerClipboard.environment,
@@ -433,7 +450,7 @@ async function run() {
   ])
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v6",
+    schema: "chariox.room_environment.pointer_click_drill.v7",
     status: "passed",
     startedAt,
     source: sourceIdentity,
@@ -449,6 +466,7 @@ async function run() {
     idempotencyKey,
     physicalEffect: companionResult?.physicalEffect ?? "POINTER_CLICK_COUNT=1",
     computerSecret: computerSecretResult,
+    computerKeyboard,
     computerClipboard: computerClipboard.summary,
     containerLimits: limits,
     assertions: [
@@ -466,6 +484,9 @@ async function run() {
       "home-kernel approvals released each credential only after the password field had focus",
       "worker typed both credentials through the Room Computer action path into the shared headed desktop",
       "Computer secret actions were attributed, argument-free, visible in both TUIs, and absent from clipboard, screenshots, logs, history, and relay output",
+      "slice-bound agent typed a non-US sample into the physical X11 desktop through Room authority",
+      "keyboard focus survived a select-all chord, replacement text, and repeated BackSpace on the physical X11 desktop",
+      "Room history and both TUIs retained keyboard attribution, counts, and repeat values without text or key names",
       "slice-bound agent wrote the physical X11 clipboard through the home kernel's Room Action authority",
       "human desktop takeover rejected an agent clipboard mutation without changing the clipboard or Action ledger",
       "human clipboard write crossed the public Room request and encrypted worker path with count-only history",
@@ -502,6 +523,142 @@ async function run() {
         screenshot: companionResult.screenshot,
       },
     } : {}),
+  }
+}
+
+async function exerciseRoomKeyboard(activityController, activityNotices) {
+  await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/keyboard`])
+  await waitForBrowserText("ROOM_COMPUTER_KEYBOARD_READY", 30_000, "keyboard fixture did not load")
+  const typed = await executeAgentKeyboardAction({
+    args: { action: "type", text: keyboardText },
+    retainedInput: keyboardText,
+    expectedKind: "keyboard_text",
+    expectedMarker: "ROOM_COMPUTER_KEYBOARD_TEXT_OK",
+    markerFailure: "non-US keyboard text did not reach X11",
+    validate: (action, actorId) => assertRoomKeyboardTextAction(action, {
+      actorId,
+      input: keyboardText,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const selectAll = await executeAgentKeyboardAction({
+    args: { action: "key", key: "ctrl+a", repeat: 1 },
+    retainedInput: "ctrl+a",
+    expectedKind: "keyboard_key",
+    expectedMarker: "ROOM_COMPUTER_KEYBOARD_SELECT_ALL_OK",
+    markerFailure: "keyboard chord did not select the entire focused input",
+    validate: (action, actorId) => assertRoomKeyboardKeyAction(action, {
+      actorId,
+      key: "ctrl+a",
+      repeat: 1,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const replaced = await executeAgentKeyboardAction({
+    args: { action: "type", text: keyboardReplacementText },
+    retainedInput: keyboardReplacementText,
+    expectedKind: "keyboard_text",
+    expectedMarker: "ROOM_COMPUTER_KEYBOARD_SHORTCUT_OK",
+    markerFailure: "typing after ctrl+a did not replace the selected text",
+    validate: (action, actorId) => assertRoomKeyboardTextAction(action, {
+      actorId,
+      input: keyboardReplacementText,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const repeated = await executeAgentKeyboardAction({
+    args: { action: "key", key: "BackSpace", repeat: 3 },
+    retainedInput: "BackSpace",
+    expectedKind: "keyboard_key",
+    expectedMarker: "ROOM_COMPUTER_KEYBOARD_REPEAT_OK",
+    markerFailure: "repeated BackSpace did not preserve focus or execute exactly three times",
+    validate: (action, actorId) => assertRoomKeyboardKeyAction(action, {
+      actorId,
+      key: "BackSpace",
+      repeat: 3,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const history = unwrap(
+    await client.send(requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 25)),
+    "RoomEnvironmentActionHistoryListed",
+  ).page.actions
+  for (const keyboardAction of [typed, selectAll, replaced, repeated]) {
+    keyboardAction.validate(
+      history.find((candidate) => candidate.action_id === keyboardAction.actionId),
+      keyboardAction.actorId,
+    )
+  }
+  const tempRoot = await tempRootPromise
+  const keyboardValues = [keyboardText, keyboardReplacementText, keyboardAfterRepeat]
+  await assertNoPlaintextSecretInTree(tempRoot, keyboardValues)
+  await assertNoPlaintextSecretInTree(evidenceRoot, keyboardValues)
+
+  return {
+    agentId: secretAgent.id,
+    actorId: typed.actorId,
+    actionIds: [typed, selectAll, replaced, repeated].map((entry) => entry.actionId),
+    cases: [
+      textCaseSummary("non-us-text", keyboardText),
+      textCaseSummary("shortcut-replacement", keyboardReplacementText),
+    ],
+    physicalInputExact: true,
+    shortcutSelectedAll: true,
+    repeatExact: true,
+    focusPreserved: true,
+    localTuiObserved: true,
+    remoteTuiObserved: true,
+    retainedContentRedacted: true,
+  }
+}
+
+async function executeAgentKeyboardAction({
+  args,
+  retainedInput,
+  expectedKind,
+  expectedMarker,
+  markerFailure,
+  validate,
+  activityController,
+  activityNotices,
+}) {
+  const localBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const remoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const response = await mcpToolCall(secretProviderRun, "slice_keyboard", args)
+  assert.equal(response.ok, true, redactDrillSecrets(JSON.stringify(response.raw)))
+  assert.equal(response.content?.action_kind, expectedKind)
+  assert.equal(response.content?.session_id, sessionId)
+  assert.equal(response.content?.agent_id, secretAgent.id)
+  assertRetainedTextIsRedacted(
+    response.raw,
+    retainedInput,
+    "runtime MCP response retained keyboard input",
+  )
+  await waitForBrowserText(expectedMarker, 20_000, markerFailure)
+
+  const environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const action = environment.actions.find(
+    (candidate) => candidate.action_id === response.content?.action_id,
+  )
+  validate(action, response.content?.actor_id)
+  const noticePattern = new RegExp(`^Room action: .+ · computer ${expectedKind} · completed$`)
+  assert.equal(await activityController.synchronize(), true)
+  assert.match(activityNotices.at(-1), noticePattern)
+  await Promise.all([
+    waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localBaseline, 20_000),
+    waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteBaseline, 20_000),
+  ])
+  return {
+    actionId: response.content?.action_id,
+    actorId: response.content?.actor_id,
+    validate,
   }
 }
 
@@ -1379,6 +1536,9 @@ async function captureScreenshotFromRemoteTui(tempRoot) {
 
 async function startFixture() {
   const expectedUserDigest = fnv1a64(userSecret)
+  const expectedKeyboardDigest = fnv1a64(keyboardText)
+  const expectedKeyboardReplacementDigest = fnv1a64(keyboardReplacementText)
+  const expectedKeyboardAfterRepeatDigest = fnv1a64(keyboardAfterRepeat)
   const server = http.createServer((request, response) => {
     if (request.url === "/secret") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
@@ -1397,6 +1557,28 @@ async function startFixture() {
         function fnv1a64(value){let hash=14695981039346656037n;for(const byte of new TextEncoder().encode(value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}return hash.toString(16).padStart(16,"0")}
         document.querySelector("#user-secret").addEventListener("input",(event)=>{document.querySelector("#user-status").textContent=fnv1a64(event.target.value)===expectedUserDigest?"USER_SECRET_OK":"USER_SECRET_WAITING"});
         document.querySelector("#generated-secret").addEventListener("input",(event)=>{document.querySelector("#generated-status").textContent=event.target.value.length===generatedLength?"GENERATED_SECRET_OK":"GENERATED_SECRET_WAITING"});
+      </script></body></html>`)
+      return
+    }
+    if (request.url === "/keyboard") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+      response.end(`<!doctype html><html><head><title>Room Computer keyboard drill</title><style>
+        html,body{width:100%;height:100%;margin:0}body{background:#f4f4f3;color:#202124;font:24px sans-serif}
+        main{box-sizing:border-box;margin:120px auto 0;width:680px}label{display:block;font-weight:700;margin:18px 0 8px}
+        input{box-sizing:border-box;font:32px sans-serif;padding:12px 16px;width:100%}.status{font-weight:700;margin-top:18px}
+      </style></head><body><main><h1>ROOM_COMPUTER_KEYBOARD_READY</h1>
+        <label for="keyboard-input">Keyboard input</label><input id="keyboard-input" type="password" autocomplete="off" autofocus>
+        <div class="status" id="keyboard-status">ROOM_COMPUTER_KEYBOARD_WAITING</div>
+      </main><script>
+        const expectedDigest=${JSON.stringify(expectedKeyboardDigest)};
+        const expectedReplacementDigest=${JSON.stringify(expectedKeyboardReplacementDigest)};
+        const expectedAfterRepeatDigest=${JSON.stringify(expectedKeyboardAfterRepeatDigest)};
+        function fnv1a64(value){let hash=14695981039346656037n;for(const byte of new TextEncoder().encode(value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}return hash.toString(16).padStart(16,"0")}
+        const input=document.querySelector("#keyboard-input");
+        const status=document.querySelector("#keyboard-status");
+        input.addEventListener("input",()=>{const digest=fnv1a64(input.value);status.textContent=digest===expectedDigest?"ROOM_COMPUTER_KEYBOARD_TEXT_OK":digest===expectedReplacementDigest?"ROOM_COMPUTER_KEYBOARD_SHORTCUT_OK":digest===expectedAfterRepeatDigest?"ROOM_COMPUTER_KEYBOARD_REPEAT_OK":"ROOM_COMPUTER_KEYBOARD_WAITING"});
+        input.addEventListener("select",()=>{if(input.selectionStart===0&&input.selectionEnd===input.value.length)status.textContent="ROOM_COMPUTER_KEYBOARD_SELECT_ALL_OK"});
+        input.addEventListener("blur",()=>{status.textContent="ROOM_COMPUTER_KEYBOARD_FOCUS_LOST"});
       </script></body></html>`)
       return
     }
