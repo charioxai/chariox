@@ -72,24 +72,23 @@ test("cancellation latency uses the authoritative terminal timestamp", () => {
   )
 })
 
-test("cancellation timings separate command dispatch from physical stop", () => {
+test("cancellation timings distinguish ledger observation from terminal completion", () => {
   assert.deepEqual(
     roomComputerCancellationTimings(
       { finished_at_ms: 1_450 },
       { initiatedAtMs: 1_000, requestObservedAtMs: 1_300 },
     ),
     {
-      dispatchLatencyMs: 300,
-      physicalStopLatencyMs: 150,
+      requestObservationLatencyMs: 300,
       endToEndLatencyMs: 450,
     },
   )
   assert.throws(
     () => roomComputerCancellationTimings(
-      { finished_at_ms: 1_299 },
+      { finished_at_ms: 999 },
       { initiatedAtMs: 1_000, requestObservedAtMs: 1_300 },
     ),
-    /before its cancellation request was observed/,
+    /before its cancellation request/,
   )
   assert.throws(
     () => roomComputerCancellationTimings(
@@ -97,6 +96,16 @@ test("cancellation timings separate command dispatch from physical stop", () => 
       { initiatedAtMs: 1_301, requestObservedAtMs: 1_300 },
     ),
     /observed before initiation/,
+  )
+})
+
+test("cancellation may finish before the polling client observes its request event", () => {
+  assert.deepEqual(
+    roomComputerCancellationTimings(
+      { finished_at_ms: 1_450 },
+      { initiatedAtMs: 1_000, requestObservedAtMs: 1_600 },
+    ),
+    { requestObservationLatencyMs: 600, endToEndLatencyMs: 450 },
   )
 })
 

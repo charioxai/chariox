@@ -75,15 +75,9 @@ export function roomComputerCancellationTimings(
     requestObservedAtMs >= initiatedAtMs,
     "cancellation request was observed before initiation",
   )
-  assert.ok(Number.isInteger(action?.finished_at_ms), "terminal Action finish timestamp")
-  assert.ok(
-    action.finished_at_ms >= requestObservedAtMs,
-    "terminal Action finished before its cancellation request was observed",
-  )
   return {
-    dispatchLatencyMs: requestObservedAtMs - initiatedAtMs,
-    physicalStopLatencyMs: action.finished_at_ms - requestObservedAtMs,
-    endToEndLatencyMs: action.finished_at_ms - initiatedAtMs,
+    requestObservationLatencyMs: requestObservedAtMs - initiatedAtMs,
+    endToEndLatencyMs: roomComputerCancellationLatencyMs(action, initiatedAtMs),
   }
 }
 

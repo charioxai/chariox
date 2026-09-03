@@ -1210,12 +1210,8 @@ async function exerciseCancellableKeyboardInput({
     requestObservedAtMs: requestObserved.observedAtMs,
   })
   assert.ok(
-    cancellationTimings.physicalStopLatencyMs < 2_000,
-    `${label} physical stop took ${cancellationTimings.physicalStopLatencyMs}ms after the request reached the Room ledger`,
-  )
-  assert.ok(
     cancellationTimings.endToEndLatencyMs < 2_000,
-    `${label} end-to-end cancellation took ${cancellationTimings.endToEndLatencyMs}ms (${cancellationTimings.dispatchLatencyMs}ms dispatch + ${cancellationTimings.physicalStopLatencyMs}ms physical stop)`,
+    `${label} end-to-end cancellation took ${cancellationTimings.endToEndLatencyMs}ms (request event observed after ${cancellationTimings.requestObservationLatencyMs}ms)`,
   )
   const [cancellationResult, settlement] = await Promise.all([cancellationObservation, pending])
   if (cancellationResult.error) throw cancellationResult.error
