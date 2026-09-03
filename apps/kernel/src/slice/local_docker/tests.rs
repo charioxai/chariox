@@ -905,6 +905,67 @@ fn failed_saved_state_publication_after_archive_capture_preserves_restorable_pri
 }
 
 #[test]
+fn uncertain_saved_state_publication_after_manifest_rename_retains_both_generations() {
+    let root = test_root("slice-state-publication-uncertain");
+    std::fs::create_dir_all(&root).expect("state directory should create");
+    let manifest = root.join("manifest.json");
+    let prior_archive = root.join("home-prior.tar.zst");
+    let next_archive = root.join("home-next.tar.zst");
+    std::fs::write(&prior_archive, b"prior generation").expect("prior archive should write");
+    std::fs::write(&next_archive, b"next generation").expect("next archive should write");
+
+    let mut prior = saved_state(manifest.display().to_string());
+    prior.home_archive_path = prior_archive.display().to_string();
+    prior.image_ref = "chariox-slice-state:gmail-ready-prior".to_string();
+    std::fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&prior).expect("prior state should encode"),
+    )
+    .expect("prior manifest should write");
+
+    let mut next = prior.clone();
+    next.home_archive_path = next_archive.display().to_string();
+    next.image_ref = "chariox-slice-state:gmail-ready-next".to_string();
+    next.updated_at_ms += 1;
+
+    state::publish_saved_state_generation_with(&manifest, &next, Some(&prior), |path, state| {
+        state::write_state_manifest_with(path, state, |_parent| {
+            Err(std::io::Error::other(
+                "injected directory sync failure after rename",
+            ))
+        })
+    })
+    .expect("a published manifest with uncertain durability must retain both generations");
+
+    let published: SliceSavedStateRecord = serde_json::from_slice(
+        &std::fs::read(&manifest).expect("renamed manifest should remain readable"),
+    )
+    .expect("renamed manifest should contain the next state");
+    assert_eq!(published.home_archive_path, next.home_archive_path);
+    assert_eq!(
+        std::fs::read(&prior_archive).expect("prior archive must be retained"),
+        b"prior generation"
+    );
+    assert_eq!(
+        std::fs::read(&next_archive).expect("published archive must be retained"),
+        b"next generation"
+    );
+
+    let prior_restore = test_options().with_saved_state(&prior);
+    let next_restore = test_options().with_saved_state(&published);
+    assert_eq!(
+        prior_restore.saved_home_archive.as_deref(),
+        Some(prior_archive.as_path())
+    );
+    assert_eq!(
+        next_restore.saved_home_archive.as_deref(),
+        Some(next_archive.as_path())
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
     let store = SliceStore::default();
     let record = store
