@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::account_profile::ProviderAccountProfileRegistry;
 use crate::error::DaemonError;
+use crate::local::GetProviderAuthStatusRequest;
 
 const PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: &str = "CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS";
 const CREDENTIAL_BINDINGS_ROOT: &str = "/home/chariox/.credential-bindings";
@@ -42,7 +43,26 @@ pub(crate) fn materialize_publication_provider_accounts(
         return Ok(());
     };
     let bindings = validated_bindings(source.to_string_lossy().as_bytes())?;
-    materialize_validated_bindings(registry, owner_user_id, &bindings)
+    materialize_validated_bindings(registry, owner_user_id, &bindings)?;
+    refresh_materialized_provider_account_auth(registry, owner_user_id, &bindings)
+}
+
+fn refresh_materialized_provider_account_auth(
+    registry: &ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    bindings: &PublicationProviderAccountBindings,
+) -> Result<(), DaemonError> {
+    for binding in &bindings.accounts {
+        crate::local::provider_requests::provider_auth_status_response(
+            registry,
+            owner_user_id,
+            GetProviderAuthStatusRequest {
+                provider: binding.provider.clone(),
+                account_profile: binding.account_profile.clone(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn materialize_validated_bindings(
@@ -135,11 +155,14 @@ fn invalid_bindings() -> DaemonError {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        materialize_validated_bindings, validated_bindings, PublicationProviderAccountBinding,
-        PublicationProviderAccountBindings, PublicationProviderDefaultAccount,
+        materialize_validated_bindings, refresh_materialized_provider_account_auth,
+        validated_bindings, PublicationProviderAccountBinding, PublicationProviderAccountBindings,
+        PublicationProviderDefaultAccount,
     };
     use crate::account_profile::ProviderAccountProfileRegistry;
 
@@ -217,6 +240,123 @@ mod tests {
             .get("local", "codex", "profile-codex")
             .expect("resolve publication account");
         assert!(profile.is_default);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_claude_account_is_authenticated_before_prompt_admission() {
+        let _guard = crate::env_lock::lock();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-publication-claude-auth-{}-{unique}",
+            std::process::id()
+        ));
+        let source_home = root.join("source-home");
+        fs::create_dir_all(source_home.join(".claude")).expect("create source profile");
+        fs::write(
+            source_home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#,
+        )
+        .expect("write source credential");
+
+        let claude = root.join("claude");
+        fs::write(
+            &claude,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ge 3 ] && [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"deployment@example.test","subscriptionType":"pro"}'
+  exit 0
+fi
+if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
+  printf '%s\n' 'claude 1.2.3'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .expect("write Claude fixture");
+        let mut permissions = fs::metadata(&claude)
+            .expect("read Claude fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&claude, permissions).expect("make Claude fixture executable");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &claude);
+
+        let registry = ProviderAccountProfileRegistry::open(root.join("registry.json"))
+            .expect("open registry");
+        let bindings = PublicationProviderAccountBindings {
+            schema_version: 1,
+            defaults: vec![PublicationProviderDefaultAccount {
+                provider: "claude".to_string(),
+                account_profile: "profile-claude".to_string(),
+            }],
+            accounts: vec![PublicationProviderAccountBinding {
+                provider: "claude".to_string(),
+                account_profile: "profile-claude".to_string(),
+                label: "Claude deployment".to_string(),
+                home: source_home,
+            }],
+        };
+
+        materialize_validated_bindings(&registry, "local", &bindings)
+            .expect("materialize publication accounts");
+        assert!(registry
+            .require_authenticated(
+                "local",
+                "claude",
+                "profile-claude",
+                Some("sonnet"),
+                "submit prompt",
+            )
+            .is_err());
+
+        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
+            .expect("refresh deployment account auth");
+
+        registry
+            .require_authenticated(
+                "local",
+                "claude",
+                "profile-claude",
+                Some("sonnet"),
+                "submit prompt",
+            )
+            .expect("authenticated deployment account should pass prompt admission");
+
+        fs::write(
+            &claude,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ge 3 ] && [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '{"loggedIn":false}'
+  exit 0
+fi
+if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
+  printf '%s\n' 'claude 1.2.3'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .expect("replace Claude fixture with unauthenticated response");
+        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
+            .expect("record unauthenticated deployment account");
+        assert!(registry
+            .require_authenticated(
+                "local",
+                "claude",
+                "profile-claude",
+                Some("sonnet"),
+                "submit prompt",
+            )
+            .is_err());
+
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_dir_all(root);
     }
 }
