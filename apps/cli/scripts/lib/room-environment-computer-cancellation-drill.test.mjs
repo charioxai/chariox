@@ -8,6 +8,7 @@ import {
   assertRoomComputerActionCancelled,
   assertRoomComputerActionRunning,
   roomComputerCancellationLatencyMs,
+  roomComputerCancellationTimings,
 } from "./room-environment-computer-cancellation-drill.mjs"
 
 const runningAction = {
@@ -68,6 +69,34 @@ test("cancellation latency uses the authoritative terminal timestamp", () => {
   assert.throws(
     () => roomComputerCancellationLatencyMs({ finished_at_ms: 999 }, 1_000),
     /before its cancellation request/,
+  )
+})
+
+test("cancellation timings separate command dispatch from physical stop", () => {
+  assert.deepEqual(
+    roomComputerCancellationTimings(
+      { finished_at_ms: 1_450 },
+      { initiatedAtMs: 1_000, requestObservedAtMs: 1_300 },
+    ),
+    {
+      dispatchLatencyMs: 300,
+      physicalStopLatencyMs: 150,
+      endToEndLatencyMs: 450,
+    },
+  )
+  assert.throws(
+    () => roomComputerCancellationTimings(
+      { finished_at_ms: 1_299 },
+      { initiatedAtMs: 1_000, requestObservedAtMs: 1_300 },
+    ),
+    /before its cancellation request was observed/,
+  )
+  assert.throws(
+    () => roomComputerCancellationTimings(
+      { finished_at_ms: 1_450 },
+      { initiatedAtMs: 1_301, requestObservedAtMs: 1_300 },
+    ),
+    /observed before initiation/,
   )
 })
 

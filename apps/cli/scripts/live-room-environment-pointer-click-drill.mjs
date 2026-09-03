@@ -28,7 +28,7 @@ import {
   assertHumanDesktopTakeoverCompleted,
   assertRoomComputerActionCancelled,
   assertRoomComputerActionRunning,
-  roomComputerCancellationLatencyMs,
+  roomComputerCancellationTimings,
 } from "./lib/room-environment-computer-cancellation-drill.mjs"
 import {
   assertRoomPointerClickAction,
@@ -1107,6 +1107,10 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
       explicit: explicitLocal.cancellationLatencyMs,
       takeover: takeoverRemote.cancellationLatencyMs,
     },
+    cancellationTimings: {
+      explicit: explicitLocal.cancellationTimings,
+      takeover: takeoverRemote.cancellationTimings,
+    },
     tuiObservationLatencyMs: {
       explicit: explicitLocal.tuiObservationLatencyMs,
       takeover: takeoverRemote.tuiObservationLatencyMs,
@@ -1135,6 +1139,7 @@ async function exerciseCancellableKeyboardInput({
     "RoomEnvironmentState",
   ).environment
   const baselineSequence = Math.max(0, ...baseline.actions.map((action) => action.sequence))
+  const baselineEventCursor = baseline.event_cursor
   assert.ok(baseline.focused_tab_id, `${label} requires a focused browser tab`)
   const localNoticeBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteNoticeBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
@@ -1166,10 +1171,23 @@ async function exerciseCancellableKeyboardInput({
   assert.ok(started.count < input.length, `${label} completed before cancellation`)
 
   const cancelStartedAt = Date.now()
-  await cancel(started.action.action_id, { localNoticeBaseline, remoteNoticeBaseline })
-  const settlement = await pending
-  const tuiObservationLatencyMs = Date.now() - cancelStartedAt
-  assertSettlement(settlement, input, label)
+  const cancellationObservation = Promise.resolve()
+    .then(() => cancel(started.action.action_id, { localNoticeBaseline, remoteNoticeBaseline }))
+    .then(
+      (result) => ({ result, error: null, observedAtMs: Date.now() }),
+      (error) => ({ result: null, error, observedAtMs: Date.now() }),
+    )
+  const requestObserved = await waitFor(async () => {
+    const replay = unwrap(
+      await client.send(requests.getRoomEnvironmentEventsRequest(sessionId, baselineEventCursor)),
+      "RoomEnvironmentEvents",
+    ).replay
+    const events = replay.Events?.events ?? []
+    return events.some((event) => (
+      event.kind?.ActionChanged?.action_id === started.action.action_id
+        && event.kind.ActionChanged.cancellation_requested === true
+    )) ? { observedAtMs: Date.now() } : false
+  }, 20_000, `${label} cancellation request did not reach the Room ledger`)
 
   const terminal = await waitFor(async () => {
     const current = unwrap(
@@ -1187,11 +1205,22 @@ async function exerciseCancellableKeyboardInput({
     kind: "keyboard_text",
     focusedTabId: baseline.focused_tab_id,
   })
-  const cancellationLatencyMs = roomComputerCancellationLatencyMs(terminal, cancelStartedAt)
+  const cancellationTimings = roomComputerCancellationTimings(terminal, {
+    initiatedAtMs: cancelStartedAt,
+    requestObservedAtMs: requestObserved.observedAtMs,
+  })
   assert.ok(
-    cancellationLatencyMs < 2_000,
-    `${label} physical cancellation took ${cancellationLatencyMs}ms`,
+    cancellationTimings.physicalStopLatencyMs < 2_000,
+    `${label} physical stop took ${cancellationTimings.physicalStopLatencyMs}ms after the request reached the Room ledger`,
   )
+  assert.ok(
+    cancellationTimings.endToEndLatencyMs < 2_000,
+    `${label} end-to-end cancellation took ${cancellationTimings.endToEndLatencyMs}ms (${cancellationTimings.dispatchLatencyMs}ms dispatch + ${cancellationTimings.physicalStopLatencyMs}ms physical stop)`,
+  )
+  const [cancellationResult, settlement] = await Promise.all([cancellationObservation, pending])
+  if (cancellationResult.error) throw cancellationResult.error
+  const tuiObservationLatencyMs = cancellationResult.observedAtMs - cancelStartedAt
+  assertSettlement(settlement, input, label)
   const stoppedCount = await cancellationFixtureCharacterCount()
   await sleep(750)
   assert.equal(
@@ -1212,7 +1241,8 @@ async function exerciseCancellableKeyboardInput({
     focusedTabId: baseline.focused_tab_id,
     countBeforeCancellation: started.count,
     countAfterCancellation: stoppedCount,
-    cancellationLatencyMs,
+    cancellationLatencyMs: cancellationTimings.endToEndLatencyMs,
+    cancellationTimings,
     tuiObservationLatencyMs,
   }
 }
