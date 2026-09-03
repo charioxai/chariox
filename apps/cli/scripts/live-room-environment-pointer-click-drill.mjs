@@ -923,17 +923,18 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
 
   const explicitLocal = await exerciseCancellableAgentKeyboardInput({
     input: cancellationText,
-    cancel: async (actionId) => {
-      const snapshot = await localAutomation.send(
+    cancel: async (actionId, { localNoticeBaseline }) => {
+      await localAutomation.send(
         "submit_prompt",
         { prompt: `/room cancel ${actionId}` },
         20_000,
       )
-      assert.ok(
-        automationNoticeTexts(snapshot).some((notice) => (
-          notice.startsWith(`Room action ${actionId} cancellation requested\n`)
-        )),
-        "local TUI did not render the authoritative cancellation response",
+      await waitForTuiNoticeAfter(
+        localAutomation,
+        "local",
+        new RegExp(`^Room action ${actionId} cancellation requested\\n`),
+        localNoticeBaseline,
+        20_000,
       )
     },
     activityController,
@@ -947,17 +948,18 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
   const takeoverRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
   const takeoverRemote = await exerciseCancellableAgentKeyboardInput({
     input: takeoverCancellationText,
-    cancel: async (actionId) => {
-      const snapshot = await remoteAutomation.send(
+    cancel: async (actionId, { remoteNoticeBaseline }) => {
+      await remoteAutomation.send(
         "submit_prompt",
         { prompt: "/room takeover desktop" },
         20_000,
       )
-      assert.ok(
-        automationNoticeTexts(snapshot).some((notice) => (
-          notice.startsWith(`Room takeover requires cancellation: ${actionId}\n`)
-        )),
-        "remote TUI did not render the pending human takeover",
+      await waitForTuiNoticeAfter(
+        remoteAutomation,
+        "remote",
+        new RegExp(`^Room takeover requires cancellation: ${actionId}\\n`),
+        remoteNoticeBaseline,
+        20_000,
       )
     },
     activityController,
@@ -1121,7 +1123,7 @@ async function exerciseCancellableAgentKeyboardInput({
   assert.ok(started.count < input.length, `${label} completed before cancellation`)
 
   const cancelStartedAt = Date.now()
-  await cancel(started.action.action_id)
+  await cancel(started.action.action_id, { localNoticeBaseline, remoteNoticeBaseline })
   const settlement = await pending
   if (settlement.error) throw settlement.error
   const toolResult = settlement.result
