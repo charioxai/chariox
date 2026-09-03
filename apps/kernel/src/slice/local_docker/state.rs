@@ -52,6 +52,7 @@ fn save_local_docker_slice_state_inner(
     let image_ref = active_state_image_ref(&state_id);
     let state_dir = options.root.join("states").join(&state_id);
     let manifest_path = state_dir.join("manifest.json");
+    let home_archive_path = active_state_home_archive_path(&state_dir);
     let previous_state = if manifest_path.exists() {
         Some(read_state_manifest::<SliceSavedStateRecord>(
             &manifest_path,
@@ -73,7 +74,7 @@ fn save_local_docker_slice_state_inner(
         let archive_result = archive_local_docker_home_volume(
             record,
             options,
-            &state_dir.join("home.tar.zst"),
+            &home_archive_path,
             "state",
             &state_id,
             "slice.state.save",
@@ -102,23 +103,12 @@ fn save_local_docker_slice_state_inner(
             last_operation_status: Some(crate::slice::model::SliceOperationStatus::Completed),
             last_error: None,
         };
-        if let Err(error) = write_state_manifest(&manifest_path, &state) {
-            remove_home_archive_generation_best_effort("state", &state.id, &home_archive_path);
-            remove_docker_image_best_effort(&image_ref);
-            return Err(error);
-        }
-        if let Some(previous) = previous_state.as_ref() {
-            if previous.home_archive_path != state.home_archive_path {
-                remove_home_archive_generation_best_effort(
-                    "state",
-                    &previous.id,
-                    Path::new(&previous.home_archive_path),
-                );
-            }
-            if previous.image_ref != state.image_ref {
-                remove_docker_image_best_effort(&previous.image_ref);
-            }
-        }
+        publish_saved_state_generation_with(
+            &manifest_path,
+            &state,
+            previous_state.as_ref(),
+            write_state_manifest,
+        )?;
         Ok(state)
     })
 }
@@ -243,7 +233,7 @@ pub fn set_local_docker_default_saved_state(
             ),
         })?;
     }
-    write_state_manifest(&path, &default_ref)
+    write_state_manifest(&path, &default_ref).map(|_| ())
 }
 
 pub fn default_local_docker_saved_state(
@@ -624,6 +614,10 @@ fn active_state_image_ref(state_id: &str) -> String {
     )
 }
 
+pub(super) fn active_state_home_archive_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(format!("home-{:016x}.tar.zst", rand::random::<u64>()))
+}
+
 fn backup_id(record: &SliceRecord, name: Option<&str>) -> String {
     let label = name
         .map(str::trim)
@@ -655,7 +649,28 @@ fn sanitize_state_component(value: &str) -> String {
     }
 }
 
-fn write_state_manifest<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), DaemonError> {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ManifestPublication {
+    Durable,
+    PublishedDurabilityUncertain { message: String },
+}
+
+fn write_state_manifest<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<ManifestPublication, DaemonError> {
+    write_state_manifest_with(path, value, sync_manifest_parent)
+}
+
+pub(super) fn write_state_manifest_with<T, F>(
+    path: &Path,
+    value: &T,
+    sync_parent: F,
+) -> Result<ManifestPublication, DaemonError>
+where
+    T: serde::Serialize,
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
     let payload =
         serde_json::to_vec_pretty(value).map_err(|error| DaemonError::LocalTransport {
             operation: "slice.state.manifest",
@@ -686,8 +701,6 @@ fn write_state_manifest<T: serde::Serialize>(path: &Path, value: &T) -> Result<(
         file.sync_all()?;
         drop(file);
         std::fs::rename(&temporary, path)?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -699,6 +712,72 @@ fn write_state_manifest<T: serde::Serialize>(path: &Path, value: &T) -> Result<(
                 path.display()
             ),
         });
+    }
+    if let Err(error) = sync_parent(parent) {
+        tracing::warn!(
+            manifest = %path.display(),
+            message = %error,
+            "saved state manifest was published but parent directory durability is uncertain"
+        );
+        return Ok(ManifestPublication::PublishedDurabilityUncertain {
+            message: error.to_string(),
+        });
+    }
+    Ok(ManifestPublication::Durable)
+}
+
+fn sync_manifest_parent(parent: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
+}
+
+pub(super) fn publish_saved_state_generation_with<F>(
+    manifest_path: &Path,
+    state: &SliceSavedStateRecord,
+    previous_state: Option<&SliceSavedStateRecord>,
+    publish_manifest: F,
+) -> Result<(), DaemonError>
+where
+    F: FnOnce(&Path, &SliceSavedStateRecord) -> Result<ManifestPublication, DaemonError>,
+{
+    match publish_manifest(manifest_path, state) {
+        Err(error) => {
+            remove_home_archive_generation_best_effort(
+                "state",
+                &state.id,
+                Path::new(&state.home_archive_path),
+            );
+            remove_docker_image_best_effort(&state.image_ref);
+            return Err(error);
+        }
+        Ok(ManifestPublication::PublishedDurabilityUncertain { message }) => {
+            tracing::warn!(
+                manifest = %manifest_path.display(),
+                %message,
+                "retaining both saved state generations after uncertain manifest durability"
+            );
+            return Ok(());
+        }
+        Ok(ManifestPublication::Durable) => {}
+    }
+    if let Some(previous) = previous_state {
+        if previous.home_archive_path != state.home_archive_path {
+            remove_home_archive_generation_best_effort(
+                "state",
+                &previous.id,
+                Path::new(&previous.home_archive_path),
+            );
+        }
+        if previous.image_ref != state.image_ref {
+            remove_docker_image_best_effort(&previous.image_ref);
+        }
     }
     Ok(())
 }

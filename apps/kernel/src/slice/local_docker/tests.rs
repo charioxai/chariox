@@ -665,6 +665,95 @@ exit 0
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+fn failed_save_recovery_starts_only_the_existing_container() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("failed-save-recovery");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    let running = root.join("running");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  exit 0
+fi
+if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
+  if [ -f "$DOCKER_RUNNING" ]; then printf 'true\n'; else printf 'false\n'; fi
+  exit 0
+fi
+if [ "$1" = "start" ] && [ "$2" = "saved-slice" ]; then
+  : > "$DOCKER_RUNNING"
+  exit 0
+fi
+for argument in "$@"; do
+  if [ "$argument" = "df" ]; then
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+    printf 'fixture 1000000 1 999999 1%% /\n'
+    exit 0
+  fi
+done
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("slice-linux-docker/provision-linux-docker-slice.sh");
+    let mut paths = vec![bin];
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("recover")
+        .env("PATH", path)
+        .env("TMPDIR", &root)
+        .env("DOCKER_LOG", &log)
+        .env("DOCKER_RUNNING", &running)
+        .env("CHARIOX_SLICE_NAME", "saved-slice")
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", "prior-saved-image")
+        .env("CHARIOX_SLICE_BASE_IMAGE", "current-runtime-image")
+        .env("CHARIOX_SLICE_START_DESKTOP", "0")
+        .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "0")
+        .env("CHARIOX_SLICE_START_RUNTIME", "1")
+        .output()
+        .expect("slice recovery command should execute");
+    assert!(
+        output.status.success(),
+        "slice recovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = std::fs::read_to_string(&log).expect("fake Docker log should read");
+    assert!(
+        calls.lines().any(|call| call == "start saved-slice"),
+        "recovery must restart the stopped current container: {calls}"
+    );
+    assert!(
+        calls
+            .lines()
+            .any(|call| call.ends_with(" saved-slice /opt/chariox-slice/start-runtime.sh")),
+        "recovery must restart the worker runtime: {calls}"
+    );
+    for forbidden in ["image inspect", "create ", "rm -f", "volume create"] {
+        assert!(
+            !calls.lines().any(|call| call.starts_with(forbidden)),
+            "recovery must not replace the current container via `{forbidden}`: {calls}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn local_docker_slice_rejects_mounting_development_control_root() {
     let mut record = SliceStore::default()
@@ -731,6 +820,148 @@ fn local_docker_default_saved_state_round_trips_through_pointer_manifest() {
 
     assert_eq!(resolved.id, "gmail-ready");
     assert_eq!(resolved.manifest_path, state.manifest_path);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn saved_state_archives_use_distinct_generation_paths() {
+    let root = test_root("slice-state-generations");
+    let first = state::active_state_home_archive_path(&root);
+    let second = state::active_state_home_archive_path(&root);
+
+    assert_ne!(first, second);
+    assert_eq!(first.parent(), Some(root.as_path()));
+    assert_eq!(second.parent(), Some(root.as_path()));
+    assert_eq!(
+        first.extension().and_then(|value| value.to_str()),
+        Some("zst")
+    );
+    assert_eq!(
+        second.extension().and_then(|value| value.to_str()),
+        Some("zst")
+    );
+}
+
+#[test]
+fn failed_saved_state_publication_after_archive_capture_preserves_restorable_prior_generation() {
+    let root = test_root("slice-state-publication-failure");
+    std::fs::create_dir_all(&root).expect("state directory should create");
+    let manifest = root.join("manifest.json");
+    let prior_archive = root.join("home-prior.tar.zst");
+    let next_archive = root.join("home-next.tar.zst");
+    std::fs::write(&prior_archive, b"prior generation").expect("prior archive should write");
+    std::fs::write(&next_archive, b"next generation").expect("next archive should write");
+
+    let mut prior = saved_state(manifest.display().to_string());
+    prior.home_archive_path = prior_archive.display().to_string();
+    prior.image_ref = "chariox-slice-state:gmail-ready-prior".to_string();
+    let prior_manifest = serde_json::to_vec_pretty(&prior).expect("prior state should encode");
+    std::fs::write(&manifest, &prior_manifest).expect("prior manifest should write");
+
+    let mut next = prior.clone();
+    next.home_archive_path = next_archive.display().to_string();
+    next.image_ref = "chariox-slice-state:gmail-ready-next".to_string();
+    next.updated_at_ms += 1;
+
+    let error = state::publish_saved_state_generation_with(
+        &manifest,
+        &next,
+        Some(&prior),
+        |_path, _state| {
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "slice.state.manifest",
+                message: "injected publication failure".to_string(),
+            })
+        },
+    )
+    .expect_err("injected manifest publication must fail");
+
+    assert!(error.to_string().contains("injected publication failure"));
+    assert_eq!(
+        std::fs::read(&manifest).expect("prior manifest should remain readable"),
+        prior_manifest
+    );
+    assert_eq!(
+        std::fs::read(&prior_archive).expect("prior archive should remain readable"),
+        b"prior generation"
+    );
+    assert!(
+        !next_archive.exists(),
+        "unpublished archive must be removed"
+    );
+
+    let restored: SliceSavedStateRecord = serde_json::from_slice(
+        &std::fs::read(&manifest).expect("prior manifest should remain readable for restore"),
+    )
+    .expect("prior manifest should remain valid");
+    let restore_options = test_options().with_saved_state(&restored);
+    assert_eq!(
+        restore_options.saved_home_archive.as_deref(),
+        Some(prior_archive.as_path())
+    );
+    assert_eq!(restore_options.docker_image, prior.image_ref);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn uncertain_saved_state_publication_after_manifest_rename_retains_both_generations() {
+    let root = test_root("slice-state-publication-uncertain");
+    std::fs::create_dir_all(&root).expect("state directory should create");
+    let manifest = root.join("manifest.json");
+    let prior_archive = root.join("home-prior.tar.zst");
+    let next_archive = root.join("home-next.tar.zst");
+    std::fs::write(&prior_archive, b"prior generation").expect("prior archive should write");
+    std::fs::write(&next_archive, b"next generation").expect("next archive should write");
+
+    let mut prior = saved_state(manifest.display().to_string());
+    prior.home_archive_path = prior_archive.display().to_string();
+    prior.image_ref = "chariox-slice-state:gmail-ready-prior".to_string();
+    std::fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&prior).expect("prior state should encode"),
+    )
+    .expect("prior manifest should write");
+
+    let mut next = prior.clone();
+    next.home_archive_path = next_archive.display().to_string();
+    next.image_ref = "chariox-slice-state:gmail-ready-next".to_string();
+    next.updated_at_ms += 1;
+
+    state::publish_saved_state_generation_with(&manifest, &next, Some(&prior), |path, state| {
+        state::write_state_manifest_with(path, state, |_parent| {
+            Err(std::io::Error::other(
+                "injected directory sync failure after rename",
+            ))
+        })
+    })
+    .expect("a published manifest with uncertain durability must retain both generations");
+
+    let published: SliceSavedStateRecord = serde_json::from_slice(
+        &std::fs::read(&manifest).expect("renamed manifest should remain readable"),
+    )
+    .expect("renamed manifest should contain the next state");
+    assert_eq!(published.home_archive_path, next.home_archive_path);
+    assert_eq!(
+        std::fs::read(&prior_archive).expect("prior archive must be retained"),
+        b"prior generation"
+    );
+    assert_eq!(
+        std::fs::read(&next_archive).expect("published archive must be retained"),
+        b"next generation"
+    );
+
+    let prior_restore = test_options().with_saved_state(&prior);
+    let next_restore = test_options().with_saved_state(&published);
+    assert_eq!(
+        prior_restore.saved_home_archive.as_deref(),
+        Some(prior_archive.as_path())
+    );
+    assert_eq!(
+        next_restore.saved_home_archive.as_deref(),
+        Some(next_archive.as_path())
+    );
+
     let _ = std::fs::remove_dir_all(root);
 }
 

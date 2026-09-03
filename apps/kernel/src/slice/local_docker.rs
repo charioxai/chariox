@@ -168,6 +168,7 @@ pub fn run_local_docker_slice_action(
     let mut command = Command::new(&script);
     let action_name = match action {
         LocalDockerSliceAction::Provision => "provision",
+        LocalDockerSliceAction::Recover => "recover",
         LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
         LocalDockerSliceAction::RemoveProviderAuth => "remove-provider-auth",
         LocalDockerSliceAction::Stop => "stop",
@@ -179,7 +180,10 @@ pub fn run_local_docker_slice_action(
         record,
         relay,
         options,
-        action == LocalDockerSliceAction::Provision,
+        matches!(
+            action,
+            LocalDockerSliceAction::Provision | LocalDockerSliceAction::Recover
+        ),
     )?;
     let mut broker_inputs = Vec::new();
     if let (true, true, Some(home)) = (
@@ -761,6 +765,7 @@ pub fn collect_local_docker_slice_logs(
     let mut entries = Vec::new();
     for action in [
         LocalDockerSliceAction::Provision,
+        LocalDockerSliceAction::Recover,
         LocalDockerSliceAction::ImportProviderAuth,
         LocalDockerSliceAction::RemoveProviderAuth,
         LocalDockerSliceAction::Stop,
@@ -1238,6 +1243,7 @@ impl LocalDockerSliceAction {
     fn as_str(self) -> &'static str {
         match self {
             Self::Provision => "provision",
+            Self::Recover => "recover",
             Self::ImportProviderAuth => "import-provider-auth",
             Self::RemoveProviderAuth => "remove-provider-auth",
             Self::Stop => "stop",

@@ -104,8 +104,8 @@ export function parseArgs(argv) {
     }
   }
   if (options.providers.length === 0) throw new Error("at least one provider is required")
-  if (!["local-reload", "worker-resume", "slice-restart", "slice-shutdown", "live-migrate-to-slice", "live-migrate-roundtrip-slice"].includes(options.drill)) {
-    throw new Error(`unsupported --drill ${options.drill}; implemented drills: local-reload, worker-resume, slice-restart, slice-shutdown, live-migrate-to-slice, live-migrate-roundtrip-slice`)
+  if (!["local-reload", "worker-resume", "slice-restart", "slice-shutdown", "slice-save-failure", "live-migrate-to-slice", "live-migrate-roundtrip-slice"].includes(options.drill)) {
+    throw new Error(`unsupported --drill ${options.drill}; implemented drills: local-reload, worker-resume, slice-restart, slice-shutdown, slice-save-failure, live-migrate-to-slice, live-migrate-roundtrip-slice`)
   }
   if (!["shared", "isolated"].includes(options.workerState)) {
     throw new Error(`unsupported --worker-state ${options.workerState}; expected shared or isolated`)
@@ -127,6 +127,7 @@ export function printHelp() {
     "  worker-resume  Drill 3 precursor: resume a captured provider thread on a same-host worker",
     "  slice-restart  Drill 4 precursor: save/restart a local Docker slice and relaunch the same agent",
     "  slice-shutdown  Save/shut down a local Docker slice, then explicitly start it and relaunch the same agent",
+    "  slice-save-failure  Preserve the running slice, agent thread, and prior saved generation after injected capture failure",
     "  live-migrate-to-slice  Drill 4: start locally, move the same agent to a slice, and resume the same provider thread",
     "  live-migrate-roundtrip-slice  Drill 5: move local -> slice -> local and resume the same provider thread both ways",
     "",
@@ -390,7 +391,10 @@ export function sliceRecordSnapshot(slice) {
     providers: slice?.providers ?? [],
     session_ids: slice?.session_ids ?? [],
     agent_ids: slice?.agent_ids ?? [],
-    saved_state_id: slice?.active_saved_state_id ?? slice?.saved_state_id ?? null,
+    saved_state_id: slice?.active_saved_state_id ?? slice?.saved_state_id ?? slice?.saved_state_ref ?? null,
+    saved_state_ref: slice?.saved_state_ref ?? null,
+    saved_state_status: slice?.saved_state_status ?? null,
+    saved_state_updated_at_ms: slice?.saved_state_updated_at_ms ?? null,
     operation: slice?.operation ?? null,
   }
 }

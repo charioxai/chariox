@@ -299,6 +299,7 @@ pub struct CreateSliceInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDockerSliceAction {
     Provision,
+    Recover,
     ImportProviderAuth,
     RemoveProviderAuth,
     Stop,

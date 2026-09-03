@@ -77,6 +77,7 @@ const persistentHandleDescriptors = new Map()
 let persistentHandleRecords
 const ACTIONS = new Set([
   "provision",
+  "recover",
   "import-provider-auth",
   "remove-provider-auth",
   "stop",
@@ -372,7 +373,8 @@ function validateProvisioner(action, environment, files) {
     "CHARIOX_SLICE_ACCOUNT_OWNER",
     "CHARIOX_SLICE_ACCOUNT_PROFILE",
   ])
-  const actionEnvironment = action === "provision"
+  const usesFullEnvironment = action === "provision" || action === "recover"
+  const actionEnvironment = usesFullEnvironment
     ? ALLOWED_ENVIRONMENT
     : action === "start-provider-login"
       ? new Set([
@@ -385,7 +387,7 @@ function validateProvisioner(action, environment, files) {
         ? authEnvironment
         : commonEnvironment
   for (const name of Object.keys(environment)) {
-    if (!actionEnvironment.has(name) && !(action === "provision" && /^CHARIOX_SLICE_DEVELOPMENT_MOUNT_[0-9]+$/.test(name))) {
+    if (!actionEnvironment.has(name) && !(usesFullEnvironment && /^CHARIOX_SLICE_DEVELOPMENT_MOUNT_[0-9]+$/.test(name))) {
       fail(`${name} is not allowed for provisioner action ${action}`)
     }
   }
