@@ -710,7 +710,7 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "mousemove 640 400\n",
             "click --repeat 3 --delay 20 6\n",
             "click --repeat 5 --delay 20 5\n",
-            "type --clearmodifiers --delay 20 --file -\n",
+            "type --clearmodifiers --delay 40 --file -\n",
             "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
             "keyup Shift_L\n",
             "keyup Shift_R\n",
