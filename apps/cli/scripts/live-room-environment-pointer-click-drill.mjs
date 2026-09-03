@@ -1091,7 +1091,10 @@ async function exerciseCancellableAgentKeyboardInput({
   const pending = mcpToolCall(secretProviderRun, "slice_keyboard", {
     action: "type",
     text: input,
-  })
+  }).then(
+    (result) => ({ result, error: null }),
+    (error) => ({ result: null, error }),
+  )
   const started = await waitFor(async () => {
     const current = unwrap(
       await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
@@ -1116,7 +1119,9 @@ async function exerciseCancellableAgentKeyboardInput({
 
   const cancelStartedAt = Date.now()
   await cancel(started.action.action_id)
-  const toolResult = await pending
+  const settlement = await pending
+  if (settlement.error) throw settlement.error
+  const toolResult = settlement.result
   const cancellationLatencyMs = Date.now() - cancelStartedAt
   assert.equal(toolResult.ok, false, `${label} must not report tool success`)
   assert.match(
