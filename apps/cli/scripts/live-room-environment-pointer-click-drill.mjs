@@ -921,8 +921,27 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
     activityNotices,
   })
 
-  const explicitLocal = await exerciseCancellableAgentKeyboardInput({
+  const explicitTakeover = unwrap(
+    await client.send(requests.requestRoomEnvironmentInputTakeoverRequest(
+      sessionId,
+      { kind: "desktop" },
+    )),
+    "RoomEnvironmentTakeoverUpdated",
+  )
+  assert.equal(explicitTakeover.outcome.state, "granted")
+  assert.ok(explicitTakeover.environment.input_ownership.some((entry) => (
+    entry.target.kind === "desktop" && entry.actor_id === "user:local"
+  )))
+  const explicitLocal = await exerciseCancellableKeyboardInput({
     input: cancellationText,
+    actorId: "user:local",
+    start: (baseline) => client.send(requests.submitRoomEnvironmentActionRequest(
+      sessionId,
+      baseline.runtime_generation,
+      baseline.viewport.revision,
+      `${runId}-human-keyboard-cancellation`,
+      { kind: "keyboard_text", text: cancellationText },
+    )),
     cancel: async (actionId, { localNoticeBaseline }) => {
       await localAutomation.send(
         "submit_prompt",
@@ -937,17 +956,35 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
         20_000,
       )
     },
+    assertSettlement: assertCancelledHumanActionSettlement,
     activityController,
     activityNotices,
-    label: "local TUI explicit cancellation",
+    label: "local TUI explicit human cancellation",
   })
+  const explicitRelease = unwrap(
+    await client.send(requests.releaseRoomEnvironmentInputRequest(
+      sessionId,
+      { kind: "desktop" },
+    )),
+    "RoomEnvironmentInputReleased",
+  ).environment
+  assert.equal(
+    explicitRelease.input_ownership.some((entry) => entry.target.kind === "desktop"),
+    false,
+    "explicit cancellation owner must release desktop before agent recovery",
+  )
   await recoverCancellationFixture(activityController, activityNotices)
   await selectCancellationFixtureText(activityController, activityNotices)
 
   const takeoverLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const takeoverRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
-  const takeoverRemote = await exerciseCancellableAgentKeyboardInput({
+  const takeoverRemote = await exerciseCancellableKeyboardInput({
     input: takeoverCancellationText,
+    actorId: `agent:${secretAgent.id}`,
+    start: () => mcpToolCall(secretProviderRun, "slice_keyboard", {
+      action: "type",
+      text: takeoverCancellationText,
+    }),
     cancel: async (actionId, { remoteNoticeBaseline }) => {
       await remoteAutomation.send(
         "submit_prompt",
@@ -962,6 +999,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
         20_000,
       )
     },
+    assertSettlement: assertCancelledAgentToolSettlement,
     activityController,
     activityNotices,
     label: "remote TUI human takeover cancellation",
@@ -1077,9 +1115,12 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
   }
 }
 
-async function exerciseCancellableAgentKeyboardInput({
+async function exerciseCancellableKeyboardInput({
   input,
+  actorId,
+  start,
   cancel,
+  assertSettlement,
   activityController,
   activityNotices,
   label,
@@ -1092,10 +1133,7 @@ async function exerciseCancellableAgentKeyboardInput({
   assert.ok(baseline.focused_tab_id, `${label} requires a focused browser tab`)
   const localNoticeBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
   const remoteNoticeBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
-  const pending = mcpToolCall(secretProviderRun, "slice_keyboard", {
-    action: "type",
-    text: input,
-  }).then(
+  const pending = Promise.resolve().then(() => start(baseline)).then(
     (result) => ({ result, error: null }),
     (error) => ({ result: null, error }),
   )
@@ -1106,7 +1144,7 @@ async function exerciseCancellableAgentKeyboardInput({
     ).environment
     const action = current.actions.find((candidate) => (
       candidate.sequence > baselineSequence
-        && candidate.actor_id === `agent:${secretAgent.id}`
+        && candidate.actor_id === actorId
         && candidate.kind === "keyboard_text"
     ))
     if (!action) return false
@@ -1115,7 +1153,7 @@ async function exerciseCancellableAgentKeyboardInput({
   }, 4_000, `${label} did not begin physical input`)
   assertRoomComputerActionRunning(started.action, {
     actionId: started.action.action_id,
-    actorId: `agent:${secretAgent.id}`,
+    actorId,
     kind: "keyboard_text",
     focusedTabId: baseline.focused_tab_id,
   })
@@ -1125,20 +1163,8 @@ async function exerciseCancellableAgentKeyboardInput({
   const cancelStartedAt = Date.now()
   await cancel(started.action.action_id, { localNoticeBaseline, remoteNoticeBaseline })
   const settlement = await pending
-  if (settlement.error) throw settlement.error
-  const toolResult = settlement.result
   const cancellationLatencyMs = Date.now() - cancelStartedAt
-  assert.equal(toolResult.ok, false, `${label} must not report tool success`)
-  assert.match(
-    JSON.stringify(toolResult.raw),
-    /cancel/i,
-    `${label} must return an actionable cancellation result`,
-  )
-  assertRetainedTextIsRedacted(
-    toolResult.raw,
-    input,
-    `${label} runtime MCP result retained keyboard input`,
-  )
+  assertSettlement(settlement, input, label)
   assert.ok(cancellationLatencyMs < 2_000, `${label} took ${cancellationLatencyMs}ms`)
 
   const terminal = await waitFor(async () => {
@@ -1153,7 +1179,7 @@ async function exerciseCancellableAgentKeyboardInput({
   }, 20_000, `${label} did not reach one terminal cancelled state`)
   assertRoomComputerActionCancelled(terminal, {
     actionId: started.action.action_id,
-    actorId: `agent:${secretAgent.id}`,
+    actorId,
     kind: "keyboard_text",
     focusedTabId: baseline.focused_tab_id,
   })
@@ -1173,12 +1199,40 @@ async function exerciseCancellableAgentKeyboardInput({
   ])
   return {
     actionId: started.action.action_id,
-    actorId: `agent:${secretAgent.id}`,
+    actorId,
     focusedTabId: baseline.focused_tab_id,
     countBeforeCancellation: started.count,
     countAfterCancellation: stoppedCount,
     cancellationLatencyMs,
   }
+}
+
+function assertCancelledHumanActionSettlement(settlement, input, label) {
+  assert.equal(settlement.result, null, `${label} must not return a successful submission`)
+  assert.ok(settlement.error, `${label} must return an actionable cancellation error`)
+  const errorText = String(settlement.error?.stack ?? settlement.error)
+  assert.match(errorText, /cancel/i, `${label} cancellation error`)
+  assertRetainedTextIsRedacted(
+    { error: errorText },
+    input,
+    `${label} local response retained keyboard input`,
+  )
+}
+
+function assertCancelledAgentToolSettlement(settlement, input, label) {
+  if (settlement.error) throw settlement.error
+  const toolResult = settlement.result
+  assert.equal(toolResult.ok, false, `${label} must not report tool success`)
+  assert.match(
+    JSON.stringify(toolResult.raw),
+    /cancel/i,
+    `${label} must return an actionable cancellation result`,
+  )
+  assertRetainedTextIsRedacted(
+    toolResult.raw,
+    input,
+    `${label} runtime MCP result retained keyboard input`,
+  )
 }
 
 async function selectCancellationFixtureText(activityController, activityNotices) {
