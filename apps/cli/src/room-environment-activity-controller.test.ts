@@ -84,10 +84,63 @@ test("Room activity projects actor, tab, input, and action outcome events withou
     "Room actors: Mara (present), Miguel (present)",
     "Room tab: Docs — https://example.test/docs",
     "Room input: Miguel controls desktop",
-    "Room action: Mara · browser navigate · completed",
+    "Room action #1: Mara · browser navigate · completed",
   ])
   assert.deepEqual(harness.activity, ["room_environment_events"])
   assert.equal(harness.requests.length, 3, "one state refresh should serve the complete event batch")
+})
+
+test("Room activity keeps consecutive same-kind Actions distinct by sequence", async () => {
+  const initial = roomEnvironment()
+  const actions: RoomEnvironmentSnapshot["actions"] = [1, 2].map((sequence) => ({
+    action_id: `action-${sequence}`,
+    sequence,
+    idempotency_key: null,
+    actor_id: "agent:agent-1",
+    runtime_generation: 2,
+    mode: "computer",
+    kind: "pointer_click",
+    arguments: {
+      kind: "pointer_click",
+      x: 640,
+      y: 400,
+      button: "left",
+      click_count: 1,
+      viewport_revision: 3,
+    },
+    targets: [{ kind: "desktop" }],
+    state: "completed",
+    cancellation_requested: false,
+    submitted_at_ms: sequence * 10,
+    started_at_ms: sequence * 10 + 1,
+    finished_at_ms: sequence * 10 + 2,
+    outcome: { status: "completed" },
+  }))
+  const events: RoomEnvironmentEvent[] = actions.map((action, index) => roomEvent(5 + index, {
+    ActionChanged: {
+      action_id: action.action_id,
+      state: "completed",
+      cancellation_requested: false,
+      submitted_at_ms: action.submitted_at_ms,
+      started_at_ms: action.started_at_ms,
+      finished_at_ms: action.finished_at_ms,
+      outcome: { status: "completed" },
+    },
+  }))
+  const harness = activityHarness([
+    { RoomEnvironmentState: { environment: initial } },
+    { RoomEnvironmentEvents: { replay: { Events: { events, next_cursor: 6 } } } },
+    { RoomEnvironmentState: { environment: roomEnvironment({ eventCursor: 6, actions }) } },
+  ])
+
+  await harness.controller.synchronize()
+  harness.notices.length = 0
+  await harness.controller.synchronize()
+
+  assert.deepEqual(harness.notices, [
+    "Room action #1: Mara · computer pointer_click · completed",
+    "Room action #2: Mara · computer pointer_click · completed",
+  ])
 })
 
 test("Room activity applies a replay-gap snapshot directly", async () => {

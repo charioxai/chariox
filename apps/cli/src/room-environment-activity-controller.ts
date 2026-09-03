@@ -281,10 +281,13 @@ function formatActionNotice(
   changed: Extract<RoomEnvironmentEvent["kind"], { ActionChanged: unknown }>["ActionChanged"],
   environment: RoomEnvironmentSnapshot,
 ): string {
+  // Bounded snapshots can omit an older Action still present in event replay.
+  // ActionChanged carries no sequence; keep its unique ID rather than inventing
+  // a sequence or dropping the notice. Only snapshot-backed notices use #N.
   if (!action) return `Room action: ${changed.action_id} · ${formatActionState(changed.state, changed.outcome)}`
   const actor = environment.actors.find((candidate) => candidate.actor_id === action.actor_id)
   return [
-    "Room action:",
+    `Room action #${action.sequence}:`,
     actor?.display_label ?? actorLabel(action.actor_id),
     "·",
     action.mode,

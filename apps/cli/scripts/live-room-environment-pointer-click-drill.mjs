@@ -25,6 +25,12 @@ import {
   assertRoomKeyboardTextAction,
 } from "./lib/room-environment-computer-input-drill.mjs"
 import {
+  assertRoomPointerClickAction,
+  assertRoomPointerDragAction,
+  assertRoomPointerMoveAction,
+  assertRoomPointerScrollAction,
+} from "./lib/room-environment-computer-pointer-drill.mjs"
+import {
   automationNoticeEntries,
   automationNoticeIds,
   automationNoticeTexts,
@@ -57,6 +63,26 @@ const physicalClipboardText = `physical-clipboard-${runId}-áéíóú\nsecond li
 const keyboardText = `keyboard-${runId}-Grüße 世界`
 const keyboardReplacementText = `focus-${runId}-ABC`
 const keyboardAfterRepeat = keyboardReplacementText.slice(0, -3)
+const pointerMatrix = Object.freeze({
+  move: { x: 160, y: 220 },
+  singleClick: { x: 460, y: 220, button: "left", clickCount: 1 },
+  rightClick: { x: 700, y: 220, button: "right", clickCount: 1 },
+  doubleClick: { x: 940, y: 220, button: "left", clickCount: 2 },
+  textSelection: {
+    fromX: 220,
+    fromY: 450,
+    toX: 900,
+    toY: 450,
+    button: "left",
+  },
+  scroll: {
+    x: 640,
+    y: 700,
+    horizontalSteps: 4,
+    verticalSteps: 5,
+  },
+  keyboardFocus: { x: 640, y: 393, button: "left", clickCount: 1 },
+})
 const clipboardValues = [
   agentClipboardText,
   blockedAgentClipboardText,
@@ -389,10 +415,10 @@ async function run() {
   )), "RoomEnvironmentActionSubmitted")
   assert.equal(actionState(click.environment, click.action_id), "completed")
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), /^Room action: Local user · computer pointer_click · completed$/)
+  assert.match(activityNotices.at(-1), /^Room action #\d+: Local user · computer pointer_click · completed$/)
   await Promise.all([
-    waitForLocalNotice(/^Room action: Local user · computer pointer_click · completed$/),
-    waitForRemoteNotice(/^Room action: Local user · computer pointer_click · completed$/),
+    waitForLocalNotice(/^Room action #\d+: Local user · computer pointer_click · completed$/),
+    waitForRemoteNotice(/^Room action #\d+: Local user · computer pointer_click · completed$/),
   ])
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
@@ -426,6 +452,7 @@ async function run() {
     waitForRemoteNotice(/^Room input: available$/),
   ])
   const computerSecretResult = await exerciseComputerSecretInput()
+  const computerPointer = await exerciseRoomPointer(activityController, activityNotices)
   const computerKeyboard = await exerciseRoomKeyboard(activityController, activityNotices)
   const computerClipboard = await exerciseRoomClipboard(activityController, activityNotices)
   companionResult = await runCompanionIfConfigured({
@@ -450,7 +477,7 @@ async function run() {
   ])
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v7",
+    schema: "chariox.room_environment.pointer_click_drill.v8",
     status: "passed",
     startedAt,
     source: sourceIdentity,
@@ -466,6 +493,7 @@ async function run() {
     idempotencyKey,
     physicalEffect: companionResult?.physicalEffect ?? "POINTER_CLICK_COUNT=1",
     computerSecret: computerSecretResult,
+    computerPointer,
     computerKeyboard,
     computerClipboard: computerClipboard.summary,
     containerLimits: limits,
@@ -484,6 +512,10 @@ async function run() {
       "home-kernel approvals released each credential only after the password field had focus",
       "worker typed both credentials through the Room Computer action path into the shared headed desktop",
       "Computer secret actions were attributed, argument-free, visible in both TUIs, and absent from clipboard, screenshots, logs, history, and relay output",
+      "slice-bound agent moved, single-clicked, right-clicked, double-clicked, dragged, and scrolled the physical X11 desktop through Room authority",
+      "pointer drag selected text without moving the Chromium window",
+      "horizontal and vertical pointer scrolling both changed the physical nested scroller",
+      "Room history retained pointer coordinates, button, count, and scroll steps while both TUIs retained sequence, actor, kind, and outcome",
       "slice-bound agent typed a non-US sample into the physical X11 desktop through Room authority",
       "keyboard focus survived a select-all chord, replacement text, and repeated BackSpace on the physical X11 desktop",
       "Room history and both TUIs retained keyboard attribution, counts, and repeat values without text or key names",
@@ -526,15 +558,232 @@ async function run() {
   }
 }
 
+async function exerciseRoomPointer(activityController, activityNotices) {
+  await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/pointer-matrix`])
+  await waitForBrowserText(
+    "ROOM_COMPUTER_POINTER_READY",
+    30_000,
+    "pointer matrix fixture did not load",
+  )
+  await screenshot("before-pointer-matrix")
+  const before = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const viewportRevision = before.viewport.revision
+
+  const moved = await executeAgentPointerAction({
+    args: { action: "move", ...pointerMatrix.move },
+    expectedKind: "pointer_move",
+    expectedMarker: "POINTER_MOVE_OK",
+    markerFailure: "physical pointer move did not enter its target",
+    validate: (action, actorId) => assertRoomPointerMoveAction(action, {
+      actorId,
+      ...pointerMatrix.move,
+      viewportRevision,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const singleClick = await executeAgentPointerAction({
+    args: {
+      action: "click",
+      x: pointerMatrix.singleClick.x,
+      y: pointerMatrix.singleClick.y,
+      button: pointerMatrix.singleClick.button,
+    },
+    expectedKind: "pointer_click",
+    expectedMarker: "POINTER_SINGLE_CLICK_OK",
+    markerFailure: "physical single click did not reach its target exactly once",
+    validate: (action, actorId) => assertRoomPointerClickAction(action, {
+      actorId,
+      ...pointerMatrix.singleClick,
+      viewportRevision,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const rightClick = await executeAgentPointerAction({
+    args: {
+      action: "click",
+      x: pointerMatrix.rightClick.x,
+      y: pointerMatrix.rightClick.y,
+      button: pointerMatrix.rightClick.button,
+    },
+    expectedKind: "pointer_click",
+    expectedMarker: "POINTER_RIGHT_CLICK_OK",
+    markerFailure: "physical right click did not reach its target",
+    validate: (action, actorId) => assertRoomPointerClickAction(action, {
+      actorId,
+      ...pointerMatrix.rightClick,
+      viewportRevision,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const doubleClick = await executeAgentPointerAction({
+    args: {
+      action: "double_click",
+      x: pointerMatrix.doubleClick.x,
+      y: pointerMatrix.doubleClick.y,
+      button: pointerMatrix.doubleClick.button,
+    },
+    expectedKind: "pointer_click",
+    expectedMarker: "POINTER_DOUBLE_CLICK_OK",
+    markerFailure: "physical double click did not reach its target",
+    validate: (action, actorId) => assertRoomPointerClickAction(action, {
+      actorId,
+      ...pointerMatrix.doubleClick,
+      viewportRevision,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const textSelection = await executeAgentPointerAction({
+    args: {
+      action: "drag",
+      x: pointerMatrix.textSelection.fromX,
+      y: pointerMatrix.textSelection.fromY,
+      to_x: pointerMatrix.textSelection.toX,
+      to_y: pointerMatrix.textSelection.toY,
+      button: pointerMatrix.textSelection.button,
+    },
+    expectedKind: "pointer_drag",
+    expectedMarker: "TEXT_SELECTION_OK WINDOW_GEOMETRY_STABLE",
+    markerFailure: "physical drag did not select text without moving the browser window",
+    validate: (action, actorId) => assertRoomPointerDragAction(action, {
+      actorId,
+      ...pointerMatrix.textSelection,
+      viewportRevision,
+    }),
+    activityController,
+    activityNotices,
+  })
+  const scrolled = await executeAgentPointerAction({
+    args: {
+      action: "scroll",
+      x: pointerMatrix.scroll.x,
+      y: pointerMatrix.scroll.y,
+      amount: pointerMatrix.scroll.verticalSteps,
+      horizontal_steps: pointerMatrix.scroll.horizontalSteps,
+    },
+    expectedKind: "pointer_scroll",
+    expectedMarker: "POINTER_SCROLL_BOTH_AXES_OK",
+    markerFailure: "physical pointer scroll did not move both nested-scroller axes",
+    validate: (action, actorId) => assertRoomPointerScrollAction(action, {
+      actorId,
+      ...pointerMatrix.scroll,
+      viewportRevision,
+    }),
+    activityController,
+    activityNotices,
+  })
+  await screenshot("after-pointer-matrix")
+
+  const actions = [moved, singleClick, rightClick, doubleClick, textSelection, scrolled]
+  assert.equal(new Set(actions.map((entry) => entry.actionId)).size, actions.length)
+  const history = unwrap(
+    await client.send(requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 25)),
+    "RoomEnvironmentActionHistoryListed",
+  ).page.actions
+  for (const pointerAction of actions) {
+    pointerAction.validate(
+      history.find((candidate) => candidate.action_id === pointerAction.actionId),
+      pointerAction.actorId,
+    )
+  }
+
+  return {
+    agentId: secretAgent.id,
+    actorId: moved.actorId,
+    actionIds: actions.map((entry) => entry.actionId),
+    cases: [
+      "move",
+      "single_click",
+      "right_click",
+      "double_click",
+      "text_selection_drag",
+      "horizontal_and_vertical_scroll",
+    ],
+    physicalEffectsExact: true,
+    textSelectionExact: true,
+    windowGeometryStable: true,
+    localTuiObserved: true,
+    remoteTuiObserved: true,
+  }
+}
+
+async function executeAgentPointerAction({
+  args,
+  expectedKind,
+  expectedMarker,
+  markerFailure,
+  validate,
+  activityController,
+  activityNotices,
+}) {
+  const localBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const remoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const response = await mcpToolCall(secretProviderRun, "slice_mouse", args)
+  assert.equal(response.ok, true, redactDrillSecrets(JSON.stringify(response.raw)))
+  assert.equal(response.content?.action_kind, expectedKind)
+  assert.equal(response.content?.session_id, sessionId)
+  assert.equal(response.content?.agent_id, secretAgent.id)
+  try {
+    await waitForBrowserText(expectedMarker, 20_000, markerFailure)
+  } catch (error) {
+    const failureLabel = expectedMarker.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    await screenshot(`pointer-failure-${failureLabel}`).catch(() => {})
+    throw error
+  }
+
+  const environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const action = environment.actions.find(
+    (candidate) => candidate.action_id === response.content?.action_id,
+  )
+  validate(action, response.content?.actor_id)
+  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · completed$`)
+  assert.equal(await activityController.synchronize(), true)
+  assert.match(activityNotices.at(-1), noticePattern)
+  await Promise.all([
+    waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localBaseline, 20_000),
+    waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteBaseline, 20_000),
+  ])
+  return {
+    actionId: response.content?.action_id,
+    actorId: response.content?.actor_id,
+    validate,
+  }
+}
+
 async function exerciseRoomKeyboard(activityController, activityNotices) {
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/keyboard`])
   await waitForBrowserText("ROOM_COMPUTER_KEYBOARD_READY", 30_000, "keyboard fixture did not load")
-  await sliceScreen(["browser-click", "#keyboard-input"])
-  await waitForBrowserText(
-    "ROOM_COMPUTER_KEYBOARD_FOCUS_OK",
-    20_000,
-    "keyboard fixture did not establish the physical input focus",
-  )
+  const environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const focused = await executeAgentPointerAction({
+    args: {
+      action: "click",
+      x: pointerMatrix.keyboardFocus.x,
+      y: pointerMatrix.keyboardFocus.y,
+      button: pointerMatrix.keyboardFocus.button,
+    },
+    expectedKind: "pointer_click",
+    expectedMarker: "ROOM_COMPUTER_KEYBOARD_FOCUS_OK",
+    markerFailure: "Room pointer click did not establish the physical keyboard focus",
+    validate: (action, actorId) => assertRoomPointerClickAction(action, {
+      actorId,
+      ...pointerMatrix.keyboardFocus,
+      viewportRevision: environment.viewport.revision,
+    }),
+    activityController,
+    activityNotices,
+  })
   const typed = await executeAgentKeyboardAction({
     args: { action: "type", text: keyboardText },
     retainedInput: keyboardText,
@@ -607,6 +856,7 @@ async function exerciseRoomKeyboard(activityController, activityNotices) {
   return {
     agentId: secretAgent.id,
     actorId: typed.actorId,
+    focusActionId: focused.actionId,
     actionIds: [typed, selectAll, replaced, repeated].map((entry) => entry.actionId),
     cases: [
       textCaseSummary("non-us-text", keyboardText),
@@ -644,7 +894,13 @@ async function executeAgentKeyboardAction({
     retainedInput,
     "runtime MCP response retained keyboard input",
   )
-  await waitForBrowserText(expectedMarker, 20_000, markerFailure)
+  try {
+    await waitForBrowserText(expectedMarker, 20_000, markerFailure)
+  } catch (error) {
+    const failureLabel = expectedMarker.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    await screenshot(`keyboard-failure-${failureLabel}`).catch(() => {})
+    throw error
+  }
 
   const environment = unwrap(
     await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
@@ -654,7 +910,7 @@ async function executeAgentKeyboardAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action: .+ · computer ${expectedKind} · completed$`)
+  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · completed$`)
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), noticePattern)
   await Promise.all([
@@ -705,7 +961,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     actorId: agentWrite.content?.actor_id,
     clipboardText: agentClipboardText,
   })
-  const noticePattern = /^Room action: .+ · computer clipboard_write · completed$/
+  const noticePattern = /^Room action #\d+: .+ · computer clipboard_write · completed$/
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), noticePattern)
   await Promise.all([
@@ -972,7 +1228,7 @@ async function exerciseComputerSecretInput() {
   assert.ok(secretActions.every((action) => action.state === "completed"))
   assert.ok(secretActions.every((action) => action.actor_id === userPaste.content.actor_id))
 
-  const noticePattern = /^Room action: .+ · computer secret_input · completed$/
+  const noticePattern = /^Room action #\d+: .+ · computer secret_input · completed$/
   const [localNotice, remoteNotice] = await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localNoticeBaseline, 20_000),
     waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteNoticeBaseline, 20_000),
@@ -1212,7 +1468,7 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 }
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
-  const noticePattern = /^Room action: .+ · computer pointer_click · completed$/
+  const noticePattern = /^Room action #\d+: .+ · computer pointer_click · completed$/
   return await runRoomEnvironmentCompanion({
     env: process.env,
     ready: {
@@ -1588,6 +1844,52 @@ async function startFixture() {
         input.addEventListener("select",()=>{if(input.selectionStart===0&&input.selectionEnd===input.value.length)status.textContent="ROOM_COMPUTER_KEYBOARD_SELECT_ALL_OK"});
         input.addEventListener("blur",()=>{status.textContent="ROOM_COMPUTER_KEYBOARD_FOCUS_LOST"});
         queueMicrotask(confirmFocus);
+      </script></body></html>`)
+      return
+    }
+    if (request.url === "/pointer-matrix") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+      response.end(`<!doctype html><html><head><title>Room Computer pointer matrix</title><style>
+        *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden}body{background:#f4f4f3;color:#202124;font:20px sans-serif}
+        h1{font-size:22px;left:16px;margin:0;position:fixed;top:4px}.target{align-items:center;border:3px solid #555;display:flex;font-weight:700;height:120px;justify-content:center;position:fixed;top:20px;width:200px}
+        #move-target{left:60px;width:200px}#single-target{left:360px}#right-target{left:600px}#double-target{left:840px}
+        #selection-input{font:32px monospace;height:100px;left:160px;padding:20px;position:fixed;top:250px;width:800px}
+        #selection-status{font-weight:700;left:160px;position:fixed;top:355px}
+        #scroller{border:3px solid #555;height:160px;left:160px;overflow:scroll;position:fixed;top:480px;width:960px}
+        #scroll-content{background:linear-gradient(135deg,#f7b267,#70c1b3);height:640px;padding:20px;width:2200px}
+        #scroll-status{font-weight:700;left:180px;position:sticky;top:20px}
+      </style></head><body><h1>ROOM_COMPUTER_POINTER_READY</h1>
+        <div class="target" id="move-target">POINTER_MOVE_WAITING</div>
+        <button class="target" id="single-target">POINTER_SINGLE_WAITING</button>
+        <button class="target" id="right-target">POINTER_RIGHT_WAITING</button>
+        <button class="target" id="double-target">POINTER_DOUBLE_WAITING</button>
+        <input id="selection-input" value="Select this entire physical pointer sample without moving the browser window">
+        <div id="selection-status">TEXT_SELECTION_WAITING</div>
+        <div id="scroller"><div id="scroll-content"><span id="scroll-status">POINTER_SCROLL_WAITING</span></div></div>
+      <script>
+        let stableGeometry=null;
+        const moveTarget=document.querySelector("#move-target");
+        moveTarget.addEventListener("mousemove",()=>{stableGeometry=[window.screenX,window.screenY,window.outerWidth,window.outerHeight].join(":");moveTarget.textContent="POINTER_MOVE_OK"});
+        const singleTarget=document.querySelector("#single-target");let singleClicks=0;
+        singleTarget.addEventListener("click",()=>{singleClicks+=1;singleTarget.textContent=singleClicks===1?"POINTER_SINGLE_CLICK_OK":"POINTER_SINGLE_CLICK_COUNT="+singleClicks});
+        const rightTarget=document.querySelector("#right-target");
+        rightTarget.addEventListener("contextmenu",(event)=>{event.preventDefault();rightTarget.textContent="POINTER_RIGHT_CLICK_OK"});
+        const doubleTarget=document.querySelector("#double-target");
+        doubleTarget.addEventListener("dblclick",()=>{doubleTarget.textContent="POINTER_DOUBLE_CLICK_OK"});
+        const selectionInput=document.querySelector("#selection-input");
+        const updateSelectionStatus=()=>{
+          const selected=Math.abs(selectionInput.selectionEnd-selectionInput.selectionStart);
+          const geometry=[window.screenX,window.screenY,window.outerWidth,window.outerHeight].join(":");
+          document.querySelector("#selection-status").textContent=selected>=8?"TEXT_SELECTION_OK "+(stableGeometry&&geometry===stableGeometry?"WINDOW_GEOMETRY_STABLE":"WINDOW_GEOMETRY_CHANGED"):"TEXT_SELECTION_WAITING";
+        };
+        selectionInput.addEventListener("select",updateSelectionStatus);
+        document.addEventListener("selectionchange",updateSelectionStatus);
+        const scroller=document.querySelector("#scroller");
+        scroller.addEventListener("scroll",()=>{
+          if(scroller.scrollLeft>0)scroller.dataset.horizontal="ok";
+          if(scroller.scrollTop>0)scroller.dataset.vertical="ok";
+          document.querySelector("#scroll-status").textContent=scroller.dataset.horizontal==="ok"&&scroller.dataset.vertical==="ok"?"POINTER_SCROLL_BOTH_AXES_OK":"POINTER_SCROLL_WAITING";
+        });
       </script></body></html>`)
       return
     }
