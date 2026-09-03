@@ -294,17 +294,29 @@ impl KernelRuntimeState {
                                 .update(outcome.into_run());
                         }
                     }
-                    let remove_run_id = run_id.to_string();
-                    let (_, process_key) = self
-                        .with_app_side_effect(|app| {
-                            crate::app::ProviderLaunchProcessRuntime::new(app)
-                                .remove_run(&remove_run_id)
-                        })
-                        .await
-                        .unwrap_or((false, None));
-                    self.owned
-                        .remove_provider_process_tracking_for_run(run_id, process_key);
+                } else if let Some(mut projected_run) =
+                    self.owned.provider_run_projection.get(run_id)
+                {
+                    if projected_run.state() != crate::provider::ProviderRunState::Ended {
+                        projected_run.mark_ended();
+                        self.owned.clear_active_provider_run_session_pointer(
+                            &manifest.session_id,
+                            projected_run.id(),
+                        )?;
+                        self.owned.clear_prompt_activity(projected_run.id());
+                        self.owned.provider_run_projection.update(projected_run);
+                    }
                 }
+                let remove_run_id = run_id.to_string();
+                let (_, process_key) = self
+                    .with_app_side_effect(|app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&remove_run_id)
+                    })
+                    .await
+                    .unwrap_or((false, None));
+                self.owned
+                    .remove_provider_process_tracking_for_run(run_id, process_key);
             }
             let _ = self
                 .owned
@@ -1071,6 +1083,18 @@ mod tests {
         runtime
             .owned
             .agent_store
+            .set_agent_runtime_profile_with_account_profile(
+                &agent_id,
+                "codex",
+                Some("gpt-5.6-sol".to_string()),
+                Some("high".to_string()),
+                Some("work".to_string()),
+                crate::provider::ProviderResumeState::from_codex_thread_id("thread-projected"),
+            )
+            .expect("projected provider selection should persist on the agent");
+        runtime
+            .owned
+            .agent_store
             .update_agent_config(
                 &agent_id,
                 Some(Some(crate::provider::AgentExecutionMode::Plan)),
@@ -1079,6 +1103,19 @@ mod tests {
                 None,
             )
             .expect("agent execution config should update");
+        let worker_provider_run_id = "worker-provider-run";
+        let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            "leased-agent-1",
+            worker_provider_run_id,
+        );
+        runtime
+            .owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                &agent_id,
+                Some(worker_provider_run_id.to_string()),
+            )
+            .expect("worker provider run should bind to the slice agent");
         let request = crate::provider::LaunchProviderRequest::new(
             &session_id,
             "codex",
@@ -1095,7 +1132,7 @@ mod tests {
         .with_permission_level(crate::provider::AgentPermissionLevel::Required)
         .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
         let mut projected = crate::provider::RuntimeProviderRun::new(
-            "projected-run",
+            &projected_provider_run_id,
             &request,
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::Managed,
@@ -1111,6 +1148,11 @@ mod tests {
         );
         projected.mark_running();
         runtime.owned.provider_run_projection.update(projected);
+        runtime
+            .owned
+            .session_store
+            .set_active_provider_run(&session_id, Some(projected_provider_run_id.clone()))
+            .expect("projected provider should be active in the home session");
 
         let manifests = runtime
             .slice_agent_relaunch_manifests(&slice, "slice.state.save")
@@ -1119,6 +1161,35 @@ mod tests {
             .park_slice_agent_provider_runs(&manifests)
             .await
             .expect("projected provider should park for slice shutdown");
+        assert_eq!(
+            runtime
+                .owned
+                .provider_run_projection
+                .get(&projected_provider_run_id)
+                .expect("projected provider run should remain queryable")
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should remain available")
+                .active_provider_run_id(),
+            None
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .remote_execution()
+                .expect("slice binding should remain available")
+                .active_worker_provider_run_id,
+            None
+        );
         let recaptured = runtime
             .slice_agent_relaunch_manifests(&slice, "slice.start")
             .expect("parked projected provider selection should remain recoverable");
@@ -1134,10 +1205,7 @@ mod tests {
             manifest.provider_session_id.as_deref(),
             Some("thread-projected")
         );
-        assert_eq!(
-            manifest.existing_provider_run_id.as_deref(),
-            Some("projected-run")
-        );
+        assert_eq!(manifest.existing_provider_run_id.as_deref(), None);
         assert_eq!(
             manifest.execution_mode,
             crate::provider::AgentExecutionMode::Plan

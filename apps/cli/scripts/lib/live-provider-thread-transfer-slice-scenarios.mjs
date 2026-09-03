@@ -39,6 +39,7 @@ import {
   sliceRecordSnapshot,
   sliceRestartContinuityChecks,
   sliceSavedStateSnapshot,
+  sliceShutdownCheckpointChecks,
   variant,
   variantAny,
   waitForHistoryOutputMarker,
@@ -51,6 +52,8 @@ import {
 } from "./live-provider-thread-transfer-runtime.mjs"
 
 export async function runSliceRestartScenario({ provider, root, kernelUrl, options }) {
+  const shutdownThenStart = options.drill === "slice-shutdown"
+  const lifecycleLabel = shutdownThenStart ? "slice shutdown and explicit start" : "slice restart"
   const workspace = path.join(root, provider, "workspace")
   await mkdir(workspace, { recursive: true })
   await writeFile(path.join(workspace, "README.md"), `# Slice restart provider thread transfer drill for ${provider}\n`, "utf8")
@@ -60,12 +63,14 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     kernelMaxMissedPongs: 10,
   })
   const result = {
-    drill: "slice-restart",
+    drill: options.drill,
     provider,
     status: "failed",
     started_at_ms: Date.now(),
     evidence: {
-      scope: "home-managed local Docker slice save/restart with the same Chariox agent record",
+      scope: shutdownThenStart
+        ? "home-managed local Docker slice save/shutdown followed by explicit start with the same Chariox agent record"
+        : "home-managed local Docker slice save/restart with the same Chariox agent record",
       same_chariox_agent_record: true,
     },
     checks: {},
@@ -231,11 +236,15 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.evidence.slice_before_restart = sliceRecordSnapshot(sliceBeforeRestart)
     result.evidence.remember_marker = rememberMarker
 
-    logStep(result, provider, "save-slice-state-restart-agents", { sliceId, providerSessionId: beforeThreadId })
+    const saveMode = shutdownThenStart ? "shutdown" : "restart_agents"
+    logStep(result, provider, shutdownThenStart ? "save-slice-state-shutdown" : "save-slice-state-restart-agents", {
+      sliceId,
+      providerSessionId: beforeThreadId,
+    })
     const savedState = variant(
       await withTimeout(
-        client.send(saveSliceStateRequest(sliceId, "restart_agents", "this_slice")),
-        `save and restart slice for ${provider}`,
+        client.send(saveSliceStateRequest(sliceId, saveMode, "this_slice")),
+        `save ${lifecycleLabel} for ${provider}`,
         options.timeoutMs,
       ),
       "SliceStateSaved",
@@ -243,6 +252,50 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.evidence.slice_state_saved = {
       slice: sliceRecordSnapshot(savedState.slice),
       state: sliceSavedStateSnapshot(savedState.state),
+    }
+
+    let restartedSlice = savedState.slice
+    if (shutdownThenStart) {
+      const parkedRun = await waitForProviderRunEnded({
+        client,
+        providerRunId: beforeRun.id,
+        timeoutMs: Math.min(options.timeoutMs, 60_000),
+        pollMs: options.pollMs,
+      })
+      const stoppedState = variantAny(
+        await client.send(getSessionStateRequest(session.id)),
+        "SessionState",
+        "SessionStateLoaded",
+      )
+      const stoppedSession = stoppedState.session ?? stoppedState
+      result.evidence.provider_after_shutdown = providerRunSnapshot(parkedRun)
+      result.evidence.session_after_shutdown = {
+        id: stoppedSession.id ?? null,
+        active_provider_run_id: stoppedSession.active_provider_run_id ?? null,
+      }
+      Object.assign(result.checks, sliceShutdownCheckpointChecks({
+        savedSlice: savedState.slice,
+        parkedRun,
+        stoppedSession,
+      }))
+      if (!result.checks.slice_shutdown_checkpoint_valid) {
+        throw new Error(`slice shutdown did not leave ${sliceId} stopped with provider run ${beforeRun.id} parked`)
+      }
+
+      logStep(result, provider, "start-slice-explicitly", { sliceId })
+      restartedSlice = variant(
+        await withTimeout(
+          client.send(startSliceRequest(sliceId)),
+          `explicitly start slice for ${provider}`,
+          options.timeoutMs,
+        ),
+        "SliceStarted",
+      ).slice
+      result.evidence.slice_started_explicitly = sliceRecordSnapshot(restartedSlice)
+      result.checks.slice_explicit_start_completed = String(restartedSlice.status ?? "").toLowerCase() === "running"
+      if (!result.checks.slice_explicit_start_completed) {
+        throw new Error(`explicit start did not return ${sliceId} to running state`)
+      }
     }
 
     const afterRun = await waitForSessionActiveProviderRun({
@@ -283,11 +336,11 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       beforeBinding,
       afterBinding,
       sliceBeforeRestart,
-      restartedSlice: savedState.slice,
+      restartedSlice,
       savedState: savedState.state,
     }))
     if (!result.checks.same_chariox_agent_record) {
-      throw new Error(`slice restart did not preserve same Chariox agent record ${agent.id}`)
+      throw new Error(`${lifecycleLabel} did not preserve same Chariox agent record ${agent.id}`)
     }
     if (!result.checks.slice_working_directory_preserved) {
       throw new Error(
@@ -295,32 +348,32 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       )
     }
     if (!result.checks.provider_thread_id_preserved) {
-      throw new Error(`provider thread id changed across slice restart: before=${beforeThreadId} after=${afterThreadId}`)
+      throw new Error(`provider thread id changed across ${lifecycleLabel}: before=${beforeThreadId} after=${afterThreadId}`)
     }
     if (!result.checks.provider_run_relaunched) {
-      throw new Error(`slice restart reused stale provider run ${beforeRun.id}`)
+      throw new Error(`${lifecycleLabel} reused stale provider run ${beforeRun.id}`)
     }
     if (!result.checks.account_profile_preserved) {
       throw new Error(
-        `provider account changed across slice restart: before=${beforeRun.account_profile ?? "<unset>"} after=${afterRun.account_profile ?? "<unset>"}`,
+        `provider account changed across ${lifecycleLabel}: before=${beforeRun.account_profile ?? "<unset>"} after=${afterRun.account_profile ?? "<unset>"}`,
       )
     }
     if (!result.checks.execution_mode_preserved || !result.checks.permission_level_preserved) {
       throw new Error(
-        `provider execution authority changed across slice restart: mode ${beforeRun.execution_mode ?? "<unset>"}->${afterRun.execution_mode ?? "<unset>"}, permission ${beforeRun.permission_level ?? "<unset>"}->${afterRun.permission_level ?? "<unset>"}`,
+        `provider execution authority changed across ${lifecycleLabel}: mode ${beforeRun.execution_mode ?? "<unset>"}->${afterRun.execution_mode ?? "<unset>"}, permission ${beforeRun.permission_level ?? "<unset>"}->${afterRun.permission_level ?? "<unset>"}`,
       )
     }
     if (!result.checks.agent_binding_repaired) {
-      throw new Error(`slice restart did not replace the remote execution binding for ${agent.id}`)
+      throw new Error(`${lifecycleLabel} did not replace the remote execution binding for ${agent.id}`)
     }
     if (!result.checks.slice_worker_identity_preserved) {
-      throw new Error(`slice restart changed durable worker identity for ${sliceId}`)
+      throw new Error(`${lifecycleLabel} changed durable worker identity for ${sliceId}`)
     }
     if (!result.checks.slice_restart_timeline_valid) {
-      throw new Error(`slice restart timestamps do not prove save-before-relaunch ordering for ${agent.id}`)
+      throw new Error(`${lifecycleLabel} timestamps do not prove save-before-relaunch ordering for ${agent.id}`)
     }
     if (!result.checks.slice_restart_completed) {
-      throw new Error(`slice restart did not produce a running slice with fresh execution for ${agent.id}`)
+      throw new Error(`${lifecycleLabel} did not produce a running slice with fresh execution for ${agent.id}`)
     }
 
     const recallMarker = `${rememberMarker}_SLICE_RECALLED`
@@ -331,7 +384,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
         session.id,
         attachment.id,
         agent.id,
-        "If you remember the marker from before the slice restart, reply with it followed immediately by the suffix `_SLICE_RECALLED`. Do not include any other text.",
+        `If you remember the marker from before the ${lifecycleLabel}, reply with it followed immediately by the suffix \`_SLICE_RECALLED\`. Do not include any other text.`,
         [],
       ),
       `submit slice recall marker prompt for ${provider}`,
@@ -397,6 +450,10 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     }
     await client.close().catch(() => {})
   }
+}
+
+export async function runSliceShutdownScenario(args) {
+  return await runSliceRestartScenario(args)
 }
 
 export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl, options }) {

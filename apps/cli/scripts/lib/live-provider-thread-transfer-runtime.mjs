@@ -104,8 +104,8 @@ export function parseArgs(argv) {
     }
   }
   if (options.providers.length === 0) throw new Error("at least one provider is required")
-  if (!["local-reload", "worker-resume", "slice-restart", "live-migrate-to-slice", "live-migrate-roundtrip-slice"].includes(options.drill)) {
-    throw new Error(`unsupported --drill ${options.drill}; implemented drills: local-reload, worker-resume, slice-restart, live-migrate-to-slice, live-migrate-roundtrip-slice`)
+  if (!["local-reload", "worker-resume", "slice-restart", "slice-shutdown", "live-migrate-to-slice", "live-migrate-roundtrip-slice"].includes(options.drill)) {
+    throw new Error(`unsupported --drill ${options.drill}; implemented drills: local-reload, worker-resume, slice-restart, slice-shutdown, live-migrate-to-slice, live-migrate-roundtrip-slice`)
   }
   if (!["shared", "isolated"].includes(options.workerState)) {
     throw new Error(`unsupported --worker-state ${options.workerState}; expected shared or isolated`)
@@ -126,6 +126,7 @@ export function printHelp() {
     "  local-reload  Drill 1: baseline local reload preserves provider thread",
     "  worker-resume  Drill 3 precursor: resume a captured provider thread on a same-host worker",
     "  slice-restart  Drill 4 precursor: save/restart a local Docker slice and relaunch the same agent",
+    "  slice-shutdown  Save/shut down a local Docker slice, then explicitly start it and relaunch the same agent",
     "  live-migrate-to-slice  Drill 4: start locally, move the same agent to a slice, and resume the same provider thread",
     "  live-migrate-roundtrip-slice  Drill 5: move local -> slice -> local and resume the same provider thread both ways",
     "",
@@ -356,6 +357,23 @@ export function sliceRestartContinuityChecks({
     slice_worker_identity_preserved: sliceWorkerIdentityPreserved,
     slice_restart_timeline_valid: sliceRestartTimelineValid,
     slice_restart_completed: sliceRestartCompleted,
+  }
+}
+
+export function sliceShutdownCheckpointChecks({ savedSlice, parkedRun, stoppedSession }) {
+  const sliceShutdownLeftStopped = String(savedSlice?.status ?? "").toLowerCase() === "stopped"
+  const sliceShutdownParkedProviderRun = String(parkedRun?.state ?? "").toLowerCase() === "ended"
+  const sliceShutdownClearedActiveProviderRun = !stoppedSession?.active_provider_run_id
+
+  return {
+    slice_shutdown_left_stopped: sliceShutdownLeftStopped,
+    slice_shutdown_parked_provider_run: sliceShutdownParkedProviderRun,
+    slice_shutdown_cleared_active_provider_run: sliceShutdownClearedActiveProviderRun,
+    slice_shutdown_checkpoint_valid: (
+      sliceShutdownLeftStopped
+      && sliceShutdownParkedProviderRun
+      && sliceShutdownClearedActiveProviderRun
+    ),
   }
 }
 
