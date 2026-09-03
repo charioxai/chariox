@@ -29,9 +29,32 @@ export function clipboardInterruptionWindowMs(value) {
 
 export function assertRetainedClipboardEvidenceIsRedacted(evidence, clipboardText) {
   if (clipboardText.length === 0) return
+  const escapedClipboardText = JSON.stringify(clipboardText).slice(1, -1)
   assert.equal(
-    JSON.stringify(evidence).includes(clipboardText),
+    containsClipboardText(evidence, clipboardText, escapedClipboardText, new WeakSet()),
     false,
     "retained clipboard evidence contains clipboard text",
+  )
+}
+
+function containsClipboardText(value, clipboardText, escapedClipboardText, seen) {
+  if (typeof value === "string") {
+    return (
+      value.includes(clipboardText) ||
+      (escapedClipboardText !== clipboardText && value.includes(escapedClipboardText))
+    )
+  }
+  if (!value || typeof value !== "object") return false
+  if (seen.has(value)) return false
+  seen.add(value)
+  if (Array.isArray(value)) {
+    return value.some((entry) =>
+      containsClipboardText(entry, clipboardText, escapedClipboardText, seen),
+    )
+  }
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      containsClipboardText(key, clipboardText, escapedClipboardText, seen) ||
+      containsClipboardText(entry, clipboardText, escapedClipboardText, seen),
   )
 }

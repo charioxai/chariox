@@ -36,6 +36,20 @@ test("clipboard drill fails closed when retained evidence contains clipboard tex
     () => assertRetainedClipboardEvidenceIsRedacted({ report: `leak=${value}` }, value),
     /retained clipboard evidence contains clipboard text/,
   )
+
+  const multiline = "clipboard-first-line\nclipboard-second-line\n"
+  assert.throws(
+    () => assertRetainedClipboardEvidenceIsRedacted({ report: multiline }, multiline),
+    /retained clipboard evidence contains clipboard text/,
+  )
+  assert.throws(
+    () =>
+      assertRetainedClipboardEvidenceIsRedacted(
+        JSON.stringify({ report: multiline }),
+        multiline,
+      ),
+    /retained clipboard evidence contains clipboard text/,
+  )
 })
 
 test("clipboard drill interruption window is explicit and bounded", () => {
