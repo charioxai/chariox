@@ -111,21 +111,44 @@ impl KernelRuntimeState {
             slice_id: slice.id.clone(),
             command,
         };
-        let first = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &config,
-            target.clone(),
-            request(command.clone()),
-            Duration::from_secs(15),
-        ).await;
+        let send = |target, command| async {
+            let timeout = match &command {
+                Command::ComputerInput {
+                    action: crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { input },
+                    ..
+                } => Duration::from_millis(
+                    crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
+                ),
+                _ => Duration::from_secs(15),
+            };
+            match self.connected_relay_state_for_config(&config).await {
+                Some(relay_state) => {
+                    crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                        &config,
+                        &relay_state,
+                        target,
+                        request(command),
+                        timeout,
+                    )
+                    .await
+                }
+                None => {
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                        &config,
+                        target,
+                        request(command),
+                        timeout,
+                    )
+                    .await
+                }
+            }
+        };
+        let first = send(target.clone(), command.clone()).await;
         let response = match first {
             Ok(response) => response,
             Err(first_error) if recovery.is_some() => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    &config,
-                    target,
-                    request(recovery.expect("action recovery command")),
-                    Duration::from_secs(15),
-                ).await.map_err(|retry_error| controller_route_error(&format!(
+                send(target, recovery.expect("action recovery command"))
+                .await.map_err(|retry_error| controller_route_error(&format!(
                     "browser action result remained unavailable after non-mutating receipt recovery: {retry_error}; initial delivery error: {first_error}"
                 )))?
             }

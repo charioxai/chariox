@@ -562,18 +562,25 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     };
     write_executable("xdpyinfo", "#!/bin/sh\nexit 0\n");
     write_executable("pgrep", "#!/bin/sh\nprintf '1 process\\n'\n");
-    write_executable("timeout", "#!/bin/sh\nshift\nexec \"$@\"\n");
+    write_executable(
+        "timeout",
+        "#!/bin/sh\nwhile [ \"${1#--}\" != \"$1\" ]; do shift; done\nshift\nif [ \"$1\" = /opt/chariox-selkies/bin/python ]; then shift; exec \"$CHARIOX_KEYBOARD_STUB\" \"$@\"; fi\nexec \"$@\"\n",
+    );
     write_executable(
         "xdotool",
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\ncase \"$*\" in *'type '*'--file -'*) printf '%s' \"${LC_ALL:-}\" > \"$CHARIOX_XDOTOOL_LOCALE_LOG\"; cat >> \"$CHARIOX_XDOTOOL_STDIN_LOG\" ;; esac\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\n",
+    );
+    write_executable(
+        "keyboard",
+        "#!/bin/sh\nprintf '%s\\n' \"${1##*/}${2:+ $2}\" >> \"$CHARIOX_KEYBOARD_LOG\"\n[ \"${2:-}\" = reset ] || cat >> \"$CHARIOX_KEYBOARD_STDIN_LOG\"\n",
     );
     write_executable(
         "xclip",
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XCLIP_ARGS_LOG\"\ncase \"$*\" in\n  *'-in'*)\n    cat > \"$CHARIOX_XCLIP_LOG\"\n    [ \"${CHARIOX_XCLIP_FAIL_WRITE:-0}\" != 1 ] || exit 17\n    ;;\n  *'-out'*) cat \"$CHARIOX_XCLIP_LOG\" 2>/dev/null || true ;;\nesac\n",
     );
     let xdotool_log = root.join("xdotool.log");
-    let xdotool_stdin_log = root.join("xdotool-stdin.log");
-    let xdotool_locale_log = root.join("xdotool-locale.log");
+    let keyboard_log = root.join("keyboard.log");
+    let keyboard_stdin_log = root.join("keyboard-stdin.log");
     let xclip_log = root.join("xclip.log");
     let xclip_args_log = root.join("xclip-args.log");
     let path = format!(
@@ -594,8 +601,9 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             .env("TMPDIR", &temp)
             .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
             .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
-            .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log)
-            .env("CHARIOX_XDOTOOL_LOCALE_LOG", &xdotool_locale_log)
+            .env("CHARIOX_KEYBOARD_STUB", bin.join("keyboard"))
+            .env("CHARIOX_KEYBOARD_LOG", &keyboard_log)
+            .env("CHARIOX_KEYBOARD_STDIN_LOG", &keyboard_stdin_log)
             .env("CHARIOX_XCLIP_LOG", &xclip_log)
             .env("CHARIOX_XCLIP_ARGS_LOG", &xclip_args_log);
         let output = if let Some(input) = stdin {
@@ -672,7 +680,6 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
         .env("TMPDIR", &temp)
         .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
         .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
-        .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log)
         .env("CHARIOX_XCLIP_LOG", &xclip_log)
         .env("CHARIOX_XCLIP_ARGS_LOG", &xclip_args_log)
         .env("CHARIOX_XCLIP_FAIL_WRITE", "1")
@@ -710,30 +717,18 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "mousemove 640 400\n",
             "click --repeat 3 --delay 20 6\n",
             "click --repeat 5 --delay 20 5\n",
-            "type --clearmodifiers --delay 5 --file -\n",
             "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
-            "keyup Shift_L\n",
-            "keyup Shift_R\n",
-            "keyup Control_L\n",
-            "keyup Control_R\n",
-            "keyup Alt_L\n",
-            "keyup Alt_R\n",
-            "keyup Super_L\n",
-            "keyup Super_R\n",
-            "mouseup 1\n",
-            "mouseup 2\n",
-            "mouseup 3\n",
         )
     );
     assert_eq!(
-        std::fs::read_to_string(&xdotool_stdin_log)
-            .expect("keyboard text should reach xdotool stdin"),
+        std::fs::read_to_string(&keyboard_stdin_log)
+            .expect("keyboard text should reach the Selkies helper stdin"),
         "Grüße 世界"
     );
     assert_eq!(
-        std::fs::read_to_string(&xdotool_locale_log)
-            .expect("keyboard text should run under a UTF-8 locale"),
-        "C.UTF-8"
+        std::fs::read_to_string(&keyboard_log)
+            .expect("text and reset should use the shared keyboard helper"),
+        "slice-keyboard.py\nslice-keyboard.py reset\n"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }

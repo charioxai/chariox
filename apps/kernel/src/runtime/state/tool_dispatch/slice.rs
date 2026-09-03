@@ -1098,10 +1098,12 @@ pub(crate) async fn run_room_keyboard_text(
             "environment_invalid_keyboard_text",
         ));
     }
+    let timeout_ms =
+        crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str());
     let output = run_slice_screen_command_inner_with_cancellation(
         vec!["computer-type-stdin".to_string()],
         Some(input.into_zeroizing()),
-        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(timeout_ms),
         Some(cancellation),
     )
     .await?;

@@ -12,6 +12,16 @@ pub(crate) struct ComputerInputActionMetadata {
     pub(crate) arguments: Option<EnvironmentActionArguments>,
 }
 
+pub(crate) fn keyboard_text_timeout_ms(text: &str) -> u64 {
+    // Physical typing paces at 40 ms per character. Allow mapping/X11 work
+    // and scheduling overhead without imposing a hidden shorter text limit.
+    let characters = text
+        .chars()
+        .count()
+        .min(ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES);
+    5_000 + characters as u64 * 100
+}
+
 pub(crate) fn computer_input_action_metadata(
     input: &RoomComputerInputAction,
     viewport_revision: u64,

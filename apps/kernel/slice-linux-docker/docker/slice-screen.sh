@@ -32,7 +32,7 @@ log() {
 }
 
 run_xdotool() {
-  timeout 10s xdotool "$@"
+  timeout --foreground 10s xdotool "$@"
 }
 
 run_xdotool_utf8() {
@@ -491,7 +491,10 @@ type_text() {
 
 computer_type_stdin() {
   require_screen_available
-  run_xdotool_utf8 type --clearmodifiers --delay 5 --file -
+  # Kernel enforces a length-derived deadline and immediate cancellation.
+  # Standalone safety bound accommodates the full 64 KiB input contract.
+  timeout --foreground --kill-after=1s 2h /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py"
 }
 
 computer_key_stdin() {
@@ -512,14 +515,8 @@ computer_key_stdin() {
 
 computer_input_reset() {
   require_screen_available
-  local key
-  local button
-  for key in Shift_L Shift_R Control_L Control_R Alt_L Alt_R Super_L Super_R; do
-    run_xdotool keyup "$key" >/dev/null 2>&1 || true
-  done
-  for button in 1 2 3; do
-    run_xdotool mouseup "$button" >/dev/null 2>&1 || true
-  done
+  timeout --foreground 10s /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py" reset
 }
 
 key() {

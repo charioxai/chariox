@@ -25,6 +25,12 @@ import {
   assertRoomKeyboardTextAction,
 } from "./lib/room-environment-computer-input-drill.mjs"
 import {
+  assertHumanDesktopTakeoverCompleted,
+  assertRoomComputerActionCancelled,
+  assertRoomComputerActionRunning,
+  roomComputerCancellationTimings,
+} from "./lib/room-environment-computer-cancellation-drill.mjs"
+import {
   assertRoomPointerClickAction,
   assertRoomPointerDragAction,
   assertRoomPointerMoveAction,
@@ -38,10 +44,18 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
+const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
+if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
+  throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
+}
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
 const runId = `room-pointer-${process.pid}-${stamp}`
+const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
+  ? `web-${runId}-Grüße 世界`
+  : null
+const webKeyboardReplacementText = webKeyboardText ? `ime-${runId}-日本語` : null
 const evidenceRoot = path.join(
   os.homedir(),
   ".codex",
@@ -60,9 +74,14 @@ const agentClipboardText = `agent-clipboard-${runId}-Grüße 世界\nsecond line
 const blockedAgentClipboardText = `blocked-agent-clipboard-${runId}\n`
 const humanClipboardText = `human-clipboard-${runId}\t\nsecond line\n`
 const physicalClipboardText = `physical-clipboard-${runId}-áéíóú\nsecond line\n`
-const keyboardText = `keyboard-${runId}-Grüße 世界`
+// Cross the former 5-second worker and 15-second relay limits using physical
+// input, without making the acceptance dependent on clipboard insertion.
+const keyboardText = `keyboard-${runId}-Grüße 世界 ${"long-input ".repeat(38)}`
 const keyboardReplacementText = `focus-${runId}-ABC`
 const keyboardAfterRepeat = keyboardReplacementText.slice(0, -3)
+const cancellationText = `cancel-${runId}-` + "x".repeat(1_800)
+const takeoverCancellationText = `takeover-${runId}-` + "y".repeat(1_800)
+const cancellationRecoveryText = `recovered-${runId}`
 const pointerMatrix = Object.freeze({
   move: { x: 160, y: 220 },
   singleClick: { x: 460, y: 220, button: "left", clickCount: 1 },
@@ -90,11 +109,16 @@ const clipboardValues = [
   physicalClipboardText,
 ]
 const sensitiveValues = [
+  ...(webKeyboardText ? [webKeyboardText] : []),
+  ...(webKeyboardReplacementText ? [webKeyboardReplacementText] : []),
   userSecret,
   vaultPassphrase,
   keyboardText,
   keyboardReplacementText,
   keyboardAfterRepeat,
+  cancellationText,
+  takeoverCancellationText,
+  cancellationRecoveryText,
   ...clipboardValues,
 ]
 const generatedSecretLength = 24
@@ -451,8 +475,44 @@ async function run() {
     waitForLocalNotice(/^Room input: available$/),
     waitForRemoteNotice(/^Room input: available$/),
   ])
+  if (companionOnly) {
+    companionResult = await runCompanionIfConfigured({
+      environment: released,
+      localNoticeIds: automationNoticeIds(releasedLocalTui),
+      remoteNoticeIds: automationNoticeIds(releasedRemoteTui),
+      activityController,
+    })
+    result = {
+      schema: "chariox.room_environment.web_companion_focus.v1",
+      status: "passed",
+      startedAt,
+      source: sourceIdentity,
+      sliceRuntime: sliceRuntimeIdentity,
+      sessionId,
+      sliceId: slice.id,
+      environmentId: released.environment_id,
+      coverage: `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""}${companionResult.keyboard?.replacement ? ", select-all and native IME replacement" : ""} with local and remote TUI observation`,
+      skipped: ["computer secret", "pointer matrix", "agent keyboard matrix", "cancellation", "clipboard",
+        companionResult.keyboard?.replacement ? "remaining Web shortcuts and keyboard layouts" : "Web keyboard shortcuts and IME"],
+      companion: companionResult,
+      containerLimits: limits,
+    }
+    return
+  }
   const computerSecretResult = await exerciseComputerSecretInput()
   const computerPointer = await exerciseRoomPointer(activityController, activityNotices)
+  const computerCancellation = await exerciseRoomComputerCancellation(
+    activityController,
+    activityNotices,
+  )
+  await writeFile(path.join(evidenceRoot, "cancellation-checkpoint.json"), JSON.stringify({
+    schema: "chariox.room_environment.computer_cancellation_checkpoint.v1",
+    completedAt: new Date().toISOString(),
+    source: sourceIdentity,
+    sliceRuntime: sliceRuntimeIdentity,
+    computerCancellation,
+    note: "Phase checkpoint only; full drill acceptance also requires result.json and successful cleanup.",
+  }, null, 2))
   const computerKeyboard = await exerciseRoomKeyboard(activityController, activityNotices)
   const computerClipboard = await exerciseRoomClipboard(activityController, activityNotices)
   companionResult = await runCompanionIfConfigured({
@@ -477,7 +537,7 @@ async function run() {
   ])
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v8",
+    schema: "chariox.room_environment.pointer_click_drill.v9",
     status: "passed",
     startedAt,
     source: sourceIdentity,
@@ -495,6 +555,7 @@ async function run() {
     computerSecret: computerSecretResult,
     computerPointer,
     computerKeyboard,
+    computerCancellation,
     computerClipboard: computerClipboard.summary,
     containerLimits: limits,
     assertions: [
@@ -519,6 +580,9 @@ async function run() {
       "slice-bound agent typed a non-US sample into the physical X11 desktop through Room authority",
       "keyboard focus survived a select-all chord, replacement text, and repeated BackSpace on the physical X11 desktop",
       "Room history and both TUIs retained keyboard attribution, counts, and repeat values without text or key names",
+      "local TUI cancellation stopped an in-flight physical keyboard Action exactly once and reset input before later use",
+      "remote TUI human takeover cancelled an in-flight agent keyboard Action before granting desktop ownership",
+      "cancelled input stopped changing the physical field, remained redacted, and recovered through the same Room authority",
       "slice-bound agent wrote the physical X11 clipboard through the home kernel's Room Action authority",
       "human desktop takeover rejected an agent clipboard mutation without changing the clipboard or Action ledger",
       "human clipboard write crossed the public Room request and encrypted worker path with count-only history",
@@ -553,6 +617,7 @@ async function run() {
         actionId: companionResult.actionId,
         actorId: companionResult.actorId,
         screenshot: companionResult.screenshot,
+        ...(companionResult.keyboard ? { keyboard: companionResult.keyboard } : {}),
       },
     } : {}),
   }
@@ -870,6 +935,425 @@ async function exerciseRoomKeyboard(activityController, activityNotices) {
     remoteTuiObserved: true,
     retainedContentRedacted: true,
   }
+}
+
+async function exerciseRoomComputerCancellation(activityController, activityNotices) {
+  await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/cancellation`])
+  await waitForBrowserText(
+    "ROOM_COMPUTER_CANCELLATION_READY",
+    30_000,
+    "Computer cancellation fixture did not load",
+  )
+  const environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const focused = await executeAgentPointerAction({
+    args: {
+      action: "click",
+      x: pointerMatrix.keyboardFocus.x,
+      y: pointerMatrix.keyboardFocus.y,
+      button: pointerMatrix.keyboardFocus.button,
+    },
+    expectedKind: "pointer_click",
+    expectedMarker: "ROOM_COMPUTER_CANCELLATION_FOCUS_OK",
+    markerFailure: "Room pointer click did not establish cancellation fixture focus",
+    validate: (action, actorId) => assertRoomPointerClickAction(action, {
+      actorId,
+      ...pointerMatrix.keyboardFocus,
+      viewportRevision: environment.viewport.revision,
+    }),
+    activityController,
+    activityNotices,
+  })
+
+  const explicitTakeover = unwrap(
+    await client.send(requests.requestRoomEnvironmentInputTakeoverRequest(
+      sessionId,
+      { kind: "desktop" },
+    )),
+    "RoomEnvironmentTakeoverUpdated",
+  )
+  assert.equal(explicitTakeover.outcome.state, "granted")
+  assert.ok(explicitTakeover.environment.input_ownership.some((entry) => (
+    entry.target.kind === "desktop" && entry.actor_id === "user:local"
+  )))
+  const explicitLocal = await exerciseCancellableKeyboardInput({
+    input: cancellationText,
+    actorId: "user:local",
+    start: (baseline) => client.send(requests.submitRoomEnvironmentActionRequest(
+      sessionId,
+      baseline.runtime_generation,
+      baseline.viewport.revision,
+      `${runId}-human-keyboard-cancellation`,
+      { kind: "keyboard_text", text: cancellationText },
+    )),
+    cancel: async (actionId, { localNoticeBaseline }) => {
+      await localAutomation.send(
+        "submit_prompt",
+        { prompt: `/room cancel ${actionId}` },
+        20_000,
+      )
+      await waitForTuiNoticeAfter(
+        localAutomation,
+        "local",
+        new RegExp(`^Room action ${actionId} cancellation requested\\n`),
+        localNoticeBaseline,
+        20_000,
+      )
+    },
+    assertSettlement: assertCancelledHumanActionSettlement,
+    activityController,
+    activityNotices,
+    label: "local TUI explicit human cancellation",
+  })
+  const explicitRelease = unwrap(
+    await client.send(requests.releaseRoomEnvironmentInputRequest(
+      sessionId,
+      { kind: "desktop" },
+    )),
+    "RoomEnvironmentInputReleased",
+  ).environment
+  assert.equal(
+    explicitRelease.input_ownership.some((entry) => entry.target.kind === "desktop"),
+    false,
+    "explicit cancellation owner must release desktop before agent recovery",
+  )
+  await recoverCancellationFixture(activityController, activityNotices)
+  await selectCancellationFixtureText(activityController, activityNotices)
+
+  const takeoverLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const takeoverRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const takeoverRemote = await exerciseCancellableKeyboardInput({
+    input: takeoverCancellationText,
+    actorId: `agent:${secretAgent.id}`,
+    start: () => mcpToolCall(secretProviderRun, "slice_keyboard", {
+      action: "type",
+      text: takeoverCancellationText,
+    }),
+    cancel: async (actionId, { remoteNoticeBaseline }) => {
+      await remoteAutomation.send(
+        "submit_prompt",
+        { prompt: "/room takeover desktop" },
+        20_000,
+      )
+      await waitForTuiNoticeAfter(
+        remoteAutomation,
+        "remote",
+        new RegExp(`^Room takeover requires cancellation: ${actionId}\\n`),
+        remoteNoticeBaseline,
+        20_000,
+      )
+    },
+    assertSettlement: assertCancelledAgentToolSettlement,
+    activityController,
+    activityNotices,
+    label: "remote TUI human takeover cancellation",
+  })
+  const takenOver = await waitFor(async () => {
+    const current = unwrap(
+      await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+      "RoomEnvironmentState",
+    ).environment
+    return current.input_ownership.some((entry) => (
+      entry.target.kind === "desktop" && entry.actor_id === "user:local"
+    )) ? current : false
+  }, 20_000, "human takeover was not granted after physical input stopped")
+  assertHumanDesktopTakeoverCompleted(takenOver, {
+    actionId: takeoverRemote.actionId,
+    humanActorId: "user:local",
+  })
+  await activityController.synchronize()
+  await Promise.all([
+    waitForTuiNoticeAfter(
+      localAutomation,
+      "local",
+      /^Room input: Local user controls desktop$/,
+      takeoverLocalBaseline,
+      20_000,
+    ),
+    waitForTuiNoticeAfter(
+      remoteAutomation,
+      "remote",
+      /^Room input: Local user controls desktop$/,
+      takeoverRemoteBaseline,
+      20_000,
+    ),
+  ])
+  const releaseLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const releaseRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const released = await remoteAutomation.send(
+    "submit_prompt",
+    { prompt: "/room release desktop" },
+    20_000,
+  )
+  assert.ok(
+    automationNoticeTexts(released).some((notice) => notice.startsWith("Room input released\n")),
+    "remote TUI did not render desktop release",
+  )
+  await Promise.all([
+    waitForTuiNoticeAfter(
+      localAutomation,
+      "local",
+      /^Room input: available$/,
+      releaseLocalBaseline,
+      20_000,
+    ),
+    waitForTuiNoticeAfter(
+      remoteAutomation,
+      "remote",
+      /^Room input: available$/,
+      releaseRemoteBaseline,
+      20_000,
+    ),
+  ])
+  await recoverCancellationFixture(activityController, activityNotices)
+
+  const history = unwrap(
+    await client.send(requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 50)),
+    "RoomEnvironmentActionHistoryListed",
+  ).page.actions
+  for (const cancellation of [explicitLocal, takeoverRemote]) {
+    assert.equal(
+      history.filter((candidate) => candidate.action_id === cancellation.actionId).length,
+      1,
+      `Room history must retain exactly one terminal ${cancellation.actionId}`,
+    )
+    assertRoomComputerActionCancelled(
+      history.find((candidate) => candidate.action_id === cancellation.actionId),
+      {
+        actionId: cancellation.actionId,
+        actorId: cancellation.actorId,
+        kind: "keyboard_text",
+        focusedTabId: cancellation.focusedTabId,
+      },
+    )
+  }
+  const tempRoot = await tempRootPromise
+  await assertNoPlaintextSecretInTree(tempRoot, [cancellationText, takeoverCancellationText])
+  await assertNoPlaintextSecretInTree(evidenceRoot, [cancellationText, takeoverCancellationText])
+
+  return {
+    agentId: secretAgent.id,
+    actorId: explicitLocal.actorId,
+    focusActionId: focused.actionId,
+    explicitCancellationActionId: explicitLocal.actionId,
+    takeoverCancellationActionId: takeoverRemote.actionId,
+    cases: ["local_tui_explicit_cancel", "remote_tui_human_takeover"],
+    physicalInputStartedBeforeCancellation: true,
+    physicalInputStoppedAfterCancellation: true,
+    terminalExactlyOnce: true,
+    inputResetAndRecovered: true,
+    takeoverWaitedForCancellation: true,
+    localTuiObserved: true,
+    remoteTuiObserved: true,
+    retainedContentRedacted: true,
+    cancellationLatencyMs: {
+      explicit: explicitLocal.cancellationLatencyMs,
+      takeover: takeoverRemote.cancellationLatencyMs,
+    },
+    cancellationTimings: {
+      explicit: explicitLocal.cancellationTimings,
+      takeover: takeoverRemote.cancellationTimings,
+    },
+    tuiObservationLatencyMs: {
+      explicit: explicitLocal.tuiObservationLatencyMs,
+      takeover: takeoverRemote.tuiObservationLatencyMs,
+    },
+    characterCounts: {
+      explicitBeforeCancellation: explicitLocal.countBeforeCancellation,
+      explicitAfterCancellation: explicitLocal.countAfterCancellation,
+      takeoverBeforeCancellation: takeoverRemote.countBeforeCancellation,
+      takeoverAfterCancellation: takeoverRemote.countAfterCancellation,
+    },
+  }
+}
+
+async function exerciseCancellableKeyboardInput({
+  input,
+  actorId,
+  start,
+  cancel,
+  assertSettlement,
+  activityController,
+  activityNotices,
+  label,
+}) {
+  const baseline = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const baselineSequence = Math.max(0, ...baseline.actions.map((action) => action.sequence))
+  const baselineEventCursor = baseline.event_cursor
+  assert.ok(baseline.focused_tab_id, `${label} requires a focused browser tab`)
+  const localNoticeBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const remoteNoticeBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const pending = Promise.resolve().then(() => start(baseline)).then(
+    (result) => ({ result, error: null }),
+    (error) => ({ result: null, error }),
+  )
+  const started = await waitFor(async () => {
+    const current = unwrap(
+      await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+      "RoomEnvironmentState",
+    ).environment
+    const action = current.actions.find((candidate) => (
+      candidate.sequence > baselineSequence
+        && candidate.actor_id === actorId
+        && candidate.kind === "keyboard_text"
+    ))
+    if (!action) return false
+    const count = await cancellationFixtureCharacterCount()
+    return count > 0 || action.state !== "running" ? { action, count } : false
+  }, 4_000, `${label} did not begin physical input`)
+  assertRoomComputerActionRunning(started.action, {
+    actionId: started.action.action_id,
+    actorId,
+    kind: "keyboard_text",
+    focusedTabId: baseline.focused_tab_id,
+  })
+  assert.ok(started.count > 0, `${label} did not type before cancellation`)
+  assert.ok(started.count < input.length, `${label} completed before cancellation`)
+
+  const cancelStartedAt = Date.now()
+  const cancellationObservation = Promise.resolve()
+    .then(() => cancel(started.action.action_id, { localNoticeBaseline, remoteNoticeBaseline }))
+    .then(
+      (result) => ({ result, error: null, observedAtMs: Date.now() }),
+      (error) => ({ result: null, error, observedAtMs: Date.now() }),
+    )
+  const requestObserved = await waitFor(async () => {
+    const replay = unwrap(
+      await client.send(requests.getRoomEnvironmentEventsRequest(sessionId, baselineEventCursor)),
+      "RoomEnvironmentEvents",
+    ).replay
+    const events = replay.Events?.events ?? []
+    return events.some((event) => (
+      event.kind?.ActionChanged?.action_id === started.action.action_id
+        && event.kind.ActionChanged.cancellation_requested === true
+    )) ? { observedAtMs: Date.now() } : false
+  }, 20_000, `${label} cancellation request did not reach the Room ledger`)
+
+  const terminal = await waitFor(async () => {
+    const current = unwrap(
+      await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+      "RoomEnvironmentState",
+    ).environment
+    const action = current.actions.find(
+      (candidate) => candidate.action_id === started.action.action_id,
+    )
+    return action?.state === "cancelled" ? action : false
+  }, 20_000, `${label} did not reach one terminal cancelled state`)
+  assertRoomComputerActionCancelled(terminal, {
+    actionId: started.action.action_id,
+    actorId,
+    kind: "keyboard_text",
+    focusedTabId: baseline.focused_tab_id,
+  })
+  const cancellationTimings = roomComputerCancellationTimings(terminal, {
+    initiatedAtMs: cancelStartedAt,
+    requestObservedAtMs: requestObserved.observedAtMs,
+  })
+  assert.ok(
+    cancellationTimings.endToEndLatencyMs < 2_000,
+    `${label} end-to-end cancellation took ${cancellationTimings.endToEndLatencyMs}ms (request event observed after ${cancellationTimings.requestObservationLatencyMs}ms)`,
+  )
+  const [cancellationResult, settlement] = await Promise.all([cancellationObservation, pending])
+  if (cancellationResult.error) throw cancellationResult.error
+  const tuiObservationLatencyMs = cancellationResult.observedAtMs - cancelStartedAt
+  assertSettlement(settlement, input, label)
+  const stoppedCount = await cancellationFixtureCharacterCount()
+  await sleep(750)
+  assert.equal(
+    await cancellationFixtureCharacterCount(),
+    stoppedCount,
+    `${label} continued physical typing after terminal cancellation`,
+  )
+  assert.equal(await activityController.synchronize(), true)
+  const noticePattern = /^Room action #\d+: .+ · computer keyboard_text · cancelled \(requested\)$/
+  assert.ok(activityNotices.some((notice) => noticePattern.test(notice)))
+  await Promise.all([
+    waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localNoticeBaseline, 20_000),
+    waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteNoticeBaseline, 20_000),
+  ])
+  return {
+    actionId: started.action.action_id,
+    actorId,
+    focusedTabId: baseline.focused_tab_id,
+    countBeforeCancellation: started.count,
+    countAfterCancellation: stoppedCount,
+    cancellationLatencyMs: cancellationTimings.endToEndLatencyMs,
+    cancellationTimings,
+    tuiObservationLatencyMs,
+  }
+}
+
+function assertCancelledHumanActionSettlement(settlement, input, label) {
+  assert.equal(settlement.result, null, `${label} must not return a successful submission`)
+  assert.ok(settlement.error, `${label} must return an actionable cancellation error`)
+  const errorText = String(settlement.error?.stack ?? settlement.error)
+  assert.match(errorText, /cancel/i, `${label} cancellation error`)
+  assertRetainedTextIsRedacted(
+    { error: errorText },
+    input,
+    `${label} local response retained keyboard input`,
+  )
+}
+
+function assertCancelledAgentToolSettlement(settlement, input, label) {
+  if (settlement.error) throw settlement.error
+  const toolResult = settlement.result
+  assert.equal(toolResult.ok, false, `${label} must not report tool success`)
+  assert.match(
+    JSON.stringify(toolResult.raw),
+    /cancel/i,
+    `${label} must return an actionable cancellation result`,
+  )
+  assertRetainedTextIsRedacted(
+    toolResult.raw,
+    input,
+    `${label} runtime MCP result retained keyboard input`,
+  )
+}
+
+async function selectCancellationFixtureText(activityController, activityNotices) {
+  return await executeAgentKeyboardAction({
+    args: { action: "key", key: "ctrl+a", repeat: 1 },
+    retainedInput: "ctrl+a",
+    expectedKind: "keyboard_key",
+    expectedMarker: "ROOM_COMPUTER_CANCELLATION_SELECTED",
+    markerFailure: "cancellation fixture text was not selected after input reset",
+    validate: (action, actorId) => assertRoomKeyboardKeyAction(action, {
+      actorId,
+      key: "ctrl+a",
+      repeat: 1,
+    }),
+    activityController,
+    activityNotices,
+  })
+}
+
+async function recoverCancellationFixture(activityController, activityNotices) {
+  await selectCancellationFixtureText(activityController, activityNotices)
+  return await executeAgentKeyboardAction({
+    args: { action: "type", text: cancellationRecoveryText },
+    retainedInput: cancellationRecoveryText,
+    expectedKind: "keyboard_text",
+    expectedMarker: "ROOM_COMPUTER_CANCELLATION_RECOVERED",
+    markerFailure: "physical keyboard input did not recover after cancellation reset",
+    validate: (action, actorId) => assertRoomKeyboardTextAction(action, {
+      actorId,
+      input: cancellationRecoveryText,
+    }),
+    activityController,
+    activityNotices,
+  })
+}
+
+async function cancellationFixtureCharacterCount() {
+  const text = await sliceScreen(["browser-text"])
+  const count = Number(text.match(/ROOM_COMPUTER_CANCELLATION_COUNT=(\d+)/)?.[1])
+  return Number.isInteger(count) ? count : 0
 }
 
 async function executeAgentKeyboardAction({
@@ -1468,10 +1952,19 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 }
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
-  const noticePattern = /^Room action #\d+: .+ · computer pointer_click · completed$/
+  const noticePattern = (action) => new RegExp(`^Room action #${action.sequence}: .+ · computer ${action.kind} · completed$`)
   return await runRoomEnvironmentCompanion({
     env: process.env,
+    prepare: async () => {
+      // The keyboard/clipboard drills navigate away from the original click page.
+      // Give the Web companion a fresh physical page, not the last drill's form.
+      await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
+      await waitForBrowserText("POINTER_CLICK_READY", 30_000, "Web companion fixture did not reset")
+    },
     ready: {
+      ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
+      ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
+      pointerClickExpectedCount: 1,
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
       relayToken: remoteTuiRelayToken,
@@ -1498,17 +1991,17 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       20_000,
       "Web companion click did not reach the physical browser",
     ),
-    waitForLocalActionNotice: (baselineIds) => waitForTuiNoticeAfter(
+    waitForLocalActionNotice: (baselineIds, action) => waitForTuiNoticeAfter(
       localAutomation,
       "local",
-      noticePattern,
+      noticePattern(action),
       baselineIds,
       20_000,
     ),
-    waitForRemoteActionNotice: (baselineIds) => waitForTuiNoticeAfter(
+    waitForRemoteActionNotice: (baselineIds, action) => waitForTuiNoticeAfter(
       remoteAutomation,
       "remote",
-      noticePattern,
+      noticePattern(action),
       baselineIds,
       20_000,
     ),
@@ -1801,6 +2294,7 @@ async function startFixture() {
   const expectedKeyboardDigest = fnv1a64(keyboardText)
   const expectedKeyboardReplacementDigest = fnv1a64(keyboardReplacementText)
   const expectedKeyboardAfterRepeatDigest = fnv1a64(keyboardAfterRepeat)
+  const expectedCancellationRecoveryDigest = fnv1a64(cancellationRecoveryText)
   const server = http.createServer((request, response) => {
     if (request.url === "/secret") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
@@ -1843,6 +2337,31 @@ async function startFixture() {
         input.addEventListener("focus",confirmFocus);
         input.addEventListener("select",()=>{if(input.selectionStart===0&&input.selectionEnd===input.value.length)status.textContent="ROOM_COMPUTER_KEYBOARD_SELECT_ALL_OK"});
         input.addEventListener("blur",()=>{status.textContent="ROOM_COMPUTER_KEYBOARD_FOCUS_LOST"});
+        queueMicrotask(confirmFocus);
+      </script></body></html>`)
+      return
+    }
+    if (request.url === "/cancellation") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+      response.end(`<!doctype html><html><head><title>Room Computer cancellation drill</title><style>
+        html,body{width:100%;height:100%;margin:0}body{background:#f4f4f3;color:#202124;font:24px sans-serif}
+        main{box-sizing:border-box;margin:120px auto 0;width:680px}label{display:block;font-weight:700;margin:18px 0 8px}
+        input{box-sizing:border-box;font:32px sans-serif;padding:12px 16px;width:100%}.status{font-weight:700;margin-top:18px}
+      </style></head><body><main><h1>ROOM_COMPUTER_CANCELLATION_READY</h1>
+        <label for="cancellation-input">Cancellable keyboard input</label><input id="cancellation-input" type="password" autocomplete="off" autofocus>
+        <div class="status" id="cancellation-state">ROOM_COMPUTER_CANCELLATION_WAITING</div>
+        <div class="status" id="cancellation-count">ROOM_COMPUTER_CANCELLATION_COUNT=0</div>
+      </main><script>
+        const expectedRecoveryDigest=${JSON.stringify(expectedCancellationRecoveryDigest)};
+        function fnv1a64(value){let hash=14695981039346656037n;for(const byte of new TextEncoder().encode(value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}return hash.toString(16).padStart(16,"0")}
+        const input=document.querySelector("#cancellation-input");
+        const state=document.querySelector("#cancellation-state");
+        const count=document.querySelector("#cancellation-count");
+        const confirmFocus=()=>{if(document.activeElement===input)state.textContent="ROOM_COMPUTER_CANCELLATION_FOCUS_OK"};
+        input.addEventListener("input",()=>{count.textContent="ROOM_COMPUTER_CANCELLATION_COUNT="+input.value.length;state.textContent=fnv1a64(input.value)===expectedRecoveryDigest?"ROOM_COMPUTER_CANCELLATION_RECOVERED":"ROOM_COMPUTER_CANCELLATION_RUNNING"});
+        input.addEventListener("focus",confirmFocus);
+        input.addEventListener("select",()=>{if(input.selectionStart===0&&input.selectionEnd===input.value.length)state.textContent="ROOM_COMPUTER_CANCELLATION_SELECTED"});
+        input.addEventListener("blur",()=>{state.textContent="ROOM_COMPUTER_CANCELLATION_FOCUS_LOST"});
         queueMicrotask(confirmFocus);
       </script></body></html>`)
       return
@@ -1900,8 +2419,18 @@ async function startFixture() {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
     response.end(`<!doctype html><html><head><title>Room pointer drill</title><style>
       html,body{width:100%;height:100%;margin:0}body{display:grid;place-items:center;background:#ddd;font:32px sans-serif}
-    </style></head><body><main id="state">POINTER_CLICK_READY</main><script>
+      #web-keyboard{position:fixed;inset:0;width:100%;height:100%;box-sizing:border-box;border:0;background:transparent;color:transparent;caret-color:transparent;outline:none}
+      main{pointer-events:none;z-index:1}
+    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}</main><script>
       let clicks=0;document.addEventListener("click",()=>{clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+      ${webKeyboardText ? `
+      document.querySelector("#web-keyboard").addEventListener("input",(event)=>{
+        let hash=14695981039346656037n;
+        for(const byte of new TextEncoder().encode(event.target.value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}
+        const digest=hash.toString(16).padStart(16,"0");
+        if(digest===${JSON.stringify(fnv1a64(webKeyboardText))})document.querySelector("#web-keyboard-status").textContent="WEB_KEYBOARD_TEXT_OK";
+        document.querySelector("#web-keyboard-replacement-status").textContent=digest===${JSON.stringify(fnv1a64(webKeyboardReplacementText))}?"WEB_KEYBOARD_REPLACEMENT_OK":"WEB_KEYBOARD_REPLACEMENT_WAITING";
+      });` : ''}
     </script></body></html>`)
   })
   await new Promise((resolve, reject) => {
