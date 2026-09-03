@@ -44,6 +44,10 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
+const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
+if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
+  throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
+}
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
@@ -465,6 +469,29 @@ async function run() {
     waitForLocalNotice(/^Room input: available$/),
     waitForRemoteNotice(/^Room input: available$/),
   ])
+  if (companionOnly) {
+    companionResult = await runCompanionIfConfigured({
+      environment: released,
+      localNoticeIds: automationNoticeIds(releasedLocalTui),
+      remoteNoticeIds: automationNoticeIds(releasedRemoteTui),
+      activityController,
+    })
+    result = {
+      schema: "chariox.room_environment.web_companion_focus.v1",
+      status: "passed",
+      startedAt,
+      source: sourceIdentity,
+      sliceRuntime: sliceRuntimeIdentity,
+      sessionId,
+      sliceId: slice.id,
+      environmentId: released.environment_id,
+      coverage: "Web display and pointer input with local and remote TUI observation",
+      skipped: ["computer secret", "pointer matrix", "keyboard", "cancellation", "clipboard"],
+      companion: companionResult,
+      containerLimits: limits,
+    }
+    return
+  }
   const computerSecretResult = await exerciseComputerSecretInput()
   const computerPointer = await exerciseRoomPointer(activityController, activityNotices)
   const computerCancellation = await exerciseRoomComputerCancellation(
