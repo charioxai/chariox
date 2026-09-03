@@ -192,7 +192,8 @@ impl CommandRouter {
             | LocalDaemonRequest::SaveSliceState(_)
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
-            | LocalDaemonRequest::CreateSliceBackup(_)) => {
+            | LocalDaemonRequest::CreateSliceBackup(_)
+            | LocalDaemonRequest::RestoreSliceBackup(_)) => {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,

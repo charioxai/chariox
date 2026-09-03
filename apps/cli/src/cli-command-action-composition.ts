@@ -167,6 +167,7 @@ import {
   listSlices,
   removeSliceProviderAuth,
   resetSliceState,
+  restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
   startSlice,
@@ -634,6 +635,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     createSliceBackup: async (sliceRef, name) => {
       const result = await createSliceBackup(client, sliceRef, name)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    restoreSliceBackup: async (sliceRef, backupRef) => {
+      const result = await restoreSliceBackup(client, sliceRef, backupRef)
       setSlicesState(await listSlices(client))
       return result
     },

@@ -161,6 +161,13 @@
             "description": "Create a named backup; append backup name and slice ref",
             "value": "/slice backup --name ",
             "surfaces": ["session", "waiting_room"]
+          },
+          {
+            "id": "slice-backup-restore",
+            "label": "restore",
+            "description": "Restore a stopped slice from a verified backup; append slice and backup refs",
+            "value": "/slice backup restore ",
+            "surfaces": ["session", "waiting_room"]
           }
         ],
         "searchAliases": [

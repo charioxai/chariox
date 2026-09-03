@@ -5,8 +5,9 @@ use tokio::time::{sleep, timeout, Duration, Instant};
 use crate::error::DaemonError;
 use crate::local::{
     CreateSliceBackupRequest, CreateSliceRequest, GetSliceLogsRequest, ListSliceAuditRequest,
-    ListSlicesRequest, LocalDaemonResponse, SliceRefRequest, SliceStateResetRequest,
-    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
+    ListSlicesRequest, LocalDaemonResponse, RestoreSliceBackupRequest, SliceRefRequest,
+    SliceStateResetRequest, SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
+    SliceStateStatusRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -360,23 +361,68 @@ pub(super) async fn execute_create_slice_backup_request(
         );
         return Err(error);
     }
+    if !matches!(
+        slice.status,
+        crate::slice::SliceStatus::Running | crate::slice::SliceStatus::Stopped
+    ) {
+        let error = DaemonError::LocalTransport {
+            operation: "slice.backup.create",
+            message: format!(
+                "slice `{}` cannot create a backup while its status is {:?}",
+                slice.name, slice.status
+            ),
+        };
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "backup.create",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
     let docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     let task_slice = slice.clone();
     let backup_name = request.name.clone();
     let backup = tokio::task::spawn_blocking(move || {
-        crate::slice::create_local_docker_slice_backup(
-            &task_slice,
-            &docker_options,
-            backup_name.as_deref(),
-        )
+        if task_slice.status == crate::slice::SliceStatus::Running {
+            crate::slice::create_local_docker_slice_backup_live(
+                &task_slice,
+                &docker_options,
+                backup_name.as_deref(),
+            )
+        } else {
+            crate::slice::create_local_docker_slice_backup(
+                &task_slice,
+                &docker_options,
+                backup_name.as_deref(),
+            )
+        }
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "slice.backup.create",
         message: format!("slice backup task failed: {error}"),
     })??;
-    let backup = runtime_state.save_slice_backup_record(backup)?;
+    let backup_for_cleanup = backup.clone();
+    let backup = match runtime_state.save_slice_backup_record(backup) {
+        Ok(backup) => backup,
+        Err(error) => {
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::slice::remove_local_docker_slice_backup_best_effort(&backup_for_cleanup);
+            })
+            .await;
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "backup.create",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
     let instructions = slice_backup_instructions(&backup);
     runtime_state.record_slice_audit_event(&slice, "backup.create", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceBackupCreated {
@@ -384,6 +430,102 @@ pub(super) async fn execute_create_slice_backup_request(
         backup,
         instructions,
     })
+}
+
+pub(super) async fn execute_restore_slice_backup_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: RestoreSliceBackupRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    const OPERATION: &str = "slice.backup.restore";
+    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, OPERATION)?;
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&slice, "backup.restore", "accepted", None, None)?;
+    let slice = runtime_state
+        .reconcile_slice_agent_attachments(&slice)
+        .await?;
+    let validation = if slice.status != crate::slice::SliceStatus::Stopped {
+        Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!(
+                "slice `{}` must be stopped before restoring a backup; current status is {:?}",
+                slice.name, slice.status
+            ),
+        })
+    } else {
+        ensure_slice_has_no_active_agents(&slice, OPERATION)
+    };
+    if let Err(error) = validation {
+        let _ = runtime_state.mark_slice_operation_rejected(&slice.id, OPERATION, &error);
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "backup.restore",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
+
+    let backup = match runtime_state.resolve_slice_backup(&slice.id, &request.backup_ref) {
+        Ok(backup) => backup,
+        Err(error) => {
+            let _ = runtime_state.mark_slice_operation_rejected(&slice.id, OPERATION, &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "backup.restore",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let task_backup = backup.clone();
+    let task_runtime_state = runtime_state.clone();
+    let restore_result = tokio::task::spawn_blocking(move || {
+        crate::slice::restore_local_docker_slice_backup(
+            &task_slice,
+            &docker_options,
+            &task_backup,
+            |transaction| {
+                task_runtime_state
+                    .begin_slice_backup_restore(transaction.clone())
+                    .map(|_| ())
+            },
+            |transaction, state, resolution| {
+                task_runtime_state
+                    .resolve_slice_backup_restore(transaction, state.clone(), resolution)
+                    .map(|_| ())
+            },
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: OPERATION,
+        message: format!("slice backup restore task failed: {error}"),
+    })?;
+    match restore_result {
+        Ok(_) => {}
+        Err(error) => {
+            let _ = runtime_state.mark_slice_operation_rejected(&slice.id, OPERATION, &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "backup.restore",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    }
+    let slice =
+        runtime_state.mark_slice_operation_completed_preserving_status(&slice.id, OPERATION)?;
+    runtime_state.record_slice_audit_event(&slice, "backup.restore", "completed", None, None)?;
+    Ok(LocalDaemonResponse::SliceBackupRestored { slice, backup })
 }
 
 pub(super) async fn execute_start_slice_request(
@@ -772,13 +914,9 @@ pub(super) async fn execute_delete_slice_request(
 }
 
 fn slice_backup_instructions(backup: &crate::slice::SliceBackupRecord) -> String {
-    let backup_dir = std::path::Path::new(&backup.manifest_path)
-        .parent()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| backup.manifest_path.clone());
     format!(
-        "Backup saved:\n  {backup_dir}\n\nTo use it manually, stop Chariox slice operations, then swap this backup directory with the active state directory for the slice.\n\nThe Docker image tag for this backup is:\n  {}",
-        backup.image_ref
+        "Backup saved: {}\n\nRestore it after stopping the slice with:\n  /slice backup restore <slice-ref> {}\n\nChariox verifies the manifest, home archive, and Docker image before replacing the stopped slice.",
+        backup.id, backup.id
     )
 }
 

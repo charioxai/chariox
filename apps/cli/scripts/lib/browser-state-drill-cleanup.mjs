@@ -4,6 +4,7 @@ export function browserStateCleanupFailure(result) {
   if (!result.containerGone) leaks.push("container")
   if (!result.volumeGone) leaks.push("volume")
   if (!result.savedImageGone) leaks.push("saved image")
+  if (result.backupImagesGone === false) leaks.push("backup images")
   if (!result.tempRootRemoved) leaks.push("runtime root")
   if (!result.listenersReleased) {
     leaks.push(`ports ${(result.occupiedPorts ?? []).join(", ") || "unknown"}`)

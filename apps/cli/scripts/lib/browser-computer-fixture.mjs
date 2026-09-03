@@ -110,6 +110,17 @@ async function routeRequest({ request, response, account, password, sessions, me
       sentAt: new Date().toISOString(),
     }
     messages.push(message)
+    send(response, 303, "", { location: `/mail/sent/${message.id}` })
+    return
+  }
+  const sentMessageMatch = /^\/mail\/sent\/([^/]+)$/.exec(url.pathname)
+  if (sentMessageMatch && request.method === "GET") {
+    if (!authenticated) return redirectToLogin(response)
+    const message = messages.find((candidate) => candidate.id === sentMessageMatch[1])
+    if (!message) {
+      send(response, 404, "message not found", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
     sendHtml(response, sentPage(message))
     return
   }

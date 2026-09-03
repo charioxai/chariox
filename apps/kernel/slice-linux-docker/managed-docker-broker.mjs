@@ -77,6 +77,7 @@ const persistentHandleDescriptors = new Map()
 let persistentHandleRecords
 const ACTIONS = new Set([
   "provision",
+  "restore-state",
   "recover",
   "import-provider-auth",
   "remove-provider-auth",
@@ -373,7 +374,8 @@ function validateProvisioner(action, environment, files) {
     "CHARIOX_SLICE_ACCOUNT_OWNER",
     "CHARIOX_SLICE_ACCOUNT_PROFILE",
   ])
-  const usesFullEnvironment = action === "provision" || action === "recover"
+  const provisionsContainer = new Set(["provision", "restore-state"]).has(action)
+  const usesFullEnvironment = provisionsContainer || action === "recover"
   const actionEnvironment = usesFullEnvironment
     ? ALLOWED_ENVIRONMENT
     : action === "start-provider-login"
@@ -526,6 +528,19 @@ function validateRequest(request) {
     }
     return
   }
+  if (request?.kind === "home_archive_verify") {
+    exactKeys(request, ["kind", "scope", "id", "path"], "home archive verify request")
+    validateArtifactIdentity(request.scope, request.id)
+    if (typeof request.path !== "string" || request.path.length > 4096) {
+      fail("home archive verification path is invalid")
+    }
+    const { relative } = managedHomeArchiveCoordinates(request.path)
+    const expectedScope = request.scope === "state" ? "states" : "backups"
+    if (relative[0] !== expectedScope || relative[1] !== request.id) {
+      fail("home archive verification path does not match its identity")
+    }
+    return
+  }
   fail("broker request kind is not allowed")
 }
 
@@ -652,7 +667,7 @@ function managedHomeArchiveCoordinates(path) {
   return { candidate, relative }
 }
 
-function verifyManagedHomeArchive(path) {
+function inspectManagedHomeArchive(path) {
   const { candidate, relative } = managedHomeArchiveCoordinates(path)
   const archive = pinnedSharedPath(candidate, "managed saved home archive", "file")
   try {
@@ -684,13 +699,27 @@ function verifyManagedHomeArchive(path) {
       if (digestResult.status !== 0 || !digestResult.stdout.startsWith(`${metadata.sha256} `)) {
         fail("managed saved home archive digest does not match")
       }
-      return archive
+      return { archive, metadata }
     } finally {
       closeSync(metadataFile.fd)
     }
   } catch (error) {
     closeSync(archive.fd)
     throw error
+  }
+}
+
+function verifyManagedHomeArchive(path) {
+  return inspectManagedHomeArchive(path).archive
+}
+
+function verifyHomeArchive(request) {
+  const { archive, metadata } = inspectManagedHomeArchive(request.path)
+  closeSync(archive.fd)
+  return {
+    path: request.path,
+    sizeBytes: metadata.sizeBytes,
+    sha256: metadata.sha256,
   }
 }
 
@@ -1176,7 +1205,8 @@ function prepareProvisioner(request) {
   const newHandles = new Set()
   let inputDirectory
   try {
-    if (request.action === "provision") {
+    const provisionsContainer = new Set(["provision", "restore-state"]).has(request.action)
+    if (provisionsContainer) {
       requireExactContainerMounts(
         environment.CHARIOX_SLICE_NAME,
         expectedProvisionerMounts(environment),
@@ -1193,7 +1223,7 @@ function prepareProvisioner(request) {
         fail("existing managed slice has no broker-owned stable mount record")
       }
     }
-    for (const name of request.action === "provision" ? PATH_ENVIRONMENT : []) {
+    for (const name of provisionsContainer ? PATH_ENVIRONMENT : []) {
       const value = environment[name]
       if (!value) continue
       if (name === "CHARIOX_SLICE_WORKSPACE") {
@@ -1222,7 +1252,7 @@ function prepareProvisioner(request) {
         environment[name] = pinned.path
       }
     }
-    const mountCount = request.action === "provision"
+    const mountCount = provisionsContainer
       ? Number(environment.CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT ?? "0")
       : 0
     for (let index = 0; index < mountCount; index += 1) {
@@ -1292,6 +1322,10 @@ function execute(request) {
     removeHomeArchive(request)
     return { status: 0, stdoutBase64: "", stderrBase64: "" }
   }
+  if (request.kind === "home_archive_verify") {
+    const verified = verifyHomeArchive(request)
+    return { status: 0, stdoutBase64: Buffer.from(JSON.stringify(verified)).toString("base64"), stderrBase64: "" }
+  }
   if (request.kind === "docker" && request.args[0] === "start") {
     const recorded = recordedContainerMounts(request.args[1])
     if (recorded.length > 0) {
@@ -1322,7 +1356,7 @@ function execute(request) {
     if (request.kind === "provisioner" && request.action === "destroy" && result.status === 0) {
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
     }
-    if (request.kind === "provisioner" && request.action === "provision") {
+    if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {
       if (result.status === 0) {
         removePersistentHandles(
           (record) => record.container === request.environment.CHARIOX_SLICE_NAME && !prepared.handles.has(record.handle),

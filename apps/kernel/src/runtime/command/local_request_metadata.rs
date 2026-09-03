@@ -588,6 +588,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetSliceStateStatus(_) => "slice.state.status",
         LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
         LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
+        LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",

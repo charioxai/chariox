@@ -9,7 +9,8 @@ use super::{
     local_docker_container_name, run_local_docker_slice_screen, LocalDockerSliceOptions,
 };
 use crate::slice::model::{
-    SliceBackendKind, SliceBackupRecord, SliceDisplayMode, SliceRecord, SliceSavedStateRecord,
+    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceDisplayMode,
+    SliceRecord, SliceSavedStateRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -27,25 +28,46 @@ enum SliceSnapshotQuiesce {
     Desktop,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LocalDockerSavedStateGeneration {
+    pub(crate) state: SliceSavedStateRecord,
+    replaced_state: Option<SliceSavedStateRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SliceBackupRestoreResolution {
+    Restored,
+    RolledBack,
+}
+
 pub fn save_local_docker_slice_state(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container)
+    let generation = save_local_docker_slice_state_inner(
+        record,
+        options,
+        SliceSnapshotQuiesce::Container,
+        false,
+    )?;
+    Ok(generation.state)
 }
 
 pub fn save_local_docker_slice_state_live(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop)
+    let generation =
+        save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop, false)?;
+    Ok(generation.state)
 }
 
 fn save_local_docker_slice_state_inner(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
     quiesce: SliceSnapshotQuiesce,
-) -> Result<SliceSavedStateRecord, DaemonError> {
+    retain_replaced_state: bool,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
     let state_id = active_state_id(record);
@@ -79,7 +101,7 @@ fn save_local_docker_slice_state_inner(
             &state_id,
             "slice.state.save",
         );
-        let (home_archive_path, size_bytes) = match archive_result {
+        let (home_archive_path, size_bytes, _) = match archive_result {
             Ok(captured) => captured,
             Err(error) => {
                 remove_docker_image_best_effort(&image_ref);
@@ -106,11 +128,23 @@ fn save_local_docker_slice_state_inner(
         publish_saved_state_generation_with(
             &manifest_path,
             &state,
-            previous_state.as_ref(),
+            (!retain_replaced_state)
+                .then_some(previous_state.as_ref())
+                .flatten(),
             write_state_manifest,
         )?;
-        Ok(state)
+        Ok(LocalDockerSavedStateGeneration {
+            state,
+            replaced_state: previous_state,
+        })
     })
+}
+
+pub(crate) fn save_local_docker_slice_state_retaining_replaced(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container, true)
 }
 
 pub fn create_local_docker_slice_backup(
@@ -127,6 +161,277 @@ pub fn create_local_docker_slice_backup_live(
     name: Option<&str>,
 ) -> Result<SliceBackupRecord, DaemonError> {
     create_local_docker_slice_backup_inner(record, options, name, SliceSnapshotQuiesce::Desktop)
+}
+
+pub fn validate_local_docker_slice_backup(
+    record: &SliceRecord,
+    backup: &SliceBackupRecord,
+) -> Result<(), DaemonError> {
+    const OPERATION: &str = "slice.backup.restore";
+    if record.backend != SliceBackendKind::LocalDocker || record.os != "linux" {
+        return Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!("slice `{}` is not a local Docker Linux slice", record.name),
+        });
+    }
+    if backup.source_slice_id != record.id {
+        return Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!(
+                "backup `{}` belongs to another slice and cannot restore `{}`",
+                backup.id, record.name
+            ),
+        });
+    }
+    let expected_size = backup.size_bytes.filter(|size| *size > 0);
+    let expected_digest = backup
+        .home_archive_sha256
+        .as_deref()
+        .filter(|digest| valid_sha256_digest(digest));
+    let expected_image_id = backup
+        .image_id
+        .as_deref()
+        .filter(|image_id| valid_docker_image_id(image_id));
+    let (Some(expected_size), Some(expected_digest), Some(expected_image_id)) =
+        (expected_size, expected_digest, expected_image_id)
+    else {
+        return Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!(
+                "backup `{}` lacks valid integrity metadata; create a new backup before restoring",
+                backup.id
+            ),
+        });
+    };
+    let manifest_path = Path::new(&backup.manifest_path);
+    let manifest: SliceBackupRecord =
+        read_state_manifest(manifest_path, OPERATION, "slice backup manifest")?;
+    if manifest != *backup {
+        return Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!(
+                "backup `{}` manifest does not match its durable record",
+                backup.id
+            ),
+        });
+    }
+    let archive_path = Path::new(&backup.home_archive_path);
+    let (actual_size, actual_digest) =
+        match broker::verify_home_archive("backup", &backup.id, archive_path).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: OPERATION,
+                message: format!(
+                    "backup `{}` archive integrity check failed: {error}",
+                    backup.id
+                ),
+            }
+        })? {
+            Some(verified) => verified,
+            None => {
+                let metadata = std::fs::symlink_metadata(archive_path).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: OPERATION,
+                        message: format!(
+                            "backup `{}` archive is unavailable at {}: {error}",
+                            backup.id,
+                            archive_path.display()
+                        ),
+                    }
+                })?;
+                if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                    return Err(DaemonError::LocalTransport {
+                        operation: OPERATION,
+                        message: format!("backup `{}` archive is not a regular file", backup.id),
+                    });
+                }
+                (metadata.len(), file_sha256(archive_path, OPERATION)?)
+            }
+        };
+    if actual_size != expected_size || actual_digest != expected_digest {
+        return Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!("backup `{}` archive integrity check failed", backup.id),
+        });
+    }
+    let actual_image_id = docker_image_id(&backup.image_ref, OPERATION)?;
+    if actual_image_id != expected_image_id {
+        return Err(DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!("backup `{}` image integrity check failed", backup.id),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_local_docker_slice_backup(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    backup: &SliceBackupRecord,
+    persist_restore_started: impl FnOnce(
+        &SliceBackupRestoreTransactionRecord,
+    ) -> Result<(), DaemonError>,
+    mut persist_restore_resolution: impl FnMut(
+        &SliceBackupRestoreTransactionRecord,
+        &SliceSavedStateRecord,
+        SliceBackupRestoreResolution,
+    ) -> Result<(), DaemonError>,
+) -> Result<SliceSavedStateRecord, DaemonError> {
+    validate_local_docker_slice_backup(record, backup)?;
+
+    let rollback_name = format!("restore-rollback-{:016x}", rand::random::<u64>());
+    let rollback = create_local_docker_slice_backup(record, options, Some(&rollback_name))?;
+    let previous_saved_state = match active_saved_state_manifest(record, options) {
+        Ok(state) => state,
+        Err(error) => {
+            remove_local_docker_slice_backup_best_effort(&rollback);
+            return Err(error);
+        }
+    };
+    let transaction = SliceBackupRestoreTransactionRecord {
+        id: format!("restore-{:016x}", rand::random::<u64>()),
+        source_slice_id: record.id.clone(),
+        target_backup: backup.clone(),
+        rollback_backup: rollback.clone(),
+        previous_saved_state,
+        started_at_ms: crate::session::unix_epoch_ms(),
+    };
+    if let Err(error) = persist_restore_started(&transaction) {
+        remove_local_docker_slice_backup_best_effort(&rollback);
+        return Err(error);
+    }
+    let restore_options = options.clone().with_backup(backup);
+    let rollback_options = options.clone().with_backup(&rollback);
+    let generation = restore_local_docker_slice_backup_with_rollback(
+        &rollback,
+        || {
+            super::run_local_docker_slice_action(
+                record,
+                crate::slice::LocalDockerSliceAction::RestoreState,
+                None,
+                None,
+                None,
+                &restore_options,
+            )
+        },
+        || save_local_docker_slice_state_retaining_replaced(record, options),
+        |generation, resolution| {
+            persist_restore_resolution(&transaction, &generation.state, resolution)
+        },
+        || {
+            super::run_local_docker_slice_action(
+                record,
+                crate::slice::LocalDockerSliceAction::RestoreState,
+                None,
+                None,
+                None,
+                &rollback_options,
+            )?;
+            save_local_docker_slice_state_retaining_replaced(record, options)
+        },
+        |generation| cleanup_replaced_saved_state_generation(&transaction, generation),
+        || remove_local_docker_slice_backup_best_effort(&rollback),
+    )?;
+    Ok(generation.state)
+}
+
+pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(
+    rollback: &SliceBackupRecord,
+    restore: impl FnOnce() -> Result<(), DaemonError>,
+    capture_restored_state: impl FnOnce() -> Result<T, DaemonError>,
+    mut persist_restored_state: impl FnMut(&T, SliceBackupRestoreResolution) -> Result<(), DaemonError>,
+    restore_rollback: impl FnOnce() -> Result<T, DaemonError>,
+    cleanup_replaced_state: impl Fn(&T),
+    cleanup_rollback: impl FnOnce(),
+) -> Result<T, DaemonError> {
+    let restore_result = restore()
+        .and_then(|()| capture_restored_state())
+        .and_then(|state| {
+            persist_restored_state(&state, SliceBackupRestoreResolution::Restored)?;
+            Ok(state)
+        });
+    match restore_result {
+        Ok(state) => {
+            cleanup_replaced_state(&state);
+            cleanup_rollback();
+            Ok(state)
+        }
+        Err(error) => {
+            match restore_rollback().and_then(|state| {
+                persist_restored_state(&state, SliceBackupRestoreResolution::RolledBack)?;
+                Ok(state)
+            }) {
+                Ok(state) => {
+                    cleanup_replaced_state(&state);
+                    cleanup_rollback();
+                    Err(error)
+                }
+                Err(rollback_error) => Err(DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: format!(
+                        "backup restore failed: {error}; automatic rollback also failed: {rollback_error}; rollback artifacts remain in `{}`",
+                        rollback.manifest_path
+                    ),
+                }),
+            }
+        }
+    }
+}
+
+pub(crate) fn recover_pending_local_docker_slice_backup_restore(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    transaction: &SliceBackupRestoreTransactionRecord,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    validate_local_docker_slice_backup(record, &transaction.rollback_backup)?;
+    let rollback_options = options.clone().with_backup(&transaction.rollback_backup);
+    super::run_local_docker_slice_action(
+        record,
+        crate::slice::LocalDockerSliceAction::RestoreState,
+        None,
+        None,
+        None,
+        &rollback_options,
+    )?;
+    save_local_docker_slice_state_retaining_replaced(record, options)
+}
+
+pub(crate) fn cleanup_replaced_saved_state_generation(
+    transaction: &SliceBackupRestoreTransactionRecord,
+    generation: &LocalDockerSavedStateGeneration,
+) {
+    for replaced in [
+        generation.replaced_state.as_ref(),
+        transaction.previous_saved_state.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if replaced.image_ref != generation.state.image_ref {
+            remove_docker_image_best_effort(&replaced.image_ref);
+        }
+        if replaced.home_archive_path != generation.state.home_archive_path {
+            remove_home_archive_generation_best_effort(
+                "state",
+                &replaced.id,
+                Path::new(&replaced.home_archive_path),
+            );
+        }
+    }
+}
+
+fn active_saved_state_manifest(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<Option<SliceSavedStateRecord>, DaemonError> {
+    let path = options
+        .root
+        .join("states")
+        .join(active_state_id(record))
+        .join("manifest.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    read_state_manifest(&path, "slice.backup.restore", "active saved state manifest").map(Some)
 }
 
 fn create_local_docker_slice_backup_inner(
@@ -151,14 +456,33 @@ fn create_local_docker_slice_backup_inner(
     })?;
     with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.backup.create", || {
         docker_commit_container(record, &image_ref, "slice.backup.create")?;
-        let (home_archive_path, size_bytes) = archive_local_docker_home_volume(
+        let archive_result = archive_local_docker_home_volume(
             record,
             options,
             &backup_dir.join("home.tar.zst"),
             "backup",
             &backup_id,
             "slice.backup.create",
-        )?;
+        );
+        let (home_archive_path, size_bytes, home_archive_sha256) = match archive_result {
+            Ok(captured) => captured,
+            Err(error) => {
+                remove_docker_image_best_effort(&image_ref);
+                return Err(error);
+            }
+        };
+        let image_id = match docker_image_id(&image_ref, "slice.backup.create") {
+            Ok(image_id) => image_id,
+            Err(error) => {
+                remove_home_archive_generation_best_effort(
+                    "backup",
+                    &backup_id,
+                    &home_archive_path,
+                );
+                remove_docker_image_best_effort(&image_ref);
+                return Err(error);
+            }
+        };
         let now_ms = crate::session::unix_epoch_ms();
         let backup = SliceBackupRecord {
             id: backup_id,
@@ -174,6 +498,8 @@ fn create_local_docker_slice_backup_inner(
             manifest_path: manifest_path.display().to_string(),
             created_at_ms: now_ms,
             size_bytes: Some(size_bytes),
+            home_archive_sha256: Some(home_archive_sha256),
+            image_id: Some(image_id),
         };
         if let Err(error) = write_state_manifest(&manifest_path, &backup) {
             remove_home_archive_generation_best_effort("backup", &backup.id, &home_archive_path);
@@ -210,6 +536,30 @@ pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<
         }
     })?;
     Ok(())
+}
+
+pub(crate) fn remove_local_docker_slice_backup_best_effort(backup: &SliceBackupRecord) {
+    remove_docker_image_best_effort(&backup.image_ref);
+    let manifest_path = PathBuf::from(&backup.manifest_path);
+    if let Some(dir) = manifest_path.parent() {
+        if let Err(error) = std::fs::remove_dir_all(dir) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    backup_id = %backup.id,
+                    directory = %dir.display(),
+                    %error,
+                    "failed to remove temporary slice rollback manifest"
+                );
+            }
+        }
+    }
+    if let Err(error) = broker::remove_home_archive("backup", &backup.id) {
+        tracing::warn!(
+            backup_id = %backup.id,
+            %error,
+            "failed to remove temporary managed slice rollback archive"
+        );
+    }
 }
 
 pub fn set_local_docker_default_saved_state(
@@ -453,7 +803,7 @@ fn archive_local_docker_home_volume(
     archive_scope: &str,
     archive_id: &str,
     operation: &'static str,
-) -> Result<(PathBuf, u64), DaemonError> {
+) -> Result<(PathBuf, u64, String), DaemonError> {
     let volume = format!("{}-home", local_docker_container_name(record));
     let helper = format!(
         "{}-home-archive-{}",
@@ -479,9 +829,9 @@ fn archive_local_docker_home_volume(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let (archive_path, size) = result?;
+    let (archive_path, size, sha256) = result?;
     if size > 0 {
-        Ok((archive_path, size))
+        Ok((archive_path, size, sha256))
     } else {
         Err(DaemonError::LocalTransport {
             operation,
@@ -501,7 +851,7 @@ fn archive_local_docker_home_volume_with_helper(
     archive_scope: &str,
     archive_id: &str,
     operation: &'static str,
-) -> Result<(PathBuf, u64), DaemonError> {
+) -> Result<(PathBuf, u64, String), DaemonError> {
     let status = docker_command()
         .args([
             "create",
@@ -588,9 +938,11 @@ fn archive_local_docker_home_volume_with_helper(
             ),
         })?;
     if status.success() {
+        let sha256 = file_sha256(archive_path, operation)?;
         Ok((
             archive_path.to_path_buf(),
             file_size(archive_path).unwrap_or(0),
+            sha256,
         ))
     } else {
         Err(DaemonError::LocalTransport {
@@ -601,6 +953,52 @@ fn archive_local_docker_home_volume_with_helper(
             ),
         })
     }
+}
+
+fn file_sha256(path: &Path, operation: &'static str) -> Result<String, DaemonError> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = std::fs::File::open(path).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("failed to open slice archive {}: {error}", path.display()),
+    })?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("failed to digest slice archive {}: {error}", path.display()),
+    })?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn valid_docker_image_id(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(valid_sha256_digest)
+}
+
+fn docker_image_id(image_ref: &str, operation: &'static str) -> Result<String, DaemonError> {
+    let output = docker_command()
+        .args(["image", "inspect", "--format", "{{.Id}}", image_ref])
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to inspect slice image `{image_ref}`: {error}"),
+        })?;
+    let image_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || !image_id.starts_with("sha256:") {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("slice image `{image_ref}` is missing or has an invalid id"),
+        });
+    }
+    Ok(image_id)
 }
 
 fn active_state_id(record: &SliceRecord) -> String {
@@ -624,9 +1022,10 @@ fn backup_id(record: &SliceRecord, name: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(&record.name);
     format!(
-        "{}-{}",
+        "{}-{}-{:016x}",
         sanitize_state_component(label),
-        crate::session::unix_epoch_ms()
+        crate::session::unix_epoch_ms(),
+        rand::random::<u64>()
     )
 }
 

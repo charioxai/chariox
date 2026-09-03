@@ -5,6 +5,11 @@ mod ports;
 mod store;
 
 pub(crate) use local_docker::managed_docker_broker_configured;
+pub(crate) use local_docker::{
+    cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
+    remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
+    SliceBackupRestoreResolution,
+};
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
     create_local_docker_slice_backup_live, default_local_docker_saved_state,
@@ -13,8 +18,8 @@ pub use local_docker::{
     local_docker_private_relay_endpoint, local_docker_private_relay_token,
     remove_local_docker_saved_state, run_local_docker_slice_action, save_local_docker_slice_state,
     save_local_docker_slice_state_live, set_local_docker_default_saved_state,
-    start_local_docker_slice_provider_login, LocalDockerProviderAccount, LocalDockerSliceOptions,
-    LocalDockerSliceRelay,
+    start_local_docker_slice_provider_login, validate_local_docker_slice_backup,
+    LocalDockerProviderAccount, LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
 #[cfg(test)]
 use local_docker::{
@@ -23,10 +28,10 @@ use local_docker::{
 };
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
-    SliceDevelopmentPublication, SliceDisplayBackend, SliceDisplayEndpoint,
-    SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceLocalDockerPorts,
-    SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
-    SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    SliceBackupRestoreTransactionRecord, SliceDevelopmentPublication, SliceDisplayBackend,
+    SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode,
+    SliceLocalDockerPorts, SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart,
+    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
@@ -77,6 +82,233 @@ mod tests {
             last_operation_status: Some(SliceOperationStatus::Completed),
             last_error: None,
         }
+    }
+
+    #[test]
+    fn saved_state_record_is_persisted_before_the_in_memory_pointer_changes() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("transactional-state"))
+            .expect("slice should create");
+        let state = saved_state("transactional-state");
+        let error = store
+            .upsert_saved_state_transactionally(&slice.id, state.clone(), 43, |_, _| {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "slice.state.save",
+                    message: "injected durable-state failure".to_string(),
+                })
+            })
+            .expect_err("failed persistence must reject the state update");
+
+        assert!(error.to_string().contains("injected durable-state failure"));
+        assert_eq!(
+            store
+                .resolve(&slice.id)
+                .expect("slice should remain available")
+                .saved_state_ref,
+            None
+        );
+        assert!(store.list_saved_states().is_empty());
+
+        store
+            .upsert_saved_state_transactionally(&slice.id, state.clone(), 44, |record, saved| {
+                assert_eq!(record.saved_state_ref.as_deref(), Some(saved.id.as_str()));
+                assert_eq!(
+                    store
+                        .resolve(&slice.id)
+                        .expect("uncommitted slice should remain readable")
+                        .saved_state_ref,
+                    None
+                );
+                Ok(())
+            })
+            .expect("persisted state should commit in memory");
+        assert_eq!(
+            store
+                .resolve(&slice.id)
+                .expect("slice should remain available")
+                .saved_state_ref
+                .as_deref(),
+            Some(state.id.as_str())
+        );
+        assert_eq!(store.list_saved_states(), vec![state]);
+    }
+
+    fn backup(id: &str, name: &str, source_slice_id: &str) -> SliceBackupRecord {
+        SliceBackupRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            source_slice_id: source_slice_id.to_string(),
+            source_state_id: "dev".to_string(),
+            image_ref: format!("chariox-slice-backup:{id}"),
+            home_archive_path: format!("/tmp/{id}-home.tar.zst"),
+            manifest_path: format!("/tmp/{id}-manifest.json"),
+            created_at_ms: 1,
+            size_bytes: Some(1024),
+            home_archive_sha256: Some("a".repeat(64)),
+            image_id: Some("sha256:fixture".to_string()),
+        }
+    }
+
+    fn restore_transaction(id: &str, source_slice_id: &str) -> SliceBackupRestoreTransactionRecord {
+        SliceBackupRestoreTransactionRecord {
+            id: id.to_string(),
+            source_slice_id: source_slice_id.to_string(),
+            target_backup: backup("target", "target", source_slice_id),
+            rollback_backup: backup("rollback", "rollback", source_slice_id),
+            previous_saved_state: None,
+            started_at_ms: 45,
+        }
+    }
+
+    #[test]
+    fn backup_restore_transaction_is_durable_before_mutation_and_resolves_atomically() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("restore-transaction"))
+            .expect("slice should create");
+        let transaction = restore_transaction("restore-1", &slice.id);
+        let error = store
+            .begin_backup_restore_transactionally(transaction.clone(), |_| {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: "injected journal failure".to_string(),
+                })
+            })
+            .expect_err("restore must not begin without a durable journal record");
+        assert!(error.to_string().contains("injected journal failure"));
+        assert!(store.list_pending_backup_restores().is_empty());
+
+        store
+            .begin_backup_restore_transactionally(transaction.clone(), |_| Ok(()))
+            .expect("restore journal should persist");
+        assert_eq!(
+            store.list_pending_backup_restores(),
+            vec![transaction.clone()]
+        );
+
+        let restored_state = saved_state("restore-transaction");
+        let error = store
+            .resolve_backup_restore_transactionally(
+                &transaction.id,
+                &slice.id,
+                restored_state.clone(),
+                46,
+                SliceOperationStatus::Completed,
+                None,
+                |_, _| {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "slice.backup.restore",
+                        message: "injected resolution failure".to_string(),
+                    })
+                },
+            )
+            .expect_err("failed resolution persistence must retain recovery intent");
+        assert!(error.to_string().contains("injected resolution failure"));
+        assert_eq!(
+            store.list_pending_backup_restores(),
+            vec![transaction.clone()]
+        );
+        assert_eq!(
+            store
+                .resolve(&slice.id)
+                .expect("slice should remain available")
+                .saved_state_ref,
+            None
+        );
+
+        store
+            .resolve_backup_restore_transactionally(
+                &transaction.id,
+                &slice.id,
+                restored_state.clone(),
+                47,
+                SliceOperationStatus::Completed,
+                None,
+                |record, state| {
+                    assert_eq!(record.saved_state_ref.as_deref(), Some(state.id.as_str()));
+                    assert_eq!(
+                        store.list_pending_backup_restores(),
+                        vec![transaction.clone()]
+                    );
+                    Ok(())
+                },
+            )
+            .expect("durable resolution should commit state and clear recovery intent");
+        assert!(store.list_pending_backup_restores().is_empty());
+        assert_eq!(
+            store
+                .active_saved_state_for_slice(&slice.id)
+                .expect("state lookup should succeed"),
+            Some(restored_state)
+        );
+    }
+
+    #[test]
+    fn unresolved_backup_restore_quarantines_slice_until_durable_resolution() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("restore-quarantine"))
+            .expect("slice should create");
+        let guard = store
+            .try_begin_operation(&slice.id, "slice.backup.restore")
+            .expect("restore should acquire the slice operation guard");
+        let transaction = restore_transaction("restore-quarantine-1", &slice.id);
+        store
+            .begin_backup_restore_transactionally(transaction.clone(), |_| Ok(()))
+            .expect("restore journal should persist");
+        store
+            .resolve_backup_restore_transactionally(
+                &transaction.id,
+                &slice.id,
+                saved_state("failed-restore-state"),
+                46,
+                SliceOperationStatus::Failed,
+                Some("automatic rollback failed".to_string()),
+                |_, _| {
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "slice.backup.restore",
+                        message: "injected rollback publication failure".to_string(),
+                    })
+                },
+            )
+            .expect_err("failed rollback publication must retain recovery intent");
+
+        drop(guard);
+        for operation in ["slice.start", "slice.delete", "slice.backup.restore"] {
+            let error = store
+                .try_begin_operation(&slice.id, operation)
+                .expect_err("unresolved restore must quarantine every later operation");
+            assert!(error.to_string().contains(&transaction.id));
+        }
+
+        let mut duplicate_persisted = false;
+        let error = store
+            .begin_backup_restore_transactionally(
+                restore_transaction("restore-quarantine-2", &slice.id),
+                |_| {
+                    duplicate_persisted = true;
+                    Ok(())
+                },
+            )
+            .expect_err("a slice must not acquire a second pending restore");
+        assert!(error.to_string().contains(&transaction.id));
+        assert!(!duplicate_persisted);
+
+        store
+            .resolve_backup_restore_transactionally(
+                &transaction.id,
+                &slice.id,
+                saved_state("rolled-back-state"),
+                47,
+                SliceOperationStatus::Failed,
+                Some("backup restore failed; automatic rollback completed".to_string()),
+                |_, _| Ok(()),
+            )
+            .expect("durable rollback resolution should clear quarantine");
+        store
+            .try_begin_operation(&slice.id, "slice.start")
+            .expect("slice operation should resume after durable resolution");
     }
 
     #[test]
@@ -193,6 +425,76 @@ mod tests {
                 .expect("prior state should remain active")
                 .id,
             "state-known-good"
+        );
+    }
+
+    #[test]
+    fn slice_store_resolves_backup_by_id_or_unique_name_within_source_slice() {
+        let store = SliceStore::default();
+        let first = store
+            .create("kernel-1", "machine-1", create_input("first"))
+            .expect("first slice should create");
+        let second = store
+            .create("kernel-1", "machine-1", create_input("second"))
+            .expect("second slice should create");
+        let failed_backup = backup("failed-snapshot", "snapshot", &first.id);
+        let error = store
+            .upsert_backup_transactionally(failed_backup, |_| {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "slice.backup.create",
+                    message: "injected durable-state failure".to_string(),
+                })
+            })
+            .expect_err("failed persistence must not publish the backup record");
+        assert!(error.to_string().contains("injected durable-state failure"));
+        assert!(store.list_backups().is_empty());
+
+        store
+            .upsert_backup_transactionally(
+                backup("first-snapshot-1", "snapshot", &first.id),
+                |_| Ok(()),
+            )
+            .expect("first backup should persist");
+        store
+            .upsert_backup_transactionally(
+                backup("second-snapshot-1", "snapshot", &second.id),
+                |_| Ok(()),
+            )
+            .expect("second backup should persist");
+
+        assert_eq!(
+            store
+                .resolve_backup_for_slice(&first.id, "first-snapshot-1")
+                .expect("backup id should resolve")
+                .id,
+            "first-snapshot-1"
+        );
+        assert_eq!(
+            store
+                .resolve_backup_for_slice(&first.id, "snapshot")
+                .expect("unique backup name should resolve")
+                .id,
+            "first-snapshot-1"
+        );
+        assert!(store
+            .resolve_backup_for_slice(&first.id, "second-snapshot-1")
+            .is_err());
+        store
+            .upsert_backup_transactionally(
+                backup("first-snapshot-2", "snapshot", &first.id),
+                |_| Ok(()),
+            )
+            .expect("duplicate-name backup should persist");
+        let ambiguous = store
+            .resolve_backup_for_slice(&first.id, "snapshot")
+            .expect_err("duplicate names within one slice must require a backup id");
+        assert!(ambiguous.to_string().contains("ambiguous"));
+        assert_eq!(
+            store
+                .resolve_backup_for_slice(&first.id, "first-snapshot-2")
+                .expect("an exact id must remain unambiguous")
+                .id,
+            "first-snapshot-2"
         );
     }
 

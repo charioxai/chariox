@@ -103,6 +103,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetSliceStateStatus(_) => "slice.state.status",
         LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
         LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
+        LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",

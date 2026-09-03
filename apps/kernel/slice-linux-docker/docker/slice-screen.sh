@@ -122,6 +122,16 @@ clear_chromium_profile_locks() {
   fi
 }
 
+chromium_has_restorable_session() {
+  local default_profile="$CHROME_PROFILE/Default"
+  if [[ -d "$default_profile/Sessions" ]] \
+    && find "$default_profile/Sessions" -maxdepth 1 -type f -name 'Session_*' -size +0c -print -quit \
+      | grep -q .; then
+    return 0
+  fi
+  [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
+}
+
 configure_chromium_profile_preferences() {
   python3 - "$CHROME_PROFILE" <<'PY' >/dev/null 2>&1 || true
 import json
@@ -216,10 +226,14 @@ require_screen_available() {
 
 start_desktop() {
   local -a chrome_secure_context_args=()
+  local -a chrome_startup_target_args=("$CHROME_URL")
   if [[ -n "$CHROME_TRUSTED_INSECURE_ORIGINS" ]]; then
     chrome_secure_context_args+=(
       "--unsafely-treat-insecure-origin-as-secure=$CHROME_TRUSTED_INSECURE_ORIGINS"
     )
+  fi
+  if chromium_has_restorable_session; then
+    chrome_startup_target_args=(--restore-last-session)
   fi
 
   if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
@@ -267,7 +281,7 @@ start_desktop() {
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
     "${chrome_secure_context_args[@]}" \
-    "$CHROME_URL" >"$LOGS/chromium-gui.log" 2>&1 &
+    "${chrome_startup_target_args[@]}" >"$LOGS/chromium-gui.log" 2>&1 &
 
   sleep 2
   require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"

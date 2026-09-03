@@ -18,6 +18,7 @@ import {
   listSlicesRequest,
   removeSliceProviderAuthRequest,
   resetSliceStateRequest,
+  restoreSliceBackupRequest,
   saveSliceStateRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -161,6 +162,25 @@ export async function executeSliceCommand(
       return { ok: true, message: formatSliceStateReset(payload.slice, payload.removed_state), data: payload }
     }
     case "backup": {
+      if (first === "restore") {
+        const parsedRestore = parseSliceBackupRestoreArgs(rest)
+        if (parsedRestore.error) {
+          return { ok: false, message: parsedRestore.error }
+        }
+        const sliceRef = parsedRestore.sliceRef ?? await focusedAgentSliceRef(context, deps)
+        const response = await deps.client.send(
+          restoreSliceBackupRequest(sliceRef, parsedRestore.backupRef!),
+        )
+        const payload = expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord }>(
+          response,
+          "SliceBackupRestored",
+        )
+        return {
+          ok: true,
+          message: formatSliceBackupRestored(payload.slice, payload.backup),
+          data: payload,
+        }
+      }
       const backupArgs = first === "create" ? rest : [first, ...rest].filter((arg): arg is string => Boolean(arg))
       const { sliceRef, name, error } = parseSliceBackupArgs(backupArgs)
       if (error) {
@@ -388,6 +408,26 @@ function parseSliceBackupArgs(args: string[]): {
   return { ...(sliceRef ? { sliceRef } : {}), ...(name ? { name } : {}) }
 }
 
+function parseSliceBackupRestoreArgs(args: string[]): {
+  sliceRef?: string
+  backupRef?: string
+  error?: string
+} {
+  if (args.length === 1 && args[0] && !args[0].startsWith("--")) {
+    return { backupRef: args[0] }
+  }
+  if (
+    args.length === 2
+    && args[0]
+    && args[1]
+    && !args[0].startsWith("--")
+    && !args[1].startsWith("--")
+  ) {
+    return { sliceRef: args[0], backupRef: args[1] }
+  }
+  return { error: "usage: slice backup restore [slice-ref] <backup-ref>" }
+}
+
 function formatSliceLoginMessage(
   slice: SliceRecord,
   login: {
@@ -466,6 +506,14 @@ function formatSliceBackupCreated(
     `home_archive=${backup.home_archive_path}`,
     instructions,
   ].filter(Boolean).join("\n")
+}
+
+function formatSliceBackupRestored(slice: SliceRecord, backup: SliceBackupRecord): string {
+  return [
+    `restored slice backup ${formatSliceLabel(slice)}`,
+    `backup=${backup.id}`,
+    "status=stopped",
+  ].join("\n")
 }
 
 function resourceResult(

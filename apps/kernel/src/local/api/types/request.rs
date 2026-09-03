@@ -158,6 +158,7 @@ pub enum LocalDaemonRequest {
     GetSliceStateStatus(SliceStateStatusRequest),
     ResetSliceState(SliceStateResetRequest),
     CreateSliceBackup(CreateSliceBackupRequest),
+    RestoreSliceBackup(RestoreSliceBackupRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),

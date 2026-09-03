@@ -16,7 +16,10 @@ use crate::runtime::metaagent_event::{
 use crate::session::{
     DurablePromptPrivateState, RuntimeProject, RuntimeSession, SessionStateStore,
 };
-use crate::slice::{SliceBackupRecord, SliceRecord, SliceSavedStateRecord, SliceStore};
+use crate::slice::{
+    SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceRecord, SliceSavedStateRecord,
+    SliceStore,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DurableKernelSnapshotPayload {
@@ -32,6 +35,8 @@ pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) slice_saved_states: Vec<SliceSavedStateRecord>,
     #[serde(default)]
     pub(crate) slice_backups: Vec<SliceBackupRecord>,
+    #[serde(default)]
+    pub(crate) pending_slice_backup_restores: Vec<SliceBackupRestoreTransactionRecord>,
     #[serde(default)]
     pub(crate) metaagent_event_records: Vec<MetaagentEventRecord>,
     #[serde(default)]
@@ -63,6 +68,7 @@ impl DurableKernelSnapshotPayload {
         let slice_records = slices.list();
         let slice_saved_states = slices.list_saved_states();
         let slice_backups = slices.list_backups();
+        let pending_slice_backup_restores = slices.list_pending_backup_restores();
         let metaagent_snapshot = metaagent_events.snapshot();
         Self {
             projects,
@@ -72,6 +78,7 @@ impl DurableKernelSnapshotPayload {
             slices: slice_records,
             slice_saved_states,
             slice_backups,
+            pending_slice_backup_restores,
             metaagent_event_records: metaagent_snapshot.records,
             metaagent_event_subscriptions: metaagent_snapshot.subscriptions,
         }
@@ -490,6 +497,67 @@ mod tests {
             .sessions
             .iter()
             .all(|session| session.id() != ephemeral_session.id()));
+    }
+
+    #[test]
+    fn snapshot_retains_pending_slice_backup_restore_intent() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "snapshot-restore".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: None,
+                    development: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .expect("slice should create");
+        let backup = |id: &str| crate::slice::SliceBackupRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            source_slice_id: slice.id.clone(),
+            source_state_id: "snapshot-restore".to_string(),
+            image_ref: format!("chariox-slice-backup:{id}"),
+            home_archive_path: format!("/tmp/{id}.tar.zst"),
+            manifest_path: format!("/tmp/{id}.json"),
+            created_at_ms: 2,
+            size_bytes: Some(10),
+            home_archive_sha256: Some("a".repeat(64)),
+            image_id: Some(format!("sha256:{}", "b".repeat(64))),
+        };
+        let transaction = crate::slice::SliceBackupRestoreTransactionRecord {
+            id: "snapshot-restore-transaction".to_string(),
+            source_slice_id: slice.id.clone(),
+            target_backup: backup("target"),
+            rollback_backup: backup("rollback"),
+            previous_saved_state: None,
+            started_at_ms: 3,
+        };
+        app.slices()
+            .begin_backup_restore_transactionally(transaction.clone(), |_| Ok(()))
+            .expect("pending restore should enter the projection");
+
+        let snapshot = DurableKernelSnapshotPayload::capture(
+            &app.session_state_store(),
+            app.agents(),
+            &app.slices(),
+            &app.metaagent_event_store(),
+        );
+
+        assert_eq!(snapshot.pending_slice_backup_restores, vec![transaction]);
     }
 
     #[test]

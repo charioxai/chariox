@@ -166,6 +166,7 @@ pub enum LocalDaemonResponse {
     SliceStateStatus { slice: SliceRecord, state: Option<crate::slice::SliceSavedStateRecord>, },
     SliceStateReset { slice: SliceRecord, removed_state: Option<crate::slice::SliceSavedStateRecord>, },
     SliceBackupCreated { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, instructions: String, },
+    SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
     RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
     WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
