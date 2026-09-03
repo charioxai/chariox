@@ -128,7 +128,17 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     adapter_key: &str,
     text: &str,
 ) -> Option<String> {
-    let normalized = text.to_lowercase();
+    // Prompt settlement receives the human-readable notice projected from the
+    // authoritative provider failure. Remove only our exact framing so Claude's
+    // anchored dialog matcher still recognizes the original limit response.
+    let detail = text.trim();
+    let detail = detail
+        .strip_prefix("Provider prompt dispatch failed: ")
+        .unwrap_or(detail);
+    let detail = detail
+        .strip_prefix("Provider reported a substitutable resource limit: ")
+        .unwrap_or(detail);
+    let normalized = detail.to_lowercase();
     let substitutable = match adapter_key {
         "codex" | "opencode" => provider_normalized_text_reports_resource_limit(&normalized),
         "claude" => claude_normalized_text_reports_resource_limit_dialog(&normalized),
@@ -139,7 +149,7 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     }
     Some(format!(
         "Provider reported a substitutable resource limit: {}",
-        compact_provider_error_snippet(text)
+        compact_provider_error_snippet(detail)
     ))
 }
 
@@ -356,6 +366,34 @@ mod tests {
         let substitute_failure = classify_provider_substitutable_failure_text("claude", dialog)
             .expect("Claude's session-limit dialog should advance the substitute chain");
         assert!(substitute_failure.contains("substitutable resource limit"));
+    }
+
+    #[test]
+    fn substitute_classifier_preserves_claude_failure_through_kernel_notices() {
+        let dialog = "You've hit your session limit · resets 10:40pm (Europe/Madrid)";
+        let failure = classify_provider_substitutable_failure_text("claude", dialog).unwrap();
+        for notice in [
+            failure.clone(),
+            format!("Provider prompt dispatch failed: {failure}"),
+        ] {
+            assert_eq!(
+                classify_provider_substitutable_failure_text("claude", &notice),
+                Some(failure.clone())
+            );
+        }
+        assert!(classify_provider_substitutable_failure_text(
+            "claude",
+            &format!("The reviewer said: {failure}")
+        )
+        .is_none());
+        assert!(
+            classify_provider_terminal_failure_output_text(
+                "claude",
+                &format!("Provider prompt dispatch failed: {failure}")
+            )
+            .is_none(),
+            "ordinary output must not impersonate an authoritative kernel notice"
+        );
     }
 
     #[test]
