@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use base64::Engine as _;
 use rand::{distributions::Alphanumeric, Rng};
@@ -785,7 +785,40 @@ impl Default for RegistryDocument {
 pub struct ProviderAccountProfileRegistry {
     path: PathBuf,
     document: Arc<RwLock<RegistryDocument>>,
-    usage_refresh_attempts: Arc<Mutex<BTreeMap<(String, String, String), u64>>>,
+    usage_refresh_attempts: Arc<ProviderAccountUsageRefreshCoordinator>,
+}
+
+type ProviderAccountUsageRefreshKey = (String, String, String);
+
+struct ProviderAccountUsageRefreshAttempt {
+    attempted_at_ms: u64,
+    in_flight: bool,
+}
+
+#[derive(Default)]
+struct ProviderAccountUsageRefreshCoordinator {
+    attempts: Mutex<BTreeMap<ProviderAccountUsageRefreshKey, ProviderAccountUsageRefreshAttempt>>,
+    completed: Condvar,
+}
+
+pub(crate) struct ProviderAccountUsageRefreshLease {
+    coordinator: Arc<ProviderAccountUsageRefreshCoordinator>,
+    key: ProviderAccountUsageRefreshKey,
+}
+
+impl Drop for ProviderAccountUsageRefreshLease {
+    fn drop(&mut self) {
+        let mut attempts = self
+            .coordinator
+            .attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(attempt) = attempts.get_mut(&self.key) {
+            attempt.attempted_at_ms = crate::session::unix_epoch_ms();
+            attempt.in_flight = false;
+        }
+        self.coordinator.completed.notify_all();
+    }
 }
 
 impl ProviderAccountProfileRegistry {
@@ -814,7 +847,7 @@ impl ProviderAccountProfileRegistry {
         let registry = Self {
             path,
             document: Arc::new(RwLock::new(document)),
-            usage_refresh_attempts: Arc::new(Mutex::new(BTreeMap::new())),
+            usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
         };
         if changed {
             let document = registry.read_document()?;
@@ -1154,30 +1187,51 @@ impl ProviderAccountProfileRegistry {
         Ok(result)
     }
 
-    pub(crate) fn claim_usage_refresh_attempt(
+    pub(crate) fn acquire_usage_refresh_attempt(
         &self,
         owner_user_id: &str,
         provider: &str,
         profile_id: &str,
         now_ms: u64,
         retry_after_ms: u64,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<Option<ProviderAccountUsageRefreshLease>, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
         let key = (profile.owner_user_id, profile.provider, profile.profile_id);
         let mut attempts = self
             .usage_refresh_attempts
+            .attempts
             .lock()
-            .map_err(|error| registry_error("claim account usage refresh", error.to_string()))?;
-        attempts
-            .retain(|_, attempted_at_ms| now_ms.saturating_sub(*attempted_at_ms) < retry_after_ms);
-        if attempts
-            .get(&key)
-            .is_some_and(|attempted_at_ms| now_ms.saturating_sub(*attempted_at_ms) < retry_after_ms)
-        {
-            return Ok(false);
+            .map_err(|error| registry_error("acquire account usage refresh", error.to_string()))?;
+        attempts.retain(|_, attempt| {
+            attempt.in_flight || now_ms.saturating_sub(attempt.attempted_at_ms) < retry_after_ms
+        });
+        loop {
+            match attempts.get(&key) {
+                Some(attempt) if attempt.in_flight => {
+                    attempts = self
+                        .usage_refresh_attempts
+                        .completed
+                        .wait(attempts)
+                        .map_err(|error| {
+                            registry_error("wait for account usage refresh", error.to_string())
+                        })?;
+                }
+                Some(_) => return Ok(None),
+                None => {
+                    attempts.insert(
+                        key.clone(),
+                        ProviderAccountUsageRefreshAttempt {
+                            attempted_at_ms: now_ms,
+                            in_flight: true,
+                        },
+                    );
+                    return Ok(Some(ProviderAccountUsageRefreshLease {
+                        coordinator: self.usage_refresh_attempts.clone(),
+                        key,
+                    }));
+                }
+            }
         }
-        attempts.insert(key, now_ms);
-        Ok(true)
     }
 
     pub fn update_services(

@@ -42,26 +42,26 @@ fn refresh_provider_usage_before_launch(
     refresh: impl FnOnce() -> Result<ProviderAccountProfile, DaemonError>,
 ) -> Result<(), DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
-    if provider_usage_refresh_due_for_launch(&profile.usage, now_ms)
-        && registry.claim_usage_refresh_attempt(
+    if provider_usage_refresh_due_for_launch(&profile.usage, now_ms) {
+        if let Some(_refresh_lease) = registry.acquire_usage_refresh_attempt(
             owner_user_id,
             provider,
             &profile.profile_id,
             now_ms,
             PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS,
-        )?
-    {
-        // Reporting is optional for providers and plans that expose no stable usage API.
-        // Keep unknown capacity honest rather than blocking work when refresh itself fails.
-        if refresh().is_err() {
-            crate::logging::warn_with_fields(
-                "daemon.provider",
-                "provider usage refresh before launch was unavailable",
-                serde_json::json!({
-                    "provider": provider,
-                    "account_profile": account_profile,
-                }),
-            );
+        )? {
+            // Reporting is optional for providers and plans that expose no stable usage API.
+            // Keep unknown capacity honest rather than blocking work when refresh itself fails.
+            if refresh().is_err() {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "provider usage refresh before launch was unavailable",
+                    serde_json::json!({
+                        "provider": provider,
+                        "account_profile": account_profile,
+                    }),
+                );
+            }
         }
     }
     Ok(())
@@ -329,6 +329,154 @@ mod tests {
             )
             .expect_err("fresh exhausted Go usage should block the launch");
         assert!(blocked.to_string().contains("usage is exhausted"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_launch_waits_for_in_flight_usage_refresh_before_capacity_gate() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-provider-launch-concurrent-usage-refresh-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json"))
+            .expect("profile registry should open");
+        let profile = registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .expect("default profiles should migrate")
+            .into_iter()
+            .find(|profile| profile.provider == "opencode")
+            .expect("OpenCode default should exist");
+        registry
+            .update_observation(
+                "owner-a",
+                "opencode",
+                &profile.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("profile should be authenticated");
+
+        let now_ms = crate::session::unix_epoch_ms();
+        let profile_id = profile.profile_id.clone();
+        let first_registry = registry.clone();
+        let first_profile_id = profile_id.clone();
+        let (refresh_started_tx, refresh_started_rx) = mpsc::channel();
+        let (release_refresh_tx, release_refresh_rx) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            refresh_provider_usage_before_launch(
+                &first_registry,
+                "owner-a",
+                "opencode",
+                &first_profile_id,
+                now_ms,
+                || {
+                    refresh_started_tx
+                        .send(())
+                        .expect("test should observe the in-flight refresh");
+                    release_refresh_rx
+                        .recv()
+                        .expect("test should release the in-flight refresh");
+                    first_registry.update_usage(
+                        "owner-a",
+                        "opencode",
+                        &first_profile_id,
+                        ProviderAccountUsageSnapshot {
+                            profile_id: first_profile_id.clone(),
+                            provider: "opencode".to_string(),
+                            availability: ProviderAccountUsageAvailability::Available,
+                            meters: vec![ProviderAccountUsageMeter {
+                                meter_id: "go/monthly".to_string(),
+                                label: "OpenCode Go monthly".to_string(),
+                                service_id: Some("opencode-go".to_string()),
+                                kind: ProviderAccountUsageMeterKind::RollingLimit,
+                                scope: ProviderAccountUsageMeterScope::Plan,
+                                used_percent: Some(100.0),
+                                used: None,
+                                remaining: None,
+                                total: None,
+                                unit: None,
+                                window_duration_minutes: None,
+                                resets_at_ms: Some(now_ms + 60_000),
+                                state: ProviderAccountUsageMeterState::Exhausted,
+                                source: "test.go_usage".to_string(),
+                                observed_at_ms: now_ms,
+                            }],
+                            observed_at_ms: Some(now_ms),
+                            source: "test.go_usage".to_string(),
+                            management_url: None,
+                        },
+                    )
+                },
+            )
+            .expect("first launch refresh should complete");
+        });
+        refresh_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first launch should enter its refresh");
+
+        let second_registry = registry.clone();
+        let second_profile_id = profile_id.clone();
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (second_finished_tx, second_finished_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            second_started_tx
+                .send(())
+                .expect("test should observe the second launch");
+            refresh_provider_usage_before_launch(
+                &second_registry,
+                "owner-a",
+                "opencode",
+                &second_profile_id,
+                now_ms + 1,
+                || panic!("the concurrent launch must share the in-flight refresh"),
+            )
+            .expect("second launch refresh coordination should complete");
+            let blocked = second_registry
+                .require_authenticated(
+                    "owner-a",
+                    "opencode",
+                    &second_profile_id,
+                    Some("opencode-go/deepseek-v4"),
+                    "test.concurrent_launch",
+                )
+                .is_err();
+            second_finished_tx
+                .send(blocked)
+                .expect("test should observe the second launch outcome");
+        });
+        second_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second launch should start");
+
+        if let Ok(blocked) = second_finished_rx.recv_timeout(Duration::from_millis(250)) {
+            release_refresh_tx
+                .send(())
+                .expect("first refresh should be released for cleanup");
+            first.join().expect("first launch should join");
+            second.join().expect("second launch should join");
+            panic!(
+                "second launch crossed the capacity gate before the in-flight refresh completed; blocked={blocked}"
+            );
+        }
+
+        release_refresh_tx
+            .send(())
+            .expect("first refresh should be released");
+        assert!(
+            second_finished_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("second launch should finish after the refresh"),
+            "second launch should apply the exhausted result from the shared refresh"
+        );
+        first.join().expect("first launch should join");
+        second.join().expect("second launch should join");
         let _ = std::fs::remove_dir_all(root);
     }
 
