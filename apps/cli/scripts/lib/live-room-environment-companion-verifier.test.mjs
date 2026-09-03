@@ -13,11 +13,15 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
   const localNoticeIds = [1]
   const remoteNoticeIds = [2]
   const action = {
+    sequence: 7,
     action_id: "action-web",
     actor_id: "user:local",
     kind: "pointer_click",
     state: "completed",
   }
+  const keyboardAction = { ...action, action_id: "action-keyboard", kind: "keyboard_text", sequence: 8 }
+  const noticed = { local: [], remote: [] }
+  const physical = []
   const resultWriter = (async () => {
     const readyPath = path.join(root, "ready.json")
     while (true) {
@@ -36,6 +40,7 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
       environmentId: "environment-1",
       actionId: action.action_id,
       actorId: action.actor_id,
+      keyboard: { actionId: keyboardAction.action_id, physicalEffect: "WEB_KEYBOARD_TEXT_OK" },
       physicalEffect: "POINTER_CLICK_COUNT=2",
       client: "production-local-web-view",
       screenshot: path.join(root, "web-room-tui-shared.png"),
@@ -53,9 +58,10 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
         schema: "chariox.room_environment.companion_ready.v1",
         sessionId: "session-1",
         environmentId: "environment-1",
+        keyboardText: "fixture typing",
       },
       client: {
-        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action] } } }),
+        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction] } } }),
       },
       observerClient: {
         send: async () => ({ RoomEnvironmentState: { environment: { input_ownership: [] } } }),
@@ -67,13 +73,21 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
       activityController: { synchronize: async () => true },
       localNoticeIds,
       remoteNoticeIds,
-      waitForPhysicalEffect: async (value) => assert.equal(value, "POINTER_CLICK_COUNT=2"),
-      waitForLocalActionNotice: async (baseline) => assert.equal(baseline, localNoticeIds),
-      waitForRemoteActionNotice: async (baseline) => assert.equal(baseline, remoteNoticeIds),
+      waitForPhysicalEffect: async (value) => { physical.push(value) },
+      waitForLocalActionNotice: async (baseline, target) => {
+        assert.equal(baseline, localNoticeIds)
+        noticed.local.push(target?.sequence)
+      },
+      waitForRemoteActionNotice: async (baseline, target) => {
+        assert.equal(baseline, remoteNoticeIds)
+        noticed.remote.push(target?.sequence)
+      },
     })
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
+    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "WEB_KEYBOARD_TEXT_OK"])
+    assert.deepEqual(noticed, { local: [7, 8], remote: [7, 8] })
     assert.equal(preparedAtReady, true, "physical fixture must be reset before Web receives its handoff")
     assert.equal(verified.client, "production-local-web-view")
     assert.equal(verified.screenshot, path.join(root, "web-room-tui-shared.png"))

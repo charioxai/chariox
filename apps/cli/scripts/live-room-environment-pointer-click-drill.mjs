@@ -52,6 +52,9 @@ const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
 const runId = `room-pointer-${process.pid}-${stamp}`
+const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
+  ? `web-${runId}-Grüße 世界`
+  : null
 const evidenceRoot = path.join(
   os.homedir(),
   ".codex",
@@ -105,6 +108,7 @@ const clipboardValues = [
   physicalClipboardText,
 ]
 const sensitiveValues = [
+  ...(webKeyboardText ? [webKeyboardText] : []),
   userSecret,
   vaultPassphrase,
   keyboardText,
@@ -485,8 +489,8 @@ async function run() {
       sessionId,
       sliceId: slice.id,
       environmentId: released.environment_id,
-      coverage: "Web display and pointer input with local and remote TUI observation",
-      skipped: ["computer secret", "pointer matrix", "keyboard", "cancellation", "clipboard"],
+      coverage: `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""} with local and remote TUI observation`,
+      skipped: ["computer secret", "pointer matrix", "agent keyboard matrix", "cancellation", "clipboard", "Web keyboard shortcuts and IME"],
       companion: companionResult,
       containerLimits: limits,
     }
@@ -610,6 +614,7 @@ async function run() {
         actionId: companionResult.actionId,
         actorId: companionResult.actorId,
         screenshot: companionResult.screenshot,
+        ...(companionResult.keyboard ? { keyboard: companionResult.keyboard } : {}),
       },
     } : {}),
   }
@@ -1944,7 +1949,7 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 }
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
-  const noticePattern = /^Room action #\d+: .+ · computer pointer_click · completed$/
+  const noticePattern = (action) => new RegExp(`^Room action #${action.sequence}: .+ · computer ${action.kind} · completed$`)
   return await runRoomEnvironmentCompanion({
     env: process.env,
     prepare: async () => {
@@ -1954,6 +1959,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       await waitForBrowserText("POINTER_CLICK_READY", 30_000, "Web companion fixture did not reset")
     },
     ready: {
+      ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
       pointerClickExpectedCount: 1,
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
@@ -1981,17 +1987,17 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       20_000,
       "Web companion click did not reach the physical browser",
     ),
-    waitForLocalActionNotice: (baselineIds) => waitForTuiNoticeAfter(
+    waitForLocalActionNotice: (baselineIds, action) => waitForTuiNoticeAfter(
       localAutomation,
       "local",
-      noticePattern,
+      noticePattern(action),
       baselineIds,
       20_000,
     ),
-    waitForRemoteActionNotice: (baselineIds) => waitForTuiNoticeAfter(
+    waitForRemoteActionNotice: (baselineIds, action) => waitForTuiNoticeAfter(
       remoteAutomation,
       "remote",
-      noticePattern,
+      noticePattern(action),
       baselineIds,
       20_000,
     ),
@@ -2409,8 +2415,16 @@ async function startFixture() {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
     response.end(`<!doctype html><html><head><title>Room pointer drill</title><style>
       html,body{width:100%;height:100%;margin:0}body{display:grid;place-items:center;background:#ddd;font:32px sans-serif}
-    </style></head><body><main id="state">POINTER_CLICK_READY</main><script>
+      #web-keyboard{position:fixed;inset:0;width:100%;height:100%;box-sizing:border-box;border:0;background:transparent;color:transparent;caret-color:transparent;outline:none}
+      main{pointer-events:none;z-index:1}
+    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div>' : ''}</main><script>
       let clicks=0;document.addEventListener("click",()=>{clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+      ${webKeyboardText ? `
+      document.querySelector("#web-keyboard").addEventListener("input",(event)=>{
+        let hash=14695981039346656037n;
+        for(const byte of new TextEncoder().encode(event.target.value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}
+        document.querySelector("#web-keyboard-status").textContent=hash.toString(16).padStart(16,"0")===${JSON.stringify(fnv1a64(webKeyboardText))}?"WEB_KEYBOARD_TEXT_OK":"WEB_KEYBOARD_WAITING";
+      });` : ''}
     </script></body></html>`)
   })
   await new Promise((resolve, reject) => {

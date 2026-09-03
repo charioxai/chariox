@@ -25,7 +25,16 @@ export async function runRoomEnvironmentCompanion(input) {
     pollIntervalMs: 100,
   })
   validateCompanionResult(companion)
+  if (input.ready.keyboardText) {
+    assert.ok(companion.keyboard, "Web companion omitted required keyboard evidence")
+  }
   await input.waitForPhysicalEffect(companion.physicalEffect)
+  if (companion.keyboard) {
+    assert.equal(companion.keyboard.physicalEffect, "WEB_KEYBOARD_TEXT_OK")
+    assert.equal(typeof companion.keyboard.actionId, "string")
+    assert.ok(companion.keyboard.actionId.length > 0)
+    await input.waitForPhysicalEffect(companion.keyboard.physicalEffect)
+  }
 
   const history = unwrap(
     await input.client.send(input.requests.listRoomEnvironmentActionHistoryRequest(
@@ -40,12 +49,27 @@ export async function runRoomEnvironmentCompanion(input) {
   assert.equal(webAction.actor_id, companion.actorId)
   assert.equal(webAction.kind, "pointer_click")
   assert.equal(webAction.state, "completed")
+  const actions = [webAction]
+  if (companion.keyboard) {
+    const keyboard = history.find((action) => action.action_id === companion.keyboard.actionId)
+    assert.ok(keyboard, "Web keyboard action was absent from kernel history")
+    assert.equal(keyboard.kind, "keyboard_text")
+    assert.equal(keyboard.state, "completed")
+    assert.equal(keyboard.actor_id, companion.actorId)
+    assert.ok(keyboard.sequence > webAction.sequence, "typing must follow the focus click")
+    if (input.ready.keyboardText) {
+      assert.ok(!JSON.stringify(history).includes(input.ready.keyboardText), "history retained Web typed text")
+    }
+    actions.push(keyboard)
+  }
 
   await input.activityController.synchronize()
-  await Promise.all([
-    input.waitForLocalActionNotice(input.localNoticeIds),
-    input.waitForRemoteActionNotice(input.remoteNoticeIds),
-  ])
+  for (const action of actions) {
+    await Promise.all([
+      input.waitForLocalActionNotice(input.localNoticeIds, action),
+      input.waitForRemoteActionNotice(input.remoteNoticeIds, action),
+    ])
+  }
   const after = unwrap(
     await input.observerClient.send(input.requests.getRoomEnvironmentStateRequest(input.ready.sessionId)),
     "RoomEnvironmentState",
