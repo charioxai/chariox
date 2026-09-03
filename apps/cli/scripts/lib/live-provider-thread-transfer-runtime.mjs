@@ -64,6 +64,7 @@ export function parseArgs(argv) {
     skipRecallPrompt: false,
     workerState: "shared",
     sliceBuildImage: DEFAULT_SLICE_BUILD_IMAGE_POLICY,
+    allowProviderSandboxCompatibility: false,
     keepSliceOnFailure: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -91,6 +92,8 @@ export function parseArgs(argv) {
       options.workerState = argv[++index]
     } else if (arg === "--slice-build-image") {
       options.sliceBuildImage = argv[++index]
+    } else if (arg === "--allow-provider-sandbox-compatibility") {
+      options.allowProviderSandboxCompatibility = true
     } else if (arg === "--keep-slice-on-failure") {
       options.keepSliceOnFailure = true
     } else if (arg === "--cleanup-on-success") {
@@ -140,6 +143,7 @@ export function printHelp() {
     "  --skip-recall-prompt",
     "  --worker-state shared|isolated",
     `  --slice-build-image always|auto|never (default ${DEFAULT_SLICE_BUILD_IMAGE_POLICY})`,
+    "  --allow-provider-sandbox-compatibility",
     "  --keep-slice-on-failure",
     "  --cleanup-on-success (accepted for compatibility; disposable runtime is always cleaned)",
   ].join("\n"))
@@ -172,8 +176,13 @@ export function providerThreadSliceBuildEnv(env = process.env) {
   }
 }
 
-export function providerThreadSliceConfigLines({ sliceRoot, image, buildImage }) {
-  return [
+export function providerThreadSliceConfigLines({
+  sliceRoot,
+  image,
+  buildImage,
+  allowProviderSandboxCompatibility = false,
+}) {
+  const lines = [
     "[slices]",
     `root = ${JSON.stringify(sliceRoot)}`,
     "",
@@ -182,8 +191,11 @@ export function providerThreadSliceConfigLines({ sliceRoot, image, buildImage })
     `build_image = ${JSON.stringify(buildImage)}`,
     "memory_mb = 2048",
     `cpus = ${JSON.stringify("1.0")}`,
-    "allow_unconfined_seccomp = true",
   ]
+  if (allowProviderSandboxCompatibility) {
+    lines.push("allow_provider_sandbox_compatibility = true")
+  }
+  return lines
 }
 
 export function variant(response, name) {

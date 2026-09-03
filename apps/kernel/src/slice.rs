@@ -438,6 +438,7 @@ mod tests {
             build_image: SliceImageBuildPolicy::Never,
             extension_dockerfile: None,
             allow_unconfined_seccomp: false,
+            allow_provider_sandbox_compatibility: false,
             memory_mb: None,
             cpus: None,
             screen_width: 1280,

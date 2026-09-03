@@ -282,14 +282,14 @@ test("provider thread slice builds delegate bounded settings to the provisioner"
   )
 })
 
-test("provider thread slice drills enable the explicit nested-namespace compatibility boundary", () => {
-  const lines = providerThreadSliceConfigLines({
+test("provider thread slice drills keep the hardened default and require explicit sandbox compatibility", () => {
+  const hardenedLines = providerThreadSliceConfigLines({
     sliceRoot: "/tmp/provider-thread-slices",
     image: "chariox-slice-linux:test",
     buildImage: "never",
   })
 
-  assert.deepEqual(lines, [
+  assert.deepEqual(hardenedLines, [
     "[slices]",
     'root = "/tmp/provider-thread-slices"',
     "",
@@ -298,6 +298,15 @@ test("provider thread slice drills enable the explicit nested-namespace compatib
     'build_image = "never"',
     "memory_mb = 2048",
     'cpus = "1.0"',
-    "allow_unconfined_seccomp = true",
+  ])
+
+  const compatibilityLines = providerThreadSliceConfigLines({
+    sliceRoot: "/tmp/provider-thread-slices",
+    image: "chariox-slice-linux:test",
+    buildImage: "never",
+    allowProviderSandboxCompatibility: true,
+  })
+  assert.deepEqual(compatibilityLines.slice(-1), [
+    "allow_provider_sandbox_compatibility = true",
   ])
 })

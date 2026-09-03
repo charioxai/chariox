@@ -42,6 +42,7 @@ pub struct LocalDockerSliceOptions {
     pub extension_dockerfile: Option<PathBuf>,
     pub saved_home_archive: Option<PathBuf>,
     pub allow_unconfined_seccomp: bool,
+    pub allow_provider_sandbox_compatibility: bool,
     pub memory_mb: Option<u32>,
     pub cpus: Option<String>,
     pub screen_width: u32,
@@ -76,6 +77,9 @@ impl LocalDockerSliceOptions {
                 .map(expand_user_path_for_slice),
             saved_home_archive: None,
             allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
+            allow_provider_sandbox_compatibility: linux
+                .allow_provider_sandbox_compatibility
+                .unwrap_or(false),
             memory_mb: linux.memory_mb,
             cpus: linux.cpus.clone(),
             screen_width: linux.screen_width.unwrap_or(1280),
@@ -663,6 +667,14 @@ fn configure_local_docker_slice_command(
                 "0"
             },
         )
+        .env(
+            "CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY",
+            if options.allow_provider_sandbox_compatibility {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env("CHARIOX_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
         .env(
             "CHARIOX_SLICE_DAEMON_ALIAS",
@@ -696,13 +708,6 @@ fn configure_local_docker_slice_command(
             )
             .env("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", session_id)
             .env("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", &record.id);
-    }
-    if options.allow_unconfined_seccomp
-        || std::env::var("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE")
-            .ok()
-            .is_some_and(|value| value == "1")
-    {
-        command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
     }
     if let Some(memory_mb) = options.memory_mb {
         command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));

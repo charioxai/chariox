@@ -1,6 +1,28 @@
 use super::*;
 use crate::slice::{CreateSliceInput, SliceOperationStatus, SliceStore};
 
+struct ScopedEnvVar {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ScopedEnvVar {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
 fn test_record() -> SliceRecord {
     let store = SliceStore::default();
     store
@@ -34,6 +56,7 @@ fn test_options() -> LocalDockerSliceOptions {
         build_image: SliceImageBuildPolicy::Never,
         extension_dockerfile: None,
         allow_unconfined_seccomp: false,
+        allow_provider_sandbox_compatibility: false,
         memory_mb: None,
         cpus: None,
         screen_width: 1280,
@@ -248,21 +271,16 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
 }
 
 #[test]
-fn local_docker_slice_compatibility_mode_probes_the_named_apparmor_boundary() {
+fn local_docker_provider_sandbox_compatibility_selects_named_apparmor_boundary() {
     let _guard = crate::env_lock::lock();
-    let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
-    std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");
+    let _profile = ScopedEnvVar::set("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");
     let record = test_record();
     let mut options = test_options();
-    options.allow_unconfined_seccomp = true;
+    options.allow_provider_sandbox_compatibility = true;
     let mut command = Command::new("slice-provisioner");
 
     configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
 
-    match previous_profile {
-        Some(value) => std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", value),
-        None => std::env::remove_var("CHARIOX_SLICE_APPARMOR_PROFILE"),
-    }
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
         .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
@@ -272,7 +290,7 @@ fn local_docker_slice_compatibility_mode_probes_the_named_apparmor_boundary() {
         Some(&"chariox-slice-provider")
     );
     assert_eq!(
-        envs.get("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE"),
+        envs.get("CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY"),
         Some(&"1")
     );
 }
