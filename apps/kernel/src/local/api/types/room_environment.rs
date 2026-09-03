@@ -136,6 +136,12 @@ pub struct CancelRoomEnvironmentActionRequest {
     pub action_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadRoomEnvironmentClipboardRequest {
+    pub session_id: String,
+    pub runtime_generation: u64,
+}
+
 pub type RoomEnvironmentPointerButton = crate::session::EnvironmentPointerButton;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +167,36 @@ impl Drop for RoomEnvironmentKeyboardInput {
 impl std::fmt::Debug for RoomEnvironmentKeyboardInput {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("[redacted computer keyboard input]")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoomEnvironmentClipboardText(String);
+
+impl RoomEnvironmentClipboardText {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for RoomEnvironmentClipboardText {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RoomEnvironmentClipboardText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted computer clipboard text]")
     }
 }
 
@@ -190,6 +226,9 @@ pub enum RoomEnvironmentHumanAction {
     KeyboardKey {
         key: RoomEnvironmentKeyboardInput,
         repeat: u16,
+    },
+    ClipboardWrite {
+        text: RoomEnvironmentClipboardText,
     },
     PointerClick {
         x: u32,

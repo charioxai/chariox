@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 302 adds complete human Computer mouse and keyboard input.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 302;
+/// Version 303 adds kernel-owned Computer clipboard write and read contracts.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 303;

@@ -9,6 +9,7 @@ pub(crate) const ROOM_COMPUTER_SCROLL_MAX_STEPS: u16 = 120;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES: usize = 64 * 1024;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES: usize = 128;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT: u16 = 32;
+pub(crate) const ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +79,40 @@ impl std::fmt::Debug for RoomComputerKeyboardInput {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RoomComputerClipboardText(String);
+
+impl RoomComputerClipboardText {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RoomComputerClipboardText {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RoomComputerClipboardText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted computer clipboard text]")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
@@ -104,6 +139,9 @@ pub(crate) enum RoomComputerInputAction {
     KeyboardKey {
         input: RoomComputerKeyboardInput,
         repeat: u16,
+    },
+    ClipboardWrite {
+        text: RoomComputerClipboardText,
     },
     PointerClick {
         x: u32,
@@ -193,6 +231,10 @@ pub(crate) enum RoomBrowserControllerCommand {
         desktop_pixel_height: u32,
         action: RoomComputerInputAction,
     },
+    ComputerClipboardRead {
+        actor_id: String,
+        runtime_generation: u64,
+    },
     Release,
 }
 
@@ -213,6 +255,9 @@ pub(crate) enum RoomBrowserControllerResult {
     },
     ComputerInputApplied {
         action_id: String,
+    },
+    ComputerClipboard {
+        content: RoomComputerClipboardText,
     },
     Snapshot {
         snapshot: Option<

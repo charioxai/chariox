@@ -4,7 +4,7 @@ use crate::local::{
     AttachToSessionRequest, CancelRoomEnvironmentActionRequest, CycleAgentFocusRequest,
     DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
     FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
-    ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
+    ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
     SubmitRoomEnvironmentActionRequest, UpdateProjectWorkspacesRequest,
@@ -373,6 +373,27 @@ impl SessionRuntimeStore {
                     environment,
                 },
             );
+        (result, None)
+    }
+
+    pub(super) async fn read_room_environment_clipboard(
+        &self,
+        request: ReadRoomEnvironmentClipboardRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .read_human_room_environment_clipboard(request, actor)
+            .await
+            .map(|content| LocalDaemonResponse::RoomEnvironmentClipboardRead { content });
         (result, None)
     }
 

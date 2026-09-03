@@ -69,8 +69,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 38 adds authenticated Room Computer status, OCR, and text lookup.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 38;
+/// Version 39 adds authenticated Room Computer clipboard commands and results.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 39;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

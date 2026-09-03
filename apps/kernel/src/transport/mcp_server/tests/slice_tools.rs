@@ -24,6 +24,7 @@ impl ControllerMcpFixture {
             "CHARIOX_HOME",
             "CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT",
             "CHARIOX_CONTROLLER_MCP_TEST_SECRET",
+            "CHARIOX_TEST_CLIPBOARD_LOG",
         ]
         .into_iter()
         .map(|name| (name, std::env::var_os(name)))
@@ -135,6 +136,17 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     assert!(tools.iter().any(|tool| tool["name"] == "slice_mouse"));
     assert!(tools
         .iter()
+        .any(|tool| tool["name"] == "chariox.slice_clipboard_write"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "slice_clipboard_write"));
+    assert!(!tools.iter().any(|tool| {
+        tool["name"]
+            .as_str()
+            .is_some_and(|name| name.contains("clipboard_read"))
+    }));
+    assert!(tools
+        .iter()
         .any(|tool| tool["name"] == "chariox.slice_browser_status"));
     assert!(tools
         .iter()
@@ -191,9 +203,10 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
     ));
     std::fs::create_dir_all(&root).expect("test root should be created");
     let tool = root.join("slice-screen.sh");
+    let clipboard_log = root.join("clipboard.txt");
     std::fs::write(
         &tool,
-        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  screenshot) printf '\\211PNG\\r\\n\\032\\nfake' > \"$2\" ;;\n  find-text) printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":10,\"top\":20,\"width\":85,\"height\":20,\"center_x\":52,\"center_y\":30}' '{\"text\":\"Shared Computer\",\"left\":200,\"top\":400,\"width\":170,\"height\":40,\"center_x\":285,\"center_y\":420}' ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  screenshot) printf '\\211PNG\\r\\n\\032\\nfake' > \"$2\" ;;\n  find-text) printf '%s\\n' '{\"text\":\"Shared Computer\",\"left\":10,\"top\":20,\"width\":85,\"height\":20,\"center_x\":52,\"center_y\":30}' '{\"text\":\"Shared Computer\",\"left\":200,\"top\":400,\"width\":170,\"height\":40,\"center_x\":285,\"center_y\":420}' ;;\n  computer-clipboard-write-stdin) cat > \"$CHARIOX_TEST_CLIPBOARD_LOG\" ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
     )
     .expect("fake screen tool should be written");
     let mut permissions = std::fs::metadata(&tool)
@@ -202,6 +215,7 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
     permissions.set_mode(0o755);
     std::fs::set_permissions(&tool, permissions).expect("fake tool should be executable");
     std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &tool);
+    std::env::set_var("CHARIOX_TEST_CLIPBOARD_LOG", &clipboard_log);
 
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
@@ -371,6 +385,40 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
     assert_eq!(structured["matches"][1]["left"], 200);
     assert_eq!(structured["matches"][1]["center_x"], 285);
 
+    let clipboard_text = "Clipboard Grüße 世界\nsecond line\n";
+    let clipboard_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "slice_clipboard_write",
+                "arguments": {"text": clipboard_text}
+            }
+        }),
+    )
+    .await
+    .expect("local clipboard write should return an MCP response");
+    let clipboard_body = clipboard_response
+        .into_body()
+        .collect()
+        .await
+        .expect("local clipboard response body should collect")
+        .to_bytes();
+    let clipboard: Value =
+        serde_json::from_slice(&clipboard_body).expect("local clipboard response json");
+    assert_eq!(clipboard["result"]["isError"], false, "{clipboard:#}");
+    assert_eq!(
+        std::fs::read_to_string(&clipboard_log).expect("clipboard helper input"),
+        clipboard_text
+    );
+    assert!(
+        !clipboard.to_string().contains(clipboard_text),
+        "clipboard contents must not be reflected in the MCP response"
+    );
+
     for (id, name, arguments) in [
         (
             2,
@@ -417,6 +465,7 @@ async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel_in
             .is_some_and(|stdout| stdout.contains("action_kind")));
     }
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_TEST_CLIPBOARD_LOG");
     let _ = std::fs::remove_dir_all(root);
 }
 

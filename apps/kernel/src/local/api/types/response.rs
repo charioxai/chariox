@@ -49,6 +49,7 @@ pub enum LocalDaemonResponse {
     RoomEnvironmentTakeoverUpdated { outcome: crate::session::TakeoverOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentInputReleased { environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentActionSubmitted { action_id: String, environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentClipboardRead { content: RoomEnvironmentClipboardText, },
     RoomEnvironmentActionCancellationUpdated { outcome: crate::session::ActionCancellationOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     MetaagentTaskUpdated {
         session: RuntimeSession,

@@ -546,8 +546,10 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     let root = test_root("slice-computer-input");
     let bin = root.join("bin");
     let home = root.join("home");
+    let temp = root.join("tmp");
     std::fs::create_dir_all(&bin).expect("stub bin should be created");
     std::fs::create_dir_all(&home).expect("stub home should be created");
+    std::fs::create_dir_all(&temp).expect("test temp directory should be created");
     let write_executable = |name: &str, contents: &str| {
         let path = bin.join(name);
         std::fs::write(&path, contents).expect("stub should be written");
@@ -565,8 +567,14 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
         "xdotool",
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\ncase \"$*\" in *'--file -'*) cat >> \"$CHARIOX_XDOTOOL_STDIN_LOG\" ;; esac\n",
     );
+    write_executable(
+        "xclip",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XCLIP_ARGS_LOG\"\ncase \"$*\" in\n  *'-in'*)\n    cat > \"$CHARIOX_XCLIP_LOG\"\n    [ \"${CHARIOX_XCLIP_FAIL_WRITE:-0}\" != 1 ] || exit 17\n    ;;\n  *'-out'*) cat \"$CHARIOX_XCLIP_LOG\" 2>/dev/null || true ;;\nesac\n",
+    );
     let xdotool_log = root.join("xdotool.log");
     let xdotool_stdin_log = root.join("xdotool-stdin.log");
+    let xclip_log = root.join("xclip.log");
+    let xclip_args_log = root.join("xclip-args.log");
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -581,9 +589,12 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             .args(args)
             .env("PATH", &path)
             .env("HOME", &home)
+            .env("TMPDIR", &temp)
             .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
             .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
-            .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log);
+            .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log)
+            .env("CHARIOX_XCLIP_LOG", &xclip_log)
+            .env("CHARIOX_XCLIP_ARGS_LOG", &xclip_args_log);
         let output = if let Some(input) = stdin {
             let mut child = command
                 .stdin(Stdio::piped())
@@ -609,6 +620,7 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+        output
     };
 
     run(&["move", "20", "30"], None);
@@ -620,6 +632,70 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     run(&["pointer-scroll", "640", "400", "-3", "5"], None);
     run(&["computer-type-stdin"], Some("Grüße 世界"));
     run(&["computer-key-stdin", "3"], Some("ctrl+shift+p"));
+    let clipboard_text = "Clipboard Grüße 世界\nsecond line\n";
+    run(&["computer-clipboard-write-stdin"], Some(clipboard_text));
+    for _ in 0..100 {
+        if std::fs::read(&xclip_log).is_ok_and(|bytes| bytes == clipboard_text.as_bytes()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&xclip_log).expect("clipboard write should reach xclip stdin"),
+        clipboard_text
+    );
+    let clipboard_read = run(&["computer-clipboard-read"], None);
+    assert_eq!(clipboard_read.stdout, clipboard_text.as_bytes());
+    let clipboard_read_again = run(&["computer-clipboard-read"], None);
+    assert_eq!(
+        clipboard_read_again.stdout,
+        clipboard_text.as_bytes(),
+        "ordinary clipboard content must remain available after one read"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&xclip_args_log).expect("xclip calls should be logged"),
+        concat!(
+            "-selection clipboard -in\n",
+            "-selection clipboard -out\n",
+            "-selection clipboard -out\n",
+        )
+    );
+    let mut failed_clipboard_command = Command::new("bash");
+    failed_clipboard_command
+        .arg(&script)
+        .arg("computer-clipboard-write-stdin")
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .env("TMPDIR", &temp)
+        .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
+        .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
+        .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log)
+        .env("CHARIOX_XCLIP_LOG", &xclip_log)
+        .env("CHARIOX_XCLIP_ARGS_LOG", &xclip_args_log)
+        .env("CHARIOX_XCLIP_FAIL_WRITE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut failed_clipboard = failed_clipboard_command
+        .spawn()
+        .expect("failing clipboard helper should start");
+    failed_clipboard
+        .stdin
+        .take()
+        .expect("failing clipboard stdin should be piped")
+        .write_all(b"temporary clipboard content")
+        .expect("failing clipboard input should be written");
+    let failed_clipboard = failed_clipboard
+        .wait_with_output()
+        .expect("failing clipboard helper should finish");
+    assert_eq!(failed_clipboard.status.code(), Some(17));
+    assert_eq!(
+        std::fs::read_dir(&temp)
+            .expect("test temp directory")
+            .count(),
+        0,
+        "clipboard helper must remove its temporary stdin file"
+    );
     run(&["computer-input-reset"], None);
 
     assert_eq!(

@@ -1060,6 +1060,156 @@ fn room_environment_keyboard_input_executes_without_persisting_input() {
 }
 
 #[test]
+fn room_environment_clipboard_write_and_read_use_kernel_authority_without_persisting_content() {
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-human-clipboard-test-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("slice-screen.sh");
+    let clipboard = root.join("clipboard.txt");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  computer-clipboard-write-stdin) cat > \"$CHARIOX_CLIPBOARD_TEST_FILE\" ;;\n  computer-clipboard-read) cat \"$CHARIOX_CLIPBOARD_TEST_FILE\" ;;\n  *) exit 2 ;;\nesac\n",
+    )
+    .expect("clipboard screen helper should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("clipboard screen helper should be executable");
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    std::env::set_var("CHARIOX_CLIPBOARD_TEST_FILE", &clipboard);
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS", "5000");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-clipboard",
+                "worktree-environment-clipboard",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+    });
+    let environment = harness.with_app(|app| {
+        app.session_state_store()
+            .room_environment_snapshot(session.id())
+            .expect("Room Environment should exist")
+    });
+    let read_without_takeover = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::ReadRoomEnvironmentClipboard(ReadRoomEnvironmentClipboardRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+            }),
+        )
+        .expect_err("clipboard read should require desktop input ownership");
+    assert!(read_without_takeover
+        .to_string()
+        .contains("environment_input_takeover_required"));
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                RequestRoomEnvironmentInputTakeoverRequest {
+                    session_id: session.id().to_string(),
+                    target: crate::session::InputTarget::Desktop,
+                },
+            ),
+        )
+        .expect("owner should take desktop input");
+
+    let content = "Clipboard Grüße 世界";
+    let clipboard_text = RoomEnvironmentClipboardText::new(content.to_string());
+    assert!(!format!("{clipboard_text:?}").contains(content));
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "clipboard-write-1".to_string(),
+                action: RoomEnvironmentHumanAction::ClipboardWrite {
+                    text: clipboard_text,
+                },
+            }),
+        )
+        .expect("human clipboard write should execute");
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let action = environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .expect("clipboard Action should be recorded");
+    assert_eq!(action.kind, "clipboard_write");
+    assert_eq!(
+        action.arguments,
+        Some(crate::session::EnvironmentActionArguments::ClipboardWrite {
+            utf8_byte_count: 24,
+            character_count: 18,
+        })
+    );
+    assert!(!serde_json::to_string(&environment)
+        .expect("environment should serialize")
+        .contains(content));
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::ReadRoomEnvironmentClipboard(ReadRoomEnvironmentClipboardRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+            }),
+        )
+        .expect("desktop input owner should read the clipboard");
+    let LocalDaemonResponse::RoomEnvironmentClipboardRead { content: returned } = response else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert_eq!(returned.as_str(), content);
+    assert!(!format!("{returned:?}").contains(content));
+
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_CLIPBOARD_TEST_FILE");
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+    std::fs::remove_dir_all(&root).expect("test root should be removed");
+}
+
+#[test]
 fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover() {
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(

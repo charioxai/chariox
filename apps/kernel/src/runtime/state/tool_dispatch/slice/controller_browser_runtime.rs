@@ -63,6 +63,16 @@ impl KernelRuntimeState {
                 self.controller_computer_keyboard_tool_result(session_id, slice_id, agent_id, args)
                     .await
             }
+            SLICE_CLIPBOARD_WRITE_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceClipboardWriteArgs>(
+                    arguments,
+                    "runtime_tool_slice_clipboard_write",
+                )?;
+                self.controller_computer_clipboard_write_tool_result(
+                    session_id, slice_id, agent_id, args,
+                )
+                .await
+            }
             SLICE_OPEN_URL_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceOpenUrlArgs>(
                     arguments,

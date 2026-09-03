@@ -162,6 +162,18 @@ export function releaseRoomEnvironmentInputRequest(
   }
 }
 
+export function readRoomEnvironmentClipboardRequest(
+  sessionId: string,
+  runtimeGeneration: number,
+) {
+  return {
+    ReadRoomEnvironmentClipboard: {
+      session_id: sessionId,
+      runtime_generation: runtimeGeneration,
+    },
+  }
+}
+
 export function cancelRoomEnvironmentActionRequest(sessionId: string, actionId: string) {
   return {
     CancelRoomEnvironmentAction: {
@@ -180,6 +192,10 @@ export type RoomEnvironmentHumanAction =
       readonly kind: "keyboard_key"
       readonly key: string
       readonly repeat: number
+    }
+  | {
+      readonly kind: "clipboard_write"
+      readonly text: string
     }
   | {
       readonly kind: "pointer_move"

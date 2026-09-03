@@ -2,9 +2,9 @@ use crate::session::{
     CanonicalViewport, EnvironmentActionArguments, EnvironmentError, EnvironmentPointerButton,
 };
 use crate::transport::room_browser_controller::{
-    RoomComputerInputAction, RoomComputerPointerButton, ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
-    ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES, ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES,
-    ROOM_COMPUTER_SCROLL_MAX_STEPS,
+    RoomComputerInputAction, RoomComputerPointerButton, ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES,
+    ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT, ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES,
+    ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES, ROOM_COMPUTER_SCROLL_MAX_STEPS,
 };
 
 pub(crate) struct ComputerInputActionMetadata {
@@ -67,6 +67,13 @@ pub(crate) fn computer_input_action_metadata(
         RoomComputerInputAction::KeyboardKey { repeat, .. } => (
             "keyboard_key",
             Some(EnvironmentActionArguments::KeyboardKey { repeat: *repeat }),
+        ),
+        RoomComputerInputAction::ClipboardWrite { text } => (
+            "clipboard_write",
+            Some(EnvironmentActionArguments::ClipboardWrite {
+                utf8_byte_count: text.as_str().len() as u32,
+                character_count: text.as_str().chars().count() as u32,
+            }),
         ),
         RoomComputerInputAction::PointerClick {
             x,
@@ -162,6 +169,17 @@ pub(crate) fn validate_computer_input_action(
                 Err(EnvironmentError::InvalidKeyboardRepeat {
                     repeat: *repeat,
                     max_repeat: ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        RoomComputerInputAction::ClipboardWrite { text } => {
+            let utf8_byte_count = text.as_str().len();
+            if utf8_byte_count > ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES {
+                Err(EnvironmentError::InvalidClipboardText {
+                    utf8_byte_count,
+                    max_utf8_bytes: ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES,
                 })
             } else {
                 Ok(())

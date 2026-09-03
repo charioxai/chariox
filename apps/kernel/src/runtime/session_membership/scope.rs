@@ -185,6 +185,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CancelRoomEnvironmentAction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

@@ -318,6 +318,10 @@ pub enum EnvironmentError {
         repeat: u16,
         max_repeat: u16,
     },
+    InvalidClipboardText {
+        utf8_byte_count: usize,
+        max_utf8_bytes: usize,
+    },
     InvalidIdempotencyKey,
     InvalidEventCapacity,
     IdempotencyConflict {
@@ -369,6 +373,7 @@ impl EnvironmentError {
             Self::InvalidKeyboardText { .. } => "environment_invalid_keyboard_text",
             Self::InvalidKeyboardKey => "environment_invalid_keyboard_key",
             Self::InvalidKeyboardRepeat { .. } => "environment_invalid_keyboard_repeat",
+            Self::InvalidClipboardText { .. } => "environment_invalid_clipboard_text",
             Self::InvalidIdempotencyKey => "environment_invalid_idempotency_key",
             Self::InvalidEventCapacity => "environment_invalid_event_capacity",
             Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",

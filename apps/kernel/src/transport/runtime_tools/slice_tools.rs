@@ -90,6 +90,18 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: SLICE_CLIPBOARD_WRITE_TOOL.to_string(),
+            description: "Write text to the shared Chariox Computer clipboard through the Room action authority. This is write-only: agents cannot read clipboard contents. The text is sent through stdin and is not retained in Room history.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {"type": "string", "maxLength": 262144}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: SLICE_OPEN_URL_TOOL.to_string(),
             description: "Open a URL in the Chariox slice browser.".to_string(),
             input_schema: serde_json::json!({
@@ -295,6 +307,7 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_FIND_TEXT_TOOL => SLICE_FIND_TEXT_TOOL_ALIAS,
         SLICE_MOUSE_TOOL => SLICE_MOUSE_TOOL_ALIAS,
         SLICE_KEYBOARD_TOOL => SLICE_KEYBOARD_TOOL_ALIAS,
+        SLICE_CLIPBOARD_WRITE_TOOL => SLICE_CLIPBOARD_WRITE_TOOL_ALIAS,
         SLICE_OPEN_URL_TOOL => SLICE_OPEN_URL_TOOL_ALIAS,
         SLICE_BROWSER_STATUS_TOOL => SLICE_BROWSER_STATUS_TOOL_ALIAS,
         SLICE_BROWSER_FIND_TOOL => SLICE_BROWSER_FIND_TOOL_ALIAS,
@@ -354,6 +367,11 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_slice_keyboard"
         | "mcp__chariox__slice_keyboard"
         | "mcp__chariox__chariox_slice_keyboard" => Some(SLICE_KEYBOARD_TOOL),
+        SLICE_CLIPBOARD_WRITE_TOOL
+        | SLICE_CLIPBOARD_WRITE_TOOL_ALIAS
+        | "chariox_slice_clipboard_write"
+        | "mcp__chariox__slice_clipboard_write"
+        | "mcp__chariox__chariox_slice_clipboard_write" => Some(SLICE_CLIPBOARD_WRITE_TOOL),
         SLICE_OPEN_URL_TOOL
         | SLICE_OPEN_URL_TOOL_ALIAS
         | "chariox_slice_open_url"

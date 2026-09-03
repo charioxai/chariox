@@ -81,6 +81,9 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

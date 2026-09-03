@@ -8,13 +8,13 @@ use crate::transport::relay_peer::{
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 use crate::transport::room_browser_controller::{
-    RoomComputerInputAction, RoomComputerKeyboardInput, RoomComputerPointerButton,
-    RoomComputerSecretInput,
+    RoomComputerClipboardText, RoomComputerInputAction, RoomComputerKeyboardInput,
+    RoomComputerPointerButton, RoomComputerSecretInput,
 };
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 38);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 39);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -56,7 +56,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 38);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 39);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -148,8 +148,8 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 38);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 303);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 39);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -217,6 +217,37 @@ fn room_controller_protocol_shapes_are_versioned() {
                 "desktop_pixel_width":1280,
                 "desktop_pixel_height":800,
                 "action":{"kind":"pointer_click","x":320,"y":180,"button":"right","click_count":2}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerInput {
+                action_id: "action-clipboard".into(),
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+                viewport_revision: 9,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::ClipboardWrite {
+                    text: RoomComputerClipboardText::new(
+                        "sensitive-clipboard-fixture".to_string(),
+                    ),
+                },
+            },
+            serde_json::json!({
+                "kind":"computer_input","action_id":"action-clipboard",
+                "actor_id":"user:owner-1","runtime_generation":4,"viewport_revision":9,
+                "desktop_pixel_width":1280,"desktop_pixel_height":800,
+                "action":{"kind":"clipboard_write","text":"sensitive-clipboard-fixture"}
+            }),
+        ),
+        (
+            RoomBrowserControllerCommand::ComputerClipboardRead {
+                actor_id: "user:owner-1".into(),
+                runtime_generation: 4,
+            },
+            serde_json::json!({
+                "kind":"computer_clipboard_read","actor_id":"user:owner-1",
+                "runtime_generation":4
             }),
         ),
         (
@@ -476,6 +507,10 @@ fn room_controller_protocol_shapes_are_versioned() {
             !format!("{request:?}").contains("sensitive-keyboard"),
             "relay diagnostics must not print keyboard input"
         );
+        assert!(
+            !format!("{request:?}").contains("sensitive-clipboard"),
+            "relay diagnostics must not print clipboard input"
+        );
         assert_eq!(serde_json::to_value(&request).unwrap(), wire);
         assert_eq!(
             serde_json::from_value::<RelayPeerRequest>(wire).unwrap(),
@@ -496,6 +531,7 @@ fn room_controller_protocol_shapes_are_versioned() {
             "action_kind":"click","dialog_opened":false,"attempts":2,"elapsed_ms":50
         }}),
         serde_json::json!({"kind":"computer_input_applied","action_id":"action-7"}),
+        serde_json::json!({"kind":"computer_clipboard","content":"sensitive-clipboard-result"}),
         serde_json::json!({"kind":"snapshot","snapshot":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "snapshot_revision":2,"accessibility_nodes":[],"dom_documents":[{
@@ -559,6 +595,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         assert!(
             !format!("{response:?}").contains("sensitive-navigation-result"),
             "relay diagnostics must not print navigation result URLs"
+        );
+        assert!(
+            !format!("{response:?}").contains("sensitive-clipboard-result"),
+            "relay diagnostics must not print clipboard contents"
         );
         assert_eq!(serde_json::to_value(response).unwrap(), wire);
     }

@@ -28,9 +28,9 @@ mod skill_package_response;
 mod slice;
 pub(super) use slice::{
     capture_room_environment_screenshot, execute_room_computer_observation,
-    reset_room_computer_input, run_room_keyboard_key, run_room_keyboard_text,
-    run_room_pointer_click, run_room_pointer_drag, run_room_pointer_move, run_room_pointer_scroll,
-    run_room_secret_text_input,
+    reset_room_computer_input, run_room_clipboard_read, run_room_clipboard_write,
+    run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
+    run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
@@ -470,6 +470,7 @@ impl KernelRuntimeState {
                     | SLICE_SCREENSHOT_TOOL
                     | SLICE_MOUSE_TOOL
                     | SLICE_KEYBOARD_TOOL
+                    | SLICE_CLIPBOARD_WRITE_TOOL
                     | SLICE_OPEN_URL_TOOL
                     | SLICE_BROWSER_CLICK_TOOL
                     | SLICE_BROWSER_FILL_TOOL
@@ -534,6 +535,7 @@ fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
                 | SLICE_SCREENSHOT_TOOL
                 | SLICE_MOUSE_TOOL
                 | SLICE_KEYBOARD_TOOL
+                | SLICE_CLIPBOARD_WRITE_TOOL
                 | SLICE_OPEN_URL_TOOL
                 | SLICE_BROWSER_CLICK_TOOL
                 | SLICE_BROWSER_FILL_TOOL
@@ -628,6 +630,7 @@ mod tests {
             SLICE_FIND_TEXT_TOOL,
             SLICE_MOUSE_TOOL,
             SLICE_KEYBOARD_TOOL,
+            SLICE_CLIPBOARD_WRITE_TOOL,
             SLICE_BROWSER_STATUS_TOOL,
             SLICE_OPEN_URL_TOOL,
             SLICE_BROWSER_CLICK_TOOL,
