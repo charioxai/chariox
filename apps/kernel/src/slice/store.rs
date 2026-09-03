@@ -5,9 +5,9 @@ use crate::error::DaemonError;
 use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 use super::model::{
-    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceDevelopmentPublication,
-    SliceDisplayEndpoint, SliceOperationStatus, SliceRecord, SliceRelayEndpoint,
-    SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord,
+    SliceDevelopmentPublication, SliceDisplayEndpoint, SliceOperationStatus, SliceRecord,
+    SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
@@ -68,6 +68,7 @@ struct SliceStoreState {
     records: BTreeMap<String, SliceRecord>,
     saved_states: BTreeMap<String, SliceSavedStateRecord>,
     backups: BTreeMap<String, SliceBackupRecord>,
+    pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
     active_operations: BTreeMap<String, String>,
 }
 
@@ -252,6 +253,16 @@ impl SliceStore {
             .collect()
     }
 
+    pub fn list_pending_backup_restores(&self) -> Vec<SliceBackupRestoreTransactionRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_backup_restores
+            .values()
+            .cloned()
+            .collect()
+    }
+
     pub fn resolve_backup_for_slice(
         &self,
         slice_ref: &str,
@@ -312,6 +323,123 @@ impl SliceStore {
         for backup in backups {
             state.backups.insert(backup.id.clone(), backup);
         }
+    }
+
+    pub(crate) fn restore_pending_backup_restore_records(
+        &self,
+        records: Vec<SliceBackupRestoreTransactionRecord>,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending_backup_restores.clear();
+        for record in records {
+            state
+                .pending_backup_restores
+                .insert(record.id.clone(), record);
+        }
+    }
+
+    pub(crate) fn replay_backup_restore_started(
+        &self,
+        transaction: SliceBackupRestoreTransactionRecord,
+    ) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_backup_restores
+            .insert(transaction.id.clone(), transaction);
+    }
+
+    pub(crate) fn begin_backup_restore_transactionally(
+        &self,
+        transaction: SliceBackupRestoreTransactionRecord,
+        persist: impl FnOnce(&SliceBackupRestoreTransactionRecord) -> Result<(), DaemonError>,
+    ) -> Result<SliceBackupRestoreTransactionRecord, DaemonError> {
+        persist(&transaction)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .pending_backup_restores
+            .insert(transaction.id.clone(), transaction.clone());
+        Ok(transaction)
+    }
+
+    pub(crate) fn resolve_backup_restore_transactionally(
+        &self,
+        transaction_id: &str,
+        slice_ref: &str,
+        saved_state: SliceSavedStateRecord,
+        now_ms: u64,
+        operation_status: SliceOperationStatus,
+        last_error: Option<String>,
+        persist: impl FnOnce(&SliceRecord, &SliceSavedStateRecord) -> Result<(), DaemonError>,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let transaction = state
+            .pending_backup_restores
+            .get(transaction_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!("unknown pending slice backup restore `{transaction_id}`"),
+            })?;
+        if transaction.source_slice_id != resolved.id {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!("pending restore `{transaction_id}` belongs to another slice"),
+            });
+        }
+        let mut record = state.records.get(&resolved.id).cloned().ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!("unknown slice `{slice_ref}`"),
+            }
+        })?;
+        drop(state);
+        record.saved_state_ref = Some(saved_state.id.clone());
+        record.saved_state_status = Some(SliceSavedStateStatus::Saved);
+        record.saved_state_updated_at_ms = Some(now_ms);
+        record.last_operation = Some("backup.restore".to_string());
+        record.last_operation_status = Some(operation_status);
+        record.last_error = last_error;
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        persist(&record, &saved_state)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state);
+        state.records.insert(record.id.clone(), record.clone());
+        state.pending_backup_restores.remove(transaction_id);
+        Ok(record)
+    }
+
+    pub(crate) fn replay_backup_restore_resolution(
+        &self,
+        transaction_id: &str,
+        slice: SliceRecord,
+        saved_state: SliceSavedStateRecord,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state);
+        state.records.insert(slice.id.clone(), slice);
+        state.pending_backup_restores.remove(transaction_id);
     }
 
     pub(crate) fn upsert_saved_state_transactionally(

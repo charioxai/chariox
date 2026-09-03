@@ -282,6 +282,17 @@ pub struct SliceBackupRecord {
     pub image_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBackupRestoreTransactionRecord {
+    pub id: String,
+    pub source_slice_id: String,
+    pub target_backup: SliceBackupRecord,
+    pub rollback_backup: SliceBackupRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_saved_state: Option<SliceSavedStateRecord>,
+    pub started_at_ms: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateSliceInput {
     pub name: String,

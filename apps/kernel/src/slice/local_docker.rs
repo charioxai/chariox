@@ -28,13 +28,16 @@ mod tests;
 
 use broker::docker_command;
 use provider_inputs::home_provider_credential_sources;
-pub(crate) use state::remove_local_docker_slice_backup_best_effort;
+pub(crate) use state::{
+    cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
+    remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
+    SliceBackupRestoreResolution,
+};
 pub use state::{
     create_local_docker_slice_backup, create_local_docker_slice_backup_live,
     default_local_docker_saved_state, remove_local_docker_saved_state,
-    restore_local_docker_slice_backup, save_local_docker_slice_state,
-    save_local_docker_slice_state_live, set_local_docker_default_saved_state,
-    validate_local_docker_slice_backup,
+    save_local_docker_slice_state, save_local_docker_slice_state_live,
+    set_local_docker_default_saved_state, validate_local_docker_slice_backup,
 };
 
 pub fn initialize_managed_docker_broker() {

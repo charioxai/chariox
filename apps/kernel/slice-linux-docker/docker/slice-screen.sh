@@ -264,6 +264,7 @@ start_desktop() {
     --disable-sync \
     --disable-dev-shm-usage \
     --disable-gpu \
+    --restore-last-session \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
     "${chrome_secure_context_args[@]}" \

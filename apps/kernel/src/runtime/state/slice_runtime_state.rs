@@ -968,6 +968,93 @@ impl KernelRuntimeState {
             })
     }
 
+    pub(crate) fn begin_slice_backup_restore(
+        &self,
+        transaction: crate::slice::SliceBackupRestoreTransactionRecord,
+    ) -> Result<crate::slice::SliceBackupRestoreTransactionRecord, DaemonError> {
+        let slice = self.resolve_slice(&transaction.source_slice_id)?;
+        let transaction = self
+            .owned
+            .durable_state_store
+            .with_projection_transition_lock(|| {
+                self.owned.slice_store.begin_backup_restore_transactionally(
+                    transaction,
+                    |transaction| {
+                        self.owned
+                            .durable_state_store
+                            .append_event(
+                                "slice.backup.restore.started",
+                                Some(transaction.id.clone()),
+                                serde_json::json!({
+                                    "slice": &slice,
+                                    "transaction": transaction,
+                                }),
+                            )
+                            .map(|_| ())
+                    },
+                )
+            })?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(transaction)
+    }
+
+    pub(crate) fn resolve_slice_backup_restore(
+        &self,
+        transaction: &crate::slice::SliceBackupRestoreTransactionRecord,
+        state: crate::slice::SliceSavedStateRecord,
+        resolution: crate::slice::SliceBackupRestoreResolution,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let event_kind = match resolution {
+            crate::slice::SliceBackupRestoreResolution::Restored => {
+                "slice.backup.restore.committed"
+            }
+            crate::slice::SliceBackupRestoreResolution::RolledBack => {
+                "slice.backup.restore.rolled_back"
+            }
+        };
+        let slice = self
+            .owned
+            .durable_state_store
+            .with_projection_transition_lock(|| {
+                self.owned
+                    .slice_store
+                    .resolve_backup_restore_transactionally(
+                        &transaction.id,
+                        &transaction.source_slice_id,
+                        state,
+                        crate::session::unix_epoch_ms(),
+                        match resolution {
+                            crate::slice::SliceBackupRestoreResolution::Restored => {
+                                crate::slice::SliceOperationStatus::Completed
+                            }
+                            crate::slice::SliceBackupRestoreResolution::RolledBack => {
+                                crate::slice::SliceOperationStatus::Failed
+                            }
+                        },
+                        (resolution == crate::slice::SliceBackupRestoreResolution::RolledBack)
+                            .then(|| {
+                                "backup restore rolled back after a failed attempt".to_string()
+                            }),
+                        |slice, state| {
+                            self.owned
+                                .durable_state_store
+                                .append_event(
+                                    event_kind,
+                                    Some(transaction.id.clone()),
+                                    serde_json::json!({
+                                        "transaction_id": &transaction.id,
+                                        "slice": slice,
+                                        "state": state,
+                                    }),
+                                )
+                                .map(|_| ())
+                        },
+                    )
+            })?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(slice)
+    }
+
     pub(super) fn append_slice_durable_event(
         &self,
         kind: &'static str,

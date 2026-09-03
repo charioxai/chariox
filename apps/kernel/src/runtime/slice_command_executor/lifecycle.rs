@@ -491,9 +491,14 @@ pub(super) async fn execute_restore_slice_backup_request(
             &task_slice,
             &docker_options,
             &task_backup,
-            |state| {
+            |transaction| {
                 task_runtime_state
-                    .save_slice_state_record(&task_slice.id, state.clone())
+                    .begin_slice_backup_restore(transaction.clone())
+                    .map(|_| ())
+            },
+            |transaction, state, resolution| {
+                task_runtime_state
+                    .resolve_slice_backup_restore(transaction, state.clone(), resolution)
                     .map(|_| ())
             },
         )

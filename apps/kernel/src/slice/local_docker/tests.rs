@@ -302,7 +302,7 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
             })
         },
         || panic!("state capture must not run after target restore failure"),
-        |_| {
+        |_, _| {
             persistence_calls.set(persistence_calls.get() + 1);
             Ok(())
         },
@@ -310,6 +310,7 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
             rollback_calls.set(rollback_calls.get() + 1);
             Ok(())
         },
+        |_| {},
         || cleanup_calls.set(cleanup_calls.get() + 1),
     )
     .expect_err("the original restore failure must be returned after successful rollback");
@@ -330,13 +331,14 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
             })
         },
         || panic!("state capture must not run after target restore failure"),
-        |_| panic!("state persistence must not run when rollback capture fails"),
+        |_, _| panic!("state persistence must not run when rollback capture fails"),
         || {
             Err(crate::error::DaemonError::LocalTransport {
                 operation: "slice.backup.restore",
                 message: "injected rollback failure".to_string(),
             })
         },
+        |_| {},
         || cleanup_calls.set(cleanup_calls.get() + 1),
     )
     .expect_err("a failed rollback must retain its recovery artifacts");
@@ -354,7 +356,7 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
         &rollback,
         || Ok(()),
         || Ok("restored state"),
-        |state| {
+        |state, _| {
             persistence_calls.set(persistence_calls.get() + 1);
             if *state == "restored state" {
                 Err(crate::error::DaemonError::LocalTransport {
@@ -369,6 +371,7 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
             rollback_calls.set(rollback_calls.get() + 1);
             Ok("rollback state")
         },
+        |_| {},
         || cleanup_calls.set(cleanup_calls.get() + 1),
     )
     .expect_err("durable-state failure must roll back the restored machine");
@@ -383,7 +386,7 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
         &rollback,
         || Ok(()),
         || Ok("restored state"),
-        |_| {
+        |_, _| {
             persistence_calls.set(persistence_calls.get() + 1);
             Err(crate::error::DaemonError::LocalTransport {
                 operation: "slice.backup.restore",
@@ -391,6 +394,7 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
             })
         },
         || Ok("rollback state"),
+        |_| {},
         || cleanup_calls.set(cleanup_calls.get() + 1),
     )
     .expect_err("failed rollback-state publication must retain recovery artifacts");
@@ -401,6 +405,46 @@ fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback
     assert!(error.to_string().contains(&rollback.manifest_path));
     assert_eq!(persistence_calls.get(), 2);
     assert_eq!(cleanup_calls.get(), 0);
+}
+
+#[test]
+fn backup_restore_reclaims_replaced_generations_only_after_resolution_persists() {
+    use std::cell::RefCell;
+
+    let rollback = backup_record("/tmp/rollback-manifest.json".to_string());
+    let calls = RefCell::new(Vec::new());
+    let state = state::restore_local_docker_slice_backup_with_rollback(
+        &rollback,
+        || {
+            calls.borrow_mut().push("restore");
+            Ok(())
+        },
+        || {
+            calls.borrow_mut().push("capture");
+            Ok("restored state")
+        },
+        |_, resolution| {
+            assert_eq!(resolution, state::SliceBackupRestoreResolution::Restored);
+            calls.borrow_mut().push("persist");
+            Ok(())
+        },
+        || panic!("rollback must not run after a successful durable resolution"),
+        |_| calls.borrow_mut().push("cleanup replaced state"),
+        || calls.borrow_mut().push("cleanup rollback"),
+    )
+    .expect("restore should succeed");
+
+    assert_eq!(state, "restored state");
+    assert_eq!(
+        calls.into_inner(),
+        vec![
+            "restore",
+            "capture",
+            "persist",
+            "cleanup replaced state",
+            "cleanup rollback",
+        ]
+    );
 }
 
 #[test]
@@ -482,6 +526,16 @@ fn linux_docker_headed_browser_trusts_the_local_terminal_origin() {
         "CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321"
     ));
     assert!(script.contains("--unsafely-treat-insecure-origin-as-secure="));
+}
+
+#[test]
+fn linux_docker_headed_browser_reopens_tabs_after_snapshot_quiescence() {
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
+    )
+    .expect("slice screen script should be readable");
+
+    assert!(script.contains("--restore-last-session"));
 }
 
 #[test]

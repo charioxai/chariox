@@ -9,7 +9,8 @@ use super::{
     local_docker_container_name, run_local_docker_slice_screen, LocalDockerSliceOptions,
 };
 use crate::slice::model::{
-    SliceBackendKind, SliceBackupRecord, SliceDisplayMode, SliceRecord, SliceSavedStateRecord,
+    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceDisplayMode,
+    SliceRecord, SliceSavedStateRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -27,25 +28,46 @@ enum SliceSnapshotQuiesce {
     Desktop,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LocalDockerSavedStateGeneration {
+    pub(crate) state: SliceSavedStateRecord,
+    replaced_state: Option<SliceSavedStateRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SliceBackupRestoreResolution {
+    Restored,
+    RolledBack,
+}
+
 pub fn save_local_docker_slice_state(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container)
+    let generation = save_local_docker_slice_state_inner(
+        record,
+        options,
+        SliceSnapshotQuiesce::Container,
+        false,
+    )?;
+    Ok(generation.state)
 }
 
 pub fn save_local_docker_slice_state_live(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop)
+    let generation =
+        save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop, false)?;
+    Ok(generation.state)
 }
 
 fn save_local_docker_slice_state_inner(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
     quiesce: SliceSnapshotQuiesce,
-) -> Result<SliceSavedStateRecord, DaemonError> {
+    retain_replaced_state: bool,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
     let state_id = active_state_id(record);
@@ -106,11 +128,23 @@ fn save_local_docker_slice_state_inner(
         publish_saved_state_generation_with(
             &manifest_path,
             &state,
-            previous_state.as_ref(),
+            (!retain_replaced_state)
+                .then_some(previous_state.as_ref())
+                .flatten(),
             write_state_manifest,
         )?;
-        Ok(state)
+        Ok(LocalDockerSavedStateGeneration {
+            state,
+            replaced_state: previous_state,
+        })
     })
+}
+
+pub(crate) fn save_local_docker_slice_state_retaining_replaced(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container, true)
 }
 
 pub fn create_local_docker_slice_backup(
@@ -229,19 +263,45 @@ pub fn validate_local_docker_slice_backup(
     Ok(())
 }
 
-pub fn restore_local_docker_slice_backup(
+pub(crate) fn restore_local_docker_slice_backup(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
     backup: &SliceBackupRecord,
-    persist_restored_state: impl FnMut(&SliceSavedStateRecord) -> Result<(), DaemonError>,
+    persist_restore_started: impl FnOnce(
+        &SliceBackupRestoreTransactionRecord,
+    ) -> Result<(), DaemonError>,
+    mut persist_restore_resolution: impl FnMut(
+        &SliceBackupRestoreTransactionRecord,
+        &SliceSavedStateRecord,
+        SliceBackupRestoreResolution,
+    ) -> Result<(), DaemonError>,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
     validate_local_docker_slice_backup(record, backup)?;
 
     let rollback_name = format!("restore-rollback-{:016x}", rand::random::<u64>());
     let rollback = create_local_docker_slice_backup(record, options, Some(&rollback_name))?;
+    let previous_saved_state = match active_saved_state_manifest(record, options) {
+        Ok(state) => state,
+        Err(error) => {
+            remove_local_docker_slice_backup_best_effort(&rollback);
+            return Err(error);
+        }
+    };
+    let transaction = SliceBackupRestoreTransactionRecord {
+        id: format!("restore-{:016x}", rand::random::<u64>()),
+        source_slice_id: record.id.clone(),
+        target_backup: backup.clone(),
+        rollback_backup: rollback.clone(),
+        previous_saved_state,
+        started_at_ms: crate::session::unix_epoch_ms(),
+    };
+    if let Err(error) = persist_restore_started(&transaction) {
+        remove_local_docker_slice_backup_best_effort(&rollback);
+        return Err(error);
+    }
     let restore_options = options.clone().with_backup(backup);
     let rollback_options = options.clone().with_backup(&rollback);
-    restore_local_docker_slice_backup_with_rollback(
+    let generation = restore_local_docker_slice_backup_with_rollback(
         &rollback,
         || {
             super::run_local_docker_slice_action(
@@ -253,8 +313,10 @@ pub fn restore_local_docker_slice_backup(
                 &restore_options,
             )
         },
-        || save_local_docker_slice_state(record, options),
-        persist_restored_state,
+        || save_local_docker_slice_state_retaining_replaced(record, options),
+        |generation, resolution| {
+            persist_restore_resolution(&transaction, &generation.state, resolution)
+        },
         || {
             super::run_local_docker_slice_action(
                 record,
@@ -264,34 +326,42 @@ pub fn restore_local_docker_slice_backup(
                 None,
                 &rollback_options,
             )?;
-            save_local_docker_slice_state(record, options)
+            save_local_docker_slice_state_retaining_replaced(record, options)
         },
+        |generation| cleanup_replaced_saved_state_generation(&transaction, generation),
         || remove_local_docker_slice_backup_best_effort(&rollback),
-    )
+    )?;
+    Ok(generation.state)
 }
 
 pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(
     rollback: &SliceBackupRecord,
     restore: impl FnOnce() -> Result<(), DaemonError>,
     capture_restored_state: impl FnOnce() -> Result<T, DaemonError>,
-    mut persist_restored_state: impl FnMut(&T) -> Result<(), DaemonError>,
+    mut persist_restored_state: impl FnMut(&T, SliceBackupRestoreResolution) -> Result<(), DaemonError>,
     restore_rollback: impl FnOnce() -> Result<T, DaemonError>,
+    cleanup_replaced_state: impl Fn(&T),
     cleanup_rollback: impl FnOnce(),
 ) -> Result<T, DaemonError> {
     let restore_result = restore()
         .and_then(|()| capture_restored_state())
         .and_then(|state| {
-            persist_restored_state(&state)?;
+            persist_restored_state(&state, SliceBackupRestoreResolution::Restored)?;
             Ok(state)
         });
     match restore_result {
         Ok(state) => {
+            cleanup_replaced_state(&state);
             cleanup_rollback();
             Ok(state)
         }
         Err(error) => {
-            match restore_rollback().and_then(|state| persist_restored_state(&state)) {
-                Ok(()) => {
+            match restore_rollback().and_then(|state| {
+                persist_restored_state(&state, SliceBackupRestoreResolution::RolledBack)?;
+                Ok(state)
+            }) {
+                Ok(state) => {
+                    cleanup_replaced_state(&state);
                     cleanup_rollback();
                     Err(error)
                 }
@@ -305,6 +375,63 @@ pub(super) fn restore_local_docker_slice_backup_with_rollback<T>(
             }
         }
     }
+}
+
+pub(crate) fn recover_pending_local_docker_slice_backup_restore(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    transaction: &SliceBackupRestoreTransactionRecord,
+) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
+    validate_local_docker_slice_backup(record, &transaction.rollback_backup)?;
+    let rollback_options = options.clone().with_backup(&transaction.rollback_backup);
+    super::run_local_docker_slice_action(
+        record,
+        crate::slice::LocalDockerSliceAction::RestoreState,
+        None,
+        None,
+        None,
+        &rollback_options,
+    )?;
+    save_local_docker_slice_state_retaining_replaced(record, options)
+}
+
+pub(crate) fn cleanup_replaced_saved_state_generation(
+    transaction: &SliceBackupRestoreTransactionRecord,
+    generation: &LocalDockerSavedStateGeneration,
+) {
+    for replaced in [
+        generation.replaced_state.as_ref(),
+        transaction.previous_saved_state.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if replaced.image_ref != generation.state.image_ref {
+            remove_docker_image_best_effort(&replaced.image_ref);
+        }
+        if replaced.home_archive_path != generation.state.home_archive_path {
+            remove_home_archive_generation_best_effort(
+                "state",
+                &replaced.id,
+                Path::new(&replaced.home_archive_path),
+            );
+        }
+    }
+}
+
+fn active_saved_state_manifest(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<Option<SliceSavedStateRecord>, DaemonError> {
+    let path = options
+        .root
+        .join("states")
+        .join(active_state_id(record))
+        .join("manifest.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    read_state_manifest(&path, "slice.backup.restore", "active saved state manifest").map(Some)
 }
 
 fn create_local_docker_slice_backup_inner(

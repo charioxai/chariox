@@ -323,6 +323,7 @@ impl DaemonApp {
         let replay_ms = replay_started.elapsed().as_millis();
         diagnostics.log_summary();
         let reconciliation_started = Instant::now();
+        self.recover_pending_slice_backup_restores()?;
         self.restore_normalized_workflow_runtime_state()?;
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
@@ -342,6 +343,61 @@ impl DaemonApp {
                 "total_ms": restore_started.elapsed().as_millis(),
             }),
         );
+        Ok(())
+    }
+
+    fn recover_pending_slice_backup_restores(&self) -> Result<(), DaemonError> {
+        let transactions = self.slices.list_pending_backup_restores();
+        if transactions.is_empty() {
+            return Ok(());
+        }
+        let options = crate::slice::LocalDockerSliceOptions::from_config(&self.config);
+        for transaction in transactions {
+            let slice = self.slices.resolve(&transaction.source_slice_id)?;
+            let generation = crate::slice::recover_pending_local_docker_slice_backup_restore(
+                &slice,
+                &options,
+                &transaction,
+            )?;
+            let state = generation.state.clone();
+            self.durable_state.with_projection_transition_lock(|| {
+                self.slices.resolve_backup_restore_transactionally(
+                    &transaction.id,
+                    &transaction.source_slice_id,
+                    state,
+                    crate::session::unix_epoch_ms(),
+                    crate::slice::SliceOperationStatus::Failed,
+                    Some(
+                        "interrupted backup restore rolled back during kernel startup".to_string(),
+                    ),
+                    |slice, state| {
+                        self.durable_state
+                            .append_event(
+                                "slice.backup.restore.rolled_back",
+                                Some(transaction.id.clone()),
+                                serde_json::json!({
+                                    "transaction_id": &transaction.id,
+                                    "slice": slice,
+                                    "state": state,
+                                }),
+                            )
+                            .map(|_| ())
+                    },
+                )
+            })?;
+            crate::slice::cleanup_replaced_saved_state_generation(&transaction, &generation);
+            crate::slice::remove_local_docker_slice_backup_best_effort(
+                &transaction.rollback_backup,
+            );
+            crate::logging::warn_with_fields(
+                "slice.backup.restore",
+                "rolled back an interrupted slice backup restore during kernel startup",
+                serde_json::json!({
+                    "transaction_id": transaction.id,
+                    "slice_id": transaction.source_slice_id,
+                }),
+            );
+        }
         Ok(())
     }
 
@@ -670,9 +726,20 @@ impl DaemonApp {
             .into_iter()
             .filter(|slice| slice.owner_kernel_id == self.config.daemon_id)
             .collect::<Vec<_>>();
+        let restored_slice_ids = restored_slices
+            .iter()
+            .map(|slice| slice.id.clone())
+            .collect::<BTreeSet<_>>();
         self.slices.restore_records(restored_slices);
         self.slices
             .restore_saved_state_records(snapshot.slice_saved_states, snapshot.slice_backups);
+        self.slices.restore_pending_backup_restore_records(
+            snapshot
+                .pending_slice_backup_restores
+                .into_iter()
+                .filter(|transaction| restored_slice_ids.contains(&transaction.source_slice_id))
+                .collect(),
+        );
         let mut restored_agent_ids = std::collections::BTreeSet::<String>::new();
         for agent in snapshot.agents {
             if !restored_session_ids.contains(agent.session_id()) {
@@ -1396,6 +1463,43 @@ impl DaemonApp {
                 self.slices
                     .restore_saved_state_records(self.slices.list_saved_states(), backups);
             }
+            "slice.backup.restore.started" => {
+                let slice: crate::slice::SliceRecord = decode_durable_payload_field(
+                    &event,
+                    "slice",
+                    "durable_state.restore_slice_backup_restore_started_slice",
+                )?;
+                if slice.owner_kernel_id == self.config.daemon_id {
+                    let transaction: crate::slice::SliceBackupRestoreTransactionRecord =
+                        decode_durable_payload_field(
+                            &event,
+                            "transaction",
+                            "durable_state.restore_slice_backup_restore_started",
+                        )?;
+                    self.slices.replay_backup_restore_started(transaction);
+                }
+            }
+            "slice.backup.restore.committed" | "slice.backup.restore.rolled_back" => {
+                let slice: crate::slice::SliceRecord = decode_durable_payload_field(
+                    &event,
+                    "slice",
+                    "durable_state.restore_slice_backup_restore_resolution_slice",
+                )?;
+                if slice.owner_kernel_id == self.config.daemon_id {
+                    let transaction_id: String = decode_durable_payload_field(
+                        &event,
+                        "transaction_id",
+                        "durable_state.restore_slice_backup_restore_resolution_id",
+                    )?;
+                    let state: crate::slice::SliceSavedStateRecord = decode_durable_payload_field(
+                        &event,
+                        "state",
+                        "durable_state.restore_slice_backup_restore_resolution_state",
+                    )?;
+                    self.slices
+                        .replay_backup_restore_resolution(&transaction_id, slice, state);
+                }
+            }
             "metaagent.event.recorded"
             | "metaagent.event.read"
             | "metaagent.event.acked"
@@ -1822,6 +1926,119 @@ mod tests {
                 .expect("saved state should restore")
                 .id,
             state_id
+        );
+    }
+
+    #[test]
+    fn durable_restore_replays_pending_backup_restore_until_resolution_commits() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &config.daemon_id,
+                &config.host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "pending-restore".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: None,
+                    development: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .expect("slice should create");
+        let backup = |id: &str| crate::slice::SliceBackupRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            source_slice_id: slice.id.clone(),
+            source_state_id: "pending-restore".to_string(),
+            image_ref: format!("chariox-slice-backup:{id}"),
+            home_archive_path: format!("/tmp/{id}.tar.zst"),
+            manifest_path: format!("/tmp/{id}.json"),
+            created_at_ms: 2,
+            size_bytes: Some(10),
+            home_archive_sha256: Some("a".repeat(64)),
+            image_id: Some(format!("sha256:{}", "b".repeat(64))),
+        };
+        let transaction = crate::slice::SliceBackupRestoreTransactionRecord {
+            id: "restore-pending-1".to_string(),
+            source_slice_id: slice.id.clone(),
+            target_backup: backup("target"),
+            rollback_backup: backup("rollback"),
+            previous_saved_state: None,
+            started_at_ms: 3,
+        };
+        let mut diagnostics = DurableRestoreDiagnostics::default();
+        app.restore_durable_state_event(
+            DurableStateEvent {
+                sequence: 1,
+                event_id: "event-restore-started".to_string(),
+                kind: "slice.backup.restore.started".to_string(),
+                subject_id: Some(transaction.id.clone()),
+                timestamp_ms: 3,
+                payload: serde_json::json!({
+                    "slice": &slice,
+                    "transaction": &transaction,
+                }),
+            },
+            &mut diagnostics,
+        )
+        .expect("pending restore should replay");
+        assert_eq!(
+            app.slices().list_pending_backup_restores(),
+            vec![transaction.clone()]
+        );
+
+        let mut resolved_slice = slice.clone();
+        resolved_slice.saved_state_ref = Some("pending-restore".to_string());
+        resolved_slice.saved_state_status = Some(crate::slice::SliceSavedStateStatus::Saved);
+        let state = crate::slice::SliceSavedStateRecord {
+            id: "pending-restore".to_string(),
+            slice_name: slice.name.clone(),
+            source_slice_id: slice.id.clone(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            image_ref: "chariox-slice-state:pending-restore".to_string(),
+            home_archive_path: "/tmp/pending-restore.tar.zst".to_string(),
+            manifest_path: "/tmp/pending-restore.json".to_string(),
+            created_at_ms: 4,
+            updated_at_ms: 4,
+            size_bytes: Some(10),
+            last_operation: Some("state.save".to_string()),
+            last_operation_status: Some(crate::slice::SliceOperationStatus::Completed),
+            last_error: None,
+        };
+        app.restore_durable_state_event(
+            DurableStateEvent {
+                sequence: 2,
+                event_id: "event-restore-resolved".to_string(),
+                kind: "slice.backup.restore.rolled_back".to_string(),
+                subject_id: Some(transaction.id.clone()),
+                timestamp_ms: 4,
+                payload: serde_json::json!({
+                    "transaction_id": &transaction.id,
+                    "slice": &resolved_slice,
+                    "state": &state,
+                }),
+            },
+            &mut diagnostics,
+        )
+        .expect("restore resolution should replay");
+        assert!(app.slices().list_pending_backup_restores().is_empty());
+        assert_eq!(
+            app.slices()
+                .active_saved_state_for_slice(&slice.id)
+                .expect("state lookup should work"),
+            Some(state)
         );
     }
 
