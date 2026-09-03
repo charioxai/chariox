@@ -20,6 +20,8 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
     state: "completed",
   }
   const keyboardAction = { ...action, action_id: "action-keyboard", kind: "keyboard_text", sequence: 8 }
+  const shortcutAction = { ...action, action_id: "action-shortcut", kind: "keyboard_key", sequence: 9 }
+  const replacementAction = { ...keyboardAction, action_id: "action-ime", sequence: 10 }
   const noticed = { local: [], remote: [] }
   const physical = []
   const resultWriter = (async () => {
@@ -40,7 +42,14 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
       environmentId: "environment-1",
       actionId: action.action_id,
       actorId: action.actor_id,
-      keyboard: { actionId: keyboardAction.action_id, physicalEffect: "WEB_KEYBOARD_TEXT_OK" },
+      keyboard: {
+        actionId: keyboardAction.action_id, physicalEffect: "WEB_KEYBOARD_TEXT_OK",
+        replacement: {
+          shortcutActionId: shortcutAction.action_id,
+          actionId: replacementAction.action_id,
+          physicalEffect: "WEB_KEYBOARD_REPLACEMENT_OK",
+        },
+      },
       physicalEffect: "POINTER_CLICK_COUNT=2",
       client: "production-local-web-view",
       screenshot: path.join(root, "web-room-tui-shared.png"),
@@ -59,9 +68,10 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
         sessionId: "session-1",
         environmentId: "environment-1",
         keyboardText: "fixture typing",
+        keyboardReplacementText: "fixture replacement",
       },
       client: {
-        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction] } } }),
+        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction, shortcutAction, replacementAction] } } }),
       },
       observerClient: {
         send: async () => ({ RoomEnvironmentState: { environment: { input_ownership: [] } } }),
@@ -86,8 +96,8 @@ test("Room companion verifier uses stable TUI notice baselines", async () => {
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
-    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "WEB_KEYBOARD_TEXT_OK"])
-    assert.deepEqual(noticed, { local: [7, 8], remote: [7, 8] })
+    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK"])
+    assert.deepEqual(noticed, { local: [7, 8, 9, 10], remote: [7, 8, 9, 10] })
     assert.equal(preparedAtReady, true, "physical fixture must be reset before Web receives its handoff")
     assert.equal(verified.client, "production-local-web-view")
     assert.equal(verified.screenshot, path.join(root, "web-room-tui-shared.png"))

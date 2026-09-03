@@ -55,6 +55,7 @@ const runId = `room-pointer-${process.pid}-${stamp}`
 const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
   ? `web-${runId}-Grüße 世界`
   : null
+const webKeyboardReplacementText = webKeyboardText ? `ime-${runId}-日本語` : null
 const evidenceRoot = path.join(
   os.homedir(),
   ".codex",
@@ -109,6 +110,7 @@ const clipboardValues = [
 ]
 const sensitiveValues = [
   ...(webKeyboardText ? [webKeyboardText] : []),
+  ...(webKeyboardReplacementText ? [webKeyboardReplacementText] : []),
   userSecret,
   vaultPassphrase,
   keyboardText,
@@ -489,8 +491,9 @@ async function run() {
       sessionId,
       sliceId: slice.id,
       environmentId: released.environment_id,
-      coverage: `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""} with local and remote TUI observation`,
-      skipped: ["computer secret", "pointer matrix", "agent keyboard matrix", "cancellation", "clipboard", "Web keyboard shortcuts and IME"],
+      coverage: `Web display and pointer input${companionResult.keyboard ? " and Unicode typing" : ""}${companionResult.keyboard?.replacement ? ", select-all and native IME replacement" : ""} with local and remote TUI observation`,
+      skipped: ["computer secret", "pointer matrix", "agent keyboard matrix", "cancellation", "clipboard",
+        companionResult.keyboard?.replacement ? "remaining Web shortcuts and keyboard layouts" : "Web keyboard shortcuts and IME"],
       companion: companionResult,
       containerLimits: limits,
     }
@@ -1960,6 +1963,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
     },
     ready: {
       ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
+      ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
       pointerClickExpectedCount: 1,
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
@@ -2417,13 +2421,15 @@ async function startFixture() {
       html,body{width:100%;height:100%;margin:0}body{display:grid;place-items:center;background:#ddd;font:32px sans-serif}
       #web-keyboard{position:fixed;inset:0;width:100%;height:100%;box-sizing:border-box;border:0;background:transparent;color:transparent;caret-color:transparent;outline:none}
       main{pointer-events:none;z-index:1}
-    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div>' : ''}</main><script>
+    </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}</main><script>
       let clicks=0;document.addEventListener("click",()=>{clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
       ${webKeyboardText ? `
       document.querySelector("#web-keyboard").addEventListener("input",(event)=>{
         let hash=14695981039346656037n;
         for(const byte of new TextEncoder().encode(event.target.value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}
-        document.querySelector("#web-keyboard-status").textContent=hash.toString(16).padStart(16,"0")===${JSON.stringify(fnv1a64(webKeyboardText))}?"WEB_KEYBOARD_TEXT_OK":"WEB_KEYBOARD_WAITING";
+        const digest=hash.toString(16).padStart(16,"0");
+        if(digest===${JSON.stringify(fnv1a64(webKeyboardText))})document.querySelector("#web-keyboard-status").textContent="WEB_KEYBOARD_TEXT_OK";
+        document.querySelector("#web-keyboard-replacement-status").textContent=digest===${JSON.stringify(fnv1a64(webKeyboardReplacementText))}?"WEB_KEYBOARD_REPLACEMENT_OK":"WEB_KEYBOARD_REPLACEMENT_WAITING";
       });` : ''}
     </script></body></html>`)
   })

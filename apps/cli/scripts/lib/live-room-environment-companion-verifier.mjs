@@ -28,12 +28,19 @@ export async function runRoomEnvironmentCompanion(input) {
   if (input.ready.keyboardText) {
     assert.ok(companion.keyboard, "Web companion omitted required keyboard evidence")
   }
+  if (input.ready.keyboardReplacementText) {
+    assert.ok(companion.keyboard?.replacement, "Web companion omitted shortcut/IME evidence")
+  }
   await input.waitForPhysicalEffect(companion.physicalEffect)
   if (companion.keyboard) {
     assert.equal(companion.keyboard.physicalEffect, "WEB_KEYBOARD_TEXT_OK")
     assert.equal(typeof companion.keyboard.actionId, "string")
     assert.ok(companion.keyboard.actionId.length > 0)
     await input.waitForPhysicalEffect(companion.keyboard.physicalEffect)
+    if (companion.keyboard.replacement) {
+      assert.equal(companion.keyboard.replacement.physicalEffect, "WEB_KEYBOARD_REPLACEMENT_OK")
+      await input.waitForPhysicalEffect(companion.keyboard.replacement.physicalEffect)
+    }
   }
 
   const history = unwrap(
@@ -61,6 +68,25 @@ export async function runRoomEnvironmentCompanion(input) {
       assert.ok(!JSON.stringify(history).includes(input.ready.keyboardText), "history retained Web typed text")
     }
     actions.push(keyboard)
+    if (companion.keyboard.replacement) {
+      const replacement = companion.keyboard.replacement
+      let previous = keyboard
+      for (const [id, kind] of [[replacement.shortcutActionId, "keyboard_key"], [replacement.actionId, "keyboard_text"]]) {
+        assert.equal(typeof id, "string")
+        assert.ok(id.length > 0)
+        const action = history.find((item) => item.action_id === id)
+        assert.ok(action, "Web shortcut/IME action was absent from kernel history")
+        assert.equal(action.kind, kind)
+        assert.equal(action.state, "completed")
+        assert.equal(action.actor_id, companion.actorId)
+        assert.ok(action.sequence > previous.sequence, "shortcut and IME must follow initial typing in order")
+        actions.push(action)
+        previous = action
+      }
+      if (input.ready.keyboardReplacementText) {
+        assert.ok(!JSON.stringify(history).includes(input.ready.keyboardReplacementText), "history retained Web IME text")
+      }
+    }
   }
 
   await input.activityController.synchronize()
