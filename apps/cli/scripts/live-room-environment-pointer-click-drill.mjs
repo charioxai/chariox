@@ -1924,7 +1924,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       // The keyboard/clipboard drills navigate away from the original click page.
       // Give the Web companion a fresh physical page, not the last drill's form.
       await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
-      await waitForBrowserText("POINTER_CLICK_COUNT=0", 30_000, "Web companion fixture did not reset")
+      await waitForBrowserText("POINTER_CLICK_READY", 30_000, "Web companion fixture did not reset")
     },
     ready: {
       pointerClickExpectedCount: 1,
