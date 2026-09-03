@@ -647,6 +647,8 @@ Protocol v303 and relay peer protocol v39 add the shared Computer clipboard cont
 
 `pnpm --filter @chariox/cli run computer-clipboard:x11-drill` exercises the physical clipboard helper against real Xvfb, Chromium, and `xclip` in the existing slice image. It verifies exact empty, Unicode, whitespace, trailing-newline, repeat-read, and 256 KiB boundary behavior; forces helper failure to prove plaintext temporary-file cleanup; scans logs and captured output for clipboard residue; records only digest and size metadata; enforces bounded container resources; and removes all disposable state on success or failure.
 
+`CARGO_TARGET_DIR=/absolute/shared/cargo-target pnpm --filter @chariox/cli run computer-clipboard:room-e2e-drill` crosses the complete local product path with one home kernel, one headed worker slice, a slice-bound agent runtime MCP, and direct local plus relay-attached remote TUIs. It verifies exact agent and human clipboard writes against real X11, human-only read after takeover, agent rejection during takeover, count-only attributed Action history, content-free TUI notices, and cleanup and leak scans. The drill reuses the v303/v39 contract and adds no serialized shape.
+
 The same v302/v37 Computer actions use the existing `CancelAction` command; the
 Room Action ID is also the worker execution identity, so no new serialized shape
 or protocol version is required. The worker registers the live screen helper

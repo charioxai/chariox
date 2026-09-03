@@ -13,6 +13,12 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import {
+  assertRetainedClipboardEvidenceIsRedacted,
+  clipboardCaseSummary,
+  utf8TextFromChunks,
+} from "./lib/computer-clipboard-x11-drill.mjs"
+import { assertRoomClipboardAction } from "./lib/room-environment-clipboard-drill.mjs"
+import {
   automationNoticeEntries,
   automationNoticeIds,
   automationNoticeTexts,
@@ -38,6 +44,17 @@ const userCredentialId = `${runId}-user-computer`
 const generatedCredentialId = `${runId}-generated-computer`
 const userSecret = `room-computer-secret-${process.pid}-${Date.now()}`
 const vaultPassphrase = `room-vault-passphrase-${process.pid}-${Date.now()}`
+const agentClipboardText = `agent-clipboard-${runId}-Grüße 世界\nsecond line\n`
+const blockedAgentClipboardText = `blocked-agent-clipboard-${runId}\n`
+const humanClipboardText = `human-clipboard-${runId}\t\nsecond line\n`
+const physicalClipboardText = `physical-clipboard-${runId}-áéíóú\nsecond line\n`
+const clipboardValues = [
+  agentClipboardText,
+  blockedAgentClipboardText,
+  humanClipboardText,
+  physicalClipboardText,
+]
+const sensitiveValues = [userSecret, vaultPassphrase, ...clipboardValues]
 const generatedSecretLength = 24
 const kernelPort = 51000 + Math.floor(Math.random() * 1000)
 const relayPort = 53000 + Math.floor(Math.random() * 1000)
@@ -393,8 +410,9 @@ async function run() {
     waitForRemoteNotice(/^Room input: available$/),
   ])
   const computerSecretResult = await exerciseComputerSecretInput()
+  const computerClipboard = await exerciseRoomClipboard(activityController, activityNotices)
   companionResult = await runCompanionIfConfigured({
-    environment: released,
+    environment: computerClipboard.environment,
     localNoticeIds: automationNoticeIds(releasedLocalTui),
     remoteNoticeIds: automationNoticeIds(releasedRemoteTui),
     activityController,
@@ -403,15 +421,19 @@ async function run() {
     await observerClient.send(requests.getRoomEnvironmentStateRequest(sessionId)),
     "RoomEnvironmentState",
   ).environment
-  assert.equal(observed.environment_id, released.environment_id)
-  assert.equal(observed.session_id, released.session_id)
-  assert.equal(observed.runtime_generation, released.runtime_generation)
-  assert.deepEqual(observed.viewport, released.viewport)
-  assert.deepEqual(observed.input_ownership, released.input_ownership)
-  assert.ok(observed.event_cursor >= released.event_cursor)
+  assert.equal(observed.environment_id, computerClipboard.environment.environment_id)
+  assert.equal(observed.session_id, computerClipboard.environment.session_id)
+  assert.equal(observed.runtime_generation, computerClipboard.environment.runtime_generation)
+  assert.deepEqual(observed.viewport, computerClipboard.environment.viewport)
+  assert.deepEqual(observed.input_ownership, computerClipboard.environment.input_ownership)
+  assert.ok(observed.event_cursor >= computerClipboard.environment.event_cursor)
+  const [finalLocalTui, finalRemoteTui] = await Promise.all([
+    localAutomation.send("snapshot"),
+    remoteAutomation.send("snapshot"),
+  ])
   resources.push(await resourceSnapshot("active"))
   result = {
-    schema: "chariox.room_environment.pointer_click_drill.v5",
+    schema: "chariox.room_environment.pointer_click_drill.v6",
     status: "passed",
     startedAt,
     source: sourceIdentity,
@@ -427,6 +449,7 @@ async function run() {
     idempotencyKey,
     physicalEffect: companionResult?.physicalEffect ?? "POINTER_CLICK_COUNT=1",
     computerSecret: computerSecretResult,
+    computerClipboard: computerClipboard.summary,
     containerLimits: limits,
     assertions: [
       "public Room request completed one attributed Computer Action",
@@ -443,6 +466,12 @@ async function run() {
       "home-kernel approvals released each credential only after the password field had focus",
       "worker typed both credentials through the Room Computer action path into the shared headed desktop",
       "Computer secret actions were attributed, argument-free, visible in both TUIs, and absent from clipboard, screenshots, logs, history, and relay output",
+      "slice-bound agent wrote the physical X11 clipboard through the home kernel's Room Action authority",
+      "human desktop takeover rejected an agent clipboard mutation without changing the clipboard or Action ledger",
+      "human clipboard write crossed the public Room request and encrypted worker path with count-only history",
+      "human clipboard read required takeover, observed an exact physical X11 value, and created no Action",
+      "local and relay-attached remote TUIs projected both agent and human clipboard Actions without content",
+      "clipboard text remained absent from retained Room state, logs, helper output, and evidence",
       ...(companionResult ? [
         "production Web client joined the same authoritative Room as both real TUIs",
         "Web input produced one attributed Computer Action and the physical headed desktop effect",
@@ -453,14 +482,14 @@ async function run() {
     activityNotices,
     daemonActivities,
     localTui: {
-      sessionId: releasedLocalTui.session?.id,
-      notices: automationNoticeTexts(releasedLocalTui),
+      sessionId: finalLocalTui.session?.id,
+      notices: automationNoticeTexts(finalLocalTui),
       readyNoticeCount: automationNoticeTexts(readyLocalTui).length,
       status: localStatusNotice,
     },
     remoteTui: {
-      sessionId: releasedRemoteTui.session?.id,
-      notices: automationNoticeTexts(releasedRemoteTui),
+      sessionId: finalRemoteTui.session?.id,
+      notices: automationNoticeTexts(finalRemoteTui),
       readyNoticeCount: automationNoticeTexts(readyRemoteTui).length,
       screenshot: remoteScreenshot,
     },
@@ -473,6 +502,206 @@ async function run() {
         screenshot: companionResult.screenshot,
       },
     } : {}),
+  }
+}
+
+async function exerciseRoomClipboard(activityController, activityNotices) {
+  const before = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  await assert.rejects(
+    client.send(requests.readRoomEnvironmentClipboardRequest(
+      sessionId,
+      before.runtime_generation,
+    )),
+    /environment_input_takeover_required/,
+    "human clipboard read must require desktop takeover",
+  )
+
+  const agentLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const agentRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const agentWrite = await mcpToolCall(secretProviderRun, "slice_clipboard_write", {
+    text: agentClipboardText,
+  })
+  assert.equal(agentWrite.ok, true, redactDrillSecrets(JSON.stringify(agentWrite.raw)))
+  assert.equal(agentWrite.content?.action_kind, "clipboard_write")
+  assert.equal(agentWrite.content?.session_id, sessionId)
+  assert.equal(agentWrite.content?.agent_id, secretAgent.id)
+  assertRetainedClipboardEvidenceIsRedacted(agentWrite.raw, agentClipboardText)
+  assert.equal(await readPhysicalClipboard(), agentClipboardText)
+
+  let environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const agentAction = environment.actions.find(
+    (action) => action.action_id === agentWrite.content?.action_id,
+  )
+  assertRoomClipboardAction(agentAction, {
+    actorId: agentWrite.content?.actor_id,
+    clipboardText: agentClipboardText,
+  })
+  const noticePattern = /^Room action: .+ · computer clipboard_write · completed$/
+  assert.equal(await activityController.synchronize(), true)
+  assert.match(activityNotices.at(-1), noticePattern)
+  await Promise.all([
+    waitForTuiNoticeAfter(
+      localAutomation,
+      "local",
+      noticePattern,
+      agentLocalBaseline,
+      20_000,
+    ),
+    waitForTuiNoticeAfter(
+      remoteAutomation,
+      "remote",
+      noticePattern,
+      agentRemoteBaseline,
+      20_000,
+    ),
+  ])
+
+  const takeover = unwrap(
+    await client.send(requests.requestRoomEnvironmentInputTakeoverRequest(
+      sessionId,
+      { kind: "desktop" },
+    )),
+    "RoomEnvironmentTakeoverUpdated",
+  )
+  assert.equal(takeover.outcome.state, "granted")
+  const actionCountBeforeBlockedWrite = takeover.environment.actions.length
+  const blockedWrite = await mcpToolCall(secretProviderRun, "slice_clipboard_write", {
+    text: blockedAgentClipboardText,
+  })
+  assert.equal(blockedWrite.ok, false, "agent clipboard write must fail during human takeover")
+  assert.match(
+    JSON.stringify(blockedWrite.raw),
+    /belongs to .?user:local|input takeover|takeover required/i,
+  )
+  assertRetainedClipboardEvidenceIsRedacted(blockedWrite.raw, blockedAgentClipboardText)
+  assert.equal(await readPhysicalClipboard(), agentClipboardText)
+  environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  assert.equal(
+    environment.actions.length,
+    actionCountBeforeBlockedWrite,
+    "rejected agent clipboard write must not enter the Action ledger",
+  )
+
+  const humanLocalBaseline = new Set(automationNoticeIds(await localAutomation.send("snapshot")))
+  const humanRemoteBaseline = new Set(automationNoticeIds(await remoteAutomation.send("snapshot")))
+  const humanWrite = unwrap(
+    await client.send(requests.submitRoomEnvironmentActionRequest(
+      sessionId,
+      takeover.environment.runtime_generation,
+      takeover.environment.viewport.revision,
+      `${runId}-human-clipboard`,
+      { kind: "clipboard_write", text: humanClipboardText },
+    )),
+    "RoomEnvironmentActionSubmitted",
+  )
+  const humanAction = humanWrite.environment.actions.find(
+    (action) => action.action_id === humanWrite.action_id,
+  )
+  assertRoomClipboardAction(humanAction, {
+    actorId: "user:local",
+    clipboardText: humanClipboardText,
+  })
+  assert.equal(await readPhysicalClipboard(), humanClipboardText)
+  assert.equal(await activityController.synchronize(), true)
+  assert.match(activityNotices.at(-1), noticePattern)
+  await Promise.all([
+    waitForTuiNoticeAfter(
+      localAutomation,
+      "local",
+      noticePattern,
+      humanLocalBaseline,
+      20_000,
+    ),
+    waitForTuiNoticeAfter(
+      remoteAutomation,
+      "remote",
+      noticePattern,
+      humanRemoteBaseline,
+      20_000,
+    ),
+  ])
+
+  const actionCountBeforeRead = humanWrite.environment.actions.length
+  await writePhysicalClipboard(physicalClipboardText)
+  const clipboardRead = unwrap(
+    await client.send(requests.readRoomEnvironmentClipboardRequest(
+      sessionId,
+      humanWrite.environment.runtime_generation,
+    )),
+    "RoomEnvironmentClipboardRead",
+  )
+  assert.equal(clipboardRead.content, physicalClipboardText)
+  assertRetainedClipboardEvidenceIsRedacted(
+    { content: "[consumed without retention]" },
+    physicalClipboardText,
+  )
+  environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  assert.equal(
+    environment.actions.length,
+    actionCountBeforeRead,
+    "human clipboard read must not create an Action",
+  )
+
+  const released = unwrap(
+    await client.send(requests.releaseRoomEnvironmentInputRequest(
+      sessionId,
+      { kind: "desktop" },
+    )),
+    "RoomEnvironmentInputReleased",
+  ).environment
+  const history = unwrap(
+    await client.send(requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 25)),
+    "RoomEnvironmentActionHistoryListed",
+  ).page.actions
+  assertRoomClipboardAction(
+    history.find((action) => action.action_id === agentWrite.content?.action_id),
+    { actorId: agentWrite.content?.actor_id, clipboardText: agentClipboardText },
+  )
+  assertRoomClipboardAction(
+    history.find((action) => action.action_id === humanWrite.action_id),
+    { actorId: "user:local", clipboardText: humanClipboardText },
+  )
+  for (const value of clipboardValues) {
+    assertRetainedClipboardEvidenceIsRedacted(released, value)
+  }
+  const tempRoot = await tempRootPromise
+  await assertNoPlaintextSecretInTree(tempRoot, clipboardValues)
+  await assertNoPlaintextSecretInTree(evidenceRoot, clipboardValues)
+
+  return {
+    environment: released,
+    summary: {
+      agentId: secretAgent.id,
+      agentActorId: agentWrite.content?.actor_id,
+      agentActionId: agentWrite.content?.action_id,
+      humanActorId: "user:local",
+      humanActionId: humanWrite.action_id,
+      cases: [
+        clipboardCaseSummary("agent-write", agentClipboardText),
+        clipboardCaseSummary("blocked-agent-write", blockedAgentClipboardText),
+        clipboardCaseSummary("human-write", humanClipboardText),
+        clipboardCaseSummary("physical-write-human-read", physicalClipboardText),
+      ],
+      takeoverRejectedAgentMutation: true,
+      physicalClipboardExact: true,
+      humanReadRequiredTakeover: true,
+      humanReadCreatedAction: false,
+      localTuiObserved: true,
+      remoteTuiObserved: true,
+      retainedContentRedacted: true,
+    },
   }
 }
 
@@ -786,7 +1015,7 @@ async function assertNoPlaintextSecretInTree(root, secrets) {
 }
 
 function redactDrillSecrets(value) {
-  return [userSecret, vaultPassphrase].reduce(
+  return sensitiveValues.reduce(
     (current, secret) => current.replaceAll(secret, "[redacted]"),
     String(value),
   )
@@ -1362,6 +1591,39 @@ async function sliceScreen(args) {
   return `${result.stdout}${result.stderr}`
 }
 
+async function readPhysicalClipboard() {
+  const result = await docker([
+    "exec",
+    "-u",
+    "slice",
+    containerName,
+    "/opt/chariox-slice/slice-screen.sh",
+    "computer-clipboard-read",
+  ])
+  assert.equal(result.stderr, "", "physical clipboard read emitted stderr")
+  return result.stdout
+}
+
+async function writePhysicalClipboard(text) {
+  const result = await runCommandWithStdin(
+    "docker",
+    [
+      "exec",
+      "-i",
+      "-u",
+      "slice",
+      containerName,
+      "/opt/chariox-slice/slice-screen.sh",
+      "computer-clipboard-write-stdin",
+    ],
+    text,
+    20_000,
+  )
+  assert.equal(result.code, 0, `physical clipboard write failed: ${result.stderr}`)
+  assert.equal(result.stdout, "", "physical clipboard write emitted stdout")
+  assert.equal(result.stderr, "", "physical clipboard write emitted stderr")
+}
+
 async function assertDockerReady() {
   await docker(["info", "--format", "{{json .ServerVersion}}"], 20_000)
 }
@@ -1452,8 +1714,8 @@ async function cleanup() {
   for (const child of children.toReversed()) await terminateChild(child)
   let leakedEvidence = false
   try {
-    await assertNoPlaintextSecretInTree(tempRoot, [userSecret, vaultPassphrase])
-    await assertNoPlaintextSecretInTree(evidenceRoot, [userSecret, vaultPassphrase])
+    await assertNoPlaintextSecretInTree(tempRoot, sensitiveValues)
+    await assertNoPlaintextSecretInTree(evidenceRoot, sensitiveValues)
   } catch (error) {
     leakedEvidence = true
     failure ??= error
@@ -1610,15 +1872,20 @@ async function waitFor(operation, timeoutMs, message) {
 function runCommand(command, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
-    let stdout = ""
-    let stderr = ""
+    const stdout = []
+    const stderr = []
     const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
-    child.stdout.on("data", (chunk) => { stdout += chunk })
-    child.stderr.on("data", (chunk) => { stderr += chunk })
+    child.stdout.on("data", (chunk) => { stdout.push(chunk) })
+    child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
     child.once("close", (code, signal) => {
       clearTimeout(timeout)
-      resolve({ code, signal, stdout, stderr })
+      resolve({
+        code,
+        signal,
+        stdout: utf8TextFromChunks(stdout),
+        stderr: utf8TextFromChunks(stderr),
+      })
     })
   })
 }
@@ -1626,15 +1893,20 @@ function runCommand(command, args, timeoutMs) {
 function runCommandWithStdin(command, args, stdin, timeoutMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
-    let stdout = ""
-    let stderr = ""
+    const stdout = []
+    const stderr = []
     const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
-    child.stdout.on("data", (chunk) => { stdout += chunk })
-    child.stderr.on("data", (chunk) => { stderr += chunk })
+    child.stdout.on("data", (chunk) => { stdout.push(chunk) })
+    child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
     child.once("close", (code, signal) => {
       clearTimeout(timeout)
-      resolve({ code, signal, stdout, stderr })
+      resolve({
+        code,
+        signal,
+        stdout: utf8TextFromChunks(stdout),
+        stderr: utf8TextFromChunks(stderr),
+      })
     })
     child.stdin.end(stdin)
   })

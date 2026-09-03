@@ -235,6 +235,26 @@ interruption diagnostic, and its retained report must still record
 `containerRemoved: true` and `tempRootRemoved: true`. The window is test-only
 and bounded to 60 seconds.
 
+## Room clipboard end-to-end drill
+
+Use this after changing the Room clipboard authority, relay route, TUI Action
+projection, or physical slice adapter:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run computer-clipboard:room-e2e-drill
+```
+
+The drill starts a local kernel, a scoped relay, a headed Selkies slice, one
+slice-bound agent, and direct local plus relay-attached remote TUIs. It proves
+that an agent clipboard write crosses the home-owned Room Action path to the
+real X11 clipboard, that human takeover rejects an agent write, and that a
+human write and read use the same physical clipboard without creating a read
+Action. Room history and both TUIs retain attribution and byte/character counts
+without retaining clipboard text. The run scans all disposable state and
+evidence for its clipboard canaries and removes its container, volume,
+processes, listeners, and temporary files on success or failure.
+
 ## Hosted Cloud Relay Drill
 
 Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:
