@@ -81,6 +81,7 @@ const pointerMatrix = Object.freeze({
     horizontalSteps: 4,
     verticalSteps: 5,
   },
+  keyboardFocus: { x: 640, y: 393, button: "left", clickCount: 1 },
 })
 const clipboardValues = [
   agentClipboardText,
@@ -761,12 +762,28 @@ async function executeAgentPointerAction({
 async function exerciseRoomKeyboard(activityController, activityNotices) {
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/keyboard`])
   await waitForBrowserText("ROOM_COMPUTER_KEYBOARD_READY", 30_000, "keyboard fixture did not load")
-  await sliceScreen(["browser-click", "#keyboard-input"])
-  await waitForBrowserText(
-    "ROOM_COMPUTER_KEYBOARD_FOCUS_OK",
-    20_000,
-    "keyboard fixture did not establish the physical input focus",
-  )
+  const environment = unwrap(
+    await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  const focused = await executeAgentPointerAction({
+    args: {
+      action: "click",
+      x: pointerMatrix.keyboardFocus.x,
+      y: pointerMatrix.keyboardFocus.y,
+      button: pointerMatrix.keyboardFocus.button,
+    },
+    expectedKind: "pointer_click",
+    expectedMarker: "ROOM_COMPUTER_KEYBOARD_FOCUS_OK",
+    markerFailure: "Room pointer click did not establish the physical keyboard focus",
+    validate: (action, actorId) => assertRoomPointerClickAction(action, {
+      actorId,
+      ...pointerMatrix.keyboardFocus,
+      viewportRevision: environment.viewport.revision,
+    }),
+    activityController,
+    activityNotices,
+  })
   const typed = await executeAgentKeyboardAction({
     args: { action: "type", text: keyboardText },
     retainedInput: keyboardText,
@@ -839,6 +856,7 @@ async function exerciseRoomKeyboard(activityController, activityNotices) {
   return {
     agentId: secretAgent.id,
     actorId: typed.actorId,
+    focusActionId: focused.actionId,
     actionIds: [typed, selectAll, replaced, repeated].map((entry) => entry.actionId),
     cases: [
       textCaseSummary("non-us-text", keyboardText),
@@ -876,7 +894,13 @@ async function executeAgentKeyboardAction({
     retainedInput,
     "runtime MCP response retained keyboard input",
   )
-  await waitForBrowserText(expectedMarker, 20_000, markerFailure)
+  try {
+    await waitForBrowserText(expectedMarker, 20_000, markerFailure)
+  } catch (error) {
+    const failureLabel = expectedMarker.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    await screenshot(`keyboard-failure-${failureLabel}`).catch(() => {})
+    throw error
+  }
 
   const environment = unwrap(
     await client.send(requests.getRoomEnvironmentStateRequest(sessionId)),
