@@ -565,7 +565,7 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     write_executable("timeout", "#!/bin/sh\nshift\nexec \"$@\"\n");
     write_executable(
         "xdotool",
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\ncase \"$*\" in *'--file -'*) cat >> \"$CHARIOX_XDOTOOL_STDIN_LOG\" ;; esac\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_XDOTOOL_LOG\"\ncase \"$*\" in *'type '*'--file -'*) printf '%s' \"${LC_ALL:-}\" > \"$CHARIOX_XDOTOOL_LOCALE_LOG\"; cat >> \"$CHARIOX_XDOTOOL_STDIN_LOG\" ;; esac\n",
     );
     write_executable(
         "xclip",
@@ -573,6 +573,7 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     );
     let xdotool_log = root.join("xdotool.log");
     let xdotool_stdin_log = root.join("xdotool-stdin.log");
+    let xdotool_locale_log = root.join("xdotool-locale.log");
     let xclip_log = root.join("xclip.log");
     let xclip_args_log = root.join("xclip-args.log");
     let path = format!(
@@ -588,11 +589,13 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             .arg(&script)
             .args(args)
             .env("PATH", &path)
+            .env_remove("LC_ALL")
             .env("HOME", &home)
             .env("TMPDIR", &temp)
             .env("CHARIOX_SLICE_ROOT", root.join("runtime"))
             .env("CHARIOX_XDOTOOL_LOG", &xdotool_log)
             .env("CHARIOX_XDOTOOL_STDIN_LOG", &xdotool_stdin_log)
+            .env("CHARIOX_XDOTOOL_LOCALE_LOG", &xdotool_locale_log)
             .env("CHARIOX_XCLIP_LOG", &xclip_log)
             .env("CHARIOX_XCLIP_ARGS_LOG", &xclip_args_log);
         let output = if let Some(input) = stdin {
@@ -726,6 +729,11 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
         std::fs::read_to_string(&xdotool_stdin_log)
             .expect("keyboard text should reach xdotool stdin"),
         "Grüße 世界"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&xdotool_locale_log)
+            .expect("keyboard text should run under a UTF-8 locale"),
+        "C.UTF-8"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }

@@ -7,6 +7,10 @@ export function redactClipboardValue(value, clipboardText) {
 }
 
 export function clipboardCaseSummary(name, value) {
+  return textCaseSummary(name, value)
+}
+
+export function textCaseSummary(name, value) {
   return {
     name,
     utf8ByteCount: Buffer.byteLength(value, "utf8"),
@@ -32,20 +36,28 @@ export function utf8TextFromChunks(chunks) {
 }
 
 export function assertRetainedClipboardEvidenceIsRedacted(evidence, clipboardText) {
-  if (clipboardText.length === 0) return
-  const escapedClipboardText = JSON.stringify(clipboardText).slice(1, -1)
-  assert.equal(
-    containsClipboardText(evidence, clipboardText, escapedClipboardText, new WeakSet()),
-    false,
+  assertRetainedTextIsRedacted(
+    evidence,
+    clipboardText,
     "retained clipboard evidence contains clipboard text",
   )
 }
 
-function containsClipboardText(value, clipboardText, escapedClipboardText, seen) {
+export function assertRetainedTextIsRedacted(evidence, text, message) {
+  if (text.length === 0) return
+  const escapedText = JSON.stringify(text).slice(1, -1)
+  assert.equal(
+    containsText(evidence, text, escapedText, new WeakSet()),
+    false,
+    message,
+  )
+}
+
+function containsText(value, text, escapedText, seen) {
   if (typeof value === "string") {
     return (
-      value.includes(clipboardText) ||
-      (escapedClipboardText !== clipboardText && value.includes(escapedClipboardText))
+      value.includes(text) ||
+      (escapedText !== text && value.includes(escapedText))
     )
   }
   if (!value || typeof value !== "object") return false
@@ -53,12 +65,12 @@ function containsClipboardText(value, clipboardText, escapedClipboardText, seen)
   seen.add(value)
   if (Array.isArray(value)) {
     return value.some((entry) =>
-      containsClipboardText(entry, clipboardText, escapedClipboardText, seen),
+      containsText(entry, text, escapedText, seen),
     )
   }
   return Object.entries(value).some(
     ([key, entry]) =>
-      containsClipboardText(key, clipboardText, escapedClipboardText, seen) ||
-      containsClipboardText(entry, clipboardText, escapedClipboardText, seen),
+      containsText(key, text, escapedText, seen) ||
+      containsText(entry, text, escapedText, seen),
   )
 }
