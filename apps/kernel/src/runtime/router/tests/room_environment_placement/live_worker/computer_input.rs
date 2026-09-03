@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::FutureExt;
 
 #[test]
 fn bound_worker_applies_authenticated_mouse_and_keyboard_input_without_a_browser_controller() {
@@ -149,4 +150,174 @@ async fn applies_authenticated_mouse_and_keyboard_input_without_a_browser_contro
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     std::env::remove_var("CHARIOX_COMPUTER_INPUT_COMMAND_LOG");
     std::env::remove_var("CHARIOX_COMPUTER_INPUT_STDIN_LOG");
+}
+
+#[test]
+fn room_environment_cancels_worker_computer_input_over_the_relay_before_takeover() {
+    run_test(cancels_worker_computer_input_over_the_relay_before_takeover);
+}
+
+async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-worker-computer-cancellation-test-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("slice-screen.sh");
+    let started = root.join("started");
+    let reset = root.join("reset");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncase \"${1:-}\" in\n  pointer-drag)\n    : > \"$CHARIOX_COMPUTER_INPUT_STARTED\"\n    while :; do sleep 1; done\n    ;;\n  computer-input-reset)\n    : > \"$CHARIOX_COMPUTER_INPUT_RESET\"\n    ;;\nesac\n",
+    )
+    .expect("screen helper should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("screen helper should be executable");
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    std::env::set_var("CHARIOX_COMPUTER_INPUT_STARTED", &started);
+    std::env::set_var("CHARIOX_COMPUTER_INPUT_RESET", &reset);
+
+    let mut fixture = LiveWorker::start_configured(false, true).await;
+    let assertions = std::panic::AssertUnwindSafe(async {
+        fixture.create_slice().await;
+        fixture
+            .home
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_status(
+                "desktop",
+                crate::slice::SliceStatus::Running,
+                crate::session::unix_epoch_ms(),
+            )
+            .expect("fixture slice should be running");
+        let room = fixture.rooms[0].clone();
+        dispatch_json(
+            &fixture.home,
+            json!({"BindRoomEnvironmentSlice": {
+                "session_id":room, "slice_ref":"desktop"
+            }}),
+        )
+        .await
+        .expect("Room should bind to its worker slice");
+        dispatch_json(
+            &fixture.home,
+            json!({"StartRoomEnvironment": {
+                "session_id":room, "viewport": {
+                    "css_width":1280, "css_height":800, "device_scale_factor":1,
+                    "desktop_pixel_width":1280, "desktop_pixel_height":800
+                }
+            }}),
+        )
+        .await
+        .expect("Room Environment should start through the bound worker");
+        let listed = dispatch_json(
+            &fixture.home,
+            json!({"ListAgents":{"session_id":room}}),
+        )
+        .await
+        .expect("Room agent should be listed");
+        let agent_id = listed["AgentsListed"]["agents"][0]["id"]
+            .as_str()
+            .expect("default agent id")
+            .to_string();
+        let runtime = fixture.home.runtime_state.clone();
+        let action_room = room.clone();
+        let action = tokio::spawn(async move {
+            runtime
+                .execute_computer_input_as_agent(
+                    &action_room,
+                    &agent_id,
+                    "pointer_drag",
+                    crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
+                        from_x: 120,
+                        from_y: 160,
+                        to_x: 720,
+                        to_y: 560,
+                        button: crate::transport::room_browser_controller::RoomComputerPointerButton::Left,
+                    },
+                )
+                .await
+        });
+        timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("physical input should start on the worker");
+
+        let takeover_started = std::time::Instant::now();
+        let takeover = dispatch_json(
+            &fixture.home,
+            json!({"RequestRoomEnvironmentInputTakeover": {
+                "session_id":room, "target":{"kind":"desktop"}
+            }}),
+        )
+        .await
+        .expect("human takeover should cancel worker Computer input");
+        assert_eq!(
+            takeover["RoomEnvironmentTakeoverUpdated"]["outcome"]["state"],
+            "cancellation_required"
+        );
+        let action_result = timeout(Duration::from_secs(3), action)
+            .await
+            .expect("worker Computer input should stop")
+            .expect("worker Computer input task should join");
+        assert!(
+            takeover_started.elapsed() < Duration::from_secs(1),
+            "takeover must not wait for the worker helper timeout"
+        );
+        assert!(matches!(
+            action_result,
+            Err(DaemonError::BrowserControllerActionCancelled {
+                controller_fenced: false
+            })
+        ));
+        assert!(reset.exists(), "worker must reset physical input");
+
+        let state = dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentState":{"session_id":room}}),
+        )
+        .await
+        .expect("Room Environment state should remain readable");
+        let environment = &state["RoomEnvironmentState"]["environment"];
+        assert!(environment["actions"].as_array().is_some_and(|actions| {
+            actions.iter().any(|action| {
+                action["kind"] == "pointer_drag" && action["state"] == "cancelled"
+            })
+        }));
+        assert!(environment["input_ownership"]
+            .as_array()
+            .is_some_and(|owners| owners.iter().any(|owner| {
+                owner["target"]["kind"] == "desktop"
+                    && owner["actor_id"]
+                        .as_str()
+                        .is_some_and(|actor| actor.starts_with("user:"))
+            })));
+    })
+    .catch_unwind()
+    .await;
+
+    let controller_cleanup = fixture
+        .worker
+        .runtime_state
+        .shutdown_browser_controller_process()
+        .await;
+    fixture.stop().await;
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_COMPUTER_INPUT_STARTED");
+    std::env::remove_var("CHARIOX_COMPUTER_INPUT_RESET");
+    std::fs::remove_dir_all(&root).expect("test root should be removed");
+    controller_cleanup.expect("fixture controller should stop");
+    if let Err(panic) = assertions {
+        std::panic::resume_unwind(panic);
+    }
 }

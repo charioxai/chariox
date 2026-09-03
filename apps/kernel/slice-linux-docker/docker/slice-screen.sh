@@ -506,6 +506,18 @@ computer_key_stdin() {
   run_xdotool key --clearmodifiers --repeat "$repeat" --delay 40 "$key"
 }
 
+computer_input_reset() {
+  require_screen_available
+  local key
+  local button
+  for key in Shift_L Shift_R Control_L Control_R Alt_L Alt_R Super_L Super_R; do
+    run_xdotool keyup "$key" >/dev/null 2>&1 || true
+  done
+  for button in 1 2 3; do
+    run_xdotool mouseup "$button" >/dev/null 2>&1 || true
+  done
+}
+
 key() {
   require_screen_available
   focus_chromium
@@ -763,6 +775,7 @@ case "${1:-status}" in
   type|type_text) shift; type_text "$@" ;;
   computer-type-stdin|computer_type_stdin) computer_type_stdin ;;
   computer-key-stdin|computer_key_stdin) shift; computer_key_stdin "$@" ;;
+  computer-input-reset|computer_input_reset) computer_input_reset ;;
   key) shift; key "$@" ;;
   clipboard-get|clipboard_get) clipboard_get ;;
   clipboard-set|clipboard_set) shift; clipboard_set "$@" ;;
@@ -786,7 +799,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

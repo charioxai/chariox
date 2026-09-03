@@ -53,6 +53,7 @@ impl KernelRuntimeState {
             }
             execute_local(
                 self.owned.browser_controller_processes.clone(),
+                self.owned.computer_input_executions.clone(),
                 session_id,
                 command,
             )
@@ -174,6 +175,7 @@ impl KernelRuntimeState {
         }
         execute_local(
             self.owned.browser_controller_processes.clone(),
+            self.owned.computer_input_executions.clone(),
             session_id,
             command,
         )
@@ -204,6 +206,7 @@ fn receipt_recovery_command(command: &Command) -> Option<Command> {
 
 async fn execute_local(
     processes: BrowserControllerProcessStore,
+    computer_input_executions: crate::runtime::computer_input_execution::ComputerInputExecutionStore,
     session_id: &str,
     command: Command,
 ) -> Result<Response, DaemonError> {
@@ -226,19 +229,22 @@ async fn execute_local(
                     "environment_input_invalid_authority_context",
                 ));
             }
-            match action {
+            let execution = computer_input_executions
+                .begin(session_id, &action_id)
+                .map_err(controller_route_error)?;
+            let cancellation = execution.cancellation();
+            let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,
                     y,
-                } => {
-                    super::tool_dispatch::run_room_pointer_move(
-                        x,
-                        y,
-                        desktop_pixel_width,
-                        desktop_pixel_height,
-                    )
-                    .await?;
-                }
+                } => super::tool_dispatch::run_room_pointer_move(
+                    x,
+                    y,
+                    desktop_pixel_width,
+                    desktop_pixel_height,
+                    cancellation,
+                )
+                .await,
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
                     from_x,
                     from_y,
@@ -254,8 +260,9 @@ async fn execute_local(
                         button,
                         desktop_pixel_width,
                         desktop_pixel_height,
+                        cancellation,
                     )
-                    .await?;
+                    .await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerScroll {
                     x,
@@ -270,19 +277,18 @@ async fn execute_local(
                         vertical_steps,
                         desktop_pixel_width,
                         desktop_pixel_height,
+                        cancellation,
                     )
-                    .await?;
+                    .await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText {
                     input,
-                } => {
-                    super::tool_dispatch::run_room_keyboard_text(input).await?;
-                }
+                } => super::tool_dispatch::run_room_keyboard_text(input, cancellation).await,
                 crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey {
                     input,
                     repeat,
                 } => {
-                    super::tool_dispatch::run_room_keyboard_key(input, repeat).await?;
+                    super::tool_dispatch::run_room_keyboard_key(input, repeat, cancellation).await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
                     x,
@@ -297,15 +303,24 @@ async fn execute_local(
                         click_count,
                         desktop_pixel_width,
                         desktop_pixel_height,
+                        cancellation,
                     )
-                    .await?;
+                    .await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::SecretText {
                     input,
-                } => {
-                    super::tool_dispatch::run_room_secret_text_input(input).await?;
-                }
+                } => super::tool_dispatch::run_room_secret_text_input(input, cancellation).await,
+            };
+            if matches!(
+                input_result,
+                Err(DaemonError::BrowserControllerActionCancelled { .. })
+            ) {
+                super::tool_dispatch::reset_room_computer_input().await?;
+                return Ok(Response::ActionCancelled {
+                    controller_fenced: false,
+                });
             }
+            input_result?;
             return Ok(Response::ComputerInputApplied { action_id });
         }
         command => command,
@@ -313,9 +328,11 @@ async fn execute_local(
     let session_id = session_id.to_string();
     let recovery_processes = processes.clone();
     let result = tokio::task::spawn_blocking(move || match command {
-        Command::CancelAction { execution_id } => Ok(Response::CancellationRequested {
-            accepted: processes.cancel_browser_action(&session_id, &execution_id),
-        }),
+        Command::CancelAction { execution_id } => {
+            let accepted = computer_input_executions.cancel(&session_id, &execution_id)
+                || processes.cancel_browser_action(&session_id, &execution_id);
+            Ok(Response::CancellationRequested { accepted })
+        }
         Command::Acquire => processes
             .acquire(&session_id)
             .map(|snapshot| Response::Process { snapshot }),

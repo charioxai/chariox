@@ -620,6 +620,7 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
     run(&["pointer-scroll", "640", "400", "-3", "5"], None);
     run(&["computer-type-stdin"], Some("Grüße 世界"));
     run(&["computer-key-stdin", "3"], Some("ctrl+shift+p"));
+    run(&["computer-input-reset"], None);
 
     assert_eq!(
         std::fs::read_to_string(&xdotool_log).expect("xdotool call should be logged"),
@@ -632,6 +633,17 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "click --repeat 5 --delay 20 5\n",
             "type --clearmodifiers --delay 5 --file -\n",
             "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
+            "keyup Shift_L\n",
+            "keyup Shift_R\n",
+            "keyup Control_L\n",
+            "keyup Control_R\n",
+            "keyup Alt_L\n",
+            "keyup Alt_R\n",
+            "keyup Super_L\n",
+            "keyup Super_R\n",
+            "mouseup 1\n",
+            "mouseup 2\n",
+            "mouseup 3\n",
         )
     );
     assert_eq!(
