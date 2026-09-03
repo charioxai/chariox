@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::account_profile::ProviderAccountProfileRegistry;
+use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
 use crate::error::DaemonError;
 use crate::local::GetProviderAuthStatusRequest;
 
@@ -53,14 +53,35 @@ fn refresh_materialized_provider_account_auth(
     bindings: &PublicationProviderAccountBindings,
 ) -> Result<(), DaemonError> {
     for binding in &bindings.accounts {
-        crate::local::provider_requests::provider_auth_status_response(
+        let result = crate::local::provider_requests::provider_auth_status_response(
             registry,
             owner_user_id,
             GetProviderAuthStatusRequest {
                 provider: binding.provider.clone(),
                 account_profile: binding.account_profile.clone(),
             },
-        )?;
+        );
+        if let Err(error) = result {
+            registry.update_observation(
+                owner_user_id,
+                &binding.provider,
+                &binding.account_profile,
+                ProviderAccountAuthState::Error,
+                None,
+                None,
+                None,
+                None,
+            )?;
+            crate::logging::warn_with_fields(
+                "daemon.publication_provider_accounts",
+                "publication provider account auth refresh failed",
+                serde_json::json!({
+                    "provider": binding.provider,
+                    "account_profile": binding.account_profile,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
     Ok(())
 }
@@ -164,7 +185,7 @@ mod tests {
         validated_bindings, PublicationProviderAccountBinding, PublicationProviderAccountBindings,
         PublicationProviderDefaultAccount,
     };
-    use crate::account_profile::ProviderAccountProfileRegistry;
+    use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
 
     #[test]
     fn provider_account_materialization_manifest_has_no_agent_scope() {
@@ -355,6 +376,32 @@ exit 2
                 "submit prompt",
             )
             .is_err());
+
+        fs::write(
+            &claude,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ge 3 ] && [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' 'not-json'
+  exit 0
+fi
+if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
+  printf '%s\n' 'claude 1.2.3'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .expect("replace Claude fixture with operational failure");
+        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
+            .expect("operational auth failure must not abort publication startup");
+        assert_eq!(
+            registry
+                .get("local", "claude", "profile-claude")
+                .expect("resolve failed deployment account")
+                .auth_state,
+            ProviderAccountAuthState::Error
+        );
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_dir_all(root);
