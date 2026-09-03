@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use base64::Engine as _;
 use rand::{distributions::Alphanumeric, Rng};
@@ -785,6 +785,7 @@ impl Default for RegistryDocument {
 pub struct ProviderAccountProfileRegistry {
     path: PathBuf,
     document: Arc<RwLock<RegistryDocument>>,
+    usage_refresh_attempts: Arc<Mutex<BTreeMap<(String, String, String), u64>>>,
 }
 
 impl ProviderAccountProfileRegistry {
@@ -813,6 +814,7 @@ impl ProviderAccountProfileRegistry {
         let registry = Self {
             path,
             document: Arc::new(RwLock::new(document)),
+            usage_refresh_attempts: Arc::new(Mutex::new(BTreeMap::new())),
         };
         if changed {
             let document = registry.read_document()?;
@@ -1150,6 +1152,32 @@ impl ProviderAccountProfileRegistry {
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
+    }
+
+    pub(crate) fn claim_usage_refresh_attempt(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        now_ms: u64,
+        retry_after_ms: u64,
+    ) -> Result<bool, DaemonError> {
+        let profile = self.get(owner_user_id, provider, profile_id)?;
+        let key = (profile.owner_user_id, profile.provider, profile.profile_id);
+        let mut attempts = self
+            .usage_refresh_attempts
+            .lock()
+            .map_err(|error| registry_error("claim account usage refresh", error.to_string()))?;
+        attempts
+            .retain(|_, attempted_at_ms| now_ms.saturating_sub(*attempted_at_ms) < retry_after_ms);
+        if attempts
+            .get(&key)
+            .is_some_and(|attempted_at_ms| now_ms.saturating_sub(*attempted_at_ms) < retry_after_ms)
+        {
+            return Ok(false);
+        }
+        attempts.insert(key, now_ms);
+        Ok(true)
     }
 
     pub fn update_services(
