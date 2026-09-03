@@ -408,6 +408,52 @@ pointer_click() {
   run_xdotool mousemove "$x" "$y" click --repeat "$click_count" --delay 80 "$button"
 }
 
+pointer_drag() {
+  require_screen_available
+  local from_x="$1"
+  local from_y="$2"
+  local to_x="$3"
+  local to_y="$4"
+  local button_name="$5"
+  local button
+  case "$button_name" in
+    left) button=1 ;;
+    middle) button=2 ;;
+    right) button=3 ;;
+    *) printf 'pointer button must be left, middle, or right\n' >&2; return 2 ;;
+  esac
+  run_xdotool mousemove "$from_x" "$from_y" mousedown "$button" mousemove --sync "$to_x" "$to_y" mouseup "$button"
+}
+
+pointer_scroll() {
+  require_screen_available
+  local x="$1"
+  local y="$2"
+  local horizontal_steps="$3"
+  local vertical_steps="$4"
+  if [[ ! "$horizontal_steps" =~ ^-?[0-9]+$ || ! "$vertical_steps" =~ ^-?[0-9]+$ ]]; then
+    printf 'pointer scroll steps must be integers\n' >&2
+    return 2
+  fi
+  if (( horizontal_steps == 0 && vertical_steps == 0 \
+    || horizontal_steps < -120 || horizontal_steps > 120 \
+    || vertical_steps < -120 || vertical_steps > 120 )); then
+    printf 'pointer scroll steps must be nonzero and between -120 and 120\n' >&2
+    return 2
+  fi
+  run_xdotool mousemove "$x" "$y"
+  if (( horizontal_steps < 0 )); then
+    run_xdotool click --repeat "$((-horizontal_steps))" --delay 20 6
+  elif (( horizontal_steps > 0 )); then
+    run_xdotool click --repeat "$horizontal_steps" --delay 20 7
+  fi
+  if (( vertical_steps < 0 )); then
+    run_xdotool click --repeat "$((-vertical_steps))" --delay 20 4
+  elif (( vertical_steps > 0 )); then
+    run_xdotool click --repeat "$vertical_steps" --delay 20 5
+  fi
+}
+
 drag() {
   require_screen_available
   focus_chromium
@@ -437,6 +483,27 @@ type_text() {
   require_screen_available
   focus_chromium
   run_xdotool type --clearmodifiers --delay 5 "$*"
+}
+
+computer_type_stdin() {
+  require_screen_available
+  run_xdotool type --clearmodifiers --delay 5 --file -
+}
+
+computer_key_stdin() {
+  require_screen_available
+  local repeat="$1"
+  local key=""
+  IFS= read -r key || [[ -n "$key" ]]
+  if [[ ! "$repeat" =~ ^[0-9]+$ ]] || (( repeat < 1 || repeat > 32 )); then
+    printf 'computer key repeat must be between 1 and 32\n' >&2
+    return 2
+  fi
+  if [[ -z "$key" || ${#key} -gt 128 || "$key" == -* || "$key" =~ [[:space:]] ]]; then
+    printf 'computer key must be a non-whitespace xdotool key name of at most 128 bytes\n' >&2
+    return 2
+  fi
+  run_xdotool key --clearmodifiers --repeat "$repeat" --delay 40 "$key"
 }
 
 key() {
@@ -688,10 +755,14 @@ case "${1:-status}" in
   click) shift; click "$@" ;;
   double-click|double_click) shift; double_click "$@" ;;
   pointer-click|pointer_click) shift; pointer_click "$@" ;;
+  pointer-drag|pointer_drag) shift; pointer_drag "$@" ;;
+  pointer-scroll|pointer_scroll) shift; pointer_scroll "$@" ;;
   drag) shift; drag "$@" ;;
   move|move_mouse) shift; move_mouse "$@" ;;
   scroll) shift; scroll "$@" ;;
   type|type_text) shift; type_text "$@" ;;
+  computer-type-stdin|computer_type_stdin) computer_type_stdin ;;
+  computer-key-stdin|computer_key_stdin) shift; computer_key_stdin "$@" ;;
   key) shift; key "$@" ;;
   clipboard-get|clipboard_get) clipboard_get ;;
   clipboard-set|clipboard_set) shift; clipboard_set "$@" ;;
@@ -715,7 +786,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

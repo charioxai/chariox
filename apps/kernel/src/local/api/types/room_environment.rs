@@ -138,9 +138,59 @@ pub struct CancelRoomEnvironmentActionRequest {
 
 pub type RoomEnvironmentPointerButton = crate::session::EnvironmentPointerButton;
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoomEnvironmentKeyboardInput(String);
+
+impl RoomEnvironmentKeyboardInput {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for RoomEnvironmentKeyboardInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RoomEnvironmentKeyboardInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted computer keyboard input]")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoomEnvironmentHumanAction {
+    PointerMove {
+        x: u32,
+        y: u32,
+    },
+    PointerDrag {
+        from_x: u32,
+        from_y: u32,
+        to_x: u32,
+        to_y: u32,
+        button: RoomEnvironmentPointerButton,
+    },
+    PointerScroll {
+        x: u32,
+        y: u32,
+        horizontal_steps: i16,
+        vertical_steps: i16,
+    },
+    KeyboardText {
+        text: RoomEnvironmentKeyboardInput,
+    },
+    KeyboardKey {
+        key: RoomEnvironmentKeyboardInput,
+        repeat: u16,
+    },
     PointerClick {
         x: u32,
         y: u32,

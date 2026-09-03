@@ -304,6 +304,20 @@ pub enum EnvironmentError {
     InvalidClickCount {
         click_count: u8,
     },
+    InvalidScrollSteps {
+        horizontal_steps: i16,
+        vertical_steps: i16,
+        max_steps: u16,
+    },
+    InvalidKeyboardText {
+        utf8_byte_count: usize,
+        max_utf8_bytes: usize,
+    },
+    InvalidKeyboardKey,
+    InvalidKeyboardRepeat {
+        repeat: u16,
+        max_repeat: u16,
+    },
     InvalidIdempotencyKey,
     InvalidEventCapacity,
     IdempotencyConflict {
@@ -351,6 +365,10 @@ impl EnvironmentError {
             Self::InputTakeoverRequired { .. } => "environment_input_takeover_required",
             Self::PointerOutOfBounds { .. } => "environment_pointer_out_of_bounds",
             Self::InvalidClickCount { .. } => "environment_invalid_click_count",
+            Self::InvalidScrollSteps { .. } => "environment_invalid_scroll_steps",
+            Self::InvalidKeyboardText { .. } => "environment_invalid_keyboard_text",
+            Self::InvalidKeyboardKey => "environment_invalid_keyboard_key",
+            Self::InvalidKeyboardRepeat { .. } => "environment_invalid_keyboard_repeat",
             Self::InvalidIdempotencyKey => "environment_invalid_idempotency_key",
             Self::InvalidEventCapacity => "environment_invalid_event_capacity",
             Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",

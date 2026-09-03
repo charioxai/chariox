@@ -132,7 +132,7 @@ fn room_environment_action_cancel_uses_authenticated_actor_and_stable_errors() {
 }
 
 #[test]
-fn room_environment_pointer_click_requires_takeover_and_current_viewport() {
+fn room_environment_human_input_requires_takeover_and_rejects_invalid_arguments() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch_as_user(
@@ -225,6 +225,16 @@ fn room_environment_pointer_click_requires_takeover_and_current_viewport() {
         )
         .expect("owner should take desktop input");
 
+    let human_request = |idempotency_key: &str, action: RoomEnvironmentHumanAction| {
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+            session_id: session.id().to_string(),
+            runtime_generation: environment.runtime_generation,
+            viewport_revision: environment.viewport.revision,
+            idempotency_key: idempotency_key.to_string(),
+            action,
+        })
+    };
+
     for (candidate, expected_code) in [
         (
             request(
@@ -291,6 +301,114 @@ fn room_environment_pointer_click_requires_takeover_and_current_viewport() {
                 1,
             ),
             "environment_invalid_idempotency_key:",
+        ),
+        (
+            human_request(
+                "move-out-of-bounds",
+                RoomEnvironmentHumanAction::PointerMove {
+                    x: environment.viewport.desktop_pixel_width,
+                    y: 30,
+                },
+            ),
+            "environment_pointer_out_of_bounds:",
+        ),
+        (
+            human_request(
+                "drag-start-out-of-bounds",
+                RoomEnvironmentHumanAction::PointerDrag {
+                    from_x: environment.viewport.desktop_pixel_width,
+                    from_y: 30,
+                    to_x: 40,
+                    to_y: 50,
+                    button: RoomEnvironmentPointerButton::Left,
+                },
+            ),
+            "environment_pointer_out_of_bounds:",
+        ),
+        (
+            human_request(
+                "drag-end-out-of-bounds",
+                RoomEnvironmentHumanAction::PointerDrag {
+                    from_x: 20,
+                    from_y: 30,
+                    to_x: 40,
+                    to_y: environment.viewport.desktop_pixel_height,
+                    button: RoomEnvironmentPointerButton::Right,
+                },
+            ),
+            "environment_pointer_out_of_bounds:",
+        ),
+        (
+            human_request(
+                "scroll-zero",
+                RoomEnvironmentHumanAction::PointerScroll {
+                    x: 20,
+                    y: 30,
+                    horizontal_steps: 0,
+                    vertical_steps: 0,
+                },
+            ),
+            "environment_invalid_scroll_steps:",
+        ),
+        (
+            human_request(
+                "scroll-too-large",
+                RoomEnvironmentHumanAction::PointerScroll {
+                    x: 20,
+                    y: 30,
+                    horizontal_steps: 121,
+                    vertical_steps: 0,
+                },
+            ),
+            "environment_invalid_scroll_steps:",
+        ),
+        (
+            human_request(
+                "keyboard-text-empty",
+                RoomEnvironmentHumanAction::KeyboardText {
+                    text: RoomEnvironmentKeyboardInput::new(String::new()),
+                },
+            ),
+            "environment_invalid_keyboard_text:",
+        ),
+        (
+            human_request(
+                "keyboard-text-too-large",
+                RoomEnvironmentHumanAction::KeyboardText {
+                    text: RoomEnvironmentKeyboardInput::new("a".repeat(64 * 1024 + 1)),
+                },
+            ),
+            "environment_invalid_keyboard_text:",
+        ),
+        (
+            human_request(
+                "keyboard-key-invalid",
+                RoomEnvironmentHumanAction::KeyboardKey {
+                    key: RoomEnvironmentKeyboardInput::new("ctrl shift p".to_string()),
+                    repeat: 1,
+                },
+            ),
+            "environment_invalid_keyboard_key:",
+        ),
+        (
+            human_request(
+                "keyboard-repeat-zero",
+                RoomEnvironmentHumanAction::KeyboardKey {
+                    key: RoomEnvironmentKeyboardInput::new("Return".to_string()),
+                    repeat: 0,
+                },
+            ),
+            "environment_invalid_keyboard_repeat:",
+        ),
+        (
+            human_request(
+                "keyboard-repeat-too-large",
+                RoomEnvironmentHumanAction::KeyboardKey {
+                    key: RoomEnvironmentKeyboardInput::new("Return".to_string()),
+                    repeat: 33,
+                },
+            ),
+            "environment_invalid_keyboard_repeat:",
         ),
     ] {
         let error = harness
@@ -509,6 +627,434 @@ fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
 
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     std::env::remove_var("CHARIOX_POINTER_CLICK_LOG");
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+    std::fs::remove_dir_all(&root).expect("test root should be removed");
+}
+
+#[test]
+fn room_environment_pointer_motion_executes_and_records_coordinates() {
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-human-pointer-move-test-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("slice-screen.sh");
+    let log = root.join("pointer-move.log");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_POINTER_MOVE_LOG\"\n",
+    )
+    .expect("screen helper should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("screen helper should be executable");
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    std::env::set_var("CHARIOX_POINTER_MOVE_LOG", &log);
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS", "5000");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-pointer-move-execution",
+                "worktree-environment-pointer-move-execution",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+    });
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                RequestRoomEnvironmentInputTakeoverRequest {
+                    session_id: session.id().to_string(),
+                    target: crate::session::InputTarget::Desktop,
+                },
+            ),
+        )
+        .expect("owner should take desktop input");
+    let environment = harness.with_app(|app| {
+        app.session_state_store()
+            .room_environment_snapshot(session.id())
+            .expect("Room Environment should exist")
+    });
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "pointer-move-1".to_string(),
+                action: RoomEnvironmentHumanAction::PointerMove { x: 640, y: 400 },
+            }),
+        )
+        .expect("valid human pointer move should execute");
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let action = environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .expect("pointer move Action should be recorded");
+    assert_eq!(action.kind, "pointer_move");
+    assert_eq!(
+        action.state,
+        crate::session::EnvironmentActionState::Completed
+    );
+    assert_eq!(
+        action.arguments,
+        Some(crate::session::EnvironmentActionArguments::PointerMove {
+            x: 640,
+            y: 400,
+            viewport_revision: environment.viewport.revision,
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("physical move should be logged"),
+        "move 640 400\n"
+    );
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "pointer-drag-1".to_string(),
+                action: RoomEnvironmentHumanAction::PointerDrag {
+                    from_x: 120,
+                    from_y: 160,
+                    to_x: 720,
+                    to_y: 560,
+                    button: RoomEnvironmentPointerButton::Left,
+                },
+            }),
+        )
+        .expect("valid human pointer drag should execute");
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let action = environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .expect("pointer drag Action should be recorded");
+    assert_eq!(action.kind, "pointer_drag");
+    assert_eq!(
+        action.state,
+        crate::session::EnvironmentActionState::Completed
+    );
+    assert_eq!(
+        action.arguments,
+        Some(crate::session::EnvironmentActionArguments::PointerDrag {
+            from_x: 120,
+            from_y: 160,
+            to_x: 720,
+            to_y: 560,
+            button: crate::session::EnvironmentPointerButton::Left,
+            viewport_revision: environment.viewport.revision,
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("physical motion should be logged"),
+        "move 640 400\npointer-drag 120 160 720 560 left\n"
+    );
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "pointer-scroll-1".to_string(),
+                action: RoomEnvironmentHumanAction::PointerScroll {
+                    x: 640,
+                    y: 400,
+                    horizontal_steps: -3,
+                    vertical_steps: 5,
+                },
+            }),
+        )
+        .expect("valid human pointer scroll should execute");
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let action = environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .expect("pointer scroll Action should be recorded");
+    assert_eq!(action.kind, "pointer_scroll");
+    assert_eq!(
+        action.state,
+        crate::session::EnvironmentActionState::Completed
+    );
+    assert_eq!(
+        action.arguments,
+        Some(crate::session::EnvironmentActionArguments::PointerScroll {
+            x: 640,
+            y: 400,
+            horizontal_steps: -3,
+            vertical_steps: 5,
+            viewport_revision: environment.viewport.revision,
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("physical mouse input should be logged"),
+        "move 640 400\npointer-drag 120 160 720 560 left\npointer-scroll 640 400 -3 5\n"
+    );
+
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_POINTER_MOVE_LOG");
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+    std::fs::remove_dir_all(&root).expect("test root should be removed");
+}
+
+#[test]
+fn room_environment_keyboard_input_executes_without_persisting_input() {
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-human-keyboard-text-test-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("slice-screen.sh");
+    let command_log = root.join("keyboard-command.log");
+    let input_log = root.join("keyboard-input.log");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHARIOX_KEYBOARD_COMMAND_LOG\"\ncat >> \"$CHARIOX_KEYBOARD_INPUT_LOG\"\n",
+    )
+    .expect("screen helper should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("screen helper should be executable");
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    std::env::set_var("CHARIOX_KEYBOARD_COMMAND_LOG", &command_log);
+    std::env::set_var("CHARIOX_KEYBOARD_INPUT_LOG", &input_log);
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS", "5000");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-keyboard-text",
+                "worktree-environment-keyboard-text",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+    });
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                RequestRoomEnvironmentInputTakeoverRequest {
+                    session_id: session.id().to_string(),
+                    target: crate::session::InputTarget::Desktop,
+                },
+            ),
+        )
+        .expect("owner should take desktop input");
+    let environment = harness.with_app(|app| {
+        app.session_state_store()
+            .room_environment_snapshot(session.id())
+            .expect("Room Environment should exist")
+    });
+    let input = "Grüße 世界";
+    let keyboard_input = RoomEnvironmentKeyboardInput::new(input.to_string());
+    assert!(!format!("{keyboard_input:?}").contains(input));
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "keyboard-text-1".to_string(),
+                action: RoomEnvironmentHumanAction::KeyboardText {
+                    text: keyboard_input,
+                },
+            }),
+        )
+        .expect("valid human keyboard text should execute");
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let action = environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .expect("keyboard text Action should be recorded");
+    assert_eq!(action.kind, "keyboard_text");
+    assert_eq!(
+        action.state,
+        crate::session::EnvironmentActionState::Completed
+    );
+    assert_eq!(
+        action.arguments,
+        Some(crate::session::EnvironmentActionArguments::KeyboardText {
+            utf8_byte_count: 14,
+            character_count: 8,
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&command_log).expect("keyboard command should be logged"),
+        "computer-type-stdin\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&input_log).expect("keyboard input should reach stdin"),
+        input
+    );
+
+    let conflicting_text = RoomEnvironmentKeyboardInput::new("Früße 世界".to_string());
+    let error = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "keyboard-text-1".to_string(),
+                action: RoomEnvironmentHumanAction::KeyboardText {
+                    text: conflicting_text,
+                },
+            }),
+        )
+        .expect_err("same-length keyboard text must not share an idempotent operation identity");
+    assert!(matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "environment.action.submit",
+            message,
+        } if message.starts_with("environment_idempotency_conflict:")
+    ));
+
+    let key_input = RoomEnvironmentKeyboardInput::new("ctrl+shift+p".to_string());
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                runtime_generation: environment.runtime_generation,
+                viewport_revision: environment.viewport.revision,
+                idempotency_key: "keyboard-key-1".to_string(),
+                action: RoomEnvironmentHumanAction::KeyboardKey {
+                    key: key_input,
+                    repeat: 3,
+                },
+            }),
+        )
+        .expect("valid human keyboard key chord should execute");
+    let LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+        action_id,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let action = environment
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .expect("keyboard key Action should be recorded");
+    assert_eq!(action.kind, "keyboard_key");
+    assert_eq!(
+        action.state,
+        crate::session::EnvironmentActionState::Completed
+    );
+    assert_eq!(
+        action.arguments,
+        Some(crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&command_log).expect("keyboard commands should be logged"),
+        "computer-type-stdin\ncomputer-key-stdin 3\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&input_log).expect("keyboard inputs should reach stdin"),
+        "Grüße 世界ctrl+shift+p"
+    );
+
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_KEYBOARD_COMMAND_LOG");
+    std::env::remove_var("CHARIOX_KEYBOARD_INPUT_LOG");
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
     std::fs::remove_dir_all(&root).expect("test root should be removed");
 }

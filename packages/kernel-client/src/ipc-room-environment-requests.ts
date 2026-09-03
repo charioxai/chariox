@@ -171,13 +171,43 @@ export function cancelRoomEnvironmentActionRequest(sessionId: string, actionId: 
   }
 }
 
-export type RoomEnvironmentHumanAction = {
-  readonly kind: "pointer_click"
-  readonly x: number
-  readonly y: number
-  readonly button: "left" | "middle" | "right"
-  readonly click_count: 1 | 2
-}
+export type RoomEnvironmentHumanAction =
+  | {
+      readonly kind: "keyboard_text"
+      readonly text: string
+    }
+  | {
+      readonly kind: "keyboard_key"
+      readonly key: string
+      readonly repeat: number
+    }
+  | {
+      readonly kind: "pointer_move"
+      readonly x: number
+      readonly y: number
+    }
+  | {
+      readonly kind: "pointer_drag"
+      readonly from_x: number
+      readonly from_y: number
+      readonly to_x: number
+      readonly to_y: number
+      readonly button: "left" | "middle" | "right"
+    }
+  | {
+      readonly kind: "pointer_scroll"
+      readonly x: number
+      readonly y: number
+      readonly horizontal_steps: number
+      readonly vertical_steps: number
+    }
+  | {
+      readonly kind: "pointer_click"
+      readonly x: number
+      readonly y: number
+      readonly button: "left" | "middle" | "right"
+      readonly click_count: 1 | 2
+    }
 
 export function submitRoomEnvironmentActionRequest(
   sessionId: string,

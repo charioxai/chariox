@@ -69,8 +69,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 36 adds approval-gated Computer credential injection.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 36;
+/// Version 37 adds complete human Computer mouse and keyboard input.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 37;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

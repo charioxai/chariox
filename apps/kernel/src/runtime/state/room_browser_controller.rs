@@ -227,6 +227,63 @@ async fn execute_local(
                 ));
             }
             match action {
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
+                    x,
+                    y,
+                } => {
+                    super::tool_dispatch::run_room_pointer_move(
+                        x,
+                        y,
+                        desktop_pixel_width,
+                        desktop_pixel_height,
+                    )
+                    .await?;
+                }
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                    button,
+                } => {
+                    super::tool_dispatch::run_room_pointer_drag(
+                        from_x,
+                        from_y,
+                        to_x,
+                        to_y,
+                        button,
+                        desktop_pixel_width,
+                        desktop_pixel_height,
+                    )
+                    .await?;
+                }
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerScroll {
+                    x,
+                    y,
+                    horizontal_steps,
+                    vertical_steps,
+                } => {
+                    super::tool_dispatch::run_room_pointer_scroll(
+                        x,
+                        y,
+                        horizontal_steps,
+                        vertical_steps,
+                        desktop_pixel_width,
+                        desktop_pixel_height,
+                    )
+                    .await?;
+                }
+                crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText {
+                    input,
+                } => {
+                    super::tool_dispatch::run_room_keyboard_text(input).await?;
+                }
+                crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey {
+                    input,
+                    repeat,
+                } => {
+                    super::tool_dispatch::run_room_keyboard_key(input, repeat).await?;
+                }
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
                     x,
                     y,

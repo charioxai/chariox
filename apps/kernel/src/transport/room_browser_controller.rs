@@ -5,6 +5,11 @@ use crate::runtime::browser_controller_process::{
 };
 use crate::session::CanonicalViewport;
 
+pub(crate) const ROOM_COMPUTER_SCROLL_MAX_STEPS: u16 = 120;
+pub(crate) const ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES: usize = 64 * 1024;
+pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES: usize = 128;
+pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT: u16 = 32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RoomComputerPointerButton {
@@ -43,9 +48,63 @@ impl std::fmt::Debug for RoomComputerSecretInput {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RoomComputerKeyboardInput(String);
+
+impl RoomComputerKeyboardInput {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RoomComputerKeyboardInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RoomComputerKeyboardInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted computer keyboard input]")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
+    PointerMove {
+        x: u32,
+        y: u32,
+    },
+    PointerDrag {
+        from_x: u32,
+        from_y: u32,
+        to_x: u32,
+        to_y: u32,
+        button: RoomComputerPointerButton,
+    },
+    PointerScroll {
+        x: u32,
+        y: u32,
+        horizontal_steps: i16,
+        vertical_steps: i16,
+    },
+    KeyboardText {
+        input: RoomComputerKeyboardInput,
+    },
+    KeyboardKey {
+        input: RoomComputerKeyboardInput,
+        repeat: u16,
+    },
     PointerClick {
         x: u32,
         y: u32,

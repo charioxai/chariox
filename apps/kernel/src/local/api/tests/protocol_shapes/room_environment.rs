@@ -13,7 +13,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_screenshot_transfer_shape_is_versioned_and_bounded() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let capture = LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(
         CaptureRoomEnvironmentScreenshotRequest {
@@ -85,7 +85,7 @@ fn room_environment_screenshot_transfer_shape_is_versioned_and_bounded() {
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -363,7 +363,7 @@ fn room_environment_state_shape_is_versioned() {
 
 #[test]
 fn room_environment_event_replay_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
         session_id: "session-1".to_string(),
@@ -473,7 +473,7 @@ fn room_environment_event_replay_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_history_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
         ListRoomEnvironmentActionHistoryRequest {
@@ -557,7 +557,7 @@ fn room_environment_action_history_shape_is_versioned() {
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -645,7 +645,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -668,7 +668,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -691,7 +691,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -731,7 +731,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_pointer_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentPointer(UpdateRoomEnvironmentPointerRequest {
@@ -769,7 +769,7 @@ fn room_environment_pointer_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -853,7 +853,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
@@ -912,7 +912,7 @@ fn room_environment_input_release_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_cancellation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request =
         LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
@@ -970,7 +970,7 @@ fn room_environment_action_cancellation_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_submission_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 301);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
 
     let request =
         LocalDaemonRequest::SubmitRoomEnvironmentAction(SubmitRoomEnvironmentActionRequest {
@@ -1074,4 +1074,124 @@ fn room_environment_action_submission_shape_is_versioned() {
             .expect("Action submission response should decode"),
         response
     );
+}
+
+#[test]
+fn room_environment_complete_human_input_shapes_are_versioned_and_keyboard_history_is_redacted() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 302);
+
+    for (action, wire) in [
+        (
+            RoomEnvironmentHumanAction::PointerMove { x: 640, y: 400 },
+            serde_json::json!({"kind":"pointer_move","x":640,"y":400}),
+        ),
+        (
+            RoomEnvironmentHumanAction::PointerDrag {
+                from_x: 120,
+                from_y: 160,
+                to_x: 720,
+                to_y: 560,
+                button: RoomEnvironmentPointerButton::Left,
+            },
+            serde_json::json!({"kind":"pointer_drag","from_x":120,"from_y":160,
+                "to_x":720,"to_y":560,"button":"left"}),
+        ),
+        (
+            RoomEnvironmentHumanAction::PointerScroll {
+                x: 640,
+                y: 400,
+                horizontal_steps: -3,
+                vertical_steps: 5,
+            },
+            serde_json::json!({"kind":"pointer_scroll","x":640,"y":400,
+                "horizontal_steps":-3,"vertical_steps":5}),
+        ),
+        (
+            RoomEnvironmentHumanAction::KeyboardText {
+                text: RoomEnvironmentKeyboardInput::new("sensitive-keyboard-text-世界".to_string()),
+            },
+            serde_json::json!({"kind":"keyboard_text","text":"sensitive-keyboard-text-世界"}),
+        ),
+        (
+            RoomEnvironmentHumanAction::KeyboardKey {
+                key: RoomEnvironmentKeyboardInput::new(
+                    "ctrl+shift+sensitive-keyboard-key".to_string(),
+                ),
+                repeat: 3,
+            },
+            serde_json::json!({"kind":"keyboard_key",
+                "key":"ctrl+shift+sensitive-keyboard-key","repeat":3}),
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_value(&action).expect("human input should encode"),
+            wire
+        );
+        assert_eq!(
+            serde_json::from_value::<RoomEnvironmentHumanAction>(wire)
+                .expect("human input should decode"),
+            action
+        );
+        assert!(
+            !format!("{action:?}").contains("sensitive-keyboard"),
+            "local diagnostics must not print keyboard input"
+        );
+    }
+
+    for (arguments, wire) in [
+        (
+            crate::session::EnvironmentActionArguments::PointerMove {
+                x: 640,
+                y: 400,
+                viewport_revision: 9,
+            },
+            serde_json::json!({"kind":"pointer_move","x":640,"y":400,
+                "viewport_revision":9}),
+        ),
+        (
+            crate::session::EnvironmentActionArguments::PointerDrag {
+                from_x: 120,
+                from_y: 160,
+                to_x: 720,
+                to_y: 560,
+                button: crate::session::EnvironmentPointerButton::Left,
+                viewport_revision: 9,
+            },
+            serde_json::json!({"kind":"pointer_drag","from_x":120,"from_y":160,
+                "to_x":720,"to_y":560,"button":"left","viewport_revision":9}),
+        ),
+        (
+            crate::session::EnvironmentActionArguments::PointerScroll {
+                x: 640,
+                y: 400,
+                horizontal_steps: -3,
+                vertical_steps: 5,
+                viewport_revision: 9,
+            },
+            serde_json::json!({"kind":"pointer_scroll","x":640,"y":400,
+                "horizontal_steps":-3,"vertical_steps":5,"viewport_revision":9}),
+        ),
+        (
+            crate::session::EnvironmentActionArguments::KeyboardText {
+                utf8_byte_count: 14,
+                character_count: 8,
+            },
+            serde_json::json!({"kind":"keyboard_text","utf8_byte_count":14,
+                "character_count":8}),
+        ),
+        (
+            crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 },
+            serde_json::json!({"kind":"keyboard_key","repeat":3}),
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_value(&arguments).expect("Action arguments should encode"),
+            wire
+        );
+        assert_eq!(
+            serde_json::from_value::<crate::session::EnvironmentActionArguments>(wire)
+                .expect("Action arguments should decode"),
+            arguments
+        );
+    }
 }
