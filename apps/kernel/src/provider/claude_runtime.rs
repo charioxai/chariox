@@ -396,6 +396,12 @@ fn handle_claude_tool_uses(
             bytes,
         });
     }
+    if state.tool_transcript.take_truncation_notice() {
+        batch.notices.push(
+            "Claude tool transcript truncated to resource limits; provider execution is unchanged"
+                .to_string(),
+        );
+    }
     if !tool_results.is_empty() {
         let response = json!({
             "type": "user",
