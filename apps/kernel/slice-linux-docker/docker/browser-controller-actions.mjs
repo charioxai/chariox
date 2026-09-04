@@ -25,6 +25,7 @@ export async function performBrowserAction({
   signal,
   now = Date.now,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  assertContext = async () => {},
 }) {
   const backendNodeId = parseBackendNodeReference(nodeRef);
   const normalizedAction = normalizeAction(action);
@@ -45,6 +46,7 @@ export async function performBrowserAction({
       );
     }
     attempts += 1;
+    await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
     const objectId = await resolveBackendNode(connection, sessionId, backendNodeId);
     try {
@@ -219,6 +221,15 @@ async function inspectActionability(connection, sessionId, objectId) {
       "browser actionability inspection returned an invalid result",
     );
   }
+  if (result.state === "ready" && result.crossOriginFrame) {
+    const { quads } = await connection.send("DOM.getContentQuads", { objectId }, sessionId);
+    const quad = quads?.[0];
+    if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) {
+      return { state: "frame_unavailable" };
+    }
+    result.x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
+    result.y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+  }
   return result;
 }
 
@@ -266,9 +277,13 @@ export function actionabilityFunction() {
   let x = localX;
   let y = localY;
   let currentWindow = ownerWindow;
+  let crossOriginFrame = false;
   while (currentWindow && currentWindow !== currentWindow.top) {
     const frameElement = currentWindow.frameElement;
-    if (!frameElement) return { state: "frame_unavailable" };
+    if (!frameElement) {
+      crossOriginFrame = true;
+      break;
+    }
     const frameRect = frameElement.getBoundingClientRect();
     const frameStyle = frameElement.ownerDocument.defaultView.getComputedStyle(frameElement);
     const paddingLeft = Number.parseFloat(frameStyle.paddingLeft) || 0;
@@ -302,6 +317,7 @@ export function actionabilityFunction() {
     width: rect.width,
     height: rect.height,
     editable,
+    ...(crossOriginFrame ? { crossOriginFrame: true } : {}),
   };
 }
 
