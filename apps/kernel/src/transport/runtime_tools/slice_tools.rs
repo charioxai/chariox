@@ -202,10 +202,19 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_DOWNLOADS_TOOL.to_string(),
-            description: "Enable downloads for the focused Room browser tab. Download paths remain private to the slice.".to_string(),
+            description: "Enable downloads for the focused Room browser tab, or cancel an active download using its observed browser_generation and guid from slice_browser_events. Cancellation is requested, not completed, until a canceled progress event arrives. Download paths remain private to the slice.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "cancel": {
+                        "type": "object", "required": ["browser_generation", "guid"],
+                        "properties": {
+                            "browser_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991u64},
+                            "guid": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"}
+                        },
+                        "additionalProperties": false
+                    }
+                },
                 "additionalProperties": false
             }),
         },

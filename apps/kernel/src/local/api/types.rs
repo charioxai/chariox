@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 303 adds kernel-owned Computer clipboard write and read contracts.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 303;
+/// Version 304 adds kernel-owned browser download cancellation.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 304;

@@ -20,6 +20,8 @@ const ACTION_QUEUE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) struct BrowserControllerActionExecution<T> {
     pub(crate) action_id: String,
     pub(crate) actor_id: String,
+    pub(crate) environment_id: String,
+    pub(crate) runtime_generation: u64,
     pub(crate) value: T,
 }
 
@@ -187,7 +189,24 @@ impl KernelRuntimeState {
             tab_id,
             document_revision,
         );
-        let (admission, _) = self
+        self.execute_environment_mutation_as_agent(session_id, request, execution_id, execution)
+            .await
+    }
+
+    pub(super) async fn execute_environment_mutation_as_agent<T, F>(
+        &self,
+        session_id: &str,
+        request: EnvironmentActionRequest,
+        execution_id: Option<&str>,
+        execution: F,
+    ) -> Result<BrowserControllerActionExecution<T>, DaemonError>
+    where
+        F: Future<Output = Result<T, DaemonError>>,
+    {
+        let actor_id = request.actor_id.clone();
+        let runtime_generation = request.runtime_generation;
+        let tab_preconditions = request.tab_preconditions.clone();
+        let (admission, admitted_environment) = self
             .submit_room_environment_action(session_id, request)
             .map_err(action_environment_error)?;
         let action_id = match admission {
@@ -225,9 +244,21 @@ impl KernelRuntimeState {
             }
         };
 
-        if let Err(error) =
-            self.validate_browser_action_precondition(session_id, tab_id, document_revision)
-        {
+        let preconditions = self
+            .room_environment_snapshot(session_id)
+            .and_then(|current| {
+                if current.runtime_generation != runtime_generation {
+                    return Err(EnvironmentError::StaleRuntimeGeneration {
+                        expected: current.runtime_generation,
+                        actual: runtime_generation,
+                    });
+                }
+                for (tab_id, revision) in &tab_preconditions {
+                    self.validate_browser_action_precondition(session_id, tab_id, *revision)?;
+                }
+                Ok(())
+            });
+        if let Err(error) = preconditions {
             let _ = self.finish_room_environment_action(
                 session_id,
                 &action_id,
@@ -297,6 +328,8 @@ impl KernelRuntimeState {
         Ok(BrowserControllerActionExecution {
             action_id,
             actor_id,
+            environment_id: admitted_environment.environment_id,
+            runtime_generation,
             value: result?,
         })
     }

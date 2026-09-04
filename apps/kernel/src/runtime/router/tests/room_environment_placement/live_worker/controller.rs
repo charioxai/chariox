@@ -307,6 +307,11 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
                 target_id: "worker-tab".into(),
                 document_id: "worker-document".into(),
             },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelDownload {
+                cancellation: crate::runtime::browser_controller_file_transfer::BrowserDownloadCancellation::new(
+                    1, "worker-active-download".into(),
+                ).unwrap(),
+            },
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::Upload {
                 target_id: "worker-tab".into(),
                 document_id: "worker-document".into(),
@@ -377,6 +382,7 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
     }));
     super::controller_compatibility::check(fixture, &token).await;
     super::controller_worker_mcp::check(fixture, worker_mcp_placement).await;
+    super::controller_integrations::check_cancellation_without_tabs(fixture, &token).await;
     dispatch_json(
         &fixture.home,
         json!({"StopRoomEnvironment":{"session_id":room}}),

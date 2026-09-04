@@ -69,8 +69,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 39 adds authenticated Room Computer clipboard commands and results.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 39;
+/// Version 40 adds authenticated Room browser download cancellation.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

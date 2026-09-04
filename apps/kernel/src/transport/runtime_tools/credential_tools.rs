@@ -292,7 +292,17 @@ pub struct SliceBrowserEventsArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SliceBrowserDownloadsArgs {}
+pub struct SliceBrowserDownloadsArgs {
+    #[serde(default)]
+    pub cancel: Option<SliceBrowserDownloadCancelArgs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserDownloadCancelArgs {
+    pub browser_generation: u64,
+    pub guid: String,
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

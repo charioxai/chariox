@@ -186,6 +186,9 @@ pub(crate) enum RoomBrowserControllerCommand {
         target_id: String,
         document_id: String,
     },
+    CancelDownload {
+        cancellation: crate::runtime::browser_controller_file_transfer::BrowserDownloadCancellation,
+    },
     Upload {
         target_id: String,
         document_id: String,
@@ -281,6 +284,9 @@ pub(crate) enum RoomBrowserControllerResult {
         result: Option<
             crate::runtime::browser_controller_file_transfer::BrowserControllerDownloadsResult,
         >,
+    },
+    DownloadCancellation {
+        result: Option<crate::runtime::browser_controller_file_transfer::BrowserControllerDownloadCancellationResult>,
     },
     Upload {
         result:
