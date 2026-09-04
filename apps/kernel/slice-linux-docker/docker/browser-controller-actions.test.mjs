@@ -42,6 +42,17 @@ test("click auto-waits for a stable actionable element and uses native input", a
   );
 });
 
+test("detached elements reject before polling or input and release their remote object", async () => {
+  const connection = new FakeActionConnection([{ state: "detached" }]);
+  await assert.rejects(performBrowserAction({
+    connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a",
+    nodeRef: "backend:103", action: { kind: "fill", text: "not inserted" },
+    sleep: async () => { throw new Error("detached references must not poll"); },
+  }), { code: "stale_element_reference" });
+  assert.equal(connection.calls.some((call) => call.method.startsWith("Input.")), false);
+  assert.equal(connection.calls.some((call) => call.method === "Runtime.releaseObject"), true);
+});
+
 test("actionability accepts a hit inside the target's own shadow tree", () => {
   const ownerWindow = {
     getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),

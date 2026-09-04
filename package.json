@@ -13,6 +13,7 @@
     "start:cli": "node scripts/start-cli.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 run test",
     "test:daemon": "RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --manifest-path apps/kernel/Cargo.toml",
+    "test:browser-controller-browser": "node --test --test-concurrency=1 apps/kernel/slice-linux-docker/docker/browser-controller.browser-test.mjs",
     "perf:drills": "node scripts/performance-drills.mjs",
     "validation:suite": "node apps/cli/scripts/drill-validation-suite.mjs",
     "validation:focused-runtime-gate": "pnpm --filter @chariox/cli run validation:focused-runtime-gate",
