@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
+import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
@@ -239,6 +240,7 @@ async function run() {
   const kernelEnv = {
     ...process.env,
     CHARIOX_HOME: path.join(tempRoot, "home"),
+    CHARIOX_LOG_DIR: path.join(tempRoot, "kernel-logs"),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(kernelPort + 1),
     CHARIOX_CODEX_PORT: String(kernelPort + 2),
@@ -2757,6 +2759,18 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  if (failure) {
+    // Capture the failure before teardown adds disconnect/retry noise.
+    const privateRelayPort = slice?.local_docker_ports?.relay
+    const diagnostic = await captureRoomKernelDiagnostics(path.join(tempRoot, "kernel-logs"), {
+      primary: `ws://127.0.0.1:${relayPort}`,
+      private: slice?.relay_endpoint?.private ? slice.relay_endpoint.url
+        : Number.isInteger(privateRelayPort) ? `ws://127.0.0.1:${privateRelayPort}` : undefined,
+    }).catch(() => ({ status: "unavailable" }))
+    await writeFile(path.join(evidenceRoot, "kernel-connection-diagnostic.json"),
+      `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 })
+      .catch(() => undefined)
+  }
   if (failure && slice) {
     const diagnostic = await captureRoomStreamerDiagnostics(containerName, runCommand)
       .catch(() => ({ status: "unavailable" }))

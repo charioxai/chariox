@@ -145,6 +145,33 @@ action checkpoint alone is not a passing run. Cleanup must remove the owned
 container, volume, temporary state and listeners and pass the fixture-secret
 scan. Keep evidence outside repositories under `~/.codex/evidence/`.
 
+The Room drill assigns its home kernel a private `CHARIOX_LOG_DIR` under the
+disposable drill root. On failure, before teardown can flood the log with
+disconnect retries, it writes `kernel-connection-diagnostic.json`. This captures allowlisted
+connection stages and fixed error categories, not raw log lines, tokens, URLs,
+Room names, paths, prompts, or provider payloads. Primary and private relay URLs
+are compared in memory and recorded only as `primary` or `private`.
+
+Capture scans at most 64 directory entries, selects at most eight daemon log
+files, reads at most 64 KiB per file and 256 KiB total, and retains the latest 128
+matching events from those reads. Symlinks and non-regular files are ignored.
+Missing, unavailable and truncated evidence is explicit. This diagnostic does
+not establish that a failed connection recovered. The live slice failure and
+the complete provider/Web/TUI acceptance case must still be rerun.
+
+The privacy and bounded-read tests run with `test:room-provider`. To verify the
+capture against an already-built kernel without building, starting a slice or
+calling a provider:
+
+```sh
+CHARIOX_DIAGNOSTIC_KERNEL_BINARY=/absolute/path/to/chariox-kernel \
+  node --test apps/cli/scripts/lib/room-kernel-diagnostics.kernel-test.mjs
+```
+
+This test forces a local WebSocket handshake failure and removes its kernel,
+listener and temporary state in cleanup. It is not a reproduction of every
+private-relay provisioning failure.
+
 One discovery/click task does not close the entire Browser matrix. Navigation,
 frames, dialogs, upload/download, permissions, concurrent actors, vault-backed
 work, persistence and provider-thread resume each still need their own proof.
