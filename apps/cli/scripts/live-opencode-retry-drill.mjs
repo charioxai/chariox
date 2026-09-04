@@ -25,7 +25,7 @@ assert.ok([kernelBinary, opencodeBinary, clientDist].every(value => value && pat
 const { LocalIpcClient } = await import(pathToFileURL(path.join(clientDist, 'ipc.js')))
 const requests = await import(pathToFileURL(path.join(clientDist, 'ipc-requests.js')))
 const scratch = path.join(os.homedir(), '.chariox/dev/browser-computer-use')
-const workerThreads = process.env.CHARIOX_RETRY_WORKER_THREADS ?? '2'
+const workerThreads = process.env.CHARIOX_RETRY_WORKER_THREADS ?? '1'
 assert.match(workerThreads, /^[1-4]$/, 'use one to four worker threads')
 await fs.mkdir(scratch, { recursive: true })
 const root = await fs.mkdtemp(path.join(scratch, 'opencode-kernel-retry.'))

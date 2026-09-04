@@ -31,6 +31,23 @@ impl ProviderProcessService {
     pub(crate) fn initialize_runtime_binding(
         run: &RuntimeProviderRun,
     ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
+        // Cold prompt launches can reach this synchronous provider handshake
+        // from an async worker. The provider calls back into this kernel's MCP
+        // server during initialization, so yield the worker while waiting.
+        // Calls already on a blocking thread or outside Tokio stay synchronous.
+        let initialize = || Self::initialize_runtime_binding_sync(run);
+        if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(initialize)
+        } else {
+            initialize()
+        }
+    }
+
+    fn initialize_runtime_binding_sync(
+        run: &RuntimeProviderRun,
+    ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
         if run.adapter_key() == "dev-stub" && run.provider() == "runtime-init-fail" {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: run.id().to_string(),

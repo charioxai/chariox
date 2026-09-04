@@ -30,21 +30,31 @@ are streamed rather than loading the binary into memory. The source revision
 identifies the drill, not the compilation provenance of an arbitrary supplied
 kernel binary.
 
-## Scope and outstanding regression
+## Scope and cold-start regression
 
 This is local kernel/native-provider protocol evidence, not rendered Web/TUI,
 relay, Docker, managed deployment or successful model/tool-use acceptance.
 Those remain separate requirements in the end-to-end plan.
 
-The default is two Tokio workers. Set `CHARIOX_RETRY_WORKER_THREADS=1` to reproduce
-the cold-prompt startup stall found on kernel SHA-256
+The default is one Tokio worker, so normal runs also cover cold-prompt startup
+without starving the kernel's MCP server. `CHARIOX_RETRY_WORKER_THREADS` allows
+one to four workers for comparison. The original one-worker case stalled on kernel
+SHA-256
 `d1679c80774e094adef66bad9276a644888808dd56c9dc5acf9fa48f80aef0f1`.
 The supplied runtime's actual SHA is recorded in each result; do not infer a fix
-from the two-worker pass. One-worker startup remains an open runtime regression.
+from a two-worker pass.
 Set `CHARIOX_RETRY_PURE=1` to launch the same official CLI with `--pure`. The
 one-worker stall occurred both with and without this option.
 
-The startup investigation points to synchronous cold-provider initialization in
+The startup stall came from synchronous cold-provider initialization in
 `ensure_prompt_provider_run_for_agent`, called from `with_app_side_effect` on an
 async worker. Initialization waits for MCP requests served by that same runtime.
-The exact fix and single-worker regression validation are still outstanding.
+Shared provider initialization now uses Tokio's blocking region on a multi-thread
+runtime, allowing the sole async worker to keep serving the provider's MCP
+handshake. Calls outside Tokio or on a current-thread test runtime keep their
+existing synchronous behavior. This does not claim that a current-thread runtime
+can service asynchronous MCP while a synchronous launch blocks it; the kernel
+binary uses a multi-thread runtime even when configured with one worker.
+
+The same live drill fails before this fix at prompt submission with zero model
+requests, then passes after it with native retry, cancellation and cleanup checks.
