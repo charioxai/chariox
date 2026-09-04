@@ -159,6 +159,15 @@ Run locally with
 records the exact Git head, kernel hash, initial and restored slice runtime
 identity, resource samples, assertions, screenshots, and cleanup result.
 
+The first-party fixture also exposes a one-time OAuth authorization flow. The
+real-Chrome Browser Controller acceptance test must open the authorization
+popup through an observed link, activate its stable Tab, submit consent, follow
+the redirect, validate the callback in the original page, confirm the
+HttpOnly-authenticated session, and close the popup without changing the
+original Tab identity. The complete functional evidence contract records this
+as `browser.authentication` alongside the external-service reauthentication
+proof above.
+
 ## Phase 5: Gmail Live Drill
 
 Validate the real product requirement.

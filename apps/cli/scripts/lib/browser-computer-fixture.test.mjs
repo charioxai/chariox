@@ -164,6 +164,49 @@ test("fixture can invalidate an external service session without erasing the bro
   }
 })
 
+test("fixture provides a one-time OAuth popup redirect and callback", async () => {
+  const password = "fixture-test-password"
+  const fixture = await startBrowserComputerFixture({ password })
+  try {
+    const startPage = await fetch(`${fixture.origin}/oauth/start`).then((response) => response.text())
+    const authorizeHref = startPage.match(/href="(\/oauth\/authorize\?state=[^"]+)"/)?.[1]
+    assert.ok(authorizeHref)
+    assert.match(startPage, /target="_blank"/)
+
+    const authorizePage = await fetch(new URL(authorizeHref, fixture.origin)).then((response) => response.text())
+    assert.match(authorizePage, /Authorize Fixture account/)
+    const state = new URL(authorizeHref, fixture.origin).searchParams.get("state")
+    const authorization = await fetch(`${fixture.origin}/oauth/authorize`, {
+      method: "POST",
+      body: new URLSearchParams({ state }),
+      redirect: "manual",
+    })
+    assert.equal(authorization.status, 303)
+    const callbackLocation = authorization.headers.get("location")
+    const callbackUrl = new URL(callbackLocation, fixture.origin)
+    assert.equal(callbackUrl.pathname, "/oauth/callback")
+    assert.equal(callbackUrl.searchParams.get("state"), state)
+    assert.match(callbackUrl.searchParams.get("code"), /^fixture-code-/)
+
+    const callback = await fetch(callbackUrl)
+    assert.equal(callback.status, 200)
+    const cookie = callback.headers.get("set-cookie")
+    assert.match(cookie, /^chariox_fixture_session=/)
+    const callbackPage = await callback.text()
+    assert.match(callbackPage, /CHARIOX_FIXTURE_OAUTH_CALLBACK/)
+    assert.match(callbackPage, /postMessage/)
+    assert.match(callbackPage, new RegExp(state))
+    assert.doesNotMatch(callbackPage, new RegExp(password))
+
+    const inbox = await fetch(`${fixture.origin}/mail/inbox`, { headers: { cookie } })
+    assert.equal(inbox.status, 200)
+    const replayedCallback = await fetch(callbackUrl)
+    assert.equal(replayedCallback.status, 400)
+  } finally {
+    await fixture.close()
+  }
+})
+
 test("fixture validates required credentials and releases its listener", async () => {
   await assert.rejects(() => startBrowserComputerFixture(), /password is required/)
   const fixture = await startBrowserComputerFixture({ password: "fixture-test-password" })

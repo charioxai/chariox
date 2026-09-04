@@ -14,11 +14,23 @@ export async function startBrowserComputerFixture({
   if (!nonEmptyString(account)) throw new Error("browser/computer fixture account is required")
 
   const sessions = new Map()
+  const pendingOAuthStates = new Set()
+  const oauthGrants = new Map()
   const messages = []
   const uploads = []
   const server = http.createServer(async (request, response) => {
     try {
-      await routeRequest({ request, response, account, password, sessions, messages, uploads })
+      await routeRequest({
+        request,
+        response,
+        account,
+        password,
+        sessions,
+        pendingOAuthStates,
+        oauthGrants,
+        messages,
+        uploads,
+      })
     } catch (error) {
       send(response, 500, `fixture error: ${error?.message ?? String(error)}`, {
         "content-type": "text/plain; charset=utf-8",
@@ -44,7 +56,17 @@ export async function startBrowserComputerFixture({
   }
 }
 
-async function routeRequest({ request, response, account, password, sessions, messages, uploads }) {
+async function routeRequest({
+  request,
+  response,
+  account,
+  password,
+  sessions,
+  pendingOAuthStates,
+  oauthGrants,
+  messages,
+  uploads,
+}) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`)
   const cookies = parseCookies(request.headers.cookie ?? "")
   const authenticated = sessions.get(cookies.chariox_fixture_session) === account
@@ -87,6 +109,52 @@ async function routeRequest({ request, response, account, password, sessions, me
     sessions.set(sessionId, account)
     send(response, 303, "", {
       location: "/mail/inbox",
+      "set-cookie": `chariox_fixture_session=${sessionId}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
+    })
+    return
+  }
+  if (url.pathname === "/oauth/start" && request.method === "GET") {
+    const state = `fixture-state-${randomUUID()}`
+    pendingOAuthStates.add(state)
+    sendHtml(response, oauthStartPage(state))
+    return
+  }
+  if (url.pathname === "/oauth/authorize" && request.method === "GET") {
+    const state = url.searchParams.get("state") ?? ""
+    if (!pendingOAuthStates.has(state)) {
+      send(response, 400, "invalid OAuth state", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
+    sendHtml(response, oauthAuthorizePage(state, account))
+    return
+  }
+  if (url.pathname === "/oauth/authorize" && request.method === "POST") {
+    const form = new URLSearchParams(await readBody(request))
+    const state = form.get("state") ?? ""
+    if (!pendingOAuthStates.delete(state)) {
+      send(response, 400, "invalid OAuth state", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
+    const code = `fixture-code-${randomUUID()}`
+    oauthGrants.set(code, { state, account })
+    send(response, 303, "", {
+      location: `/oauth/callback?${new URLSearchParams({ code, state })}`,
+    })
+    return
+  }
+  if (url.pathname === "/oauth/callback" && request.method === "GET") {
+    const code = url.searchParams.get("code") ?? ""
+    const state = url.searchParams.get("state") ?? ""
+    const grant = oauthGrants.get(code)
+    if (!grant || grant.state !== state) {
+      send(response, 400, "invalid OAuth callback", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
+    oauthGrants.delete(code)
+    const sessionId = `fixture-${randomUUID()}`
+    sessions.set(sessionId, grant.account)
+    send(response, 200, oauthCallbackPage(grant), {
+      "content-type": "text/html; charset=utf-8",
       "set-cookie": `chariox_fixture_session=${sessionId}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
     })
     return
@@ -270,6 +338,44 @@ function loginPage(error = "") {
       <label>Password <input id="password" name="password" type="password" autocomplete="current-password"></label>
       <button id="login" type="submit">Sign in</button>
     </form>
+  `)
+}
+
+function oauthStartPage(state) {
+  const expectedState = scriptJson(state)
+  return html("Fixture OAuth client", `
+    <h1>Fixture OAuth client</h1>
+    <p id="oauth-status">signed out</p>
+    <a id="oauth-sign-in" href="/oauth/authorize?state=${encodeURIComponent(state)}" target="_blank" rel="opener">Sign in with Fixture</a>
+    <script>
+      const expectedState = ${expectedState};
+      window.addEventListener("message", (event) => {
+        if (event.origin !== window.location.origin || event.data?.type !== "fixture-oauth" || event.data?.state !== expectedState) return;
+        document.querySelector("#oauth-status").textContent = "CHARIOX_FIXTURE_OAUTH_AUTHENTICATED " + event.data.account;
+      });
+    </script>
+  `)
+}
+
+function oauthAuthorizePage(state, account) {
+  return html("Fixture OAuth authorization", `
+    <h1>Fixture OAuth authorization</h1>
+    <p>Continue as ${escapeHtml(account)}</p>
+    <form method="post" action="/oauth/authorize">
+      <input type="hidden" name="state" value="${escapeHtml(state)}">
+      <button id="oauth-authorize" type="submit">Authorize Fixture account</button>
+    </form>
+  `)
+}
+
+function oauthCallbackPage({ state, account }) {
+  const payload = scriptJson({ type: "fixture-oauth", state, account })
+  return html("Fixture OAuth callback", `
+    <h1 id="oauth-callback">CHARIOX_FIXTURE_OAUTH_CALLBACK</h1>
+    <button id="oauth-complete" type="button" onclick="window.close()">Complete sign-in</button>
+    <script>
+      window.opener?.postMessage(${payload}, window.location.origin);
+    </script>
   `)
 }
 
