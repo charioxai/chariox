@@ -171,6 +171,7 @@ COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-re
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs /opt/chariox-slice/browser-controller-dialogs.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
@@ -190,6 +191,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
+    /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \

@@ -6,6 +6,7 @@ import {
   BrowserCdpClient,
   CdpConnection,
 } from "./browser-controller-cdp.mjs";
+import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
 const viewport = {
   css_width: 1280,
@@ -423,6 +424,50 @@ test("download and upload requests stay target-bound and return no file paths", 
   assert.equal(JSON.stringify({ downloads, upload }).includes("/safe"), false);
 });
 
+test("prompt defaults remain document-bound, private, and cleared when the dialog lifecycle ends", async () => {
+  let connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const target = { target_id: "target-a", document_id: "loader-a", action: "accept" };
+  await browser.reconcile(viewport);
+  const open = () => connection.emit({
+    method: "Page.javascriptDialogOpening", sessionId: "session-a",
+    params: { type: "prompt", defaultPrompt: "private default", message: "private message" },
+  });
+  const lastAnswer = () => connection.calls.filter((call) => call.method === "Page.handleJavaScriptDialog").at(-1).params;
+  open();
+  const result = await browser.handleDialog(target);
+  assert.deepEqual(lastAnswer(), { accept: true, promptText: "private default" });
+  assert.equal(JSON.stringify(result).includes("private"), false);
+  const trace = browser.pollEvents({ cursor: 0, browser_generation: 1 });
+  assert.equal(JSON.stringify(trace).includes("private"), false);
+  await assert.rejects(browser.handleDialog({ ...target, document_id: "old-document" }), (error) => error.code === "stale_document_reference");
+  await browser.handleDialog({ ...target, prompt_text: "" });
+  assert.deepEqual(lastAnswer(), { accept: true, promptText: "" });
+  await browser.handleDialog({ target_id: "target-b", document_id: "loader-b", action: "accept" });
+  assert.deepEqual(lastAnswer(), { accept: true });
+
+  for (const event of [
+    { method: "Page.javascriptDialogClosed", sessionId: "session-a", params: { result: true } },
+    { method: "Page.frameNavigated", sessionId: "session-a", params: { frame: { id: "frame-a", loaderId: "loader-a" } } },
+    { method: "Target.targetCrashed", params: { targetId: "target-a" } },
+    { method: "Target.targetDestroyed", params: { targetId: "target-a" } },
+    { method: "Inspector.targetCrashed", sessionId: "session-a", params: {} },
+    { method: "Target.detachedFromTarget", params: { sessionId: "session-a", targetId: "target-a" } },
+  ]) {
+    open();
+    connection.emit(event);
+    await browser.handleDialog(target);
+    assert.deepEqual(lastAnswer(), { accept: true }, event.method);
+  }
+  open();
+  await browser.close();
+  connection = new FakeConnection();
+  await browser.reconcile(viewport);
+  await browser.handleDialog(target);
+  assert.deepEqual(lastAnswer(), { accept: true });
+  await browser.close();
+});
+
 test("permission decisions derive the current target origin", async () => {
   const connection = new FakeConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
@@ -542,6 +587,43 @@ test("CDP responses are correlated and command failures stay bounded", async () 
   const timedOut = connection.send("Page.getFrameTree", {}, "session-a");
   await assert.rejects(timedOut, (error) => error.code === "browser_cdp_timeout");
   await connection.close();
+});
+
+test("timed-out or disconnected dialog replies terminate and do not leak defaults into a new connection", async (t) => {
+  let socket = new DialogFaultSocket();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => new CdpConnection(socket, 100) });
+  t.after(() => browser.close());
+  let id = 0;
+  const request = (method, params) => handleBrowserControllerRequest({ id: ++id, method, params }, { browser });
+  const target = { target_id: "target-a", document_id: "loader-a", action: "accept" };
+  assert.equal((await request("browser.reconcile", { viewport })).ok, true);
+  socket.message({ method: "Page.javascriptDialogOpening", sessionId: "session-a", params: { type: "prompt", defaultPrompt: "old private default" } });
+  socket.holdDialog = true;
+  const timedOut = await request("browser.dialog", target);
+  assert.equal(timedOut.ok, false);
+  assert.equal(timedOut.error.code, "browser_cdp_timeout");
+  // A late acknowledgement belongs only to the expired request.
+  socket.message({ id: socket.heldDialog.id, result: {} });
+  socket.holdDialog = false;
+  assert.equal((await request("browser.dialog", target)).ok, true);
+  assert.equal(socket.lastDialog.params.promptText, "old private default");
+
+  socket.holdDialog = true;
+  socket.dialogSent = Promise.withResolvers();
+  const disconnectedRequest = request("browser.dialog", target);
+  await socket.dialogSent.promise;
+  socket.close();
+  const disconnected = await disconnectedRequest;
+  assert.equal(disconnected.ok, false);
+  assert.equal(disconnected.error.code, "browser_cdp_disconnected");
+  socket = new DialogFaultSocket();
+  const reconnected = await request("browser.reconcile", { viewport });
+  assert.equal(reconnected.ok, true, JSON.stringify(reconnected.error));
+  assert.equal(reconnected.result.browser_generation, 2);
+  assert.equal((await request("browser.dialog", target)).ok, true);
+  assert.deepEqual(socket.lastDialog.params, { accept: true }, "a new connection must not reuse the previous dialog default");
+  const trace = await request("browser.events.poll", { cursor: 0, browser_generation: 2 });
+  assert.equal(JSON.stringify(trace).includes("old private default"), false);
 });
 
 class FakeConnection {
@@ -746,5 +828,29 @@ class FakeSocket extends EventTarget {
 
   message(payload) {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) }));
+  }
+}
+
+class DialogFaultSocket extends FakeSocket {
+  constructor() {
+    super();
+    this.remote = new FakeConnection();
+    this.holdDialog = false;
+    this.dialogSent = Promise.withResolvers();
+  }
+
+  send(payload) {
+    super.send(payload);
+    const request = JSON.parse(payload);
+    if (request.method === "Page.handleJavaScriptDialog") {
+      this.lastDialog = request;
+      this.dialogSent.resolve();
+      if (this.holdDialog) {
+        this.heldDialog = request;
+        return;
+      }
+    }
+    void this.remote.send(request.method, request.params, request.sessionId)
+      .then((result) => this.message({ id: request.id, result }));
   }
 }

@@ -118,6 +118,25 @@ are rejected immediately, not polled as temporarily hidden elements. These are
 controller-level checks, not proof of provider-led retry, kernel action-history
 projection, concurrent navigation during insertion, or cross-origin recovery.
 
+### Controller dialogs
+
+The same real-Chrome command opens alerts, confirmations and prompts through
+controller clicks and answers through `browser.dialog`. It checks accept and
+dismiss, Unicode and explicit empty answers, absent-dialog errors followed by
+successful input, and rejection of stale-document or oversized requests while
+the original dialog remains answerable. Dialog events must carry the correct
+target and document without exposing messages, defaults or answer text.
+
+Accepting a prompt without `prompt_text` preserves its default. An explicit empty
+string clears it. The controller keeps a maximum 2048 UTF-8 bytes of default text
+privately until the dialog closes, navigates, detaches or crashes, or the browser
+connection resets. Larger defaults require an explicit replacement or dismissal;
+they are not truncated or copied into events. Focused CDP-boundary tests cover
+cleanup and cross-target isolation.
+
+These tests do not prove provider-led dialog handling, Web/TUI dialog projection,
+before-unload prompts, timeout recovery or reconnect while a dialog is open.
+
 Keep the exact source/image fingerprints, provider identity, action ID and
 sequence, physical result, Web screenshot, TUI assertions, resource samples,
 outer process exit and cleanup ledger. A provider text response or an early

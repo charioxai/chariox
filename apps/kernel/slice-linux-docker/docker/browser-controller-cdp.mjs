@@ -24,6 +24,7 @@ import {
   navigateBrowser,
   waitForBrowserState,
 } from "./browser-controller-compatibility.mjs";
+import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -66,6 +67,7 @@ export class BrowserCdpClient {
     this.targetsByDownload = new Map();
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
+    this.dialogDefaults = new BrowserDialogDefaults();
   }
 
   async reconcile(rawViewport) {
@@ -83,6 +85,7 @@ export class BrowserCdpClient {
           this.sessionsByTarget.delete(targetId);
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
+          this.dialogDefaults.delete(targetId);
           for (const [frameId, frameTargetId] of this.targetsByFrame) {
             if (frameTargetId === targetId) this.targetsByFrame.delete(frameId);
           }
@@ -107,6 +110,7 @@ export class BrowserCdpClient {
         this.targetsByFrame.clear();
         this.targetsByDownload.clear();
         this.documentIdsByTarget.clear();
+        this.dialogDefaults.clear();
       }
       throw normalizeControllerError(error);
     }
@@ -123,6 +127,7 @@ export class BrowserCdpClient {
     this.targetsByDownload.clear();
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
+    this.dialogDefaults.clear();
     if (connection) {
       await connection.close();
     }
@@ -140,6 +145,7 @@ export class BrowserCdpClient {
     this.targetsByDownload.clear();
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
+    this.dialogDefaults.clear();
     const connection = this.connectionFactory
       ? await this.connectionFactory()
       : await connectToBrowser({
@@ -377,11 +383,21 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
       );
     }
+    const defaultPrompt = action === "accept" && promptText == null
+      ? this.dialogDefaults.get(targetId, documentId)
+      : undefined;
+    if (defaultPrompt === null) {
+      throw new BrowserControllerError(
+        "browser_dialog_invalid",
+        "browser dialog default exceeds 2048 UTF-8 bytes; supply an explicit prompt value or dismiss",
+      );
+    }
+    const answer = promptText ?? defaultPrompt;
     await connection.send(
       "Page.handleJavaScriptDialog",
       {
         accept: action === "accept",
-        ...(action === "accept" && promptText != null ? { promptText } : {}),
+        ...(action === "accept" && answer != null ? { promptText: answer } : {}),
       },
       sessionId,
     );
@@ -525,12 +541,15 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
+    this.dialogDefaults.observe(message, dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
       if (typeof sessionId === "string") this.targetsBySession.delete(sessionId);
       if (typeof targetId === "string") {
         this.sessionsByTarget.delete(targetId);
+        this.dialogDefaults.delete(targetId);
         for (const [frameId, frameTargetId] of this.targetsByFrame) {
           if (frameTargetId === targetId) this.targetsByFrame.delete(frameId);
         }
