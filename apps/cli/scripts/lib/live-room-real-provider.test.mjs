@@ -341,6 +341,7 @@ test("diagnostics identify only allowlisted tool names from actual tool records"
   ] }] })
   await assert.rejects(runRoomRealProvider(run.input))
   assert.deepEqual(run.checkpoints.at(-1).diagnostic.observedTools, ["list_mcp_resources", "slice_mouse"])
+  assert.equal(run.checkpoints.at(-1).diagnostic.computerToolMentioned, true)
   assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
 })
 

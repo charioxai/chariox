@@ -85,6 +85,7 @@ export async function captureRoomProviderDiagnostic(input) {
         const tool = typeof value?.tool === "string"
           ? value.tool.replace(/^(?:mcp__chariox__|chariox\.|chariox_)/, "") : ""
         if (diagnosticTools.has(tool)) observedTools.add(tool)
+        if (tool === "slice_mouse") result.computerToolMentioned = true
       } catch { /* A truncated or non-JSON preview cannot prove a tool identity. */ }
     }
   }
