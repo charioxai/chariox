@@ -175,3 +175,14 @@ test("completed error turn ends the action wait without exhausting its deadline"
   }
   await assert.rejects(runRoomRealProvider(run.input), /provider turn failed before/)
 })
+
+test("full error blob is inspected even when its preview has the same entry index", async () => {
+  const run = fixture({ turns: [{ lifecycle: "completed", entries: [],
+    summary: entry("provider_error", "OpenCode error", 8),
+    blobs: [{ blob_id: "full", kind: "provider_error", summary: "OpenCode error", total_chars: 100 }],
+  }], blobs: { full: [entry("provider_error", `Invalid schema for function ${secret}`, 8)] } })
+  await assert.rejects(runRoomRealProvider(run.input), /provider turn failed before/)
+  assert.equal(run.checkpoints.at(-1).diagnostic.entryCounts.provider_error, 1)
+  assert.ok(run.checkpoints.at(-1).diagnostic.codes.includes("invalid_tool_schema"))
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
