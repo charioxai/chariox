@@ -31,6 +31,7 @@ impl KernelRuntimeState {
             &command,
             Command::Action { .. }
                 | Command::Tab { .. }
+                | Command::History { .. }
                 | Command::Dialog { .. }
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
@@ -397,6 +398,13 @@ async fn execute_local(
         } => processes
             .manage_browser_tab(&session_id, &target_id, &document_id, action)
             .map(|result| Response::Tab { result }),
+        Command::History {
+            target_id,
+            document_id,
+            action,
+        } => processes
+            .navigate_browser_history(&session_id, &target_id, &document_id, action)
+            .map(|result| Response::History { result }),
         Command::Navigate {
             target_id,
             document_id,

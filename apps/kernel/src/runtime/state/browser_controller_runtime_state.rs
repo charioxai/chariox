@@ -363,6 +363,71 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn navigate_browser_environment_history(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_history::BrowserHistoryAction,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.history", error))?;
+        let RoomBrowserControllerResult::History {
+            result: Some(result),
+        } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::History {
+                    target_id: binding.runtime_target_id.clone(),
+                    document_id: binding.document_id,
+                    action,
+                },
+            )
+            .await?
+        else {
+            return Err(controller_route_error(
+                "browser controller did not return a history operation result",
+            ));
+        };
+        result
+            .validate(&binding.runtime_target_id, action)
+            .map_err(|message| controller_route_error(&message))?;
+        self.reconcile_browser_controller_environment(session_id)
+            .await
+    }
+
+    pub(crate) async fn navigate_browser_environment_history_as_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_history::BrowserHistoryAction,
+    ) -> Result<super::BrowserControllerActionExecution<RoomEnvironmentSnapshot>, DaemonError> {
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.history", error))?;
+        self.execute_browser_mutation_as_agent(
+            session_id,
+            agent_id,
+            tab_id,
+            binding.document_revision,
+            match action {
+                crate::runtime::browser_controller_history::BrowserHistoryAction::Back => {
+                    "browser_history_back"
+                }
+                crate::runtime::browser_controller_history::BrowserHistoryAction::Forward => {
+                    "browser_history_forward"
+                }
+                crate::runtime::browser_controller_history::BrowserHistoryAction::Reload => {
+                    "browser_history_reload"
+                }
+            },
+            None,
+            self.navigate_browser_environment_history(session_id, tab_id, action),
+        )
+        .await
+    }
+
     pub(crate) async fn perform_browser_environment_locator_action(
         &self,
         session_id: &str,

@@ -166,6 +166,8 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     for name in [
         "chariox.slice_browser_tab",
         "slice_browser_tab",
+        "chariox.slice_browser_history",
+        "slice_browser_history",
         "chariox.slice_browser_events",
         "slice_browser_events",
         "chariox.slice_browser_downloads",

@@ -20,6 +20,9 @@ state.clickCount ??= 0;
 state.url ??= "https://worker.test/";
 state.documentId ??= "worker-document";
 state.focusedTarget ??= "worker-tab";
+state.history ??= [{ id: 1, url: state.url, title: "Worker browser" }];
+state.historyIndex ??= state.history.length - 1;
+state.documentSequence ??= 1;
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
 const subscribers = new Set();
 const emit = (message) => {
@@ -57,12 +60,38 @@ const chromium = {
       case "Page.getFrameTree": return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
         loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : state.documentId,
+        url: sessionId === "worker-popup-session" ? "https://popup.worker.test/" : state.url,
       } } };
-      case "Page.navigate":
+      case "Page.navigate": {
         state.url = params.url;
-        state.documentId = "worker-navigated-document";
+        state.documentId = `worker-document-${++state.documentSequence}`;
+        state.history.splice(state.historyIndex + 1);
+        state.history.push({
+          id: Math.max(0, ...state.history.map((entry) => entry.id)) + 1,
+          url: state.url,
+          title: "Worker browser",
+        });
+        state.historyIndex = state.history.length - 1;
         persist();
         return { frameId: "worker-frame", loaderId: state.documentId };
+      }
+      case "Page.getNavigationHistory": return {
+        currentIndex: state.historyIndex,
+        entries: state.history,
+      };
+      case "Page.navigateToHistoryEntry": {
+        const index = state.history.findIndex((entry) => entry.id === params.entryId);
+        if (index < 0) throw new Error("unknown worker history entry");
+        state.historyIndex = index;
+        state.url = state.history[index].url;
+        state.documentId = `worker-document-${++state.documentSequence}`;
+        persist();
+        return {};
+      }
+      case "Page.reload":
+        state.documentId = `worker-document-${++state.documentSequence}`;
+        persist();
+        return {};
       case "Runtime.evaluate": return { result: { value:
         state.focusedTarget === (sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab")
       } };

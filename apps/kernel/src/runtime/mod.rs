@@ -8,6 +8,7 @@ pub(crate) mod browser_controller_action;
 pub(crate) mod browser_controller_compatibility;
 pub(crate) mod browser_controller_event;
 pub(crate) mod browser_controller_file_transfer;
+pub(crate) mod browser_controller_history;
 pub(crate) mod browser_controller_permission;
 pub(crate) mod browser_controller_process;
 pub(crate) mod browser_controller_snapshot;

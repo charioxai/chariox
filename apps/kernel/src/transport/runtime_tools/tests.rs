@@ -412,6 +412,17 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_TAB_TOOL_ALIAS));
+        let history = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_BROWSER_HISTORY_TOOL)
+            .expect("browser history tool spec");
+        assert_eq!(
+            history.input_schema["properties"]["action"]["enum"],
+            serde_json::json!(["back", "forward", "reload"])
+        );
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_HISTORY_TOOL_ALIAS));
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_FIND_TOOL));
@@ -638,6 +649,10 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_slice_tool_name("mcp__chariox__slice_browser_tab"),
             Some(SLICE_BROWSER_TAB_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_history"),
+            Some(SLICE_BROWSER_HISTORY_TOOL)
         );
         assert_eq!(
             canonical_slice_tool_name("mcp__chariox__slice_browser_wait_for_text"),

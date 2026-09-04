@@ -62,6 +62,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .any(|spec| spec.name == "slice_browser_dialog"));
     for name in [
         "slice_browser_tab",
+        "slice_browser_history",
         "slice_browser_events",
         "slice_browser_downloads",
         "slice_browser_upload",
@@ -305,6 +306,91 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     assert_eq!(physical["upload"]["fileCount"], 1);
     assert_eq!(physical["permission"]["setting"], "denied");
     assert_eq!(physical["permission"]["origin"], "https://worker.test");
+
+    let navigated = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_open_url",
+            json!({"url":"https://history.worker.test/current"}),
+        )
+        .await
+        .expect("navigate before public history operation");
+    assert!(navigated.ok, "{:?}", navigated.payload);
+    let history_tab_id = tab_id;
+    let back = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_history",
+            json!({"tab_id":history_tab_id,"action":"back"}),
+        )
+        .await
+        .expect("public history tool crosses the bound worker relay");
+    assert!(back.ok, "{:?}", back.payload);
+    assert_eq!(back.payload["action"], "back");
+    assert_eq!(back.payload["tab_id"], history_tab_id);
+    assert_eq!(back.payload["url"], "https://worker.test/");
+    let unavailable = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_history",
+            json!({"tab_id":history_tab_id,"action":"back"}),
+        )
+        .await
+        .expect_err("history before the first entry must fail closed");
+    assert!(
+        unavailable
+            .to_string()
+            .contains("browser_history_unavailable"),
+        "{unavailable}"
+    );
+    let forward = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_history",
+            json!({"tab_id":history_tab_id,"action":"forward"}),
+        )
+        .await
+        .expect("public history tool moves forward through the bound worker relay");
+    assert_eq!(
+        forward.payload["url"],
+        "https://history.worker.test/current"
+    );
+    let before_reload = forward.payload["document_revision"]
+        .as_u64()
+        .expect("document revision before reload");
+    let reloaded = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_history",
+            json!({"tab_id":history_tab_id,"action":"reload"}),
+        )
+        .await
+        .expect("public history tool reloads through the bound worker relay");
+    assert_eq!(
+        reloaded.payload["url"],
+        "https://history.worker.test/current"
+    );
+    assert!(
+        reloaded.payload["document_revision"]
+            .as_u64()
+            .is_some_and(|revision| revision > before_reload),
+        "reload must advance the Room document revision: {:?}",
+        reloaded.payload
+    );
+    let environment = runtime
+        .room_environment_snapshot(room)
+        .expect("Room environment after history operations");
+    for (action_id, kind) in [
+        (&back.payload["action_id"], "browser_history_back"),
+        (&forward.payload["action_id"], "browser_history_forward"),
+        (&reloaded.payload["action_id"], "browser_history_reload"),
+    ] {
+        assert!(environment.actions.iter().any(|action| {
+            action.action_id == action_id.as_str().expect("history action id")
+                && action.kind == kind
+                && action.state == crate::session::EnvironmentActionState::Completed
+        }));
+    }
 
     std::fs::remove_file(upload_path).expect("remove upload fixture");
 }

@@ -154,6 +154,31 @@ impl KernelRuntimeState {
         ))
     }
 
+    pub(super) async fn controller_browser_history_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserHistoryArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let action = match args.action.as_str() {
+            "back" => crate::runtime::browser_controller_history::BrowserHistoryAction::Back,
+            "forward" => crate::runtime::browser_controller_history::BrowserHistoryAction::Forward,
+            "reload" => crate::runtime::browser_controller_history::BrowserHistoryAction::Reload,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_history",
+                    message: format!("unsupported browser history action `{other}`"),
+                });
+            }
+        };
+        let tab_id = args.tab_id;
+        let execution = self
+            .navigate_browser_environment_history_as_agent(session_id, agent_id, &tab_id, action)
+            .await?;
+        controller_browser_history_tool_result(slice_id, agent_id, &tab_id, action, execution)
+    }
+
     pub(super) async fn controller_browser_find_tool_result(
         &self,
         session_id: &str,
