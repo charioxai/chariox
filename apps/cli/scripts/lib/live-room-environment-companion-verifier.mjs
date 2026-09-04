@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import path from "node:path"
+import { assertRoomRealProviderAction } from "./live-room-real-provider.mjs"
 
 import {
   publishRoomDrillCompanionReady,
@@ -78,13 +79,7 @@ export async function runRoomEnvironmentCompanion(input) {
     const action = history.find((item) => item.action_id === provider.actionId)
     assert.ok(action, "real-provider action was absent from kernel history")
     assert.equal(action.actor_id, provider.actorId)
-    assert.equal(action.kind, "pointer_click")
-    assert.equal(action.mode, "computer")
-    assert.equal(action.state, "completed")
-    assert.equal(action.arguments.x, 640)
-    assert.equal(action.arguments.y, 400)
-    assert.equal(action.arguments.button, "left")
-    assert.equal(action.arguments.click_count, 1)
+    assertRoomRealProviderAction(action, input.ready.realProvider.mode)
     assert.ok(action.sequence < webAction.sequence, "provider action must precede human takeover")
     actions.unshift(action)
   }
