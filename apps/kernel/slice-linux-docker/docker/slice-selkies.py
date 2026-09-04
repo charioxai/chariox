@@ -106,11 +106,11 @@ def stop(directory):
     return {"stopped": True, "forced": forced}
 
 
-def start(directory):
-    port = int(os.environ.get("CHARIOX_SLICE_NOVNC_PORT", "6080"))
+def start(directory, *, port=None, display=None):
+    port = int(port if port is not None else os.environ.get("CHARIOX_SLICE_NOVNC_PORT", "6080"))
     if not 1 <= port <= 65535:
         raise ValueError("invalid display port")
-    display = os.environ.get("DISPLAY", ":99")
+    display = display if display is not None else os.environ.get("DISPLAY", ":99")
     previous = read_state(directory)
     if owned_process(previous) is not None:
         if previous["port"] != port or previous["display"] != display:
@@ -120,7 +120,7 @@ def start(directory):
         return public_status(previous)
 
     token = secrets.token_urlsafe(32)
-    environment = {**os.environ, "SELKIES_MASTER_TOKEN": token}
+    environment = {**os.environ, "DISPLAY": display, "SELKIES_MASTER_TOKEN": token}
     command = [
         os.environ.get("CHARIOX_SLICE_SELKIES_BIN", "/opt/chariox-selkies/bin/selkies"),
         "--addr=127.0.0.1", f"--port={port}", "--mode=websockets",
