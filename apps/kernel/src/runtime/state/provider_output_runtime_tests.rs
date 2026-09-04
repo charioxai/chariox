@@ -148,6 +148,7 @@ mod completion_settlement;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
+mod forwarded_failure;
 mod history_projection;
 mod prompt_cancellation;
 mod publication_settlement;

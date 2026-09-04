@@ -58,6 +58,12 @@ impl KernelRuntimeState {
         message: String,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
+        if context.home_kernel_id != owned.config_projection.snapshot().daemon_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "forward workflow provider failure",
+                message: "failure targets a different home kernel".to_string(),
+            });
+        }
         let session = owned.session_store.get_session(&context.home_session_id)?;
         let Some(active_prompt) = owned
             .prompt_state_owner
@@ -65,6 +71,24 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        // A worker can deliver a failure after the home has already settled
+        // that turn. Acknowledge it without touching a newer active prompt.
+        if active_prompt.workflow_run_id() != Some(context.workflow_run_id.as_str())
+            || active_prompt.workflow_node_run_id() != Some(context.workflow_node_run_id.as_str())
+        {
+            return Ok(());
+        }
+        let (run_id, node_run_id) = owned.resolve_owned_authenticated_workflow_turn(
+            &context.home_session_id,
+            std::slice::from_ref(&context.home_agent_id),
+            Some(&context.delivery_token),
+        )?;
+        if run_id != context.workflow_run_id || node_run_id != context.workflow_node_run_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "forward workflow provider failure",
+                message: "failure does not match the authenticated workflow turn".to_string(),
+            });
+        }
         let dispatches = owned.workflow_fail_provider_prompt(
             &context.home_session_id,
             &active_prompt,
