@@ -9,6 +9,7 @@ import {
 import {
   BrowserFileTransferError,
   configureBrowserDownloads,
+  cancelBrowserDownload,
   uploadBrowserFiles,
 } from "./browser-controller-files.mjs";
 import {
@@ -409,6 +410,21 @@ export class BrowserCdpClient {
           fileSystem: this.fileSystem,
         }),
       };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async cancelDownload(rawRequest) {
+    const connection = await this.ensureConnection();
+    try {
+      return await cancelBrowserDownload({
+        connection,
+        browserGeneration: this.browserGeneration,
+        requestedBrowserGeneration: rawRequest?.browser_generation,
+        guid: rawRequest?.guid,
+        targetsByDownload: this.targetsByDownload,
+      });
     } catch (error) {
       throw normalizeControllerError(error);
     }
