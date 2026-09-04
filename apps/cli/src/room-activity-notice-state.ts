@@ -1,8 +1,10 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { reindexTranscriptEntries, transcriptRetentionSlice } from "@chariox/kernel-client/transcript-entry-state"
 
-export function roomActivityNoticeKey(sessionId: string, environmentId: string, cursor: number, index: number): string {
-  return `room-environment:${encodeURIComponent(sessionId)}:${encodeURIComponent(environmentId)}:${cursor}:${index}`
+export function roomActivityNoticeKey(
+  sessionId: string, environmentId: string, source: "state" | "resync" | "events", cursor: number, index: number,
+): string {
+  return `room-environment:${encodeURIComponent(sessionId)}:${encodeURIComponent(environmentId)}:${source}:${cursor}:${index}`
 }
 
 // Room events are kernel-owned, but their TUI notices are not provider history.

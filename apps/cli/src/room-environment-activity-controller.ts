@@ -102,7 +102,7 @@ export function createRoomEnvironmentActivityController(
       replayCursor = nextEnvironment.event_cursor
       nextMissingEnvironmentProbeAtMs = 0
       deps.appendNotice(roomEnvironmentSummary("Room screen", nextEnvironment),
-        roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, replayCursor, 0))
+        roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, "state", replayCursor, 0))
       deps.recordDaemonActivity("room_environment_state")
       return true
     }
@@ -121,7 +121,7 @@ export function createRoomEnvironmentActivityController(
       environment = nextEnvironment
       replayCursor = nextEnvironment.event_cursor
       deps.appendNotice(roomEnvironmentSummary("Room activity resynchronized", nextEnvironment),
-        roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, replayCursor, 0))
+        roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, "resync", replayCursor, 0))
       deps.recordDaemonActivity("room_environment_events")
       return true
     }
@@ -146,7 +146,7 @@ export function createRoomEnvironmentActivityController(
     replayCursor = nextEnvironment.event_cursor
     const notices = roomEnvironmentEventNotices(events, nextEnvironment)
     notices.forEach((notice, index) => deps.appendNotice(notice,
-      roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, replayCursor, index)))
+      roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, "events", nextCursor, index)))
     deps.recordDaemonActivity("room_environment_events")
     return notices.length > 0
   }
