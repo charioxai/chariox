@@ -254,6 +254,76 @@ test("/room browser preserves explicit stable tabs for forward and reload", asyn
   ])
 })
 
+test("/room browser activates and closes stable tabs through authenticated Room authority", async () => {
+  const environment = roomEnvironment()
+  const tabTwo = {
+    ...environment.tabs[0],
+    tab_id: "tab-2",
+    title: "Second",
+    url: "https://example.test/second",
+    focused: false,
+  }
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const idempotencyKeys = ["activate-1", "close-1"]
+  let idempotencyKeyIndex = 0
+  const commands = [
+    parseSlashCommand("/room browser activate tab-2"),
+    parseSlashCommand("/room browser close tab-1"),
+  ]
+  assert.equal(commands.every((command) => command?.kind === "room"), true)
+
+  for (const command of commands) {
+    if (!command || command.kind !== "room") throw new Error("Room browser command should parse")
+    await handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      createIdempotencyKey: () => idempotencyKeys[idempotencyKeyIndex++] ?? "unexpected-key",
+      send: async <TResponse>(request: unknown) => {
+        requests.push(request)
+        if (Object.prototype.hasOwnProperty.call(request, "GetRoomEnvironmentState")) {
+          return {
+            RoomEnvironmentState: {
+              environment: { ...environment, tabs: [...environment.tabs, tabTwo] },
+            },
+          } as TResponse
+        }
+        return {
+          RoomEnvironmentActionSubmitted: {
+            action_id: `action-${requests.length}`,
+            environment,
+          },
+        } as TResponse
+      },
+      appendNotice: (notice) => notices.push(notice),
+      flashFooter: () => undefined,
+    }, command)
+  }
+
+  assert.deepEqual(requests.filter((request) => (
+    Object.prototype.hasOwnProperty.call(request, "SubmitRoomEnvironmentBrowserAction")
+  )), [
+    {
+      SubmitRoomEnvironmentBrowserAction: {
+        session_id: "session-1",
+        runtime_generation: 2,
+        idempotency_key: "activate-1",
+        action: { kind: "tab", tab_id: "tab-2", action: "activate" },
+      },
+    },
+    {
+      SubmitRoomEnvironmentBrowserAction: {
+        session_id: "session-1",
+        runtime_generation: 2,
+        idempotency_key: "close-1",
+        action: { kind: "tab", tab_id: "tab-1", action: "close" },
+      },
+    },
+  ])
+  assert.match(notices[0] ?? "", /^Room browser activate submitted as action-2/)
+  assert.match(notices[1] ?? "", /^Room browser close submitted as action-4/)
+})
+
 test("/room browser validates its action and stable tab before mutation", async () => {
   const requests: unknown[] = []
   const flashes: string[] = []
@@ -268,17 +338,21 @@ test("/room browser validates its action and stable tab before mutation", async 
     appendNotice: () => undefined,
     flashFooter: (message: string) => flashes.push(message),
   }
-  const invalid = parseSlashCommand("/room browser close")
+  const invalid = parseSlashCommand("/room browser open")
+  const missingActivateTab = parseSlashCommand("/room browser activate")
   const unknownTab = parseSlashCommand("/room browser reload missing-tab")
   assert.equal(invalid?.kind, "room")
+  assert.equal(missingActivateTab?.kind, "room")
   assert.equal(unknownTab?.kind, "room")
 
   await handleRoomSlashCommand(deps, invalid)
+  await handleRoomSlashCommand(deps, missingActivateTab)
   await handleRoomSlashCommand(deps, unknownTab)
 
   assert.deepEqual(requests, [{ GetRoomEnvironmentState: { session_id: "session-1" } }])
   assert.deepEqual(flashes, [
-    "usage: /room browser back|forward|reload [TAB_ID]",
+    "usage: /room browser back|forward|reload|close [TAB_ID] or /room browser activate TAB_ID",
+    "usage: /room browser back|forward|reload|close [TAB_ID] or /room browser activate TAB_ID",
     "Room browser tab missing-tab is not present; run /room status and retry with a current tab ID",
   ])
 })
@@ -446,7 +520,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload [TAB_ID]|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 

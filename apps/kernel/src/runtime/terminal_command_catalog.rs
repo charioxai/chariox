@@ -266,7 +266,9 @@ mod tests {
             vec![
                 "/room browser back",
                 "/room browser forward tab-1",
-                "/room browser reload"
+                "/room browser reload",
+                "/room browser activate tab-2",
+                "/room browser close tab-1"
             ]
         );
         let save = room
