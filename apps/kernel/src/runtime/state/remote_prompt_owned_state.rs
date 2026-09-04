@@ -11,6 +11,24 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        self.prepare_queued_remote_prompt_dispatch(session_id, agent_id, None)
+    }
+
+    pub(super) fn finish_remote_profile_transition(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        claim: crate::runtime::prompt_state::AgentProfileTransitionClaim,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        self.prepare_queued_remote_prompt_dispatch(session_id, agent_id, Some(claim))
+    }
+
+    fn prepare_queued_remote_prompt_dispatch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        profile_transition: Option<crate::runtime::prompt_state::AgentProfileTransitionClaim>,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -22,11 +40,16 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         let session = self.session_store.get_session(session_id)?;
-        let Some(next_prompt) = self
-            .prompt_state_owner
-            .peek_next_queued_prompt(&session, agent_id)
-        else {
-            return Ok(None);
+        let next_prompt = if profile_transition.is_none() {
+            let Some(prompt) = self
+                .prompt_state_owner
+                .peek_next_queued_prompt(&session, agent_id)
+            else {
+                return Ok(None);
+            };
+            Some(prompt)
+        } else {
+            None
         };
         if !self.provider_account_allows_queued_prompt_advance(
             session_id,
@@ -35,21 +58,25 @@ impl KernelRuntimeOwnedState {
         ) {
             return Ok(None);
         }
-        let started = self
-            .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
+        let started = if let Some(claim) = profile_transition {
+            claim.finish_and_activate_next(
                 &session,
                 agent_id,
-                Some(next_prompt.id()),
                 self.session_store.reserve_prompt_id(),
             )?
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "advance remote queued prompt",
-                message: format!(
-                    "expected queued prompt `{}` but no queued prompt was available",
-                    next_prompt.id()
-                ),
-            })?;
+        } else {
+            let next_prompt = next_prompt.expect("ordinary queue advance checked its queue front");
+            self.prompt_state_owner
+                .activate_next_queued_prompt_with_prompt_id(
+                    &session,
+                    agent_id,
+                    Some(next_prompt.id()),
+                    self.session_store.reserve_prompt_id(),
+                )?
+        };
+        let Some(started) = started else {
+            return Ok(None);
+        };
         let _ =
             self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
         self.persist_prompt_session_state(&self.session_store.get_session(session_id)?, agent_id)?;

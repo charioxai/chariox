@@ -9,15 +9,42 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: &str,
     ) -> Result<bool, DaemonError> {
+        self.activate_next_agent_substitute_after_failure_with_claim(
+            session_id, agent_id, reason, None,
+        )
+        .await
+    }
+
+    pub(super) async fn activate_next_agent_substitute_after_failure_with_claim(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: &str,
+        profile_transition: Option<crate::runtime::prompt_state::AgentProfileTransitionClaim>,
+    ) -> Result<bool, DaemonError> {
+        let current = self.owned.agent_store.get_agent(agent_id)?;
+        let Some(substitute_index) = self.owned.next_available_substitute_index(&current)? else {
+            return Ok(false);
+        };
+        if current.remote_execution().is_some() {
+            let action = crate::local::AgentSubstituteAction::Activate {
+                index: substitute_index,
+                reason: Some(reason.to_string()),
+            };
+            let target = super::remote_agent_profile_runtime::substitute_target(&current, &action)?
+                .expect("activation selects a substitute profile");
+            if let Some(claim) = profile_transition {
+                self.update_remote_agent_substitute_with_claim(current, action, target, claim)
+                    .await?;
+            } else {
+                self.update_remote_agent_substitute(current, action, target)
+                    .await?;
+            }
+            return Ok(true);
+        }
+        drop(profile_transition);
         let (launch_request, runtime_init_delay_ms, agent) = {
             let owned = &self.owned;
-            let current = owned.agent_store.get_agent(agent_id)?;
-            if current.remote_execution().is_some() {
-                return Ok(false);
-            }
-            let Some(substitute_index) = owned.next_available_substitute_index(&current)? else {
-                return Ok(false);
-            };
             let (agent, profile) = owned.agent_store.activate_agent_substitute(
                 agent_id,
                 substitute_index,

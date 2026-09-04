@@ -279,6 +279,7 @@ impl KernelRuntimeState {
                             },
                             RelayPeerRequest::SubmitLeasedPrompt {
                                 leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile::from(&app.agents().get_agent(target_agent_id)?),
                                 prompt: remote_prompt,
                                 hidden_system_context: started_next.hidden_system_context().to_string(),
                                 attachments,

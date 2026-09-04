@@ -22,7 +22,7 @@ impl KernelRuntimeState {
         self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
         if self
-            .forward_leased_workflow_provider_failure(provider_run_id, message)
+            .settle_leased_workflow_provider_failure(session_id, &agent_id, provider_run_id)
             .await?
         {
             self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
@@ -82,6 +82,7 @@ impl KernelRuntimeState {
                 &agent_id,
                 provider_run_id,
                 &reason,
+                None,
             )
             .await
         } else {
@@ -242,10 +243,11 @@ impl KernelRuntimeState {
             .await;
     }
 
-    async fn forward_leased_workflow_provider_failure(
+    pub(super) async fn settle_leased_workflow_provider_failure(
         &self,
+        session_id: &str,
+        agent_id: &str,
         provider_run_id: &str,
-        message: &str,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -253,54 +255,40 @@ impl KernelRuntimeState {
                     .leased_workflow_turn_context_for_provider_run(provider_run_id)
             })
             .await;
-        let Some(context) = leased_context else {
+        let Some(_) = leased_context else {
             return Ok(false);
         };
-        let response = self
-            .with_app_side_effect(|app| {
-                app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        app.config(),
-                        chariox_relay::protocol::ClientTarget {
-                            daemon_id: Some(context.home_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        crate::transport::relay_peer::RelayPeerRequest::ForwardWorkflowProviderFailure {
-                            context,
-                            message: message.to_string(),
-                        },
-                    ),
-                )
-            })
-            .await?;
-        if !matches!(
-            response,
-            crate::transport::relay_peer::RelayPeerResponse::WorkflowProviderFailureHandled
-        ) {
-            return Err(DaemonError::LocalTransport {
-                operation: "forward workflow provider failure",
-                message: format!("unexpected workflow provider failure response: {response:?}"),
-            });
-        }
-        let _ = self
-            .with_app_side_effect(|app| {
-                crate::app::RemoteLeaseRuntime::new(app)
-                    .complete_leased_workflow_prompt_for_provider_run(provider_run_id)
-            })
-            .await?;
+        // The home learns failure through the same correlated, replayable runtime
+        // projection as completion. Worker settlement must not wait for the home
+        // to be reachable or admit another turn on this failed provider.
+        self.owned.fail_local_prompt_without_advance(
+            session_id,
+            agent_id,
+            Some(provider_run_id),
+        )?;
         Ok(true)
     }
 
-    async fn activate_substitute_after_provider_failure(
+    pub(super) async fn activate_substitute_after_provider_failure(
         &self,
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
         reason: &str,
+        profile_transition: Option<crate::runtime::prompt_state::AgentProfileTransitionClaim>,
     ) -> bool {
-        match self
-            .activate_next_agent_substitute_after_failure(session_id, agent_id, reason)
-            .await
+        // Failure reconciliation is nested inside output/liveness/restart
+        // polling. Keep the account-transfer and worker-confirmation future
+        // off those callers' stacks, including when this branch is not taken.
+        match Box::pin(
+            self.activate_next_agent_substitute_after_failure_with_claim(
+                session_id,
+                agent_id,
+                reason,
+                profile_transition,
+            ),
+        )
+        .await
         {
             Ok(activated) => activated,
             Err(error) => {

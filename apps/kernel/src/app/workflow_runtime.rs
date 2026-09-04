@@ -1159,6 +1159,9 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_waits_for_an_active_user_prompt_before_replacing_provider() {
+        // Provider setup reads environment-backed account paths. Config tests
+        // may replace and remove those roots while this test promotes the queue.
+        let _environment = crate::env_lock::lock();
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)

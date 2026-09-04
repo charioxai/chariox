@@ -227,10 +227,10 @@ impl KernelRuntimeState {
                 .await?;
             return Ok(records);
         }
-        if !self
-            .reconcile_provider_run_exit(session_id, provider_run_id)
-            .await?
-        {
+        // Settlement can include cancellation, queue advancement, and remote
+        // substitute reconciliation. Keep that future off enclosing
+        // launch/dispatch/output stack frames.
+        if !Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await? {
             if records.is_empty() {
                 let _ = self
                     .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
