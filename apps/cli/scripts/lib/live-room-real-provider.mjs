@@ -37,17 +37,44 @@ export async function runRoomRealProvider(input) {
     "After that single click, stop and report whether the tool succeeded.",
   ].join(" "), []))
   const actorId = `agent:${agent.id}`
-  const action = await input.waitFor(async () => {
-    const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
-      sessionId, null, 100,
-    )), "RoomEnvironmentActionHistoryListed").page.actions
-    return actions.find((item) => item.actor_id === actorId
-      && item.kind === "pointer_click" && item.state === "completed") ?? false
-  }, 180_000, "official provider did not complete a Room computer click")
+  let action
+  try {
+    action = await input.waitFor(async () => {
+      const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
+        sessionId, null, 100,
+      )), "RoomEnvironmentActionHistoryListed").page.actions
+      return actions.find((item) => item.actor_id === actorId
+        && item.kind === "pointer_click" && item.state === "completed") ?? false
+    }, 180_000, "official provider did not complete a Room computer click")
+  } catch (error) {
+    // Retain fixed diagnostic codes before the outer fixture removes runtime
+    // history. Never copy raw provider output, credentials, or MCP endpoints.
+    const outline = unwrap(await client.send(requests.getSessionHistoryOutlineRequest(
+      sessionId, [agent.id], 2,
+    )), "SessionHistoryOutline")
+    const codes = new Set()
+    for (const turn of outline.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []) {
+      const entries = [...(turn.entries ?? [])]
+      for (const blob of turn.blobs ?? []) {
+        const content = unwrap(await client.send(requests.getSessionHistoryBlobContentRequest(
+          sessionId, agent.id, blob.blob_id,
+        )), "SessionHistoryBlobContent")
+        entries.push(...(content.entries ?? []))
+      }
+      for (const { entry } of entries) {
+        for (const code of ["codex_endpoint_unhealthy", "opencode_endpoint_unhealthy", "provider launch", "unauthorized", "rate limit"]) {
+          if (String(entry?.text ?? "").toLowerCase().includes(code)) codes.add(code)
+        }
+      }
+    }
+    await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, codes: [...codes] })
+    throw error
+  }
   assert.equal(action.mode, "computer")
   assert.equal(action.arguments.x, 640)
   assert.equal(action.arguments.y, 400)
   assert.equal(action.arguments.button, "left")
+  assert.equal(action.arguments.click_count, 1)
   await input.waitForPhysicalEffect("POINTER_CLICK_COUNT=2")
   await input.waitForTuis(new RegExp(`^Room action #\\d+: ${alias} · computer pointer_click · completed$`))
   await input.screenshot("after-real-provider-click")
