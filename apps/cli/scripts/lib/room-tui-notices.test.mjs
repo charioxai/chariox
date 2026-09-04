@@ -5,7 +5,18 @@ import {
   automationNoticeEntries,
   automationNoticeIds,
   automationNoticeTexts,
+  roomActionNoticePattern,
 } from "./room-tui-notices.mjs"
+
+test("companion TUI matcher uses the kernel action mode and exact sequence", () => {
+  const pattern = roomActionNoticePattern({ sequence: 2, mode: "browser", kind: "click" })
+  assert.match("Room action #2: real-codex · browser click · completed", pattern)
+  assert.doesNotMatch("Room action #2: real-codex · computer click · completed", pattern)
+  assert.doesNotMatch("Room action #3: real-codex · browser click · completed", pattern)
+  assert.match("Room action #4: Local user · computer pointer_click · completed",
+    roomActionNoticePattern({ sequence: 4, mode: "computer", kind: "pointer_click" }))
+  assert.throws(() => roomActionNoticePattern({ sequence: 2, mode: "browser", kind: ".*" }))
+})
 
 test("Room TUI notices retain pane-scoped identity across focus changes", () => {
   const snapshot = {

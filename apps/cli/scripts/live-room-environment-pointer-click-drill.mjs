@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
+import { roomBrowserClickFixtureScript } from "./lib/room-browser-click-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import {
   assertRetainedClipboardEvidenceIsRedacted,
@@ -43,6 +44,7 @@ import {
   automationNoticeEntries,
   automationNoticeIds,
   automationNoticeTexts,
+  roomActionNoticePattern,
 } from "./lib/room-tui-notices.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -1983,7 +1985,7 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 }
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
-  const noticePattern = (action) => new RegExp(`^Room action #${action.sequence}: .+ · computer ${action.kind} · completed$`)
+  const noticePattern = roomActionNoticePattern
   return await runRoomEnvironmentCompanion({
     env: process.env,
     prepare: async () => {
@@ -2463,7 +2465,9 @@ async function startFixture() {
       #web-scroller{position:fixed;left:160px;top:420px;width:960px;height:160px;overflow:scroll;z-index:2;border:3px solid #333}
       #web-scroll-content{width:2200px;height:640px;background:linear-gradient(135deg,#f7b267,#70c1b3)}
       main{pointer-events:none;z-index:1}
+      #browser-action-target{position:fixed;left:16px;top:16px;z-index:3}
     </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}${webPointerGestures ? '<input data-web-gesture id="web-selection" readonly value="Select this physical text without moving the Room browser window"><div data-web-gesture id="web-scroller"><div id="web-scroll-content"></div></div>' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}${webPointerGestures ? '<div id="web-drag-status">WEB_DRAG_WAITING</div><div id="web-scroll-status">WEB_SCROLL_WAITING</div>' : ''}</main><script>
+      ${realProviderOptions?.mode === "browser" ? roomBrowserClickFixtureScript : ''}
       let clicks=0;document.addEventListener("click",(event)=>{if(event.target.closest("[data-web-gesture]"))return;clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
       ${webPointerGestures ? `
       const selection=document.querySelector("#web-selection");

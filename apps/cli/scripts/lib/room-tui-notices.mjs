@@ -1,3 +1,11 @@
+export function roomActionNoticePattern(action) {
+  if (!Number.isSafeInteger(action.sequence) || action.sequence < 1
+    || !["browser", "computer"].includes(action.mode) || !/^[a-z_]+$/.test(action.kind)) {
+    throw new Error("invalid Room action notice identity")
+  }
+  return new RegExp(`^Room action #${action.sequence}: .+ · ${action.mode} ${action.kind} · completed$`)
+}
+
 export function automationNoticeTexts(snapshot) {
   return automationNoticeEntries(snapshot).map((entry) => entry.text)
 }

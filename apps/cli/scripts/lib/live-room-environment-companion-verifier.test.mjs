@@ -6,8 +6,9 @@ import test from "node:test"
 
 import { runRoomEnvironmentCompanion } from "./live-room-environment-companion-verifier.mjs"
 
-for (const includeProvider of [false, true]) {
-test(`Room companion verifier uses stable TUI baselines, real provider=${includeProvider}`, async () => {
+for (const providerMode of [null, "computer", "browser"]) {
+const includeProvider = providerMode !== null
+test(`Room companion verifier uses stable TUI baselines, provider mode=${providerMode}`, async () => {
   let prepared = false
   let preparedAtReady = false
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-verifier-"))
@@ -22,7 +23,9 @@ test(`Room companion verifier uses stable TUI baselines, real provider=${include
   }
   const keyboardAction = { ...action, action_id: "action-keyboard", kind: "keyboard_text", sequence: 8 }
   const providerAction = { ...action, action_id: "action-provider", actor_id: "agent:agent-real", sequence: 6,
-    mode: "computer", arguments: { x: 640, y: 400, button: "left", click_count: 1 } }
+    mode: providerMode, kind: providerMode === "browser" ? "click" : "pointer_click",
+    targets: [{ kind: "browser_tab", id: "tab-1" }],
+    arguments: { x: 640, y: 400, button: "left", click_count: 1 } }
   const shortcutAction = { ...action, action_id: "action-shortcut", kind: "keyboard_key", sequence: 9 }
   const replacementAction = { ...keyboardAction, action_id: "action-ime", sequence: 10 }
   const dragAction = { ...action, action_id: "action-drag", kind: "pointer_drag", sequence: 11 }
@@ -79,7 +82,7 @@ test(`Room companion verifier uses stable TUI baselines, real provider=${include
         keyboardText: "fixture typing",
         keyboardReplacementText: "fixture replacement",
         pointerGestures: true,
-        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4" } } : {}),
+        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode } } : {}),
       },
       client: {
         send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction, shortcutAction, replacementAction, dragAction, scrollAction,
@@ -108,7 +111,7 @@ test(`Room companion verifier uses stable TUI baselines, real provider=${include
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
-    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
+    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", ...(providerMode === "browser" ? ["BROWSER_CLICK_ACCEPTED"] : []), "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
       "WEB_DRAG_SELECTION_OK WINDOW_GEOMETRY_STABLE", "WEB_SCROLL_BOTH_AXES_OK"])
     const expectedNotices = [...(includeProvider ? [6] : []), 7, 8, 9, 10, 11, 12]
     assert.deepEqual(noticed, { local: expectedNotices, remote: expectedNotices })

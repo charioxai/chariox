@@ -5,6 +5,45 @@ import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
 
+test("structured Browser mode requires a fresh tab-targeted browser click", async () => {
+  const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "click", state: "completed", mode: "browser",
+    action_id: "browser-action", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }],
+  }] })
+  run.input.options.mode = "browser"
+  const physical = []
+  run.input.waitForPhysicalEffect = async (value) => physical.push(value)
+  run.input.waitForTuis = async (pattern) => assert.match("Room action #2: real-opencode · browser click · completed", pattern)
+  const result = await runRoomRealProvider(run.input)
+  assert.equal(result.mode, "browser")
+  assert.equal(result.actionId, "browser-action")
+  assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "BROWSER_CLICK_ACCEPTED"])
+  const prompt = run.calls.find((call) => call.name === "submitPrompt").args[3]
+  assert.match(prompt, /slice_browser_find/)
+  assert.match(prompt, /slice_browser_click/)
+  assert.match(prompt, /field_id/)
+  assert.doesNotMatch(prompt, /Call slice_mouse/)
+})
+
+test("Browser mode cannot be satisfied by Computer input or an unscoped click", async () => {
+  for (const invalid of [
+    { kind: "pointer_click", mode: "computer", targets: [{ kind: "desktop" }] },
+    { kind: "click", mode: "browser", targets: [{ kind: "desktop" }] },
+    { kind: "click", mode: "browser", targets: [{ kind: "browser_tab", id: "" }] },
+    { kind: "click", mode: "browser", targets: [] },
+  ]) {
+    const run = fixture({ actions: [{ actor_id: "agent:agent-2", state: "completed", action_id: "bad", sequence: 2, ...invalid }] })
+    run.input.options.mode = "browser"
+    await assert.rejects(runRoomRealProviderAction(run.input))
+  }
+})
+
+test("explicit provider mode selects Browser without silently changing the default", () => {
+  const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4" }
+  assert.equal(roomRealProviderOptions(env).mode, "computer")
+  assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser" }).mode, "browser")
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_PROVIDER_MODE: "invalid" }))
+})
+
 test("Web real-provider mode requires an explicit opt-in and model", () => {
   const env = { CHARIOX_ROOM_DRILL_FOCUS: "web-companion", CHARIOX_ROOM_DRILL_PROVIDER: "codex" }
   assert.equal(roomRealProviderOptions(env), null)
