@@ -138,6 +138,184 @@ test("/room actions accepts explicit pagination and rejects unsafe bounds", asyn
   assert.deepEqual(flashes, Array(5).fill("usage: /room actions [LIMIT] [BEFORE_SEQUENCE]"))
 })
 
+test("/room browser submits focused-tab history through authenticated Room authority", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room browser back")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    createIdempotencyKey: () => "tui-history-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      if (Object.prototype.hasOwnProperty.call(request, "GetRoomEnvironmentState")) {
+        return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+      }
+      return {
+        RoomEnvironmentActionSubmitted: {
+          action_id: "action-history-1",
+          environment: {
+            ...roomEnvironment(),
+            tabs: [{
+              ...roomEnvironment().tabs[0],
+              url: "https://example.test/previous",
+              document_revision: 5,
+            }],
+            event_cursor: 5,
+          },
+        },
+      } as TResponse
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentState: { session_id: "session-1" } },
+    {
+      SubmitRoomEnvironmentBrowserAction: {
+        session_id: "session-1",
+        runtime_generation: 2,
+        idempotency_key: "tui-history-1",
+        action: { kind: "history", tab_id: "tab-1", action: "back" },
+      },
+    },
+  ])
+  assert.match(notices[0] ?? "", /^Room browser back submitted as action-history-1\nRoom environment environment-1/)
+  assert.match(notices[0] ?? "", /tab=tab-1 Docs — https:\/\/example\.test\/previous/)
+})
+
+test("/room browser preserves explicit stable tabs for forward and reload", async () => {
+  const environment = roomEnvironment()
+  const requests: unknown[] = []
+  let idempotencyKeyIndex = 0
+  const idempotencyKeys = ["forward-1", "reload-1"]
+  const tabTwo = {
+    ...environment.tabs[0],
+    tab_id: "tab-2",
+    title: "Second",
+    url: "https://example.test/second",
+    focused: false,
+  }
+  const commands = [
+    parseSlashCommand("/room browser forward tab-2"),
+    parseSlashCommand("/room browser reload tab-1"),
+  ]
+  assert.equal(commands.every((command) => command?.kind === "room"), true)
+
+  for (const command of commands) {
+    if (!command || command.kind !== "room") throw new Error("Room browser command should parse")
+    await handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      createIdempotencyKey: () => idempotencyKeys[idempotencyKeyIndex++] ?? "unexpected-key",
+      send: async <TResponse>(request: unknown) => {
+        requests.push(request)
+        if (Object.prototype.hasOwnProperty.call(request, "GetRoomEnvironmentState")) {
+          return {
+            RoomEnvironmentState: {
+              environment: { ...environment, tabs: [...environment.tabs, tabTwo] },
+            },
+          } as TResponse
+        }
+        return {
+          RoomEnvironmentActionSubmitted: {
+            action_id: `action-${requests.length}`,
+            environment,
+          },
+        } as TResponse
+      },
+      appendNotice: () => undefined,
+      flashFooter: () => undefined,
+    }, command)
+  }
+
+  assert.deepEqual(requests.filter((request) => (
+    Object.prototype.hasOwnProperty.call(request, "SubmitRoomEnvironmentBrowserAction")
+  )), [
+    {
+      SubmitRoomEnvironmentBrowserAction: {
+        session_id: "session-1",
+        runtime_generation: 2,
+        idempotency_key: "forward-1",
+        action: { kind: "history", tab_id: "tab-2", action: "forward" },
+      },
+    },
+    {
+      SubmitRoomEnvironmentBrowserAction: {
+        session_id: "session-1",
+        runtime_generation: 2,
+        idempotency_key: "reload-1",
+        action: { kind: "history", tab_id: "tab-1", action: "reload" },
+      },
+    },
+  ])
+})
+
+test("/room browser validates its action and stable tab before mutation", async () => {
+  const requests: unknown[] = []
+  const flashes: string[] = []
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    createIdempotencyKey: () => "must-not-be-used",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message: string) => flashes.push(message),
+  }
+  const invalid = parseSlashCommand("/room browser close")
+  const unknownTab = parseSlashCommand("/room browser reload missing-tab")
+  assert.equal(invalid?.kind, "room")
+  assert.equal(unknownTab?.kind, "room")
+
+  await handleRoomSlashCommand(deps, invalid)
+  await handleRoomSlashCommand(deps, unknownTab)
+
+  assert.deepEqual(requests, [{ GetRoomEnvironmentState: { session_id: "session-1" } }])
+  assert.deepEqual(flashes, [
+    "usage: /room browser back|forward|reload [TAB_ID]",
+    "Room browser tab missing-tab is not present; run /room status and retry with a current tab ID",
+  ])
+})
+
+test("/room browser requires an authoritative focused tab when no tab ID is supplied", async () => {
+  const requests: unknown[] = []
+  const flashes: string[] = []
+  const environment = roomEnvironment()
+  const command = parseSlashCommand("/room browser reload")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    createIdempotencyKey: () => "must-not-be-used",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {
+        RoomEnvironmentState: {
+          environment: {
+            ...environment,
+            focused_tab_id: null,
+            tabs: environment.tabs.map((tab) => ({ ...tab, focused: false })),
+          },
+        },
+      } as TResponse
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message) => flashes.push(message),
+  }, command)
+
+  assert.deepEqual(requests, [{ GetRoomEnvironmentState: { session_id: "session-1" } }])
+  assert.deepEqual(flashes, [
+    "Room browser has no focused tab; run /room status and retry with an explicit tab ID",
+  ])
+})
+
 test("/room start uses the portable default viewport and renders the authoritative result", async () => {
   const requests: unknown[] = []
   const notices: string[] = []
@@ -268,7 +446,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload [TAB_ID]|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 

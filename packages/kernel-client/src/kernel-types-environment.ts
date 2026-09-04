@@ -230,6 +230,13 @@ export type RoomEnvironmentUpdatedResponse = {
   }
 }
 
+export type RoomEnvironmentActionSubmittedResponse = {
+  RoomEnvironmentActionSubmitted: {
+    action_id: string
+    environment: RoomEnvironmentSnapshot
+  }
+}
+
 export type RoomEnvironmentTakeoverUpdatedResponse = {
   RoomEnvironmentTakeoverUpdated: {
     outcome: RoomEnvironmentTakeoverOutcome

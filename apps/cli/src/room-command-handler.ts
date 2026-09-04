@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import {
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentSliceRequest,
@@ -9,6 +11,7 @@ import {
   saveSliceStateRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
+  submitRoomEnvironmentBrowserActionRequest,
   type RoomEnvironmentViewportRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type {
@@ -16,6 +19,7 @@ import type {
   RoomEnvironmentActionCancellationOutcome,
   RoomEnvironmentActionCancellationUpdatedResponse,
   RoomEnvironmentActionHistoryResponse,
+  RoomEnvironmentActionSubmittedResponse,
   RoomEnvironmentInputReleasedResponse,
   RoomEnvironmentInputTarget,
   RoomEnvironmentSliceResponse,
@@ -38,6 +42,10 @@ type SliceStateSavedResponse = {
     state: SliceSavedStateRecord
   }
 }
+type RoomBrowserHistoryCommand = {
+  action: "back" | "forward" | "reload"
+  tabId: string | null
+}
 
 export type RoomViewerTarget = {
   sessionId: string
@@ -54,6 +62,7 @@ export type RoomCommandHandlerDeps = {
   isAttached: () => boolean
   sessionId: () => string
   focusedAgentId?: () => string | null
+  createIdempotencyKey?: () => string
   send: <TResponse>(request: unknown) => Promise<TResponse>
   reconnectEventStream?: () => Promise<boolean>
   openViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
@@ -67,7 +76,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "takeover", "release", "cancel", "save"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -75,6 +84,7 @@ export async function handleRoomSlashCommand(
   let inputTarget: RoomEnvironmentInputTarget | undefined
   let actionId: string | undefined
   let actionHistory: { limit: number; beforeSequence: number | null } | undefined
+  let browserHistory: RoomBrowserHistoryCommand | undefined
   let saveMode: "restart_agents" | "shutdown" | undefined
   if (subcommand === "start") {
     const parsedViewport = parseStartViewport(command.args.slice(1))
@@ -103,6 +113,13 @@ export async function handleRoomSlashCommand(
       return
     }
     actionHistory = parsedHistory
+  } else if (subcommand === "browser") {
+    const parsedBrowserHistory = parseBrowserHistoryCommand(command.args.slice(1))
+    if (typeof parsedBrowserHistory === "string") {
+      deps.flashFooter(parsedBrowserHistory, "error")
+      return
+    }
+    browserHistory = parsedBrowserHistory
   } else if (subcommand === "save") {
     if (command.args.length !== 2 || !command.args[1] || !["restart", "shutdown"].includes(command.args[1])) {
       deps.flashFooter(roomSaveUsage(), "error")
@@ -200,6 +217,49 @@ export async function handleRoomSlashCommand(
       throw new Error("Room Environment action history response is malformed")
     }
     deps.appendNotice(formatRoomEnvironmentActionHistory(response.RoomEnvironmentActionHistoryListed.page))
+    return
+  }
+  if (subcommand === "browser") {
+    if (!browserHistory) throw new Error("Room browser history command is missing")
+    const stateResponse = await deps.send<RoomEnvironmentStateResponse>(
+      getRoomEnvironmentStateRequest(sessionId),
+    )
+    if (!stateResponse || typeof stateResponse !== "object" || !("RoomEnvironmentState" in stateResponse)) {
+      throw new Error("Room Environment state response is malformed")
+    }
+    const environment = stateResponse.RoomEnvironmentState.environment
+    const tabId = browserHistory.tabId
+      ?? environment.focused_tab_id
+      ?? environment.tabs.find((tab) => tab.focused)?.tab_id
+    if (!tabId) {
+      deps.flashFooter(
+        "Room browser has no focused tab; run /room status and retry with an explicit tab ID",
+        "error",
+      )
+      return
+    }
+    if (!environment.tabs.some((tab) => tab.tab_id === tabId)) {
+      deps.flashFooter(
+        `Room browser tab ${tabId} is not present; run /room status and retry with a current tab ID`,
+        "error",
+      )
+      return
+    }
+    const response = await deps.send<RoomEnvironmentActionSubmittedResponse>(
+      submitRoomEnvironmentBrowserActionRequest(
+        sessionId,
+        environment.runtime_generation,
+        (deps.createIdempotencyKey ?? randomUUID)(),
+        { kind: "history", tab_id: tabId, action: browserHistory.action },
+      ),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentActionSubmitted" in response)) {
+      throw new Error("Room browser history response is malformed")
+    }
+    const submitted = response.RoomEnvironmentActionSubmitted
+    deps.appendNotice(
+      `Room browser ${browserHistory.action} submitted as ${submitted.action_id}\n${formatRoomEnvironmentStatus(submitted.environment)}`,
+    )
     return
   }
 
@@ -303,6 +363,15 @@ function parseActionHistoryArgs(
   return { limit, beforeSequence }
 }
 
+function parseBrowserHistoryCommand(args: string[]): RoomBrowserHistoryCommand | string {
+  if (args.length < 1 || args.length > 2) return roomBrowserUsage()
+  const action = args[0]
+  if (action !== "back" && action !== "forward" && action !== "reload") {
+    return roomBrowserUsage()
+  }
+  return { action, tabId: args[1] ?? null }
+}
+
 function parseStartViewport(args: string[]): RoomEnvironmentViewportRequest | string {
   if (args.length > 2) return roomStartUsage()
   const dimensions = args[0] ?? "1280x800"
@@ -329,7 +398,7 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload [TAB_ID]|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomActionsUsage(): string {
@@ -338,6 +407,10 @@ function roomActionsUsage(): string {
 
 function roomStartUsage(): string {
   return "usage: /room start [WIDTHxHEIGHT] [SCALE]"
+}
+
+function roomBrowserUsage(): string {
+  return "usage: /room browser back|forward|reload [TAB_ID]"
 }
 
 function roomInputUsage(): string {

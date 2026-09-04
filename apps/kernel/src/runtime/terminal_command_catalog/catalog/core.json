@@ -231,6 +231,24 @@
         ]
       },
       {
+        "id": "room-browser",
+        "label": "browser",
+        "description": "Navigate the focused Room browser tab backward, forward, or reload it; optionally append a stable TAB_ID",
+        "value": "/room browser ",
+        "examples": [
+          "/room browser back",
+          "/room browser forward tab-1",
+          "/room browser reload"
+        ],
+        "searchAliases": [
+          "browser back",
+          "browser forward",
+          "reload tab",
+          "refresh page",
+          "browser history"
+        ]
+      },
+      {
         "id": "room-takeover",
         "label": "takeover",
         "description": "Request authenticated human input ownership; defaults to desktop or append tab TAB_ID",
