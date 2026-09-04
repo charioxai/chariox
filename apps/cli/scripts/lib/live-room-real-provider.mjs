@@ -32,6 +32,7 @@ export async function runRoomRealProvider(input) {
 // proves the attributed kernel action; each caller must verify its own viewers.
 export async function runRoomRealProviderAction(input) {
   const { client, requests, sessionId, sliceId, options } = input
+  assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
   if (options.importFirst) {
     await input.checkpoint({ phase: "importing-account", provider: options.provider })
     unwrap(await client.send(requests.importSliceProviderAuthRequest(
@@ -50,9 +51,28 @@ export async function runRoomRealProviderAction(input) {
   await input.checkpoint({ phase: "prompting", provider: options.provider, agentId: agent.id })
   const actorId = `agent:${agent.id}`
   let action
+  let verifiedAgent = agent
+  let baselineSequence = 0
   let lastFailureProbe = 0
   try {
     await input.beforePrompt?.(agent)
+    if (input.agent) {
+      const state = unwrap(await input.withTimeout(client.send(requests.getSessionStateRequest(sessionId)),
+        5_000, "provider configuration lookup"), "SessionState")
+      verifiedAgent = state.session?.agents?.find((item) => item.id === agent.id)
+      const slices = unwrap(await input.withTimeout(client.send(requests.listSlicesRequest()),
+        5_000, "provider slice lookup"), "SlicesListed").slices
+      assert.ok(slices.some((slice) => slice.id === sliceId && slice.agent_ids?.includes(agent.id)),
+        "real provider must belong to the intended slice")
+    }
+    assert.ok(verifiedAgent && verifiedAgent.session_id === sessionId
+      && verifiedAgent.provider === options.provider && verifiedAgent.model === options.model
+      && (verifiedAgent.account_profile ?? "default") === options.accountProfile,
+    "authoritative provider configuration does not match the requested provider/model/profile/Room")
+    const baseline = unwrap(await input.withTimeout(client.send(requests.listRoomEnvironmentActionHistoryRequest(
+      sessionId, null, 100)), 5_000, "provider action baseline"), "RoomEnvironmentActionHistoryListed").page.actions
+    baselineSequence = baseline.reduce((latest, item) => Number.isSafeInteger(item.sequence)
+      ? Math.max(latest, item.sequence) : latest, 0)
     unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, [
     "You are validating the Chariox Room computer. Use only the Chariox runtime MCP tools.",
     "Call slice_mouse exactly once with action=click, x=640, y=400, button=left.",
@@ -65,6 +85,7 @@ export async function runRoomRealProviderAction(input) {
         sessionId, null, 100,
       )), "RoomEnvironmentActionHistoryListed").page.actions
       const completed = actions.find((item) => item.actor_id === actorId
+        && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence
         && item.kind === "pointer_click" && item.state === "completed")
       if (completed) return completed
       // This drill creates a fresh agent and submits exactly one prompt. Stop
@@ -97,8 +118,9 @@ export async function runRoomRealProviderAction(input) {
   assert.equal(action.arguments.button, "left")
   assert.equal(action.arguments.click_count, 1)
   const result = {
-    provider: options.provider, model: options.model, accountProfile: options.accountProfile, importFirst: options.importFirst,
+    provider: verifiedAgent.provider, model: verifiedAgent.model, accountProfile: verifiedAgent.account_profile ?? "default", importFirst: options.importFirst,
     agentId: agent.id, actorId, actionId: action.action_id,
+    baselineSequence, actionSequence: action.sequence,
     expectedPhysicalEffect: input.expectedPhysicalEffect ?? "POINTER_CLICK_COUNT=2",
   }
   await input.checkpoint({ phase: "action-completed", ...result })

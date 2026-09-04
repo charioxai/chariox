@@ -81,6 +81,12 @@ coverage from this helper. The OSS companion verifier then checks the provider
 action against authoritative history and observes it in both TUIs before
 acceptance. Human input must follow the provider action in the same Room.
 
+For a reused agent, the runner reloads its provider/model/profile/Room from
+kernel state and checks membership of the intended slice before submitting a
+prompt. Reported provider identity comes from that verified configuration.
+An action-sequence baseline captured after Web readiness excludes clicks from
+earlier turns. A supplied agent cannot be combined with import-first.
+
 The isolated provider mode still verifies physical input and both TUIs through
 `runRoomRealProvider`. Structured Browser operations, persistence, permission
 denial and all-provider acceptance remain in the end-to-end plan. The new Web
