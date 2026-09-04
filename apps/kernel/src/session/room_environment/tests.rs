@@ -387,10 +387,22 @@ fn observed_tab(
 #[test]
 fn closing_and_resetting_retire_runtime_tab_identity() {
     let mut environment = ready_environment();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "user-1",
+            EnvironmentActorKind::Human,
+            "Miguel",
+        ))
+        .unwrap();
     let tab_id = environment
         .register_or_reconcile_tab("controller-target-1", "https://example.test", "Example")
         .unwrap();
+    assert!(matches!(
+        environment.request_takeover("user-1", InputTarget::BrowserTab(tab_id.clone())),
+        Ok(TakeoverOutcome::Granted)
+    ));
     environment.close_tab(&tab_id).unwrap();
+    assert!(environment.snapshot().input_ownership.is_empty());
     let replacement_id = environment
         .register_or_reconcile_tab("controller-target-1", "https://example.test", "Example")
         .unwrap();
@@ -559,6 +571,26 @@ fn observations_run_concurrently_and_mutations_serialize_per_target() {
         .unwrap();
     assert_eq!(promoted.state, EnvironmentActionState::Running);
     assert!(promoted.started_at_ms >= Some(promoted.submitted_at_ms));
+}
+
+#[test]
+fn tab_lifecycle_mutations_reserve_the_desktop_and_stable_tab() {
+    let request = EnvironmentActionRequest::browser_tab_mutation(
+        "agent-1",
+        1,
+        "browser_tab_activate",
+        "tab-7",
+        3,
+    );
+
+    assert_eq!(
+        request.targets,
+        vec![
+            InputTarget::Desktop,
+            InputTarget::BrowserTab("tab-7".to_string()),
+        ]
+    );
+    assert_eq!(request.tab_preconditions, vec![("tab-7".to_string(), 3)]);
 }
 
 #[test]

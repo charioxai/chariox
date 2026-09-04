@@ -640,6 +640,20 @@ impl EnvironmentActionLedger {
         changed
     }
 
+    pub(crate) fn retain_input_targets(&mut self, tabs: &TabRegistry) -> bool {
+        let is_current = |target: &InputTarget| match target {
+            InputTarget::Desktop => true,
+            InputTarget::BrowserTab(tab_id) => tabs.contains(tab_id),
+        };
+        let previous_owner_count = self.input_owners.len();
+        let previous_takeover_count = self.pending_takeovers.len();
+        self.input_owners.retain(|target, _| is_current(target));
+        self.pending_takeovers
+            .retain(|target, _| is_current(target));
+        previous_owner_count != self.input_owners.len()
+            || previous_takeover_count != self.pending_takeovers.len()
+    }
+
     fn fail_action_for_process_loss(&mut self, action_id: &str) {
         let action = self
             .actions

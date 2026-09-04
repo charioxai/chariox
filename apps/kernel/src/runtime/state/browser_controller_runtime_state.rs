@@ -344,7 +344,7 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.tab", error))?;
-        self.execute_browser_mutation_as_agent(
+        self.execute_browser_tab_mutation_as_agent(
             session_id,
             agent_id,
             tab_id,
