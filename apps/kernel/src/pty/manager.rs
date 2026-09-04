@@ -59,16 +59,14 @@ fn disable_pty_input_echo(
 }
 
 #[cfg(unix)]
-fn terminate_pty_process_group(master: &dyn MasterPty) -> bool {
-    master
-        .process_group_leader()
-        .is_some_and(|process_group| (unsafe { libc::kill(-process_group, libc::SIGKILL) }) == 0)
+fn terminate_pty_process_group(master: &dyn MasterPty) {
+    if let Some(process_group) = master.process_group_leader() {
+        let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    }
 }
 
 #[cfg(not(unix))]
-fn terminate_pty_process_group(_master: &dyn MasterPty) -> bool {
-    false
-}
+fn terminate_pty_process_group(_master: &dyn MasterPty) {}
 
 #[derive(Clone)]
 pub(crate) struct PtyInputWriter {
@@ -605,15 +603,14 @@ impl PtyManager {
             })?;
 
         if status.is_none() {
-            if !terminate_pty_process_group(process.master.as_ref()) {
-                process
-                    .child
-                    .kill()
-                    .map_err(|error| DaemonError::PtyCleanup {
-                        provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                        message: error.to_string(),
-                    })?;
-            }
+            terminate_pty_process_group(process.master.as_ref());
+            process
+                .child
+                .kill()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+                    message: error.to_string(),
+                })?;
             process
                 .child
                 .wait()
