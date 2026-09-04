@@ -243,6 +243,7 @@ mod tests {
                 "/room reconnect",
                 "/room view",
                 "/room screenshot",
+                "/room browser ",
                 "/room takeover ",
                 "/room release ",
                 "/room cancel ",
@@ -255,6 +256,19 @@ mod tests {
             .find(|node| node.id == "room-cancel")
             .expect("Room action cancellation command should be present");
         assert_eq!(cancel.examples, vec!["/room cancel action-7"]);
+        let browser = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-browser")
+            .expect("Room browser history command should be present");
+        assert_eq!(
+            browser.examples,
+            vec![
+                "/room browser back",
+                "/room browser forward tab-1",
+                "/room browser reload"
+            ]
+        );
         let save = room
             .children
             .iter()
