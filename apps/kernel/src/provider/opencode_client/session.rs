@@ -12,7 +12,7 @@ use super::{OpenCodeClient, OpenCodeMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeSessionSnapshot {
-    pub status: String,
+    pub status: OpenCodeSessionStatus,
     pub messages: Vec<OpenCodeMessage>,
 }
 
@@ -21,10 +21,39 @@ struct OpenCodeSessionCreated {
     id: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct OpenCodeSessionStatus {
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeSessionStatus {
     #[serde(rename = "type")]
-    pub(super) kind: String,
+    pub kind: String,
+    #[serde(default, deserialize_with = "deserialize_status_message")]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub attempt: Option<u64>,
+    #[serde(default)]
+    pub next: Option<u64>,
+}
+
+impl From<&str> for OpenCodeSessionStatus {
+    fn from(kind: &str) -> Self {
+        Self {
+            kind: kind.to_string(),
+            message: None,
+            attempt: None,
+            next: None,
+        }
+    }
+}
+
+fn deserialize_status_message<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.map(|message| {
+        message
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(500)
+            .collect()
+    }))
 }
 
 impl OpenCodeClient {
@@ -89,14 +118,13 @@ impl OpenCodeClient {
         Ok(OpenCodeSessionSnapshot { status, messages })
     }
 
-    pub fn session_status(&self, session_id: &str) -> Result<String, DaemonError> {
-        let status_map: BTreeMap<String, OpenCodeSessionStatus> =
+    pub fn session_status(&self, session_id: &str) -> Result<OpenCodeSessionStatus, DaemonError> {
+        let mut status_map: BTreeMap<String, OpenCodeSessionStatus> =
             self.send_json_request("GET", "/session/status", None)?;
         // OpenCode removes idle sessions from SessionStatus.list(), so omission means idle.
         Ok(status_map
-            .get(session_id)
-            .map(|status| status.kind.clone())
-            .unwrap_or_else(|| "idle".to_string()))
+            .remove(session_id)
+            .unwrap_or_else(|| "idle".into()))
     }
 
     pub fn messages(&self, session_id: &str) -> Result<Vec<OpenCodeMessage>, DaemonError> {

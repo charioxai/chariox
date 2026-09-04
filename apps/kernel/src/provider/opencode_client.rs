@@ -23,7 +23,7 @@ pub use message::{
     OpenCodeMessageTokens, OpenCodePart, OpenCodePartTime, OpenCodeSelectedModel,
     OpenCodeToolState,
 };
-pub use session::OpenCodeSessionSnapshot;
+pub use session::{OpenCodeSessionSnapshot, OpenCodeSessionStatus};
 
 #[derive(Debug, Clone)]
 pub struct OpenCodeClient {
@@ -626,7 +626,7 @@ mod tests {
         let snapshot = client
             .snapshot("session-1")
             .expect("missing status entry should default to idle");
-        assert_eq!(snapshot.status, "idle");
+        assert_eq!(snapshot.status.kind, "idle");
         assert!(snapshot.messages.is_empty());
 
         let _ = server.join();
