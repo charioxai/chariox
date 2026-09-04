@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
+import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import {
   assertRetainedClipboardEvidenceIsRedacted,
   assertRetainedTextIsRedacted,
@@ -182,15 +183,11 @@ let sourceIdentity = null
 let sliceRuntimeIdentity = null
 let fixtureWorkspace = repoRoot
 
-await mkdir(evidenceRoot, { recursive: true })
-
-try {
+const interruption = createDrillInterruption()
+await interruption.run(async () => {
+  await mkdir(evidenceRoot, { recursive: true })
   await run()
-} catch (error) {
-  failure = error
-} finally {
-  await cleanup()
-}
+}, cleanup, (error) => { failure = error })
 
 if (failure) {
   console.error(failure?.stack ?? String(failure))
@@ -277,7 +274,7 @@ async function run() {
   ])
   requests = importedRequests
   client = await waitFor(async () => {
-    const candidate = new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`)
+    const candidate = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
     try {
       await candidate.send(requests.listSlicesRequest())
       return candidate
@@ -286,7 +283,7 @@ async function run() {
       throw error
     }
   }, 60_000, "kernel did not accept local connections")
-  observerClient = new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`)
+  observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
 
   const session = unwrap(
     await client.send(requests.createSessionRequest(fixtureWorkspace, fixtureWorkspace, runId)),
@@ -1821,10 +1818,10 @@ async function launchComputerSecretAgent() {
     pathToFileURL(path.join(kernelClientRoot, "dist", "ipc.js")).href
   )
   const ready = await waitFor(async () => {
-    const candidate = new LocalIpcClient(workerRelayUrl, {
+    const candidate = interruption.guardClient(new LocalIpcClient(workerRelayUrl, {
       relayAuthToken: workerRelayToken,
       targetDaemonAlias: slice.worker_kernel_ref,
-    })
+    }))
     try {
       const current = unwrap(
         await candidate.send(requests.getProviderRunRequest(workerProviderRunId)),
@@ -2761,8 +2758,8 @@ async function cleanup() {
       `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined)
   }
   if (client && requests) {
-    await client.send(requests.deleteCredentialSecretRequest(userCredentialId)).catch(() => undefined)
-    await client.send(requests.deleteCredentialSecretRequest(generatedCredentialId)).catch(() => undefined)
+    await withTimeout(client.send(requests.deleteCredentialSecretRequest(userCredentialId)), 2_000, "cleanup credential").catch(() => undefined)
+    await withTimeout(client.send(requests.deleteCredentialSecretRequest(generatedCredentialId)), 2_000, "cleanup generated credential").catch(() => undefined)
   }
   if (client && requests && sessionId) {
     await withTimeout(client.send(requests.stopRoomEnvironmentRequest(sessionId)), 2_000, "cleanup StopRoomEnvironment").catch(() => undefined)
@@ -2778,14 +2775,12 @@ async function cleanup() {
       await writeFile(
         path.join(evidenceRoot, "slice-logs.json"),
         `${redactDrillSecrets(JSON.stringify(logs, null, 2))}\n`,
-      )
+      ).catch(() => undefined)
     }
   }
   if (client && requests && slice) {
     await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 2_000, "cleanup DeleteSlice").catch(() => undefined)
   }
-  await docker(["rm", "-f", containerName]).catch(() => undefined)
-  await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   await client?.close?.()
   await observerClient?.close?.()
   await workerClient?.close?.()
@@ -2793,6 +2788,11 @@ async function cleanup() {
   remoteAutomation?.close()
   await closeFixtureServer()
   for (const child of children.toReversed()) await terminateChild(child)
+  // Stop resource producers before the final removal, including a kernel that
+  // was still provisioning when interrupted. Otherwise a late container can
+  // appear after cleanup has already removed its predecessor.
+  await docker(["rm", "-f", containerName]).catch(() => undefined)
+  await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   let leakedEvidence = false
   try {
     await assertNoPlaintextSecretInTree(tempRoot, sensitiveValues)
@@ -2939,10 +2939,12 @@ async function waitFor(operation, timeoutMs, message) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
   while (Date.now() < deadline) {
+    interruption.check()
     try {
       const value = await operation()
       if (value) return value
     } catch (error) {
+      interruption.check()
       lastError = error
     }
     await sleep(250)
@@ -2951,6 +2953,7 @@ async function waitFor(operation, timeoutMs, message) {
 }
 
 function runCommand(command, args, timeoutMs) {
+  interruption.check()
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
     const stdout = []
@@ -2972,6 +2975,7 @@ function runCommand(command, args, timeoutMs) {
 }
 
 function runCommandWithStdin(command, args, stdin, timeoutMs) {
+  interruption.check()
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
     const stdout = []
@@ -3010,7 +3014,7 @@ function unwrapOneOf(response, ...variants) {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+  return interruption.sleep(ms)
 }
 
 async function withTimeout(promise, timeoutMs, label) {
