@@ -11,18 +11,21 @@ export function roomRealProviderOptions(env) {
   assert.ok(["codex", "claude", "opencode"].includes(provider), "select an official Room drill provider")
   const model = env.CHARIOX_ROOM_DRILL_MODEL?.trim()
   assert.ok(model, "CHARIOX_ROOM_DRILL_MODEL must explicitly select a provider model")
-  return { provider, model, accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
+  const mode = env.CHARIOX_ROOM_DRILL_PROVIDER_MODE ?? "computer"
+  assert.ok(["computer", "browser"].includes(mode), "select Browser or Computer provider mode")
+  return { provider, model, mode, accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
 }
 
 export async function runRoomRealProvider(input) {
   const result = await runRoomRealProviderAction(input)
   await input.waitForPhysicalEffect(result.expectedPhysicalEffect)
-  await input.waitForTuis(new RegExp(`^Room action #\\d+: real-${result.provider} · computer pointer_click · completed$`))
+  await input.waitForTuis(new RegExp(`^Room action #\\d+: real-${result.provider} · ${result.mode} ${result.actionKind} · completed$`))
   await input.screenshot("after-real-provider-click")
   const verified = {
     ...result, physicalEffect: result.expectedPhysicalEffect, localTuiObserved: true, remoteTuiObserved: true,
-    coverage: "Official provider calls Chariox Computer input in the shared Room",
-    skipped: ["structured Browser actions", "Web observation of the provider action", "provider save and resume"],
+    coverage: `Official provider calls Chariox ${result.mode} input in the shared Room`,
+    skipped: [result.mode === "browser" ? "remaining Browser action matrix" : "structured Browser actions",
+      "Web observation of the provider action", "provider save and resume"],
   }
   await input.checkpoint({ phase: "passed", ...verified })
   return verified
@@ -32,6 +35,9 @@ export async function runRoomRealProvider(input) {
 // proves the attributed kernel action; each caller must verify its own viewers.
 export async function runRoomRealProviderAction(input) {
   const { client, requests, sessionId, sliceId, options } = input
+  const mode = options.mode ?? "computer"
+  assert.ok(["computer", "browser"].includes(mode), "select Browser or Computer provider mode")
+  const actionKind = mode === "browser" ? "click" : "pointer_click"
   assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
   if (options.importFirst) {
     await input.checkpoint({ phase: "importing-account", provider: options.provider })
@@ -84,20 +90,28 @@ export async function runRoomRealProviderAction(input) {
       sessionId, null, 100)), 5_000, "provider action baseline"), "RoomEnvironmentActionHistoryListed").page.actions
     baselineSequence = baseline.reduce((latest, item) => Number.isSafeInteger(item.sequence)
       ? Math.max(latest, item.sequence) : latest, 0)
-    unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, [
+    const prompt = mode === "browser" ? [
+      "You are validating the Chariox Room browser. Use only the Chariox runtime MCP tools.",
+      "Use slice_browser_find with query='Browser action target' and kind=button.",
+      "Then call slice_browser_click exactly once with the returned opaque field_id for that button.",
+      "Do not use coordinates, Computer input, shell commands, provider-native browser tools, or scripts.",
+      "The shared browser is already open. Do not navigate, open another browser, edit files, or contact external services.",
+      "After the single button click, stop and report whether the tool succeeded.",
+    ].join(" ") : [
     "You are validating the Chariox Room computer. Use only the Chariox runtime MCP tools.",
     "Call slice_mouse exactly once with action=click, x=640, y=400, button=left.",
     "The Room desktop is already running. Do not launch a browser, navigate, use shell commands,",
     "edit any files, or call any external service. Do not use a provider-native browser tool.",
     "After that single click, stop and report whether the tool succeeded.",
-    ].join(" "), [])), "PromptSubmitted")
+    ].join(" ")
+    unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, prompt, [])), "PromptSubmitted")
     action = await input.waitFor(async () => {
       const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
         sessionId, null, 100,
       )), "RoomEnvironmentActionHistoryListed").page.actions
       const completed = actions.find((item) => item.actor_id === actorId
         && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence
-        && item.kind === "pointer_click" && item.state === "completed")
+        && item.kind === actionKind && item.state === "completed")
       if (completed) return completed
       // Ignore turns predating this prompt when Web reuses an idle agent.
       // A warning/error on a still-open turn must not abort the action wait.
@@ -115,7 +129,7 @@ export async function runRoomRealProviderAction(input) {
         ))) return { providerFailed: true }
       }
       return false
-    }, 180_000, "official provider did not complete a Room computer click")
+    }, 180_000, `official provider did not complete a Room ${mode} click`)
     if (action.providerFailed) throw new Error("official provider turn failed before completing the Room action")
   } catch (error) {
     const diagnostic = await captureRoomProviderDiagnostic({ ...input, agentId: agent.id })
@@ -123,19 +137,32 @@ export async function runRoomRealProviderAction(input) {
     await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, diagnostic })
     throw error
   }
-  assert.equal(action.mode, "computer")
-  assert.equal(action.arguments.x, 640)
-  assert.equal(action.arguments.y, 400)
-  assert.equal(action.arguments.button, "left")
-  assert.equal(action.arguments.click_count, 1)
+  assertRoomRealProviderAction(action, mode)
   const result = {
     provider: verifiedAgent.provider, model: verifiedAgent.model, accountProfile: verifiedAgent.account_profile ?? "default", importFirst: options.importFirst,
-    agentId: agent.id, actorId, actionId: action.action_id,
+    agentId: agent.id, actorId, actionId: action.action_id, mode, actionKind,
     baselineSequence, actionSequence: action.sequence,
     expectedPhysicalEffect: input.expectedPhysicalEffect ?? "POINTER_CLICK_COUNT=2",
   }
   await input.checkpoint({ phase: "action-completed", ...result })
   return result
+}
+
+export function assertRoomRealProviderAction(action, mode = "computer") {
+  assert.ok(["computer", "browser"].includes(mode), "invalid provider mode")
+  assert.equal(action.mode, mode)
+  assert.equal(action.state, "completed")
+  assert.equal(action.kind, mode === "browser" ? "click" : "pointer_click")
+  if (mode === "browser") {
+    assert.equal(action.targets?.length, 1, "Browser click must target exactly one tab")
+    assert.equal(action.targets[0].kind, "browser_tab")
+    assert.ok(typeof action.targets[0].id === "string" && action.targets[0].id.length > 0)
+  } else {
+    assert.equal(action.arguments.x, 640)
+    assert.equal(action.arguments.y, 400)
+    assert.equal(action.arguments.button, "left")
+    assert.equal(action.arguments.click_count, 1)
+  }
 }
 
 function unwrap(response, variant) {
