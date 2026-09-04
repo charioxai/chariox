@@ -146,8 +146,8 @@ container, volume, temporary state and listeners and pass the fixture-secret
 scan. Keep evidence outside repositories under `~/.codex/evidence/`.
 
 The Room drill assigns its home kernel a private `CHARIOX_LOG_DIR` under the
-disposable drill root. On failure, after stopping that kernel and before deleting
-its state, it writes `kernel-connection-diagnostic.json`. This captures allowlisted
+disposable drill root. On failure, before teardown can flood the log with
+disconnect retries, it writes `kernel-connection-diagnostic.json`. This captures allowlisted
 connection stages and fixed error categories, not raw log lines, tokens, URLs,
 Room names, paths, prompts, or provider payloads. Primary and private relay URLs
 are compared in memory and recorded only as `primary` or `private`.

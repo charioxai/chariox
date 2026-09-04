@@ -2761,6 +2761,18 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  if (failure) {
+    // Capture the failure before teardown adds disconnect/retry noise.
+    const privateRelayPort = slice?.local_docker_ports?.relay
+    const diagnostic = await captureRoomKernelDiagnostics(path.join(tempRoot, "kernel-logs"), {
+      primary: `ws://127.0.0.1:${relayPort}`,
+      private: slice?.relay_endpoint?.private ? slice.relay_endpoint.url
+        : Number.isInteger(privateRelayPort) ? `ws://127.0.0.1:${privateRelayPort}` : undefined,
+    }).catch(() => ({ status: "unavailable" }))
+    await writeFile(path.join(evidenceRoot, "kernel-connection-diagnostic.json"),
+      `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 })
+      .catch(() => undefined)
+  }
   if (failure && slice) {
     const diagnostic = await captureRoomStreamerDiagnostics(containerName, runCommand)
       .catch(() => ({ status: "unavailable" }))
@@ -2798,15 +2810,6 @@ async function cleanup() {
   remoteAutomation?.close()
   await closeFixtureServer()
   for (const child of children.toReversed()) await terminateChild(child)
-  if (failure) {
-    const diagnostic = await captureRoomKernelDiagnostics(path.join(tempRoot, "kernel-logs"), {
-      primary: `ws://127.0.0.1:${relayPort}`,
-      private: slice?.relay_endpoint?.private ? slice.relay_endpoint.url : undefined,
-    }).catch(() => ({ status: "unavailable" }))
-    await writeFile(path.join(evidenceRoot, "kernel-connection-diagnostic.json"),
-      `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 })
-      .catch(() => undefined)
-  }
   // Stop resource producers before the final removal, including a kernel that
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
