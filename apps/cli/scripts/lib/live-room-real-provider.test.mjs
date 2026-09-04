@@ -5,6 +5,68 @@ import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
 
+test("a completed Room action cannot pass while its provider turn remains open", async () => {
+  const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+    action_id: "action-1", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+  }], turns: [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "open", entries: [], blobs: [] }] })
+  await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
+})
+
+function settlementFixture(options = {}) {
+  return fixture({ actions: [{ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+    action_id: "action-1", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+  }], ...options })
+}
+
+test("completed history for another prompt cannot prove settlement", async () => {
+  const run = settlementFixture({ turns: [{ turn_id: "older", prompt_id: "prompt-other", lifecycle: "completed", entries: [], blobs: [] }] })
+  await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
+})
+
+test("settlement waits for the matching completed turn and an idle agent", async () => {
+  const current = { turn_id: "current", prompt_id: "prompt-current", lifecycle: "open", entries: [], blobs: [] }
+  const state = { SessionState: { session: { agents: [{ id: "agent-2", is_processing: true }] } } }
+  const run = settlementFixture({ turns: [current], state })
+  const wait = run.input.waitFor
+  run.input.waitFor = async (check, timeout, message) => {
+    if (!message.includes("settle after")) return wait(check)
+    assert.equal(timeout, 60_000)
+    assert.equal(await check(), false, "an open turn is not settled")
+    current.lifecycle = "completed"
+    assert.equal(await check(), false, "a still-processing agent is not idle")
+    state.SessionState.session.agents[0].is_processing = false
+    return check()
+  }
+  const result = await runRoomRealProviderAction(run.input)
+  assert.deepEqual(result.settlement, { promptId: "prompt-current", turnId: "current", lifecycle: "completed", agentIdle: true })
+})
+
+test("missing submission identity cannot pass a completed action", async () => {
+  const run = settlementFixture({ submit: { PromptSubmitted: {} } })
+  await assert.rejects(runRoomRealProviderAction(run.input), /lacks an identity/)
+})
+
+test("a queued submission uses its own prompt identity for settlement", async () => {
+  const run = settlementFixture({ submit: { PromptSubmitted: { outcome: { Queued: { prompt: { id: "prompt-current" } } } } } })
+  assert.equal((await runRoomRealProviderAction(run.input)).settlement.promptId, "prompt-current")
+})
+
+test("post-action provider failure stops a retrying waiter without exposing error text", async () => {
+  const run = settlementFixture({ turns: [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed",
+    entries: [entry("provider_error", secret)], blobs: [] }] })
+  const wait = run.input.waitFor
+  run.input.waitFor = async (check, _timeout, message) => {
+    if (!message.includes("settle after")) return wait(check)
+    // Production polling retries read errors; a terminal failure must be a
+    // result, rather than an exception swallowed until the deadline.
+    const result = await check().catch(() => false)
+    assert.ok(result, "terminal provider failure must stop settlement polling")
+    return result
+  }
+  await assert.rejects(runRoomRealProviderAction(run.input), /official provider turn failed after the Room action/)
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
 test("field replacement is an explicit form-only recovery drill", () => {
   const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4",
     CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser", CHARIOX_ROOM_DRILL_BROWSER_TASK: "form", CHARIOX_ROOM_DRILL_BROWSER_MUTATION: "replace-field" }
@@ -24,7 +86,7 @@ const staleToolEntry = () => entry("provider_tool", JSON.stringify({ tool: "slic
 
 test("provider recovery requires a failed stale fill before a fresh successful form submission", async () => {
   const run = fixture({ priorActions: [{ sequence: 1 }], actions: recoveryActions(),
-    turns: [{ turn_id: "current", entries: [staleToolEntry()], blobs: [] }] })
+    turns: [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed", entries: [staleToolEntry()], blobs: [] }] })
   run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserMutation: "replace-field" }
   const result = await runRoomRealProviderAction(run.input)
   assert.equal(result.browserMutation, "replace-field")
@@ -38,7 +100,7 @@ test("provider recovery requires a failed stale fill before a fresh successful f
 
 test("standalone recovery proves page acceptance and both TUI failure notices", async () => {
   const run = fixture({ priorActions: [{ sequence: 1 }], actions: recoveryActions(),
-    turns: [{ turn_id: "current", entries: [staleToolEntry()], blobs: [] }] })
+    turns: [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed", entries: [staleToolEntry()], blobs: [] }] })
   run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserMutation: "replace-field" }
   const physical = [], notices = []
   run.input.waitForPhysicalEffect = async (value) => physical.push(value)
@@ -236,7 +298,7 @@ test("reused agent must belong to the intended slice", async () => {
 test("a completed click from before this prompt cannot satisfy the action wait", async () => {
   const stale = { actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
     action_id: "old", sequence: 7, arguments: { x: 640, y: 400, button: "left", click_count: 1 } }
-  const run = fixture({ actions: [stale], priorActions: [stale] })
+  const run = fixture({ actions: [stale], priorActions: [stale], turns: [] })
   run.input.agent = { id: "agent-2" }
   await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
 })
@@ -244,11 +306,15 @@ test("a completed click from before this prompt cannot satisfy the action wait",
 test("an older failed turn cannot abort the reused agent's current prompt", async () => {
   const old = { turn_id: "old", lifecycle: "completed", entries: [entry("provider_error", "old error")], blobs: [] }
   const actions = []
-  const run = fixture({ actions, priorTurns: [old], turns: [
-    { turn_id: "current", lifecycle: "open", entries: [], blobs: [] }, old,
-  ] })
+  const current = { turn_id: "current", prompt_id: "prompt-current", lifecycle: "open", entries: [], blobs: [] }
+  const run = fixture({ actions, priorTurns: [old], turns: [current, old] })
   run.input.agent = { id: "agent-2" }
-  run.input.waitFor = async (check) => {
+  run.input.waitFor = async (check, _timeout, message) => {
+    if (message.includes("settle after")) {
+      assert.equal(await check(), false)
+      current.lifecycle = "completed"
+      return check()
+    }
     assert.equal(await check(), false, "old failure must not end the current action wait")
     actions.push({ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
       action_id: "new", sequence: 8, arguments: { x: 640, y: 400, button: "left", click_count: 1 } })
@@ -265,7 +331,7 @@ test("reused agent with an in-flight turn is rejected before prompt submission",
   assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
 })
 
-function fixture({ turns = [], priorTurns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices } = {}) {
+function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed", entries: [], blobs: [] }], priorTurns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices } = {}) {
   const checkpoints = []
   const calls = []
   const requests = Object.fromEntries([
@@ -280,7 +346,7 @@ function fixture({ turns = [], priorTurns = [], blobs = {}, submit, state, actio
       switch (request.name) {
         case "spawnAgent": return { AgentSpawned: { agent: { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default" } } }
         case "attachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
-        case "submitPrompt": return submit ?? { PromptSubmitted: {} }
+        case "submitPrompt": return submit ?? { PromptSubmitted: { outcome: { Started: { prompt: { id: "prompt-current" } } } } }
         case "listRoomEnvironmentActionHistory": return { RoomEnvironmentActionHistoryListed: { page: {
           actions: calls.some((call) => call.name === "submitPrompt") ? actions : priorActions,
         } } }
@@ -483,7 +549,7 @@ test("successful provider action still requires physical and both TUI observatio
   const result = await runRoomRealProvider(run.input)
   assert.deepEqual(observed, ["POINTER_CLICK_COUNT=2", "both-tuis"])
   assert.equal(result.actionId, "action-1")
-  assert.equal(run.calls.some((r) => r.name === "getSessionHistoryOutline"), false)
+  assert.deepEqual(result.settlement, { promptId: "prompt-current", turnId: "current", lifecycle: "completed", agentIdle: true })
 })
 
 for (const [message, expected] of [
@@ -530,7 +596,7 @@ test("completed provider turn without the requested action fails without exhaust
 
 test("action committed while reading the completed turn is rechecked before failing", async () => {
   const actions = []
-  const run = fixture({ actions, turns: [{ turn_id: "current", lifecycle: "completed", entries: [], blobs: [] }] })
+  const run = fixture({ actions, turns: [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed", entries: [], blobs: [] }] })
   const send = run.input.client.send
   run.input.client.send = async (request) => {
     if (request.name === "getSessionHistoryOutline") actions.push({
