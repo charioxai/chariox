@@ -1,9 +1,44 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { runRoomRealProvider } from "./live-room-real-provider.mjs"
+import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction } from "./live-room-real-provider.mjs"
 
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
+
+test("Web real-provider mode requires an explicit opt-in and model", () => {
+  const env = { CHARIOX_ROOM_DRILL_FOCUS: "web-companion", CHARIOX_ROOM_DRILL_PROVIDER: "codex" }
+  assert.equal(roomRealProviderOptions(env), null)
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_WEB_REAL_PROVIDER: "1" }), /model/)
+  assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_WEB_REAL_PROVIDER: "1", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4" }).provider, "codex")
+})
+
+test("shared action runner waits for Web readiness without claiming TUI observation", async () => {
+  const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+    action_id: "action-1", arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+  }] })
+  run.input.agent = { id: "agent-2" }
+  let ready = false
+  run.input.beforePrompt = async (agent) => {
+    assert.equal(agent.id, "agent-2")
+    assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+    ready = true
+  }
+  run.input.waitForTuis = async () => assert.fail("action runner must not claim TUI observation")
+  run.input.expectedPhysicalEffect = "POINTER_CLICK_COUNT=1"
+  const result = await runRoomRealProviderAction(run.input)
+  assert.equal(ready, true)
+  assert.equal(run.calls.some((call) => call.name === "spawnAgent"), false)
+  assert.equal(result.expectedPhysicalEffect, "POINTER_CLICK_COUNT=1")
+  assert.equal(result.localTuiObserved, undefined)
+  assert.equal(run.checkpoints.at(-1).phase, "action-completed")
+})
+
+test("failed Web readiness cannot submit a provider prompt", async () => {
+  const run = fixture()
+  run.input.beforePrompt = async () => { throw new Error("Web not ready") }
+  await assert.rejects(runRoomRealProviderAction(run.input), /Web not ready/)
+  assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+})
 
 function fixture({ turns = [], blobs = {}, submit, state, actions = [] } = {}) {
   const checkpoints = []
