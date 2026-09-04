@@ -3,7 +3,7 @@ export function completedAccountTurns(agents, expected) {
   for (const { agentId, profileId, marker } of expected) {
     const turn = agents.find(agent => agent.agent_id === agentId)?.turns.find(turn => turn.user_prompt?.entry?.text.includes(marker))
     if (!turn) return null
-    const entries = turn.entries.map(page => page.entry)
+    const entries = [...turn.entries, ...(turn.summary ? [turn.summary] : [])].map(page => page.entry)
     if (turn.lifecycle === 'cancelled') throw new Error(`Account test turn cancelled for ${agentId}`)
     if (entries.some(entry => entry.kind === 'provider_error')) throw new Error(`Provider error in account test turn for ${agentId}`)
     if (turn.lifecycle !== 'completed') return null

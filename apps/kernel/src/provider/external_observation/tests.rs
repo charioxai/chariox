@@ -254,6 +254,22 @@ fn normalized_observed_prompt_text_ignores_provider_native_attachment_suffixes()
 }
 
 #[test]
+fn observed_account_handoff_matches_only_the_current_request() {
+    let envelope = "<chariox_context_handoff>Prior prompt and output</chariox_context_handoff> Provider/account switch: codex [a] -> codex [b]. <user_request>Reply SWITCHED</user_request>";
+    assert_eq!(
+        normalized_observed_prompt_text(envelope),
+        Some("Reply SWITCHED".to_string())
+    );
+    for literal in [
+        "<user_request>Keep literal markup</user_request>",
+        "<chariox_context_handoff>Missing close <user_request>Do not strip</user_request>",
+        "<chariox_context_handoff>context</chariox_context_handoff> Provider/account switch: codex <user_request>Missing close",
+    ] {
+        assert_eq!(normalized_observed_prompt_text(literal), Some(literal.to_string()));
+    }
+}
+
+#[test]
 fn observed_prompt_text_ignores_chariox_generated_runtime_context() {
     let observed = "run the check <runtime-instructions>generated</runtime-instructions> \
         <native-permission-instructions>generated</native-permission-instructions>";

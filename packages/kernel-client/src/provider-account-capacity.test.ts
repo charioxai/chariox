@@ -75,9 +75,11 @@ test("Codex general and Spark allowance exhaustion are independent", () => {
   const account = profile("codex", [general, spark, credits])
   assert.equal(providerAccountCapacity(account, nowMs, "gpt-5.6-luna").state, "exhausted")
   assert.equal(providerAccountCapacity(account, nowMs, "gpt-5.3-codex-spark").state, "ready")
+  assert.equal(providerAccountCapacity(account, nowMs, "codex/gpt-5.3-codex-spark").state, "ready")
   const reverse = profile("codex", [{ ...general, state: "healthy" }, { ...spark, state: "exhausted" }, credits])
   assert.equal(providerAccountCapacity(reverse, nowMs, "gpt-5.6-luna").state, "ready")
   assert.equal(providerAccountCapacity(reverse, nowMs, "gpt-5.3-codex-spark").state, "exhausted")
+  assert.equal(providerAccountCapacity(reverse, nowMs, "codex/gpt-5.3-codex-spark").state, "exhausted")
 })
 
 function profile(provider: string, meters: ProviderAccountUsageMeter[]): ProviderAccountProfile {

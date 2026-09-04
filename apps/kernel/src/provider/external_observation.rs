@@ -381,6 +381,7 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
+    let text = strip_observed_account_handoff(text);
     let without_provider_attachment_suffix = strip_observed_provider_attachment_suffix(text);
     let without_attachments = strip_observed_attachment_markup(without_provider_attachment_suffix);
     let normalized = strip_observed_generated_prompt_context(&without_attachments)
@@ -388,6 +389,28 @@ pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn strip_observed_account_handoff(text: &str) -> &str {
+    let Some(context) = text.trim().strip_prefix("<chariox_context_handoff>") else {
+        return text;
+    };
+    let Some((_, remainder)) = context.split_once("</chariox_context_handoff>") else {
+        return text;
+    };
+    let Some(transition) = remainder
+        .trim_start()
+        .strip_prefix("Provider/account switch:")
+    else {
+        return text;
+    };
+    let Some((_, request)) = transition.split_once("<user_request>") else {
+        return text;
+    };
+    request
+        .trim_end()
+        .strip_suffix("</user_request>")
+        .unwrap_or(text)
 }
 
 fn strip_observed_provider_attachment_suffix(text: &str) -> &str {

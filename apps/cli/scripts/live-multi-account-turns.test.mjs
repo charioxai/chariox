@@ -25,3 +25,10 @@ test('completed provider output records the exact turn and run identity', () => 
 test('a prior turn cannot satisfy the next account-switch turn', () => {
   assert.equal(completedAccountTurns(history([{ kind: 'provider_output', text: 'UNIQUE_A', provider_run_id: 'run-a' }]), [{ ...expected[0], marker: 'UNIQUE_B' }]), null)
 })
+test('completed output in the history summary retains provider-run attribution', () => {
+  const outline = history([])
+  outline[0].turns[0].summary = { entry: { kind: 'provider_output', text: 'UNIQUE_A', provider_run_id: 'run-a' } }
+  assert.deepEqual(completedAccountTurns(outline, expected)?.[0].providerRunIds, ['run-a'])
+  outline[0].turns[0].summary.entry.kind = 'user_prompt'
+  assert.equal(completedAccountTurns(outline, expected), null)
+})

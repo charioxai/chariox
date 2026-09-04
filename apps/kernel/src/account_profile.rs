@@ -354,6 +354,7 @@ fn provider_account_usage_block(
         if provider == "codex" && meter.meter_id.starts_with("rolling/") {
             if let Some(model) = model
                 .map(str::trim)
+                .map(|model| model.strip_prefix("codex/").unwrap_or(model))
                 .filter(|model| !model.is_empty() && *model != "default")
             {
                 let selected = if model == "gpt-5.3-codex-spark" {
@@ -3626,6 +3627,13 @@ mod tests {
             provider_account_usage_block("codex", Some("gpt-5.3-codex-spark"), &usage, now)
                 .is_none()
         );
+        assert!(provider_account_usage_block(
+            "codex",
+            Some("codex/gpt-5.3-codex-spark"),
+            &usage,
+            now
+        )
+        .is_none());
         let reverse = capacity_snapshot(
             "codex",
             ProviderAccountUsageAvailability::Available,
@@ -3649,6 +3657,13 @@ mod tests {
             provider_account_usage_block("codex", Some("gpt-5.3-codex-spark"), &reverse, now)
                 .is_some()
         );
+        assert!(provider_account_usage_block(
+            "codex",
+            Some("codex/gpt-5.3-codex-spark"),
+            &reverse,
+            now
+        )
+        .is_some());
     }
 
     #[test]
