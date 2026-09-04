@@ -44,6 +44,7 @@ export async function configureBrowserDownloads({
       `browser download directory is unavailable: ${String(error?.code ?? "filesystem_error")}`,
     );
   }
+  await assertCurrentDocument(connection, sessionId, targetId, documentId);
   await connection.send("Browser.setDownloadBehavior", {
     behavior: "allowAndName",
     downloadPath: resolvedDirectory,

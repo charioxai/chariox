@@ -41,6 +41,24 @@ test("downloads use one configured private directory and GUID filenames", async 
   assert.deepEqual(fileSystem.created, ["/safe/downloads"]);
 });
 
+test("downloads recheck the document after directory setup before changing browser policy", async () => {
+  const connection = new FakeFileConnection();
+  const fileSystem = new FakeFileSystem({
+    "/safe/downloads": { realpath: "/safe/downloads", type: "directory" },
+  });
+  const inspect = fileSystem.stat.bind(fileSystem);
+  fileSystem.stat = async (path) => {
+    const metadata = await inspect(path);
+    connection.loaderId = "loader-b";
+    return metadata;
+  };
+  await assert.rejects(configureBrowserDownloads({
+    connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a",
+    downloadDirectory: "/safe/downloads", fileSystem,
+  }), (error) => error.code === "stale_document_reference");
+  assert.equal(connection.calls.some((call) => call.method === "Browser.setDownloadBehavior"), false);
+});
+
 test("uploads resolve regular files inside configured roots without returning paths", async () => {
   const connection = new FakeFileConnection();
   const fileSystem = new FakeFileSystem({
