@@ -449,6 +449,37 @@ test("completed error turn ends the action wait without exhausting its deadline"
   await assert.rejects(runRoomRealProvider(run.input), /provider turn failed before/)
 })
 
+test("completed provider turn without the requested action fails without exhausting its deadline", async () => {
+  const run = fixture({ turns: [{ turn_id: "current", lifecycle: "completed",
+    entries: [entry("provider_output", secret)], blobs: [] }] })
+  await assert.rejects(runRoomRealProvider(run.input), /provider turn completed without the required Room action/)
+  assert.equal(run.checkpoints.at(-1).phase, "action-failed")
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("action committed while reading the completed turn is rechecked before failing", async () => {
+  const actions = []
+  const run = fixture({ actions, turns: [{ turn_id: "current", lifecycle: "completed", entries: [], blobs: [] }] })
+  const send = run.input.client.send
+  run.input.client.send = async (request) => {
+    if (request.name === "getSessionHistoryOutline") actions.push({
+      actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+      action_id: "arrived", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+    })
+    return send(request)
+  }
+  assert.equal((await runRoomRealProviderAction(run.input)).actionId, "arrived")
+})
+
+test("older completed success cannot abort a reused agent's open turn", async () => {
+  const old = { turn_id: "old", lifecycle: "completed", entries: [], blobs: [] }
+  const run = fixture({ priorTurns: [old], turns: [
+    { turn_id: "current", lifecycle: "open", entries: [], blobs: [] }, old,
+  ] })
+  run.input.agent = { id: "agent-2" }
+  await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
+})
+
 test("full error blob is inspected even when its preview has the same entry index", async () => {
   const run = fixture({ turns: [{ lifecycle: "completed", entries: [],
     summary: entry("provider_error", "OpenCode error", 8),
