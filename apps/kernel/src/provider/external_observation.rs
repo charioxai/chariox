@@ -381,9 +381,10 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
-    let text = strip_observed_account_handoff(text);
     let without_provider_attachment_suffix = strip_observed_provider_attachment_suffix(text);
-    let without_attachments = strip_observed_attachment_markup(without_provider_attachment_suffix);
+    let without_account_handoff =
+        strip_observed_account_handoff(without_provider_attachment_suffix);
+    let without_attachments = strip_observed_attachment_markup(without_account_handoff);
     let normalized = strip_observed_generated_prompt_context(&without_attachments)
         .split_whitespace()
         .collect::<Vec<_>>()

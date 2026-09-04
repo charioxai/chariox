@@ -260,6 +260,15 @@ fn observed_account_handoff_matches_only_the_current_request() {
         normalized_observed_prompt_text(envelope),
         Some("Reply SWITCHED".to_string())
     );
+    for suffix in [
+        "Attachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8=",
+        "\nAttachment: note.txt (text/plain) at file:///tmp/note.txt\n\nfile contents",
+    ] {
+        assert_eq!(
+            normalized_observed_prompt_text(&format!("{envelope}{suffix}")),
+            Some("Reply SWITCHED".to_string())
+        );
+    }
     for literal in [
         "<user_request>Keep literal markup</user_request>",
         "<chariox_context_handoff>Missing close <user_request>Do not strip</user_request>",
