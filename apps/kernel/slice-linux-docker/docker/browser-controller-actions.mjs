@@ -397,7 +397,8 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
-        if (!(ownerDocument.activeElement === this || this.contains?.(ownerDocument.activeElement))) {
+        const activeElement = (this.getRootNode?.() ?? ownerDocument).activeElement;
+        if (!(activeElement === this || this.contains?.(activeElement))) {
           return { ok: false, reason: "target_not_focusable" };
         }
         if (!isMaskedEditableInput()) {
@@ -554,7 +555,8 @@ async function focusElement(connection, sessionId, objectId, selectAll) {
       objectId,
       functionDeclaration: `function(selectAll) {
         this.focus();
-        const focused = document.activeElement === this || this.contains?.(document.activeElement);
+        const activeElement = (this.getRootNode?.() ?? this.ownerDocument).activeElement;
+        const focused = activeElement === this || this.contains?.(activeElement);
         if (focused && selectAll) {
           if (typeof this.select === "function") {
             this.select();
