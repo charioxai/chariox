@@ -25,7 +25,7 @@ export async function runRoomRealProvider(input) {
   if (result.browserTask === "form") {
     await input.waitForPhysicalEffect("BROWSER_FORM_ACCEPTED")
     await input.waitForTuis(new RegExp(`^Room action #${result.fillActionSequence}: real-${result.provider} · browser fill · completed$`))
-  }
+  } else if (result.mode === "browser") await input.waitForPhysicalEffect("BROWSER_CLICK_ACCEPTED")
   await input.waitForTuis(new RegExp(`^Room action #\\d+: real-${result.provider} · ${result.mode} ${result.actionKind} · completed$`))
   await input.screenshot("after-real-provider-click")
   const verified = {

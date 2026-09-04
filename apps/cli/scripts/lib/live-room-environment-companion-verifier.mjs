@@ -47,7 +47,7 @@ export async function runRoomEnvironmentCompanion(input) {
   await input.waitForPhysicalEffect(companion.physicalEffect)
   if (input.ready.realProvider?.browserTask === "form") {
     await input.waitForPhysicalEffect("BROWSER_FORM_ACCEPTED")
-  }
+  } else if (input.ready.realProvider?.mode === "browser") await input.waitForPhysicalEffect("BROWSER_CLICK_ACCEPTED")
   if (companion.keyboard) {
     assert.equal(companion.keyboard.physicalEffect, "WEB_KEYBOARD_TEXT_OK")
     assert.equal(typeof companion.keyboard.actionId, "string")
