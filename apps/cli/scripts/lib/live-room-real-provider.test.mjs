@@ -157,6 +157,7 @@ for (const [message, expected] of [
   ["OpenCode request failed after 3 attempts", "provider_request_failed"],
   ["Invalid schema for function", "invalid_tool_schema"],
   ["ProviderModelNotFoundError", "model_unavailable"],
+  ["Provider session failed: Token refresh failed: 401", "auth_refresh_failed"],
 ]) {
   test(`classifies ${expected} without retaining its payload`, async () => {
     const run = fixture({ turns: [{ lifecycle: "completed", entries: [entry("provider_error", `${message}: ${secret}`)], blobs: [] }] })

@@ -4,6 +4,7 @@ const diagnosticPatterns = [
   ["endpoint_unhealthy", /(?:codex|claude|opencode)_endpoint_unhealthy/i],
   ["provider_launch", /provider launch/i],
   ["unauthorized", /unauthorized|authentication failed|invalid api key/i],
+  ["auth_refresh_failed", /token refresh failed/i],
   ["rate_limit", /rate.?limit|too many requests/i],
   ["model_unavailable", /model.{0,40}(?:not found|not available|unsupported)|ProviderModelNotFoundError/i],
   ["tool_unavailable", /(?:unknown tool|tool not found|no such tool)/i],
