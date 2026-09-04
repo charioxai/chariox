@@ -140,7 +140,9 @@ export function createRoomEnvironmentActivityController(
     assertCursorDoesNotMoveBackwards(nextCursor, nextEnvironment.event_cursor)
     if (!selectionMatches(sessionId, revision)) return false
     environment = nextEnvironment
-    replayCursor = nextEnvironment.event_cursor
+    // State can advance while this batch is in flight. Only acknowledge the
+    // events consumed here; the next poll must still fetch intervening events.
+    replayCursor = nextCursor
     const notices = roomEnvironmentEventNotices(events, nextEnvironment)
     for (const notice of notices) deps.appendNotice(notice)
     deps.recordDaemonActivity("room_environment_events")
