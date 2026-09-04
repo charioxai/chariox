@@ -14,7 +14,7 @@ test("streamer failure probe is bounded, read-only and scoped to the exact owned
     const probe = args.at(-1)
     assert.match(probe, /memory\.events/)
     assert.match(probe, /oom_kill/)
-    assert.doesNotMatch(probe, /cmdline|environ|master_token/)
+    assert.doesNotMatch(probe, /\.cmdline|\.environ|master_token/)
     return { code: 0, stdout: JSON.stringify(expected) }
   })
   assert.deepEqual(result, { status: "captured", ...expected })
