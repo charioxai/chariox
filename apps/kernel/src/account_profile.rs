@@ -1288,6 +1288,7 @@ impl ProviderAccountProfileRegistry {
         let files = materialization_files(
             &stored.locator,
             stored.public.origin == ProviderAccountProfileOrigin::Default,
+            profile_id,
         )?;
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
@@ -1314,7 +1315,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
         let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
-        let files = materialization_files(&locator, false)?;
+        let files = materialization_files(&locator, false, profile_id)?;
         if files.is_empty() {
             return Err(registry_error(
                 "materialize deployment account profile",
@@ -1358,7 +1359,7 @@ impl ProviderAccountProfileRegistry {
                     &mut files,
                     MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES,
                 )?;
-                require_materialization_file(&files, "auth.json", provider, profile_id)?;
+                require_managed_materialization_file(&files, "auth.json", provider, profile_id)?;
             }
             ProviderAccountLocator::Claude {
                 claude_config_dir, ..
@@ -1380,7 +1381,12 @@ impl ProviderAccountProfileRegistry {
                 {
                     collect_legacy_claude_keychain_credentials(&mut files)?;
                 }
-                require_materialization_file(&files, ".credentials.json", provider, profile_id)?;
+                require_managed_materialization_file(
+                    &files,
+                    ".credentials.json",
+                    provider,
+                    profile_id,
+                )?;
             }
             ProviderAccountLocator::Opencode { xdg_data_home, .. } => {
                 let auth_root = xdg_data_home.join("opencode");
@@ -1392,7 +1398,7 @@ impl ProviderAccountProfileRegistry {
                     &mut files,
                     MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES,
                 )?;
-                require_materialization_file(
+                require_managed_materialization_file(
                     &files,
                     "data/opencode/auth.json",
                     provider,
@@ -2591,6 +2597,7 @@ fn validate_profile_id(profile_id: &str) -> Result<&str, DaemonError> {
 fn materialization_files(
     locator: &ProviderAccountLocator,
     include_default_claude_keychain: bool,
+    profile_id: &str,
 ) -> Result<Vec<ProviderAccountMaterializationFile>, DaemonError> {
     let mut files = Vec::new();
     match locator {
@@ -2613,6 +2620,7 @@ fn materialization_files(
             {
                 collect_legacy_claude_keychain_credentials(&mut files)?;
             }
+            require_materialization_file(&files, ".credentials.json", "claude", profile_id)?;
         }
         ProviderAccountLocator::Opencode {
             xdg_data_home,
@@ -2766,7 +2774,7 @@ fn validate_materialization_root(root: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn require_materialization_file(
+fn require_managed_materialization_file(
     files: &[ProviderAccountMaterializationFile],
     relative_path: &str,
     provider: &str,
@@ -2778,11 +2786,20 @@ fn require_materialization_file(
             "provider account materialization exceeds the 16 MiB managed-context limit",
         ));
     }
-    if files.iter().any(|file| file.relative_path == relative_path) {
+    require_materialization_file(files, relative_path, provider, profile_id)
+}
+
+fn require_materialization_file(
+    files: &[ProviderAccountMaterializationFile],
+    relative_path: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<(), DaemonError> {
+    if materialization_has_file(files, relative_path) {
         return Ok(());
     }
     Err(registry_error(
-        "export managed account profile",
+        "export account profile",
         format!("{provider} account profile `{profile_id}` has no transferable credentials"),
     ))
 }

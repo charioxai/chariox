@@ -50,6 +50,148 @@ impl Drop for ProfileFixture {
 }
 
 #[test]
+fn claude_account_export_rejects_settings_without_transferable_credentials() {
+    let source = ProfileFixture::new();
+    let profile = source
+        .registry
+        .create_managed("owner", "claude", "Work")
+        .unwrap();
+    let environment = source
+        .registry
+        .resolve_environment("owner", "claude", &profile.profile_id)
+        .unwrap();
+    fs::write(
+        Path::new(&environment["CLAUDE_CONFIG_DIR"]).join("settings.json"),
+        b"{}",
+    )
+    .unwrap();
+
+    let error = source
+        .registry
+        .export_materialization("owner", "claude", &profile.profile_id)
+        .expect_err("settings alone must not authorize a Claude account transfer");
+    assert!(
+        error.to_string().contains("no transferable credentials"),
+        "{error}"
+    );
+    assert!(error.to_string().contains(&profile.profile_id), "{error}");
+
+    for invalid in [
+        "{}",
+        "not-json",
+        r#"{"claudeAiOauth":{"accessToken":"fixture-access-only"}}"#,
+        r#"{"claudeAiOauth":{"accessToken":"","refreshToken":""}}"#,
+    ] {
+        fs::write(
+            Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json"),
+            invalid,
+        )
+        .unwrap();
+        let error = source
+            .registry
+            .export_materialization("owner", "claude", &profile.profile_id)
+            .expect_err("a non-refreshable credential must not authorize transfer");
+        assert!(
+            error.to_string().contains("no transferable credentials"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("fixture-access-only"));
+    }
+}
+
+#[test]
+fn claude_deployment_requires_login_and_preserves_a_refreshable_account() {
+    let source = ProfileFixture::new();
+    let source_home = source.root.join("deployment-home");
+    let config_dir = source_home.join(".claude");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("settings.json"), b"{}").unwrap();
+    let error = source
+        .registry
+        .materialize_deployment_profile(
+            "owner",
+            "claude",
+            "deployment-claude",
+            "Deployment",
+            &source_home,
+        )
+        .expect_err("settings-only deployment must fail before creating a replica");
+    assert!(
+        error.to_string().contains("no transferable credentials"),
+        "{error}"
+    );
+    assert!(source
+        .registry
+        .get("owner", "claude", "deployment-claude")
+        .is_err());
+
+    let credentials = br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#;
+    fs::write(config_dir.join(".credentials.json"), credentials).unwrap();
+    let profile = source
+        .registry
+        .materialize_deployment_profile(
+            "owner",
+            "claude",
+            "deployment-claude",
+            "Deployment",
+            &source_home,
+        )
+        .expect("refreshable deployment account should materialize");
+    let export = source
+        .registry
+        .export_materialization("owner", "claude", &profile.profile_id)
+        .expect("materialized account should remain transferable");
+    let credential = export
+        .files
+        .iter()
+        .find(|file| file.relative_path == ".credentials.json")
+        .expect("credential must be in the transfer");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&credential.contents_base64)
+            .unwrap(),
+        credentials,
+    );
+    assert!(!format!("{export:?}").contains("fixture-refresh"));
+}
+
+#[test]
+fn claude_account_export_preserves_the_ordinary_transfer_size_budget() {
+    let source = ProfileFixture::new();
+    let profile = source
+        .registry
+        .create_managed("owner", "claude", "Work")
+        .unwrap();
+    let environment = source
+        .registry
+        .resolve_environment("owner", "claude", &profile.profile_id)
+        .unwrap();
+    let config_dir = Path::new(&environment["CLAUDE_CONFIG_DIR"]);
+    fs::write(
+        config_dir.join(".credentials.json"),
+        br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#,
+    )
+    .unwrap();
+    // Sparse metadata exercises the ordinary 64 MiB transfer budget without
+    // persisting a large fixture. The managed-context budget is only 16 MiB.
+    fs::File::create(config_dir.join("stats-cache.json"))
+        .unwrap()
+        .set_len(17 * 1024 * 1024)
+        .unwrap();
+    let export = source
+        .registry
+        .export_materialization("owner", "claude", &profile.profile_id)
+        .expect("credential validation must not shrink the ordinary transfer budget");
+    assert_eq!(export.files.len(), 2);
+    let managed = source
+        .registry
+        .export_managed_context_materialization("owner", "claude", &profile.profile_id)
+        .expect("managed context exports credentials only");
+    assert_eq!(managed.files.len(), 1);
+    assert_eq!(managed.files[0].relative_path, ".credentials.json");
+}
+
+#[test]
 fn opencode_account_export_is_independent_of_local_session_database_size() {
     let source = ProfileFixture::new();
     fs::write(
