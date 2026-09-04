@@ -598,6 +598,8 @@ class FakeConnection {
     if (method === "Runtime.evaluate") {
       return { result: { value: sessionId === "session-b" } };
     }
+    if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
+    if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
   }
 }
