@@ -1,9 +1,12 @@
+import { AsyncLocalStorage } from "node:async_hooks"
+
 export function createDrillInterruption(signals = process) {
   const abort = new AbortController()
+  const cleanupContext = new AsyncLocalStorage()
   const clients = new WeakSet()
   let cleaning = false
   let started = false
-  const check = () => { if (!cleaning) abort.signal.throwIfAborted() }
+  const check = () => { if (!cleanupContext.getStore()) abort.signal.throwIfAborted() }
   const interrupt = (signal) => {
     if (!cleaning && !abort.signal.aborted) abort.abort(new Error(`drill interrupted by ${signal}`))
   }
@@ -20,7 +23,7 @@ export function createDrillInterruption(signals = process) {
     },
     sleep(ms) {
       check()
-      if (cleaning) return new Promise((resolve) => setTimeout(resolve, ms))
+      if (cleanupContext.getStore()) return new Promise((resolve) => setTimeout(resolve, ms))
       return new Promise((resolve, reject) => {
         const interrupted = () => { clearTimeout(timer); reject(abort.signal.reason) }
         const timer = setTimeout(() => {
@@ -40,7 +43,7 @@ export function createDrillInterruption(signals = process) {
           // Do not race cleanup against work still provisioning a resource.
           // Keep handlers installed so repeated signals cannot interrupt cleanup.
           cleaning = true
-          await cleanup()
+          await cleanupContext.run(true, cleanup)
         }
       } finally {
         for (const [signal, handler] of Object.entries(handlers)) signals.removeListener(signal, handler)
