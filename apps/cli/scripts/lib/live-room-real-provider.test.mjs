@@ -14,7 +14,7 @@ test("Web real-provider mode requires an explicit opt-in and model", () => {
 
 test("shared action runner waits for Web readiness without claiming TUI observation", async () => {
   const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
-    action_id: "action-1", arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+    action_id: "action-1", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
   }] })
   run.input.agent = { id: "agent-2" }
   let ready = false
@@ -40,12 +40,37 @@ test("failed Web readiness cannot submit a provider prompt", async () => {
   assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
 })
 
-function fixture({ turns = [], blobs = {}, submit, state, actions = [] } = {}) {
+for (const [field, value] of [["provider", "dev-stub"], ["model", "wrong"], ["account_profile", "wrong"], ["session_id", "other-room"]]) {
+  test(`reused agent rejects authoritative ${field} mismatch before prompting`, async () => {
+    const run = fixture({ state: { SessionState: { session: { agents: [{ id: "agent-2", provider: "opencode", model: "fixture",
+      account_profile: "default", session_id: "room", [field]: value }] } } } })
+    run.input.agent = { id: "agent-2", provider: "opencode", model: "fixture" }
+    await assert.rejects(runRoomRealProviderAction(run.input), /provider configuration/)
+    assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+  })
+}
+
+test("reused agent must belong to the intended slice", async () => {
+  const run = fixture({ slices: [{ id: "other", agent_ids: ["agent-2"] }] })
+  run.input.agent = { id: "agent-2" }
+  await assert.rejects(runRoomRealProviderAction(run.input), /intended slice/)
+  assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+test("a completed click from before this prompt cannot satisfy the action wait", async () => {
+  const stale = { actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+    action_id: "old", sequence: 7, arguments: { x: 640, y: 400, button: "left", click_count: 1 } }
+  const run = fixture({ actions: [stale], priorActions: [stale] })
+  run.input.agent = { id: "agent-2" }
+  await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
+})
+
+function fixture({ turns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices } = {}) {
   const checkpoints = []
   const calls = []
   const requests = Object.fromEntries([
     "spawnAgent", "attachToSession", "submitPrompt", "listRoomEnvironmentActionHistory",
-    "getSessionState", "getSessionHistoryOutline", "getSessionHistoryBlobContent",
+    "getSessionState", "getSessionHistoryOutline", "getSessionHistoryBlobContent", "listSlices",
   ].map((name) => [`${name}Request`, (...args) => ({ name, args })]))
   const input = {
     requests, sessionId: "room", sliceId: "slice", workspace: "/fixture",
@@ -53,12 +78,15 @@ function fixture({ turns = [], blobs = {}, submit, state, actions = [] } = {}) {
     client: { send: async (request) => {
       calls.push(request)
       switch (request.name) {
-        case "spawnAgent": return { AgentSpawned: { agent: { id: "agent-2" } } }
+        case "spawnAgent": return { AgentSpawned: { agent: { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default" } } }
         case "attachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
         case "submitPrompt": return submit ?? { PromptSubmitted: {} }
-        case "listRoomEnvironmentActionHistory": return { RoomEnvironmentActionHistoryListed: { page: { actions } } }
+        case "listRoomEnvironmentActionHistory": return { RoomEnvironmentActionHistoryListed: { page: {
+          actions: calls.some((call) => call.name === "submitPrompt") ? actions : priorActions,
+        } } }
+        case "listSlices": return { SlicesListed: { slices: slices ?? [{ id: "slice", agent_ids: ["agent-2"] }] } }
         case "getSessionState": return state ?? { SessionState: {
-          session: { agents: [{ id: "agent-2", state: "Working" }] },
+          session: { agents: [{ id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default", state: "Working" }] },
           agent_activity: { "agent-2": { status: "working", prompt_status: "running", active_turn: { phase: "awaiting_first_output" } } },
         } }
         case "getSessionHistoryOutline": return { SessionHistoryOutline: { agents: [{ agent_id: "agent-2", turns }] } }
@@ -171,7 +199,7 @@ test("many small blobs still obey the total request budget", async () => {
 
 test("successful provider action still requires physical and both TUI observations", async () => {
   const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
-    action_id: "action-1", arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+    action_id: "action-1", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
   }] })
   const observed = []
   run.input.waitForPhysicalEffect = async (marker) => observed.push(marker)
