@@ -1,5 +1,30 @@
 # Room provider Browser and Computer drills
 
+### Claude tool transcript resource limits
+
+Tool invocation/result projection is bounded before retention and output
+serialization. A turn retains at most 64 unmatched invocations and 256 KiB of
+encoded input plus ID/name bytes. Each input is capped at 8 KiB before cloning;
+oversized input is replaced by `{"chariox_truncated":true}`. Pending inputs stay
+encoded instead of retaining expanded JSON trees. IDs and tool names are capped
+at 256 bytes. Projection and unsupported `ToolSearch` rejection use one pass
+examining at most 64 content blocks per message. The handler writes only the
+bounded rejection batch returned by that pass; it does not clone unchecked IDs
+or separately walk the original provider message.
+
+Results append text incrementally, retaining at most 16 KiB including a visible
+`[chariox: tool transcript truncated]` marker. At most 256 result blocks are
+examined. No unbounded text-block collection/join occurs. Oversized
+identities and exceeded tracking/message budgets produce one transcript-limit
+notice per turn. These limits affect transcript projection, not provider tool
+execution. Completing a tracked call releases its retained byte budget; turn
+reset clears both pending calls and the notice state.
+
+The standalone actual-source test covers oversized input/results, Unicode and
+exact-size boundaries, many unmatched IDs, aggregate byte exhaustion, result
+correlation, slot reuse and reset. Full kernel integration and live Claude
+provider validation remain separate requirements.
+
 These local acceptance cases use an official provider through the kernel's
 normal slice-backed agent path. The test driver does not impersonate an agent
 with direct MCP calls. Use them before managed-machine validation and public
@@ -95,6 +120,22 @@ The normal CLI package test command includes that focused suite. Repository CI
 still runs only at the final reviewed, merge-ready gate.
 
 ## Evidence and limits
+
+### Claude tool-result history
+
+Claude stream-json assistant `tool_use` events start a running tool transcript
+entry. Matching user `tool_result` events complete the same entry or attach
+the actual tool error, preserving the invocation input and tool ID. A rejected
+tool is not by itself a failed provider turn. Text result blocks are retained;
+image payloads are not copied into this textual projection. Unknown or duplicate
+results are ignored, and pending invocation context clears on prompt reset,
+settlement, cancellation and runtime restart.
+
+The isolated tests exercise the actual projection source with the existing
+serde_json dependency. They do not prove the full Claude event-drain wiring or
+a live provider error. The kernel test
+`claude_stream_projects_matching_tool_result_error_and_input` and the live
+provider/Web/TUI recovery drill must also pass before accepting that coverage.
 
 ### Controller reference recovery
 

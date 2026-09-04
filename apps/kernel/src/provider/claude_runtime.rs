@@ -23,6 +23,7 @@ mod events;
 mod input;
 mod process;
 mod state;
+mod tool_transcript;
 pub(crate) mod usage;
 mod watchdog;
 
@@ -102,6 +103,7 @@ pub(crate) fn initialize_claude_runtime(
             next_turn_number: 1,
             result_number: 1,
             emitted_text_by_block: BTreeMap::new(),
+            tool_transcript: Default::default(),
             completed_text_blocks: Default::default(),
             exit_reported: false,
         },
@@ -173,6 +175,7 @@ pub(crate) fn submit_claude_prompt(
     state.turn_watchdog.begin(Instant::now());
     state.active_stream_message_id = None;
     state.emitted_text_by_block.clear();
+    state.tool_transcript.clear();
     state.completed_text_blocks.clear();
     Ok(())
 }
@@ -326,6 +329,7 @@ fn retry_stalled_claude_turn(
 }
 
 fn clear_active_claude_turn(state: &mut ClaudeRuntimeState) {
+    state.tool_transcript.clear();
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.turn_watchdog.settle();
@@ -346,51 +350,29 @@ fn handle_claude_tool_uses(
     value: &serde_json::Value,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
-    let message = value.get("message").unwrap_or(value);
-    let Some(content) = message.get("content").and_then(serde_json::Value::as_array) else {
-        return Ok(());
-    };
-    let mut tool_results = Vec::new();
-    for block in content
-        .iter()
-        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
-    {
-        let name = block
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        if is_unsupported_claude_stream_json_tool(name) {
-            let Some(id) = block.get("id").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            tool_results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": id,
-                "is_error": true,
-                "content": format!(
-                    "Chariox does not execute Claude stream-json tool `{name}` in this runtime path. If this is a Chariox workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly."
-                ),
-            }));
-            continue;
-        }
-        let payload = json!({
-            "tool": name,
-            "status": "completed",
-            "input": block.get("input").cloned().unwrap_or(serde_json::Value::Null),
-            "id": block.get("id").cloned().unwrap_or(serde_json::Value::Null),
-        });
+    for payload in state.tool_transcript.observe(value) {
         let bytes =
             serde_json::to_vec(&payload).map_err(|error| DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
-                operation: "claude_tool_use_serialize",
+                operation: "claude_tool_transcript_serialize",
                 message: error.to_string(),
             })?;
         batch.chunks.push(super::ProviderPromptChunk {
             kind: TerminalOutputKind::ProviderTool,
-            merge_key: None,
+            merge_key: payload
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
             bytes,
         });
     }
+    if state.tool_transcript.take_truncation_notice() {
+        batch.notices.push(
+            "Claude tool transcript truncated to resource limits; provider execution is unchanged"
+                .to_string(),
+        );
+    }
+    let tool_results = state.tool_transcript.take_unsupported_results();
     if !tool_results.is_empty() {
         let response = json!({
             "type": "user",
@@ -405,10 +387,6 @@ fn handle_claude_tool_uses(
         ));
     }
     Ok(())
-}
-
-fn is_unsupported_claude_stream_json_tool(name: &str) -> bool {
-    name == "ToolSearch"
 }
 
 fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRuntimeState) -> bool {
@@ -468,6 +446,7 @@ fn restart_claude_runtime(
     state.emitted_text_by_block.clear();
     state.completed_text_blocks.clear();
     state.exit_reported = false;
+    state.tool_transcript.clear();
     Ok(())
 }
 
@@ -537,6 +516,8 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod tool_results;
+
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -597,6 +578,7 @@ mod tests {
                 next_turn_number: 1,
                 result_number: 1,
                 emitted_text_by_block: Default::default(),
+                tool_transcript: Default::default(),
                 completed_text_blocks: Default::default(),
                 exit_reported: false,
             },
@@ -1235,7 +1217,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_slice(&batch.chunks[0].bytes).expect("tool payload should be JSON");
         assert_eq!(payload["tool"], "browser_snapshot");
-        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["status"], "running");
         assert_eq!(payload["input"]["random"], "value");
     }
 
