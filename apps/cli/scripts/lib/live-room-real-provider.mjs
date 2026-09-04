@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { captureRoomProviderDiagnostic } from "./live-room-provider-diagnostic.mjs"
 import { assertRoomBrowserRecoveryActions, observeRoomStaleToolError } from "./live-room-browser-recovery.mjs"
+import { waitForRoomProviderSettlement } from "./live-room-provider-settlement.mjs"
 
 // Opt-in only: this runs a paid, official provider through the kernel, not a
 // driver impersonating an agent by calling its MCP endpoint.
@@ -81,6 +82,7 @@ export async function runRoomRealProviderAction(input) {
   let action
   let fillAction
   let recoveryActions
+  let settlement
   let verifiedAgent = agent
   let baselineSequence = 0
   const priorTurnIds = new Set()
@@ -142,7 +144,8 @@ export async function runRoomRealProviderAction(input) {
     "edit any files, or call any external service. Do not use a provider-native browser tool.",
     "After that single click, stop and report whether the tool succeeded.",
     ].join(" ")
-    unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, prompt, [])), "PromptSubmitted")
+    const submitted = unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, prompt, [])), "PromptSubmitted")
+    const promptId = (submitted.outcome?.Started ?? submitted.outcome?.Queued)?.prompt?.id
     const findCompletedAction = (actions) => {
       const completed = actions.find((item) => item.actor_id === actorId
         && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence
@@ -189,6 +192,7 @@ export async function runRoomRealProviderAction(input) {
     if (action.providerCompletedWithoutAction) throw new Error("official provider turn completed without the required Room action")
     if (recovery) await input.waitFor(() => observeRoomStaleToolError(input, agent.id, priorTurnIds),
       15_000, "provider tool history did not confirm stale_element_reference")
+    settlement = await waitForRoomProviderSettlement(input, agent.id, promptId)
   } catch (error) {
     const diagnostic = await captureRoomProviderDiagnostic({ ...input, agentId: agent.id })
       .catch(() => ({ codes: ["diagnostic_unavailable"] }))
@@ -200,6 +204,7 @@ export async function runRoomRealProviderAction(input) {
     provider: verifiedAgent.provider, model: verifiedAgent.model, accountProfile: verifiedAgent.account_profile ?? "default", importFirst: options.importFirst,
     agentId: agent.id, actorId, actionId: action.action_id, mode, actionKind,
     baselineSequence, actionSequence: action.sequence,
+    settlement,
     ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, fillActionSequence: fillAction.sequence } : {}),
     ...(options.browserLayout ? { browserLayout: options.browserLayout } : {}),
     ...(recovery ? { browserMutation: options.browserMutation, staleErrorObserved: true,
