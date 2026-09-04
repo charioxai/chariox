@@ -31,7 +31,6 @@ use events::apply_claude_message;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
-use tool_transcript::is_unsupported_claude_stream_json_tool;
 use usage::apply_claude_usage_capture;
 use watchdog::ClaudeTurnStallAction;
 
@@ -351,35 +350,6 @@ fn handle_claude_tool_uses(
     value: &serde_json::Value,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
-    let message = value.get("message").unwrap_or(value);
-    let Some(content) = message.get("content").and_then(serde_json::Value::as_array) else {
-        return Ok(());
-    };
-    let mut tool_results = Vec::new();
-    for block in content
-        .iter()
-        .filter(|_| value.get("type").and_then(serde_json::Value::as_str) == Some("assistant"))
-        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
-    {
-        let name = block
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        if is_unsupported_claude_stream_json_tool(name) {
-            let Some(id) = block.get("id").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            tool_results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": id,
-                "is_error": true,
-                "content": format!(
-                    "Chariox does not execute Claude stream-json tool `{name}` in this runtime path. If this is a Chariox workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly."
-                ),
-            }));
-            continue;
-        }
-    }
     for payload in state.tool_transcript.observe(value) {
         let bytes =
             serde_json::to_vec(&payload).map_err(|error| DaemonError::ProviderProtocol {
@@ -402,6 +372,7 @@ fn handle_claude_tool_uses(
                 .to_string(),
         );
     }
+    let tool_results = state.tool_transcript.take_unsupported_results();
     if !tool_results.is_empty() {
         let response = json!({
             "type": "user",

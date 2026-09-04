@@ -7,7 +7,10 @@ serialization. A turn retains at most 64 unmatched invocations and 256 KiB of
 encoded input plus ID/name bytes. Each input is capped at 8 KiB before cloning;
 oversized input is replaced by `{"chariox_truncated":true}`. Pending inputs stay
 encoded instead of retaining expanded JSON trees. IDs and tool names are capped
-at 256 bytes, and projection examines at most 64 content blocks per message.
+at 256 bytes. Projection and unsupported `ToolSearch` rejection use one pass
+examining at most 64 content blocks per message. The handler writes only the
+bounded rejection batch returned by that pass; it does not clone unchecked IDs
+or separately walk the original provider message.
 
 Results append text incrementally, retaining at most 16 KiB including a visible
 `[chariox: tool transcript truncated]` marker. At most 256 result blocks are

@@ -59,3 +59,50 @@ fn claude_stream_projects_matching_tool_result_error_and_input() {
     );
     assert!(batch.terminal_failure.is_none());
 }
+
+#[test]
+fn claude_handler_bounds_unsupported_rejection_written_to_provider() {
+    use std::io::{BufRead, Read};
+    let (mut state, mut batch) = parser_state();
+    let _ = state.child.kill();
+    let _ = state.child.wait();
+    let mut echo = std::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    state.stdin = echo.stdin.take().unwrap();
+    let stdout = echo.stdout.take().unwrap();
+    state.child = echo;
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        std::io::BufReader::new(stdout.take(40_001))
+            .read_line(&mut line)
+            .unwrap();
+        line
+    });
+    let mut blocks =
+        vec![json!({"type":"tool_use","name":"ToolSearch","id":"x".repeat(1_000_000)})];
+    blocks
+        .extend((0..1000).map(
+            |index| json!({"type":"tool_use","name":"ToolSearch","id":format!("id-{index}")}),
+        ));
+    handle_claude_tool_uses(
+        "run-1",
+        &mut state,
+        &json!({"type":"assistant","message":{"content":blocks}}),
+        &mut batch,
+    )
+    .unwrap();
+    let line = reader.join().unwrap();
+    assert!(line.len() < 32 * 1024);
+    let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let rejections = response["message"]["content"].as_array().unwrap();
+    assert_eq!(rejections.len(), 63);
+    assert_eq!(rejections[0]["tool_use_id"], "id-0");
+    assert!(batch
+        .notices
+        .iter()
+        .any(|notice| notice.contains("truncated to resource limits")));
+    assert!(batch.chunks.is_empty());
+}
