@@ -201,6 +201,43 @@ test("same-site cross-origin frame actions use top-viewport coordinates", async 
   }, { sameSite: true });
 });
 
+for (const layout of ["same-site", "isolated", "nested-isolated"]) {
+test(`repeated late ${layout} replacements preserve native controller clicks`, { timeout: 30_000 }, async () => {
+  await withCrossOriginFixture(async (url) => {
+    await withController(async ({ page, request }) => {
+      await page.goto(url);
+      const frame = layout === "nested-isolated"
+        ? page.frameLocator("iframe").frameLocator("iframe") : page.frameLocator("iframe");
+      await frame.getByLabel("Sample").waitFor();
+      const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      let snapshot = await request("browser.snapshot", target);
+      for (let turn = 0; turn < 12; turn++) {
+        assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
+        const oldButton = snapshot.result.accessibility_nodes.find((node) => node.role === "button" && node.name === "Accept");
+        assert.ok(oldButton);
+        await page.locator("iframe").evaluate((iframe) => iframe.replaceWith(iframe.cloneNode()));
+        await frame.getByLabel("Sample").waitFor();
+        const stale = await request("browser.action", {
+          ...target, node_ref: oldButton.node_ref, action: { kind: "click" }, timeout_ms: 300,
+        });
+        assert.equal(stale.ok, false, `turn ${turn}: old frame must reject clicks`);
+        assert.equal(stale.error.code, "stale_element_reference");
+        assert.equal(await frame.getByRole("status").innerText(), "");
+        snapshot = await request("browser.snapshot", target);
+        assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
+        const button = snapshot.result.accessibility_nodes.find((node) => node.role === "button" && node.name === "Accept");
+        assert.ok(button);
+        const clicked = await request("browser.action", {
+          ...target, node_ref: button.node_ref, action: { kind: "click" }, timeout_ms: 1_000,
+        });
+        assert.equal(clicked.ok, true, `turn ${turn}: ${JSON.stringify(clicked.error)}`);
+        assert.equal(await frame.getByRole("status").innerText(), "accepted", `turn ${turn}: the click must reach the replacement frame`);
+      }
+    });
+  }, { sameSite: layout === "same-site", nested: layout === "nested-isolated" });
+});
+}
+
 test("isolated references cannot address a different tab and keep colliding renderer IDs distinct", async () => {
   await withCrossOriginFixture(async (url) => {
     await withController(async ({ page, request, context }) => {
