@@ -1401,6 +1401,15 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
 
 #[test]
 fn explicit_provider_synthesizes_completion_after_authoritative_output_only_settlement() {
+    assert_output_only_settlement("codex");
+}
+
+#[test]
+fn structured_claude_commentary_waits_for_authoritative_turn_completion() {
+    assert_output_only_settlement("claude");
+}
+
+fn assert_output_only_settlement(provider: &str) {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
@@ -1455,12 +1464,17 @@ fn explicit_provider_synthesizes_completion_after_authoritative_output_only_sett
         )
         .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    // Reuse the isolated admission fixture; projection below receives the
+    // selected provider's actual run identity, not a provider executable.
+    RemoteLeaseRuntime::new(&mut app)
+        .set_leased_agent_provider_for_test(&leased_agent.id, provider);
+    let model = if provider == "claude" { "sonnet" } else { "gpt-5.4" };
     let launch_request = crate::provider::LaunchProviderRequest::new(
         &leased_agent.backing_session_id,
-        "codex",
-        "codex",
+        provider,
+        provider,
         "default",
-        "gpt-5.4",
+        model,
     )
     .with_agent_id(&leased_agent.backing_agent_id)
     .with_client_interface(crate::provider::ProviderClientInterface::Chariox);
@@ -1469,7 +1483,7 @@ fn explicit_provider_synthesizes_completion_after_authoritative_output_only_sett
         &launch_request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-            process_label: "codex:codex:gpt-5.4".to_string(),
+            process_label: format!("{provider}:{provider}:{model}"),
             pty_target: None,
             pty_program: None,
             pty_args: Vec::new(),
@@ -1507,7 +1521,7 @@ fn explicit_provider_synthesizes_completion_after_authoritative_output_only_sett
     assert_eq!(output_chunks.len(), 1);
     assert!(
         completions.is_empty(),
-        "provider output must not settle an active backing prompt"
+        "{provider} commentary must not settle an active backing prompt"
     );
     app.complete_active_prompt(
         &leased_agent.backing_session_id,
