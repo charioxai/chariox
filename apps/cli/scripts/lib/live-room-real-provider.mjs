@@ -16,7 +16,10 @@ export function roomRealProviderOptions(env) {
   const browserTask = env.CHARIOX_ROOM_DRILL_BROWSER_TASK
   assert.ok(browserTask === undefined || mode === "browser", "Browser task requires Browser mode")
   assert.ok(browserTask === undefined || ["click", "form"].includes(browserTask), "invalid Browser task")
-  return { provider, model, mode, ...(browserTask ? { browserTask } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
+  const browserLayout = env.CHARIOX_ROOM_DRILL_BROWSER_LAYOUT
+  assert.ok(browserLayout === undefined || browserTask === "form", "Browser layout requires the form task")
+  assert.ok(browserLayout === undefined || ["page", "nested-frame", "shadow-root"].includes(browserLayout), "invalid Browser layout")
+  return { provider, model, mode, ...(browserTask ? { browserTask } : {}), ...(browserLayout ? { browserLayout } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
 }
 
 export async function runRoomRealProvider(input) {
@@ -164,6 +167,7 @@ export async function runRoomRealProviderAction(input) {
     agentId: agent.id, actorId, actionId: action.action_id, mode, actionKind,
     baselineSequence, actionSequence: action.sequence,
     ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, fillActionSequence: fillAction.sequence } : {}),
+    ...(options.browserLayout ? { browserLayout: options.browserLayout } : {}),
     expectedPhysicalEffect: input.expectedPhysicalEffect ?? (form ? "POINTER_CLICK_COUNT=1" : "POINTER_CLICK_COUNT=2"),
   }
   await input.checkpoint({ phase: "action-completed", ...result })
