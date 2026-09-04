@@ -155,6 +155,31 @@ test("navigation invalidates the old document while preserving the target for re
   });
 });
 
+test("a page-command timeout while a prompt is open does not prevent answering or later input", { timeout: 15_000 }, async () => {
+  await withController(async ({ page, request }) => {
+    page.on("dialog", () => {});
+    await page.goto(`data:text/html,${encodeURIComponent('<button onclick="document.querySelector(\'output\').textContent=prompt(\'Question\',\'kept default\')">Prompt</button><output>waiting</output><label>Sample<input></label>')}`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = await request("browser.snapshot", target);
+    const button = snapshot.result.accessibility_nodes.find((node) => node.role === "button" && node.name === "Prompt");
+    const clicked = await request("browser.action", { ...target, node_ref: button.node_ref, action: { kind: "click" } });
+    assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+    assert.equal(clicked.result.dialog_opened, true);
+    const timedOut = await request("browser.snapshot", target);
+    assert.equal(timedOut.ok, false);
+    assert.equal(timedOut.error.code, "browser_cdp_timeout");
+    const answered = await request("browser.dialog", { ...target, action: "accept" });
+    assert.equal(answered.ok, true, JSON.stringify(answered.error));
+    assert.equal(await page.locator("output").textContent(), "kept default");
+    const filled = await request("browser.action", {
+      ...target, node_ref: fieldReference(await request("browser.snapshot", target)),
+      action: { kind: "fill", text: "after timeout" },
+    });
+    assert.equal(filled.ok, true, JSON.stringify(filled.error));
+    assert.equal(await page.getByLabel("Sample").inputValue(), "after timeout");
+  }, { requestTimeoutMs: 500 });
+});
+
 test("child-frame navigation invalidates old fields without changing the top document", async () => {
   await withController(async ({ page, request }) => {
     const field = await fixtureField(page, "nested-frame");
@@ -189,7 +214,7 @@ function fieldReference(response) {
   return fields[0].node_ref;
 }
 
-async function withController(run) {
+async function withController(run, clientOptions = {}) {
   const profile = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-browser-"));
   let context;
   let browser;
@@ -199,7 +224,7 @@ async function withController(run) {
     });
     const port = Number((await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
     assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
-    browser = new BrowserCdpClient({ debuggerEndpoint: `http://127.0.0.1:${port}` });
+    browser = new BrowserCdpClient({ ...clientOptions, debuggerEndpoint: `http://127.0.0.1:${port}` });
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(10_000);
     let nextId = 0;
