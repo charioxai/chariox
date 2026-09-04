@@ -57,6 +57,31 @@ test("Room activity loads once and empty replay does not add transcript noise", 
   assert.deepEqual(harness.activity, ["room_environment_state"])
 })
 
+test("a newer state snapshot does not acknowledge unconsumed Room events", async () => {
+  const newer = roomEnvironment({ eventCursor: 9 })
+  const harness = activityHarness([
+    { RoomEnvironmentState: { environment: roomEnvironment() } },
+    { RoomEnvironmentEvents: { replay: { Events: { events: [roomEvent(5, "ActorsChanged")], next_cursor: 5 } } } },
+    { RoomEnvironmentState: { environment: newer } },
+    (request: { GetRoomEnvironmentEvents: { cursor: number } }) => ({ RoomEnvironmentEvents: { replay: { Events: {
+      events: request.GetRoomEnvironmentEvents.cursor < 6 ? [roomEvent(6, "InputOwnershipChanged")] : [], next_cursor: 9,
+    } } } }),
+    { RoomEnvironmentState: { environment: newer } },
+    { RoomEnvironmentEvents: { replay: { Events: { events: [], next_cursor: 9 } } } },
+  ])
+  await harness.controller.synchronize()
+  await harness.controller.synchronize()
+  await harness.controller.synchronize()
+  assert.equal(harness.notices.filter(text => text === "Room input: Mara controls desktop").length, 1)
+  assert.equal(await harness.controller.synchronize(), false)
+  assert.deepEqual(harness.requests.filter((r) => typeof r === "object" && r !== null && "GetRoomEnvironmentEvents" in r), [
+    { GetRoomEnvironmentEvents: { session_id: "session-1", cursor: 4 } },
+    { GetRoomEnvironmentEvents: { session_id: "session-1", cursor: 5 } },
+    { GetRoomEnvironmentEvents: { session_id: "session-1", cursor: 9 } },
+  ])
+  assert.equal(harness.notices.filter(text => text === "Room input: Mara controls desktop").length, 1)
+})
+
 test("Room activity projects actor, tab, input, and action outcome events without pointer spam", async () => {
   const initial = roomEnvironment()
   const changed = roomEnvironment({
@@ -301,7 +326,8 @@ function activityHarness(responses: unknown[]) {
     nowMs: () => harness.nowMs,
     send: async <T>(request: unknown): Promise<T> => {
       harness.requests.push(request)
-      const response = responses.shift()
+      const next = responses.shift()
+      const response = typeof next === "function" ? next(request) : next
       if (response instanceof Error) throw response
       if (response === undefined) throw new Error("unexpected Room activity request")
       return response as T
