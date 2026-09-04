@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -559,6 +559,41 @@ test("permissions reach Chrome and update the requested web permission only", as
     });
   });
 });
+
+for (const boundary of ["mkdir", "realpath", "stat"]) {
+test(`downloads reject navigation during directory ${boundary} and allow a fresh retry`, { timeout: 10_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-download-"));
+  let navigate;
+  let navigated = false;
+  const fileSystem = Object.fromEntries(Object.entries({ mkdir, realpath, stat }).map(([name, operation]) => [name, async (...args) => {
+    const result = await operation(...args);
+    if (name === boundary && !navigated) {
+      navigated = true;
+      await navigate();
+    }
+    return result;
+  }]));
+  try {
+    await withController(async ({ page, request }) => {
+      await page.goto("data:text/html,<p>First document</p>");
+      const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      navigate = () => page.goto("data:text/html,<p>Replacement document</p>");
+      const stale = await request("browser.downloads.configure", target);
+      assert.equal(navigated, true);
+      assert.equal(stale.ok, false, "navigation during filesystem work must reject the old document");
+      assert.equal(stale.error.code, "stale_document_reference");
+      const current = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      assert.equal(current.target_id, target.target_id);
+      assert.notEqual(current.document_id, target.document_id);
+      const fresh = await request("browser.downloads.configure", current);
+      assert.equal(fresh.ok, true, JSON.stringify(fresh.error));
+      assert.equal(fresh.result.document_id, current.document_id);
+    }, { downloadDirectory: directory, fileSystem });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+}
 
 for (const layout of ["page", "same-site", "isolated", "nested-isolated"]) {
 for (const late of layout === "page" ? [false] : [false, true]) {
