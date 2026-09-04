@@ -3,8 +3,29 @@ import test from "node:test";
 
 import {
   configureBrowserDownloads,
+  cancelBrowserDownload,
   uploadBrowserFiles,
 } from "./browser-controller-files.mjs";
+
+test("download cancellation only targets observed downloads in the current browser generation", async () => {
+  const calls = [];
+  const connection = { send: async (method, params) => { calls.push({ method, params }); return {}; } };
+  const options = { connection, browserGeneration: 2, requestedBrowserGeneration: 2, guid: "download-a", targetsByDownload: new Map([["download-a", "tab-a"]]) };
+  for (const overrides of [
+    { guid: "" }, { guid: "../private" }, { guid: "x".repeat(129) },
+    { requestedBrowserGeneration: 0 }, { requestedBrowserGeneration: 1 },
+    { guid: "unobserved" },
+  ]) {
+    await assert.rejects(cancelBrowserDownload({ ...options, ...overrides }));
+    assert.equal(calls.length, 0);
+  }
+  assert.deepEqual(await cancelBrowserDownload(options), {
+    browser_generation: 2, guid: "download-a", cancellation_requested: true,
+  });
+  assert.deepEqual(calls, [{ method: "Browser.cancelDownload", params: { guid: "download-a" } }]);
+  assert.equal(options.targetsByDownload.get("download-a"), "tab-a", "terminal progress, not the command acknowledgement, releases ownership");
+  await assert.rejects(cancelBrowserDownload({ ...options, connection: { send: async () => { throw new Error("disconnected"); } } }), /disconnected/);
+});
 
 test("downloads use one configured private directory and GUID filenames", async () => {
   const connection = new FakeFileConnection();

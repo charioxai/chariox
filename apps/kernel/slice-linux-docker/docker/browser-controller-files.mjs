@@ -15,6 +15,22 @@ export class BrowserFileTransferError extends Error {
   }
 }
 
+export async function cancelBrowserDownload({
+  connection, browserGeneration, requestedBrowserGeneration, guid, targetsByDownload,
+}) {
+  if (typeof guid !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(guid)) {
+    throw new BrowserFileTransferError("browser_download_invalid", "download cancellation requires a bounded download identifier");
+  }
+  if (!Number.isSafeInteger(requestedBrowserGeneration) || requestedBrowserGeneration <= 0 || requestedBrowserGeneration !== browserGeneration) {
+    throw new BrowserFileTransferError("stale_browser_generation", "download cancellation requires the current browser generation");
+  }
+  if (!targetsByDownload.has(guid)) {
+    throw new BrowserFileTransferError("browser_download_not_active", "download is not active in this browser generation");
+  }
+  await connection.send("Browser.cancelDownload", { guid });
+  return { browser_generation: browserGeneration, guid, cancellation_requested: true };
+}
+
 export async function configureBrowserDownloads({
   connection,
   sessionId,

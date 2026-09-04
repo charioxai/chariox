@@ -65,6 +65,9 @@ export async function handleBrowserControllerRequest(
         await browser.configureDownloads(request.params),
       );
     }
+    if (request.method === "browser.downloads.cancel") {
+      return successResponse(request.id, await browser.cancelDownload(request.params));
+    }
     if (request.method === "browser.upload") {
       return successResponse(
         request.id,

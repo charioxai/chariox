@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -435,6 +435,86 @@ async function uploadReference(request, target) {
   return inputs[0].node_ref;
 }
 
+test("canceling a download after its tab closes preserves another active download", { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-download-"));
+  const responses = new Map();
+  try {
+    await withCrossOriginFixture(async (url) => {
+      await withController(async ({ page, request, context }) => {
+        try {
+        await page.goto(`${url}field?a`);
+        const other = await context.newPage();
+        await other.goto(`${url}field?b`);
+        const reconciled = (await request("browser.reconcile", { viewport })).result;
+        const targetA = reconciled.tabs.find((tab) => tab.url.endsWith("?a"));
+        const targetB = reconciled.tabs.find((tab) => tab.url.endsWith("?b"));
+        assert.equal((await request("browser.downloads.configure", targetA)).ok, true);
+        const events = [];
+        let cursor = reconciled.event_cursor;
+        const pollUntil = async (predicate) => {
+          const deadline = Date.now() + 5_000;
+          while (!predicate()) {
+            assert.ok(Date.now() < deadline, "expected bounded download progress");
+            const polled = await request("browser.events.poll", { browser_generation: reconciled.browser_generation, cursor });
+            assert.equal(polled.ok, true);
+            assert.equal(polled.result.replay_gap, false);
+            events.push(...polled.result.events);
+            cursor = polled.result.next_cursor;
+            if (!predicate()) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        };
+        for (const [target, name] of [[targetA, "A"], [targetB, "B"]]) {
+          const snapshot = await request("browser.snapshot", target);
+          const link = snapshot.result.accessibility_nodes.find((node) => node.role === "link" && node.name === name);
+          assert.ok(link);
+          const clicked = await request("browser.action", { ...target, node_ref: link.node_ref, action: { kind: "click" } });
+          assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+        }
+        await pollUntil(() => events.filter((event) => event.kind === "download_started").length === 2);
+        const guidA = events.find((event) => event.kind === "download_started" && event.target_id === targetA.target_id).data.guid;
+        const guidB = events.find((event) => event.kind === "download_started" && event.target_id === targetB.target_id).data.guid;
+        await page.close();
+        const cancellation = { browser_generation: reconciled.browser_generation, guid: guidA };
+        const stale = await request("browser.downloads.cancel", { ...cancellation, browser_generation: cancellation.browser_generation + 1 });
+        assert.equal(stale.ok, false);
+        assert.equal(stale.error.code, "stale_browser_generation");
+        const unknown = await request("browser.downloads.cancel", { ...cancellation, guid: "not-observed" });
+        assert.equal(unknown.ok, false);
+        assert.equal(unknown.error.code, "browser_download_not_active");
+        const canceled = await request("browser.downloads.cancel", cancellation);
+        assert.equal(canceled.ok, true, JSON.stringify(canceled.error));
+        assert.equal(canceled.result.cancellation_requested, true);
+        await pollUntil(() => events.some((event) => event.kind === "download_progress" && event.data.guid === guidA && event.data.state === "canceled"));
+        assert.ok(!events.some((event) => event.kind === "download_progress" && event.data.guid === guidB && event.data.state !== "inProgress"));
+        assert.equal(responses.get("/slow?b").destroyed, false);
+        responses.get("/slow?b").end("rest");
+        await pollUntil(() => events.some((event) => event.kind === "download_progress" && event.data.guid === guidB && event.data.state === "completed"));
+        assert.equal(await readFile(path.join(directory, guidB), "utf8"), "x".repeat(1024) + "rest");
+        const repeated = await request("browser.downloads.cancel", cancellation);
+        assert.equal(repeated.ok, false);
+        assert.equal(repeated.error.code, "browser_download_not_active");
+        const files = await readdir(directory);
+        assert.ok(!files.some((file) => file.startsWith(guidA)), "canceled partial file must be removed");
+        } finally {
+          for (const response of responses.values()) if (!response.destroyed && !response.writableEnded) response.end("rest");
+        }
+      }, { downloadDirectory: directory });
+    }, {
+      download: true,
+      fieldMarkup: '<a href="/slow?a">A</a><a href="/slow?b">B</a>',
+      downloadHandler: (request, response) => {
+        if (!request.url.startsWith("/slow?")) return false;
+        responses.set(request.url, response);
+        response.writeHead(200, { "content-type": "text/plain", "content-disposition": 'attachment; filename="sample.txt"', "content-length": "1028" });
+        response.write("x".repeat(1024));
+        return true;
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 for (const boundary of ["mkdir", "realpath", "stat"]) {
 test(`downloads reject navigation during directory ${boundary} and allow a fresh retry`, { timeout: 10_000 }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-download-"));
@@ -535,15 +615,16 @@ test(`${late ? "late " : ""}${layout} download persists real bytes with tab-attr
 async function withCrossOriginFixture(run, {
   sameSite = false, nested = false,
   download = false,
+  downloadHandler = sendFixtureDownload,
   fieldMarkup = '<label>Sample<input></label><button onclick="document.querySelector(\'output\').textContent=\'accepted\'">Accept</button><output role="status"></output>',
 } = {}) {
   const childServer = createServer((request, response) => {
-    if (download && sendFixtureDownload(request, response)) return;
+    if (download && downloadHandler(request, response)) return;
     response.setHeader("content-type", "text/html");
     response.end(nested ? `<iframe style="width:500px;height:100px" src="http://127.0.0.1:${server.address().port}/field"></iframe>` : fieldMarkup);
   });
   const server = createServer((request, response) => {
-    if (download && sendFixtureDownload(request, response)) return;
+    if (download && downloadHandler(request, response)) return;
     response.setHeader("content-type", "text/html");
     response.end(request.url.startsWith("/field") ? fieldMarkup : `<main style="padding:60px"><iframe style="width:600px;height:200px" src="http://${sameSite ? "127.0.0.1" : "localhost"}:${childServer.address().port}/field"></iframe></main>`);
   });
