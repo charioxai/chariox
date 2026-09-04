@@ -484,6 +484,10 @@ impl KernelRuntimeState {
                     .clear_workflow_run_settling(session_id, workflow_run_id)?;
             }
             let mut dispatches = workflow_completion?;
+            // Completion persisted while the settlement reservation still held
+            // the terminal run. Archive only after its claim cleanup has ended.
+            owned
+                .persist_workflow_runtime_session(session_id, "workflow_provider_prompt_settled")?;
             if completion.released_claim {
                 dispatches.extend(owned.workflow_retry_blocked_claims());
             }
