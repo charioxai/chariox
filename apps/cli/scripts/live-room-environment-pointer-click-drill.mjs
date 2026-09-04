@@ -12,6 +12,7 @@ import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
+import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import {
   assertRetainedClipboardEvidenceIsRedacted,
   assertRetainedTextIsRedacted,
@@ -2719,6 +2720,12 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  if (failure && slice) {
+    const diagnostic = await captureRoomStreamerDiagnostics(containerName, runCommand)
+      .catch(() => ({ status: "unavailable" }))
+    await writeFile(path.join(evidenceRoot, "streamer-failure-diagnostic.json"),
+      `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined)
+  }
   if (client && requests) {
     await client.send(requests.deleteCredentialSecretRequest(userCredentialId)).catch(() => undefined)
     await client.send(requests.deleteCredentialSecretRequest(generatedCredentialId)).catch(() => undefined)
@@ -2739,11 +2746,6 @@ async function cleanup() {
         `${redactDrillSecrets(JSON.stringify(logs, null, 2))}\n`,
       )
     }
-    await runCommand(
-      "docker",
-      ["cp", `${containerName}:/tmp/chariox-slice-1000/selkies/streamer.log`, path.join(evidenceRoot, "selkies-streamer.log")],
-      5_000,
-    ).catch(() => undefined)
   }
   if (client && requests && slice) {
     await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 2_000, "cleanup DeleteSlice").catch(() => undefined)
