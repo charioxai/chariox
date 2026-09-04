@@ -315,6 +315,8 @@ refresh_slice_support_files() {
     || log "browser controller actions module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" \
     || log "browser controller CDP module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-dialogs.mjs" \
+    || log "browser controller dialog module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
     || log "browser controller compatibility module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
@@ -342,6 +344,7 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
+    /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
