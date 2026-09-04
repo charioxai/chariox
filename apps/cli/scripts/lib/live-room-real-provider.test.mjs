@@ -5,6 +5,83 @@ import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
 
+test("field replacement is an explicit form-only recovery drill", () => {
+  const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4",
+    CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser", CHARIOX_ROOM_DRILL_BROWSER_TASK: "form", CHARIOX_ROOM_DRILL_BROWSER_MUTATION: "replace-field" }
+  assert.equal(roomRealProviderOptions(env).browserMutation, "replace-field")
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_MUTATION: "unknown" }), /mutation/)
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_TASK: "click" }), /form/)
+})
+
+const recoveryActions = () => [
+  { actor_id: "agent:agent-2", mode: "browser", kind: "click", state: "completed", action_id: "replace", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }] },
+  { actor_id: "agent:agent-2", mode: "browser", kind: "fill", state: "failed", outcome: { status: "failed", code: "controller_failure" }, action_id: "stale", sequence: 3, targets: [{ kind: "browser_tab", id: "tab-1" }] },
+  { actor_id: "agent:agent-2", mode: "browser", kind: "fill", state: "completed", action_id: "fresh", sequence: 4, targets: [{ kind: "browser_tab", id: "tab-1" }] },
+  { actor_id: "agent:agent-2", mode: "browser", kind: "submit", state: "completed", action_id: "submit", sequence: 5, targets: [{ kind: "browser_tab", id: "tab-1" }] },
+]
+const staleToolEntry = () => entry("provider_tool", JSON.stringify({ tool: "slice_browser_fill", status: "failed",
+  input: { field_id: "old", text: "STALE ATTEMPT MUST NOT LAND" }, error: `stale_element_reference: ${secret}` }))
+
+test("provider recovery requires a failed stale fill before a fresh successful form submission", async () => {
+  const run = fixture({ priorActions: [{ sequence: 1 }], actions: recoveryActions(),
+    turns: [{ turn_id: "current", entries: [staleToolEntry()], blobs: [] }] })
+  run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserMutation: "replace-field" }
+  const result = await runRoomRealProviderAction(run.input)
+  assert.equal(result.browserMutation, "replace-field")
+  assert.equal(result.replacementActionId, "replace")
+  assert.equal(result.staleActionId, "stale")
+  assert.equal(result.staleActionSequence, 3)
+  assert.equal(result.staleErrorObserved, true)
+  assert.equal(result.fillActionId, "fresh")
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("standalone recovery proves page acceptance and both TUI failure notices", async () => {
+  const run = fixture({ priorActions: [{ sequence: 1 }], actions: recoveryActions(),
+    turns: [{ turn_id: "current", entries: [staleToolEntry()], blobs: [] }] })
+  run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserMutation: "replace-field" }
+  const physical = [], notices = []
+  run.input.waitForPhysicalEffect = async (value) => physical.push(value)
+  run.input.waitForTuis = async (value) => notices.push(value)
+  await runRoomRealProvider(run.input)
+  assert.ok(physical.includes("BROWSER_STALE_RECOVERY_ACCEPTED"))
+  assert.ok(notices.some((pattern) => pattern.test("Room action #3: real-opencode · browser fill · failed (controller_failure)")))
+  assert.equal(notices.length, 4)
+})
+
+test("recovery rejects unrelated, stale, extra or successful attempts", async () => {
+  for (const mutate of [
+    (actions) => actions.splice(1, 1),
+    (actions) => { actions[1].state = "completed" },
+    (actions) => { actions[1].actor_id = "agent:other" },
+    (actions) => { actions[1].sequence = 1 },
+    (actions) => { actions[1].targets[0].id = "other-tab" },
+    (actions) => { actions[1].outcome.code = "process_lost" },
+    (actions) => actions.push({ ...actions[1], action_id: "duplicate" }),
+  ]) {
+    const actions = recoveryActions()
+    mutate(actions)
+    const run = fixture({ priorActions: [{ sequence: 1 }], actions })
+    run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserMutation: "replace-field" }
+    await assert.rejects(runRoomRealProviderAction(run.input))
+  }
+})
+
+test("recovery requires actual tool error output, not prompt or model claims", async () => {
+  for (const item of [entry("user_prompt", "stale_element_reference"), entry("provider_output", "stale_element_reference"),
+    ...[undefined, "completed", "running"].map((status) => entry("provider_tool", JSON.stringify({
+      tool: "slice_browser_fill", status, input: { text: "STALE ATTEMPT MUST NOT LAND" }, error: "stale_element_reference",
+    }))),
+    entry("provider_tool", JSON.stringify({ tool: "slice_browser_fill", input: { text: "STALE ATTEMPT MUST NOT LAND", error: "stale_element_reference" } })),
+    entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", error: "stale_element_reference" })),
+    entry("provider_tool", JSON.stringify({ tool: "slice_browser_fill", input: { text: "STALE ATTEMPT MUST NOT LAND" }, error: "browser_action_timeout" })),
+  ]) {
+    const run = fixture({ actions: recoveryActions(), turns: [{ turn_id: "current", entries: [item], blobs: [] }] })
+    run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserMutation: "replace-field" }
+    await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
+  }
+})
+
 test("nested Browser layouts must explicitly select the form task", () => {
   const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4",
     CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser", CHARIOX_ROOM_DRILL_BROWSER_TASK: "form" }
