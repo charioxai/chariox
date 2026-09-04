@@ -123,6 +123,19 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: SLICE_BROWSER_TAB_TOOL.to_string(),
+            description: "Activate or close a stable Room browser tab returned by slice_browser_status. The kernel resolves the opaque tab ID and serializes the mutation through the shared Room action authority.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["tab_id", "action"],
+                "properties": {
+                    "tab_id": {"type": "string", "minLength": 1},
+                    "action": {"type": "string", "enum": ["activate", "close"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: SLICE_BROWSER_FIND_TOOL.to_string(),
             description: "Find visible browser fields, buttons, or links by label, placeholder, name, text, role, or selector.".to_string(),
             input_schema: serde_json::json!({
@@ -319,6 +332,7 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_CLIPBOARD_WRITE_TOOL => SLICE_CLIPBOARD_WRITE_TOOL_ALIAS,
         SLICE_OPEN_URL_TOOL => SLICE_OPEN_URL_TOOL_ALIAS,
         SLICE_BROWSER_STATUS_TOOL => SLICE_BROWSER_STATUS_TOOL_ALIAS,
+        SLICE_BROWSER_TAB_TOOL => SLICE_BROWSER_TAB_TOOL_ALIAS,
         SLICE_BROWSER_FIND_TOOL => SLICE_BROWSER_FIND_TOOL_ALIAS,
         SLICE_BROWSER_FILL_TOOL => SLICE_BROWSER_FILL_TOOL_ALIAS,
         SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
@@ -391,6 +405,11 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_slice_browser_status"
         | "mcp__chariox__slice_browser_status"
         | "mcp__chariox__chariox_slice_browser_status" => Some(SLICE_BROWSER_STATUS_TOOL),
+        SLICE_BROWSER_TAB_TOOL
+        | SLICE_BROWSER_TAB_TOOL_ALIAS
+        | "chariox_slice_browser_tab"
+        | "mcp__chariox__slice_browser_tab"
+        | "mcp__chariox__chariox_slice_browser_tab" => Some(SLICE_BROWSER_TAB_TOOL),
         SLICE_BROWSER_FIND_TOOL
         | SLICE_BROWSER_FIND_TOOL_ALIAS
         | "chariox_slice_browser_find"

@@ -957,6 +957,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             .collect::<std::collections::BTreeSet<_>>();
         for expected in [
             "slice_browser_status",
+            "slice_browser_tab",
             "slice_open_url",
             "slice_browser_click",
             "slice_browser_fill",

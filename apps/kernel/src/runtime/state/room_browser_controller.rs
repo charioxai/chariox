@@ -30,6 +30,7 @@ impl KernelRuntimeState {
         let admitted_mutation_command = matches!(
             &command,
             Command::Action { .. }
+                | Command::Tab { .. }
                 | Command::Dialog { .. }
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
@@ -389,6 +390,13 @@ async fn execute_local(
         } => processes
             .capture_browser_snapshot(&session_id, &target_id, &document_id)
             .map(|snapshot| Response::Snapshot { snapshot }),
+        Command::Tab {
+            target_id,
+            document_id,
+            action,
+        } => processes
+            .manage_browser_tab(&session_id, &target_id, &document_id, action)
+            .map(|result| Response::Tab { result }),
         Command::Navigate {
             target_id,
             document_id,

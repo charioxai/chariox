@@ -467,6 +467,7 @@ impl KernelRuntimeState {
                     | SLICE_OCR_TOOL
                     | SLICE_FIND_TEXT_TOOL
                     | SLICE_BROWSER_STATUS_TOOL
+                    | SLICE_BROWSER_TAB_TOOL
                     | SLICE_SCREENSHOT_TOOL
                     | SLICE_MOUSE_TOOL
                     | SLICE_KEYBOARD_TOOL
@@ -532,6 +533,7 @@ fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
                 | SLICE_OCR_TOOL
                 | SLICE_FIND_TEXT_TOOL
                 | SLICE_BROWSER_STATUS_TOOL
+                | SLICE_BROWSER_TAB_TOOL
                 | SLICE_SCREENSHOT_TOOL
                 | SLICE_MOUSE_TOOL
                 | SLICE_KEYBOARD_TOOL
@@ -632,6 +634,7 @@ mod tests {
             SLICE_KEYBOARD_TOOL,
             SLICE_CLIPBOARD_WRITE_TOOL,
             SLICE_BROWSER_STATUS_TOOL,
+            SLICE_BROWSER_TAB_TOOL,
             SLICE_OPEN_URL_TOOL,
             SLICE_BROWSER_CLICK_TOOL,
             SLICE_BROWSER_FILL_TOOL,

@@ -303,6 +303,11 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
                 document_id: "worker-document".into(),
                 action: crate::runtime::browser_controller_action::BrowserDialogAction::Dismiss,
             },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Tab {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                action: crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+            },
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::ConfigureDownloads {
                 target_id: "worker-tab".into(),
                 document_id: "worker-document".into(),

@@ -26,6 +26,7 @@ use super::browser_controller_permission::{
     BrowserControllerPermissionResult, BrowserPermissionName, BrowserPermissionSetting,
 };
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
+use super::browser_controller_tab::{BrowserControllerTabResult, BrowserTabAction};
 use crate::session::CanonicalViewport;
 
 mod cancellation;
@@ -112,6 +113,14 @@ pub(crate) trait BrowserControllerProcessBackend {
         _document_id: &str,
     ) -> Result<BrowserControllerStructuredSnapshot, String> {
         Err("browser controller backend does not support structured snapshots".to_string())
+    }
+    fn manage_browser_tab(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _action: BrowserTabAction,
+    ) -> Result<BrowserControllerTabResult, String> {
+        Err("browser controller backend does not support tab lifecycle operations".to_string())
     }
     fn perform_browser_action(
         &mut self,
@@ -570,6 +579,25 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(snapshot)
     }
 
+    fn manage_browser_tab(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserTabAction,
+    ) -> Result<BrowserControllerTabResult, String> {
+        let response = self.request(
+            "browser.tab",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "action": action.as_str(),
+            }),
+        )?;
+        let result = response.into_result::<BrowserControllerTabResult>("browser.tab")?;
+        result.validate(target_id, document_id, action)?;
+        Ok(result)
+    }
+
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -949,6 +977,18 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .capture_browser_snapshot(target_id, document_id)
     }
 
+    pub(crate) fn manage_browser_tab(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserTabAction,
+    ) -> Result<BrowserControllerTabResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .manage_browser_tab(target_id, document_id, action)
+    }
+
     pub(crate) fn perform_browser_action(
         &mut self,
         session_id: &str,
@@ -1178,6 +1218,24 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .capture_browser_snapshot(session_id, target_id, document_id)
+            .map(Some)
+    }
+
+    pub(crate) fn manage_browser_tab(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserTabAction,
+    ) -> Result<Option<BrowserControllerTabResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .manage_browser_tab(session_id, target_id, document_id, action)
             .map(Some)
     }
 
@@ -1458,6 +1516,17 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .capture_browser_snapshot(target_id, document_id)
+    }
+
+    fn manage_browser_tab(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserTabAction,
+    ) -> Result<BrowserControllerTabResult, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend
+            .manage_browser_tab(target_id, document_id, action)
     }
 
     fn perform_browser_action(

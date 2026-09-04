@@ -61,6 +61,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .iter()
         .any(|spec| spec.name == "slice_browser_dialog"));
     for name in [
+        "slice_browser_tab",
         "slice_browser_events",
         "slice_browser_downloads",
         "slice_browser_upload",
@@ -96,6 +97,43 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .await
         .expect("nested-frame action crosses the bound worker relay");
     assert_eq!(frame_clicked.value.element_ref, frame_button.element_ref);
+
+    let popup_status = runtime
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+        .await
+        .expect("popup is reconciled into the stable Room tab registry");
+    let popup_tab_id = popup_status.payload["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tab| tab["title"] == "Worker popup")
+        .and_then(|tab| tab["tab_id"].as_str())
+        .expect("stable popup tab id")
+        .to_string();
+    let activated = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_tab",
+            json!({"tab_id":popup_tab_id.as_str(),"action":"activate"}),
+        )
+        .await
+        .expect("public tab tool activates the popup through the bound worker");
+    assert!(activated.ok, "{:?}", activated.payload);
+    assert_eq!(activated.payload["focused_tab_id"], popup_tab_id);
+    let closed = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_tab",
+            json!({"tab_id":popup_tab_id.as_str(),"action":"close"}),
+        )
+        .await
+        .expect("public tab tool closes the popup through the bound worker");
+    assert!(closed.ok, "{:?}", closed.payload);
+    assert!(closed.payload["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|tab| tab["tab_id"] != popup_tab_id));
 
     let dialog = runtime
         .dispatch_authenticated_runtime_tool_call(
@@ -256,6 +294,8 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .expect("worker browser state");
     let physical: Value = serde_json::from_str(&physical).expect("worker browser state JSON");
     assert_eq!(physical["shadowClicked"], true);
+    assert_eq!(physical["popup"], false);
+    assert_eq!(physical["focusedTarget"], "worker-tab");
     assert_eq!(physical["frameClicked"], true);
     assert_eq!(physical["dialog"]["accept"], true);
     assert_eq!(physical["dialog"]["promptText"], "approved by home");

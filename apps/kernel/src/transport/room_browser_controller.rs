@@ -166,6 +166,11 @@ pub(crate) enum RoomBrowserControllerCommand {
         target_id: String,
         document_id: String,
     },
+    Tab {
+        target_id: String,
+        document_id: String,
+        action: crate::runtime::browser_controller_tab::BrowserTabAction,
+    },
     Navigate {
         target_id: String,
         document_id: String,
@@ -266,6 +271,9 @@ pub(crate) enum RoomBrowserControllerResult {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,
         >,
+    },
+    Tab {
+        result: Option<crate::runtime::browser_controller_tab::BrowserControllerTabResult>,
     },
     Navigation {
         result: Option<
