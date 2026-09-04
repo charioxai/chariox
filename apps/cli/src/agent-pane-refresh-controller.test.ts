@@ -139,6 +139,28 @@ test("agent history refresh recovers a completed response without loading unrela
   assert.deepEqual(harness.paneEntries.b?.map((entry) => entry.text), ["keep me"])
 })
 
+test("Room notices arriving during history I/O are retained at commit time", async () => {
+  const current = { a: [] as TranscriptEntry[] }
+  const harness = createHarness({ split: false, currentEntries: current,
+    beforeHistoryResult: async () => {
+      current.a = [{ id: 3, role: "notice", text: "live Room action",
+        mergeKey: "room-environment:session-1:environment-1:8:0" }]
+    },
+  })
+  await harness.controller.refreshAgentHistories(session("a"), ["a"])
+  assert.deepEqual(harness.paneEntries.a?.map(e => e.text), ["hello", "live Room action"])
+})
+
+test("full history refresh cannot apply notices after leaving the Room", async () => {
+  let attached = true
+  const harness = createHarness({ split: false, isCurrentSession: () => attached,
+    beforeHistoryResult: async () => { attached = false },
+  })
+  await harness.controller.refresh(session("a"))
+  assert.deepEqual(harness.paneEntries, {})
+  assert.equal(harness.replaced, null)
+})
+
 for (const targeted of [false, true]) {
   test(`Room action notices survive completed provider history refresh, targeted=${targeted}`, async () => {
     const notice = { id: 3, role: "notice", text: "Room action #2: Codex · computer pointer_click · completed",
@@ -164,6 +186,8 @@ function createHarness(options: {
   currentFocusedAgentId?: string | null
   currentEntries?: Record<string, TranscriptEntry[]>
   historyPages?: Record<string, { entries: TranscriptEntry[]; nextCursor: unknown }>
+  beforeHistoryResult?: () => Promise<void>
+  isCurrentSession?: () => boolean
 }): {
   calls: string[]
   loads: string[]
@@ -187,6 +211,7 @@ function createHarness(options: {
     splitAgentResponseMode: () => options.split,
     maxAgentsPerScreen: () => 2,
     loadHistoryPage: async (_sessionId, agentId, cursor) => {
+      await options.beforeHistoryResult?.()
       loads.push(`${agentId}:${cursor ? JSON.stringify(cursor) : "null"}`)
       const page = options.historyPages?.[`${agentId}:${cursor ? JSON.stringify(cursor) : "null"}`]
       if (page) {
@@ -229,7 +254,7 @@ function createHarness(options: {
       calls.push(`rebuildAuxiliaryAgentPane:${agentId}`)
       rebuiltAuxiliaryAgentIds.push(agentId)
     },
-    isCurrentSession: () => true,
+    isCurrentSession: options.isCurrentSession ?? (() => true),
   })
 
   return {
