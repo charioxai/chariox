@@ -351,6 +351,23 @@ fn provider_account_usage_block(
         .then(|| model.and_then(opencode_service_from_model))
         .flatten();
     let relevant_meters = usage.meters.iter().filter(|meter| {
+        if provider == "codex" && meter.meter_id.starts_with("rolling/") {
+            if let Some(model) = model
+                .map(str::trim)
+                .filter(|model| !model.is_empty() && *model != "default")
+            {
+                let selected = if model == "gpt-5.3-codex-spark" {
+                    "codex_bengalfox"
+                } else {
+                    "codex"
+                };
+                if let Some((_, bucket)) = meter.meter_id.rsplit_once('/') {
+                    if matches!(bucket, "codex" | "codex_bengalfox") {
+                        return bucket == selected;
+                    }
+                }
+            }
+        }
         if provider != "opencode" {
             return true;
         }
@@ -3566,6 +3583,72 @@ mod tests {
             source: "test".to_string(),
             management_url: None,
         }
+    }
+
+    #[test]
+    fn codex_usage_admission_separates_general_and_spark_allowances() {
+        let now = PROVIDER_USAGE_STALE_AFTER_MS * 2;
+        let general = ProviderAccountUsageMeter {
+            meter_id: "rolling/10080/codex".to_string(),
+            ..capacity_meter(
+                "Weekly",
+                ProviderAccountUsageMeterKind::RollingLimit,
+                ProviderAccountUsageMeterState::Exhausted,
+                now,
+                Some(now + 60_000),
+            )
+        };
+        let spark = ProviderAccountUsageMeter {
+            meter_id: "rolling/300/codex_bengalfox".to_string(),
+            ..capacity_meter(
+                "Spark",
+                ProviderAccountUsageMeterKind::RollingLimit,
+                ProviderAccountUsageMeterState::Healthy,
+                now,
+                Some(now + 60_000),
+            )
+        };
+        let credits = capacity_meter(
+            "Credits",
+            ProviderAccountUsageMeterKind::CreditBalance,
+            ProviderAccountUsageMeterState::Exhausted,
+            now,
+            None,
+        );
+        let usage = capacity_snapshot(
+            "codex",
+            ProviderAccountUsageAvailability::Available,
+            vec![general.clone(), spark.clone(), credits.clone()],
+            now,
+        );
+        assert!(provider_account_usage_block("codex", Some("gpt-5.6-luna"), &usage, now).is_some());
+        assert!(
+            provider_account_usage_block("codex", Some("gpt-5.3-codex-spark"), &usage, now)
+                .is_none()
+        );
+        let reverse = capacity_snapshot(
+            "codex",
+            ProviderAccountUsageAvailability::Available,
+            vec![
+                ProviderAccountUsageMeter {
+                    state: ProviderAccountUsageMeterState::Healthy,
+                    ..general
+                },
+                ProviderAccountUsageMeter {
+                    state: ProviderAccountUsageMeterState::Exhausted,
+                    ..spark
+                },
+                credits,
+            ],
+            now,
+        );
+        assert!(
+            provider_account_usage_block("codex", Some("gpt-5.6-luna"), &reverse, now).is_none()
+        );
+        assert!(
+            provider_account_usage_block("codex", Some("gpt-5.3-codex-spark"), &reverse, now)
+                .is_some()
+        );
     }
 
     #[test]

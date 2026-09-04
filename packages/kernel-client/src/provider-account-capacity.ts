@@ -32,7 +32,12 @@ export function providerAccountCapacity(
     ? meters.filter((meter) => openCodeMeterService(meter) === selectedOpenCodeService)
     : provider === "opencode"
       ? meters.filter((meter) => openCodeMeterService(meter) == null)
-      : meters
+      : provider === "codex" ? meters.filter((meter) => {
+        if (!model?.trim() || model.trim() === "default" || !meter.meter_id.startsWith("rolling/")) return true
+        const bucket = meter.meter_id.split("/").at(-1)
+        if (bucket !== "codex" && bucket !== "codex_bengalfox") return true
+        return bucket === (model.trim() === "gpt-5.3-codex-spark" ? "codex_bengalfox" : "codex")
+      }) : meters
   const exhausted = relevantMeters.filter(currentlyExhausted)
   if (provider === "codex" || provider === "claude") {
     const exhaustedUsage = exhausted.filter((meter) => meter.kind !== "credit_balance" && meter.kind !== "spend_limit")

@@ -69,6 +69,17 @@ test("scopes OpenCode Go exhaustion to Go rather than Zen or arbitrary upstream 
   assert.equal(providerAccountCapacity(zenExhausted, nowMs, "gpt-5.2").state, "exhausted")
 })
 
+test("Codex general and Spark allowance exhaustion are independent", () => {
+  const general = { ...usage, meter_id: "rolling/10080/codex" }
+  const spark = { ...usage, meter_id: "rolling/300/codex_bengalfox", state: "healthy" as const }
+  const account = profile("codex", [general, spark, credits])
+  assert.equal(providerAccountCapacity(account, nowMs, "gpt-5.6-luna").state, "exhausted")
+  assert.equal(providerAccountCapacity(account, nowMs, "gpt-5.3-codex-spark").state, "ready")
+  const reverse = profile("codex", [{ ...general, state: "healthy" }, { ...spark, state: "exhausted" }, credits])
+  assert.equal(providerAccountCapacity(reverse, nowMs, "gpt-5.6-luna").state, "ready")
+  assert.equal(providerAccountCapacity(reverse, nowMs, "gpt-5.3-codex-spark").state, "exhausted")
+})
+
 function profile(provider: string, meters: ProviderAccountUsageMeter[]): ProviderAccountProfile {
   return {
     owner_user_id: "owner",
