@@ -49,6 +49,15 @@ allowed, but exported roots and files must be regular, non-symlink entries and
 the existing 64 MiB total limit still applies. Managed-machine context export
 remains the separate credential-only, 16 MiB path.
 
+Refreshing an existing regular OpenCode replica updates only those portable
+account files. It preserves worker-created history, databases, and directories
+held open by a running provider. Portable files omitted by the home authority
+are removed, so revoked credentials do not survive a refresh. If the registry
+commit fails, the previous portable files are restored. On Unix, refresh and
+rollback use held directory descriptors and no-follow reads so a concurrent
+symlink replacement cannot redirect credential writes. Each file publication
+is atomic; this is not an atomic multi-file provider-state snapshot.
+
 This account transfer is not a history backup or provider-session migration.
 Environment and slice saved-state acceptance must validate their own durable
 provider state independently.
