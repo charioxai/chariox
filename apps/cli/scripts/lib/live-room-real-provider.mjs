@@ -68,7 +68,7 @@ export async function runRoomRealProvider(input) {
         entries.push(...(content.entries ?? []))
       }
       for (const { entry } of entries) {
-        for (const code of ["codex_endpoint_unhealthy", "opencode_endpoint_unhealthy", "provider launch", "unauthorized", "rate limit"]) {
+        for (const code of ["codex_endpoint_unhealthy", "claude_endpoint_unhealthy", "opencode_endpoint_unhealthy", "provider launch", "unauthorized", "rate limit"]) {
           if (String(entry?.text ?? "").toLowerCase().includes(code)) codes.add(code)
         }
       }

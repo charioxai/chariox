@@ -202,6 +202,7 @@ if (failure) {
 async function run() {
   const tempRoot = await tempRootPromise
   if (realProviderOptions) {
+    assert.equal((await stat(tempRoot)).mode & 0o777, 0o700, "provider workspace parent must remain private")
     fixtureWorkspace = path.join(tempRoot, "provider-workspace")
     await mkdir(fixtureWorkspace, { recursive: true })
     // Colima bind mounts preserve host ownership inside the provider user
