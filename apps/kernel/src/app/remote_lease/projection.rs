@@ -1189,7 +1189,10 @@ fn leased_provider_requires_explicit_completion(
     provider: &str,
     worker_provider_run: Option<&crate::provider::RuntimeProviderRun>,
 ) -> bool {
-    if worker_provider_run.is_some_and(crate::provider::provider_run_uses_claude_native_bridge) {
+    if worker_provider_run.is_some_and(|run| {
+        crate::provider::provider_run_uses_structured_prompt_io(run)
+            || crate::provider::provider_run_uses_claude_native_bridge(run)
+    }) {
         return true;
     }
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
@@ -2127,7 +2130,7 @@ mod explicit_completion_tests {
     }
 
     #[test]
-    fn claude_headless_leased_runs_require_explicit_completion() {
+    fn claude_headless_and_structured_leased_runs_require_explicit_completion() {
         let headless = provider_run(
             "provider-run-headless-claude",
             "session-1",
@@ -2148,7 +2151,7 @@ mod explicit_completion_tests {
             "claude",
             Some(&headless),
         ));
-        assert!(!leased_provider_requires_explicit_completion(
+        assert!(leased_provider_requires_explicit_completion(
             "claude",
             Some(&structured),
         ));
