@@ -1,0 +1,73 @@
+# Room provider Browser and Computer drills
+
+These local acceptance cases use an official provider through the kernel's
+normal slice-backed agent path. The test driver does not impersonate an agent
+with direct MCP calls. Use them before managed-machine validation and public
+benchmarks, following `BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`.
+
+## Select the case
+
+Set these environment variables when running the paired Cloud
+`apps/web/scripts/view-route-local-room-tui-drill.mjs` script:
+
+| Variable | Value |
+| --- | --- |
+| `CHARIOX_ROOM_DRILL_FOCUS` | `web-companion` |
+| `CHARIOX_ROOM_DRILL_WEB_REAL_PROVIDER` | `1` |
+| `CHARIOX_ROOM_DRILL_PROVIDER` | `codex`, `claude`, or `opencode` |
+| `CHARIOX_ROOM_DRILL_MODEL` | explicit model supported by that official provider |
+| `CHARIOX_ROOM_DRILL_PROVIDER_MODE` | `browser` or `computer`, default `computer` |
+| `CHARIOX_OSS_REPO` | absolute path to the matching OSS worktree |
+| `CHARIOX_SLICE_DOCKER_PROVISIONER` | that worktree's `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh` |
+| `CHARIOX_ROOM_DRILL_IMAGE` | prebuilt image matching the runtime source fingerprint |
+| `CARGO_TARGET_DIR` | existing component binaries outside repositories |
+
+The runner also needs the existing built TUI/kernel-client and paired Cloud
+Web/API outputs, Chrome and Playwright. Reuse task-specific build outputs and
+dependency caches. Do not build or install another copy per worktree. Provider
+authentication must be valid in the selected default official profile. This
+mode consumes real provider usage. Import-first is not supported by the Web
+case; automatic kernel-managed account materialization is part of the test.
+
+For physical/TUI-only coverage, use `CHARIOX_ROOM_DRILL_FOCUS=real-provider`
+with the same provider/model/mode selection and run the OSS
+`apps/cli/scripts/live-room-environment-pointer-click-drill.mjs` script.
+
+## Required observations
+
+Computer mode asks for one coordinate click through `slice_mouse`. Browser
+mode adds a fixture button, asks for `slice_browser_find`, then asks for one
+`slice_browser_click` with its opaque `field_id`. The Browser case requires
+a completed `browser/click` action targeting exactly one tab; a Computer
+pointer click cannot satisfy it.
+
+Both cases check the authoritative provider configuration, Room/slice
+membership, agent attribution and an action sequence newer than the pre-prompt
+baseline. Web must paint the physical counter change at the canonical
+viewport, then human takeover must work in that same environment. Both TUIs
+must retain the matching action notice. Subsequent keyboard, selection and
+scroll checks exercise the same physical page.
+
+Run focused assertions without a package rebuild:
+
+```sh
+pnpm --filter @chariox/cli run test:room-provider
+```
+
+The normal CLI package test command includes that focused suite. Repository CI
+still runs only at the final reviewed, merge-ready gate.
+
+## Evidence and limits
+
+Keep the exact source/image fingerprints, provider identity, action ID and
+sequence, physical result, Web screenshot, TUI assertions, resource samples,
+outer process exit and cleanup ledger. A provider text response or an early
+action checkpoint alone is not a passing run. Cleanup must remove the owned
+container, volume, temporary state and listeners and pass the fixture-secret
+scan. Keep evidence outside repositories under `~/.codex/evidence/`.
+
+One discovery/click task does not close the entire Browser matrix. Navigation,
+frames, dialogs, upload/download, permissions, concurrent actors, vault-backed
+work, persistence and provider-thread resume each still need their own proof.
+Neither these local drills nor their reused component builds establish managed
+deployment acceptance or a final packaged release.
