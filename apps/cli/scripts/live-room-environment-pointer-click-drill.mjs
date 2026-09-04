@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createHash, createHmac } from "node:crypto"
 import { createWriteStream } from "node:fs"
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import http from "node:http"
 import net from "node:net"
 import os from "node:os"
@@ -201,6 +201,10 @@ async function run() {
   if (realProviderOptions) {
     fixtureWorkspace = path.join(tempRoot, "provider-workspace")
     await mkdir(fixtureWorkspace, { recursive: true })
+    // Colima bind mounts preserve host ownership inside the provider user
+    // namespace. Only this empty workspace is shared; its mkdtemp parent stays
+    // private, and no repository permissions or host account data are changed.
+    await chmod(fixtureWorkspace, 0o777)
   }
   await assertDockerReady()
   resources.push(await resourceSnapshot("before"))
