@@ -1,5 +1,10 @@
 const entryKinds = ["user_prompt", "provider_output", "provider_reasoning", "provider_tool", "provider_error", "provider_status", "notice"]
 const actionStates = ["queued", "running", "completed", "failed", "cancelled"]
+const diagnosticTools = new Set([
+  "list_mcp_resources", "list_mcp_resource_templates", "list_slices", "tool_search",
+  "slice_screen_status", "slice_screenshot", "slice_mouse", "slice_keyboard",
+  "slice_browser_find", "slice_browser_click", "slice_browser_fill", "slice_browser_submit",
+])
 const diagnosticPatterns = [
   ["endpoint_unhealthy", /(?:codex|claude|opencode)_endpoint_unhealthy/i],
   ["provider_launch", /provider launch/i],
@@ -34,9 +39,10 @@ export async function captureRoomProviderDiagnostic(input) {
     agentState: "unknown", activityStatus: "unknown", promptStatus: "unknown", activeTurnPhase: "unknown",
     turns: [], entryCounts: counters([...entryKinds, "unknown"]),
     blobCounts: counters([...entryKinds, "unknown"]), actionCounts: counters([...actionStates, "unknown"]),
-    computerToolMentioned: false, truncated: false, codes: [],
+    computerToolMentioned: false, observedTools: [], truncated: false, codes: [],
   }
   const codes = new Set()
+  const observedTools = new Set()
   let inspectedChars = 0
   let inspectedEntries = 0
   let loadedBlobs = 0
@@ -59,6 +65,7 @@ export async function captureRoomProviderDiagnostic(input) {
     if (text.length < value.length) result.truncated = true
     for (const [code, pattern] of diagnosticPatterns) if (pattern.test(text)) codes.add(code)
     if (tool && /\bslice_mouse\b/.test(text)) result.computerToolMentioned = true
+    return text
   }
   const inspectEntry = (item, seen) => {
     if (!item?.entry) return
@@ -71,7 +78,15 @@ export async function captureRoomProviderDiagnostic(input) {
     if (Number.isSafeInteger(item.entry_index)) {
       seen.add(item.entry_index)
     }
-    inspectText(item.entry.text, kind === "provider_tool")
+    const text = inspectText(item.entry.text, kind === "provider_tool")
+    if (kind === "provider_tool") {
+      try {
+        const value = JSON.parse(text)
+        const tool = typeof value?.tool === "string"
+          ? value.tool.replace(/^(?:mcp__chariox__|chariox\.|chariox_)/, "") : ""
+        if (diagnosticTools.has(tool)) observedTools.add(tool)
+      } catch { /* A truncated or non-JSON preview cannot prove a tool identity. */ }
+    }
   }
   await section("state_unavailable", async () => {
     const state = await request(requests.getSessionStateRequest(sessionId), "SessionState")
@@ -122,5 +137,6 @@ export async function captureRoomProviderDiagnostic(input) {
     }
   })
   result.codes = [...codes].sort()
+  result.observedTools = [...observedTools].sort()
   return result
 }

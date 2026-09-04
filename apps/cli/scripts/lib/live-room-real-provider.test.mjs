@@ -332,6 +332,18 @@ test("tool output and failed Room actions are distinguished from absent tool out
   assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
 })
 
+test("diagnostics identify only allowlisted tool names from actual tool records", async () => {
+  const tool = name => entry("provider_tool", JSON.stringify({ tool: name, input: secret, output: secret }))
+  const run = fixture({ turns: [{ lifecycle: "open", blobs: [], entries: [
+    tool("list_mcp_resources"), tool("mcp__chariox__slice_mouse"), tool("private-tool-" + secret),
+    entry("user_prompt", JSON.stringify({ tool: "slice_browser_find" })),
+    entry("provider_output", JSON.stringify({ tool: "slice_browser_click" })),
+  ] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.observedTools, ["list_mcp_resources", "slice_mouse"])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
 test("prompt rejection fails immediately rather than waiting for an impossible action", async () => {
   const run = fixture({ submit: { Error: { message: secret } } })
   let waited = false
