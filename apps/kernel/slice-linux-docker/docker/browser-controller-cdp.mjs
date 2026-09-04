@@ -437,7 +437,7 @@ export class BrowserCdpClient {
     try {
       return {
         browser_generation: this.browserGeneration,
-        ...await uploadBrowserFiles({
+        ...await withBrowserActionFrame({
           connection,
           sessionId,
           targetId,
@@ -446,7 +446,7 @@ export class BrowserCdpClient {
           filePaths: rawRequest?.file_paths,
           uploadRoots: this.uploadRoots,
           fileSystem: this.fileSystem,
-        }),
+        }, uploadBrowserFiles),
       };
     } catch (error) {
       throw normalizeControllerError(error);
