@@ -1,7 +1,7 @@
 import {
   BrowserSnapshotError,
 } from "./browser-controller-snapshot.mjs";
-import { captureBrowserFrames, withBrowserActionFrame } from "./browser-controller-frames.mjs";
+import { BrowserFrameTargets, captureBrowserFrames, registerBrowserFrameTargets, withBrowserActionFrame } from "./browser-controller-frames.mjs";
 import {
   BrowserActionError,
   performBrowserAction,
@@ -62,7 +62,7 @@ export class BrowserCdpClient {
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
     this.targetsBySession = new Map();
-    this.targetsByFrame = new Map();
+    this.targetsByFrame = new BrowserFrameTargets();
     this.targetsByDownload = new Map();
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
@@ -83,9 +83,7 @@ export class BrowserCdpClient {
           this.sessionsByTarget.delete(targetId);
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
-          for (const [frameId, frameTargetId] of this.targetsByFrame) {
-            if (frameTargetId === targetId) this.targetsByFrame.delete(frameId);
-          }
+          this.targetsByFrame.removeTarget(targetId);
         }
       }
       const inspected = await Promise.all(
@@ -191,7 +189,6 @@ export class BrowserCdpClient {
       ),
     ]);
     const documentId = frameTree?.frameTree?.frame?.loaderId;
-    const frameId = frameTree?.frameTree?.frame?.id;
     if (typeof documentId !== "string" || !documentId) {
       throw new BrowserControllerError(
         "browser_document_identity_missing",
@@ -199,9 +196,7 @@ export class BrowserCdpClient {
       );
     }
     this.documentIdsByTarget.set(target.targetId, documentId);
-    if (typeof frameId === "string" && frameId) {
-      this.targetsByFrame.set(frameId, target.targetId);
-    }
+    await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
     return {
       target_id: target.targetId,
       document_id: documentId,
@@ -531,20 +526,15 @@ export class BrowserCdpClient {
       if (typeof sessionId === "string") this.targetsBySession.delete(sessionId);
       if (typeof targetId === "string") {
         this.sessionsByTarget.delete(targetId);
-        for (const [frameId, frameTargetId] of this.targetsByFrame) {
-          if (frameTargetId === targetId) this.targetsByFrame.delete(frameId);
-        }
+        this.targetsByFrame.removeTarget(targetId);
       }
     }
+    this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
     if (message?.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       const targetId = this.targetsBySession.get(message.sessionId);
       const documentId = message.params?.frame?.loaderId;
-      const frameId = message.params?.frame?.id;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
-      }
-      if (targetId && typeof frameId === "string" && frameId) {
-        this.targetsByFrame.set(frameId, targetId);
       }
     }
     if (message?.method === "Browser.downloadWillBegin") {
