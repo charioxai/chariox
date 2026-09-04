@@ -53,6 +53,7 @@ export async function runRoomRealProviderAction(input) {
   let action
   let verifiedAgent = agent
   let baselineSequence = 0
+  const priorTurnIds = new Set()
   let lastFailureProbe = 0
   try {
     await input.beforePrompt?.(agent)
@@ -69,6 +70,16 @@ export async function runRoomRealProviderAction(input) {
       && verifiedAgent.provider === options.provider && verifiedAgent.model === options.model
       && (verifiedAgent.account_profile ?? "default") === options.accountProfile,
     "authoritative provider configuration does not match the requested provider/model/profile/Room")
+    if (input.agent) {
+      assert.equal(verifiedAgent.is_processing, false, "reused provider must be idle before this drill")
+      const outline = unwrap(await input.withTimeout(client.send(requests.getSessionHistoryOutlineRequest(
+        sessionId, [agent.id], 2)), 5_000, "provider history baseline"), "SessionHistoryOutline")
+      const turns = outline.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []
+      for (const turn of turns.slice(0, 2)) {
+        assert.ok(typeof turn.turn_id === "string" && turn.turn_id.length > 0, "provider history baseline lacks a turn identity")
+        priorTurnIds.add(turn.turn_id)
+      }
+    }
     const baseline = unwrap(await input.withTimeout(client.send(requests.listRoomEnvironmentActionHistoryRequest(
       sessionId, null, 100)), 5_000, "provider action baseline"), "RoomEnvironmentActionHistoryListed").page.actions
     baselineSequence = baseline.reduce((latest, item) => Number.isSafeInteger(item.sequence)
@@ -88,16 +99,16 @@ export async function runRoomRealProviderAction(input) {
         && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence
         && item.kind === "pointer_click" && item.state === "completed")
       if (completed) return completed
-      // This drill creates a fresh agent and submits exactly one prompt. Stop
-      // waiting if that turn has already ended with an error, not on a mere
-      // warning/error while the provider is still running.
+      // Ignore turns predating this prompt when Web reuses an idle agent.
+      // A warning/error on a still-open turn must not abort the action wait.
       if (Date.now() - lastFailureProbe >= 2_000) {
         lastFailureProbe = Date.now()
         const outline = await input.withTimeout(client.send(requests.getSessionHistoryOutlineRequest(
           sessionId, [agent.id], 2,
         )), 2_000, "provider failure probe").catch(() => null)
         const turns = outline?.SessionHistoryOutline?.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []
-        if (turns.slice(0, 2).some((turn) => turn.lifecycle === "completed" && (
+        if (turns.slice(0, 2).some((turn) => !priorTurnIds.has(turn.turn_id)
+          && (!input.agent || typeof turn.turn_id === "string") && turn.lifecycle === "completed" && (
           turn.summary?.entry?.kind === "provider_error"
           || (turn.entries ?? []).slice(0, 256).some((item) => item.entry?.kind === "provider_error")
           || (turn.blobs ?? []).slice(0, 16).some((item) => item.kind === "provider_error")
