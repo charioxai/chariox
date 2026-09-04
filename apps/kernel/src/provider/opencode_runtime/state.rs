@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crate::terminal::TerminalOutputKind;
 
 use super::super::{OpenCodeEventSubscription, OpenCodeMessage};
+use crate::provider::opencode_client::OpenCodeSessionStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeOutputChunk {
@@ -43,7 +44,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) message_parent_ids: BTreeMap<String, Option<String>>,
     pub(super) preexisting_message_ids: BTreeSet<String>,
     pub(super) event_subscription: OpenCodeEventSubscription,
-    pub(super) last_status_kind: Option<String>,
+    pub(super) last_status: Option<OpenCodeSessionStatus>,
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
@@ -68,7 +69,7 @@ impl OpenCodeRuntimeState {
             message_parent_ids: BTreeMap::new(),
             preexisting_message_ids: BTreeSet::new(),
             event_subscription,
-            last_status_kind: None,
+            last_status: None,
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
@@ -136,7 +137,7 @@ impl OpenCodeRuntimeState {
         self.active_user_message_id = None;
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = None;
-        self.last_status_kind = Some("idle".to_string());
+        self.last_status = Some("idle".into());
     }
 
     pub(super) fn message_belongs_to_active_prompt(&self, message_id: &str) -> bool {
