@@ -8,6 +8,15 @@ import {
   roomActionNoticePattern,
 } from "./room-tui-notices.mjs"
 
+test("companion TUI matcher requires the failed action and its exact failure code", () => {
+  const action = { sequence: 3, mode: "browser", kind: "fill", state: "failed", outcome: { status: "failed", code: "controller_failure" } }
+  const pattern = roomActionNoticePattern(action)
+  assert.match("Room action #3: real-codex · browser fill · failed (controller_failure)", pattern)
+  assert.doesNotMatch("Room action #3: real-codex · browser fill · completed", pattern)
+  assert.doesNotMatch("Room action #3: real-codex · browser fill · failed (process_lost)", pattern)
+  assert.throws(() => roomActionNoticePattern({ ...action, outcome: { status: "failed", code: ".*" } }))
+})
+
 test("companion TUI matcher uses the kernel action mode and exact sequence", () => {
   const pattern = roomActionNoticePattern({ sequence: 2, mode: "browser", kind: "click" })
   assert.match("Room action #2: real-codex · browser click · completed", pattern)
