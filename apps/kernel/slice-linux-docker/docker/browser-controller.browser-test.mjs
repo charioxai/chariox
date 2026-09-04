@@ -67,6 +67,70 @@ async function fixtureField(page, layout) {
   return field;
 }
 
+test("controller dialogs accept, dismiss, preserve prompt values, and recover from absent dialogs", { timeout: 30_000 }, async () => {
+  await withController(async ({ page, request }) => {
+    // Keep Playwright from auto-dismissing dialogs. Only the controller may answer.
+    page.on("dialog", () => {});
+    await page.goto(`data:text/html,${encodeURIComponent('<button>Open dialog</button><output>waiting</output><label>Sample<input></label>')}`);
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    for (const sample of [
+      { type: "alert", action: "accept", expected: "undefined" },
+      { type: "alert", action: "dismiss", expected: "undefined" },
+      { type: "confirm", action: "accept", expected: "true" },
+      { type: "confirm", action: "dismiss", expected: "false" },
+      { type: "prompt", action: "accept", prompt_text: "Mañana 日本語", expected: "Mañana 日本語" },
+      { type: "prompt", action: "accept", prompt_text: "", expected: "" },
+      { type: "prompt", action: "accept", expected: "default value" },
+      { type: "prompt", action: "accept", default_text: "é".repeat(1025), default_error: true, prompt_text: "override", expected: "override" },
+      { type: "prompt", action: "dismiss", prompt_text: "ignored", expected: "null" },
+    ]) {
+      await page.evaluate(({ type, default_text = "default value" }) => {
+        document.querySelector("output").textContent = "waiting";
+        document.querySelector("button").onclick = () => {
+          document.querySelector("output").textContent = String(window[type]("Sample dialog", default_text));
+        };
+      }, sample);
+      const snapshot = await request("browser.snapshot", target);
+      const button = snapshot.result.accessibility_nodes.find((node) => node.role === "button" && node.name === "Open dialog");
+      assert.ok(button);
+      const clicked = await request("browser.action", { ...target, node_ref: button.node_ref, action: { kind: "click" } });
+      assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+      assert.equal(clicked.result.dialog_opened, true);
+      const stale = await request("browser.dialog", { ...target, document_id: "previous-document", action: "dismiss" });
+      assert.equal(stale.ok, false);
+      assert.equal(stale.error.code, "stale_document_reference");
+      const invalid = await request("browser.dialog", { ...target, action: "accept", prompt_text: "x".repeat(2049) });
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.error.code, "browser_dialog_invalid");
+      if (sample.default_error) {
+        const oversizedDefault = await request("browser.dialog", { ...target, action: "accept" });
+        assert.equal(oversizedDefault.ok, false);
+        assert.equal(oversizedDefault.error.code, "browser_dialog_invalid");
+      }
+      const handled = await request("browser.dialog", { ...target, action: sample.action, prompt_text: sample.prompt_text });
+      assert.equal(handled.ok, true, JSON.stringify(handled.error));
+      assert.equal(await page.locator("output").textContent(), sample.expected);
+      const absent = await request("browser.dialog", { ...target, action: "accept" });
+      assert.equal(absent.ok, false);
+      assert.equal(absent.error.code, "browser_cdp_command_failed");
+      const filled = await request("browser.action", {
+        ...target, node_ref: fieldReference(await request("browser.snapshot", target)),
+        action: { kind: "fill", text: "after dialog" },
+      });
+      assert.equal(filled.ok, true, JSON.stringify(filled.error));
+      assert.equal(await page.getByLabel("Sample").inputValue(), "after dialog");
+    }
+    const trace = await request("browser.events.poll", { cursor: 0, browser_generation: 1, limit: 200 });
+    assert.equal(trace.ok, true);
+    assert.equal(trace.result.replay_gap, false);
+    const dialogs = trace.result.events.filter((event) => event.kind.startsWith("dialog_"));
+    assert.equal(dialogs.length, 18);
+    assert.deepEqual(dialogs.map((event) => event.kind), Array(9).fill(["dialog_opened", "dialog_closed"]).flat());
+    assert.ok(dialogs.every((event) => event.target_id === target.target_id && event.document_id === target.document_id));
+    assert.ok(dialogs.every((event) => !JSON.stringify(event).includes("Sample dialog") && !JSON.stringify(event).includes("Mañana 日本語") && !JSON.stringify(event).includes("default value")));
+  });
+});
+
 test("navigation invalidates the old document while preserving the target for rediscovery", async () => {
   await withController(async ({ page, request }) => {
     await fixtureField(page, "page");

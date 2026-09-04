@@ -479,6 +479,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-cdp.mjs",
+        "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
         "browser-controller-files.mjs",
         "browser-controller-permissions.mjs",

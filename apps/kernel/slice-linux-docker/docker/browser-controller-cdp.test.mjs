@@ -423,6 +423,50 @@ test("download and upload requests stay target-bound and return no file paths", 
   assert.equal(JSON.stringify({ downloads, upload }).includes("/safe"), false);
 });
 
+test("prompt defaults remain document-bound, private, and cleared when the dialog lifecycle ends", async () => {
+  let connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const target = { target_id: "target-a", document_id: "loader-a", action: "accept" };
+  await browser.reconcile(viewport);
+  const open = () => connection.emit({
+    method: "Page.javascriptDialogOpening", sessionId: "session-a",
+    params: { type: "prompt", defaultPrompt: "private default", message: "private message" },
+  });
+  const lastAnswer = () => connection.calls.filter((call) => call.method === "Page.handleJavaScriptDialog").at(-1).params;
+  open();
+  const result = await browser.handleDialog(target);
+  assert.deepEqual(lastAnswer(), { accept: true, promptText: "private default" });
+  assert.equal(JSON.stringify(result).includes("private"), false);
+  const trace = browser.pollEvents({ cursor: 0, browser_generation: 1 });
+  assert.equal(JSON.stringify(trace).includes("private"), false);
+  await assert.rejects(browser.handleDialog({ ...target, document_id: "old-document" }), (error) => error.code === "stale_document_reference");
+  await browser.handleDialog({ ...target, prompt_text: "" });
+  assert.deepEqual(lastAnswer(), { accept: true, promptText: "" });
+  await browser.handleDialog({ target_id: "target-b", document_id: "loader-b", action: "accept" });
+  assert.deepEqual(lastAnswer(), { accept: true });
+
+  for (const event of [
+    { method: "Page.javascriptDialogClosed", sessionId: "session-a", params: { result: true } },
+    { method: "Page.frameNavigated", sessionId: "session-a", params: { frame: { id: "frame-a", loaderId: "loader-a" } } },
+    { method: "Target.targetCrashed", params: { targetId: "target-a" } },
+    { method: "Target.targetDestroyed", params: { targetId: "target-a" } },
+    { method: "Inspector.targetCrashed", sessionId: "session-a", params: {} },
+    { method: "Target.detachedFromTarget", params: { sessionId: "session-a", targetId: "target-a" } },
+  ]) {
+    open();
+    connection.emit(event);
+    await browser.handleDialog(target);
+    assert.deepEqual(lastAnswer(), { accept: true }, event.method);
+  }
+  open();
+  await browser.close();
+  connection = new FakeConnection();
+  await browser.reconcile(viewport);
+  await browser.handleDialog(target);
+  assert.deepEqual(lastAnswer(), { accept: true });
+  await browser.close();
+});
+
 test("permission decisions derive the current target origin", async () => {
   const connection = new FakeConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
