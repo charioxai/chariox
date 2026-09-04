@@ -11,7 +11,7 @@ at 256 bytes, and projection examines at most 64 content blocks per message.
 
 Results append text incrementally, retaining at most 16 KiB including a visible
 `[chariox: tool transcript truncated]` marker. At most 256 result blocks are
-examined. No unbounded text-block collection/join occurs. Missing or oversized
+examined. No unbounded text-block collection/join occurs. Oversized
 identities and exceeded tracking/message budgets produce one transcript-limit
 notice per turn. These limits affect transcript projection, not provider tool
 execution. Completing a tracked call releases its retained byte budget; turn

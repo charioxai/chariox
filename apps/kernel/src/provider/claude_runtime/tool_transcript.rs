@@ -273,7 +273,7 @@ mod tests {
             event["message"]["content"][0]["input"] = json!({"text":"x".repeat(7000)});
             accepted += transcript.observe(&event).len();
         }
-        assert!(accepted > 0 && accepted < 64);
+        assert_eq!(accepted, 37);
         assert!(transcript.take_truncation_notice());
         for index in 0..accepted {
             assert_eq!(
@@ -283,12 +283,13 @@ mod tests {
                 1
             );
         }
-        assert_eq!(
-            transcript
-                .observe(&invocation("after-results", "fill"))
-                .len(),
-            1
-        );
+        let mut refilled = 0;
+        for index in 0..64 {
+            let mut event = invocation(&format!("refill-{index}"), "fill");
+            event["message"]["content"][0]["input"] = json!({"text":"x".repeat(7000)});
+            refilled += transcript.observe(&event).len();
+        }
+        assert_eq!(refilled, 37, "completion must release the full byte budget");
     }
 
     #[test]
