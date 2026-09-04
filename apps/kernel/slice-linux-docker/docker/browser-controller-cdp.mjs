@@ -1,7 +1,7 @@
 import {
   BrowserSnapshotError,
 } from "./browser-controller-snapshot.mjs";
-import { BrowserFrameTargets, captureBrowserFrames, registerBrowserFrameTargets, withBrowserActionFrame } from "./browser-controller-frames.mjs";
+import { BrowserFrameSessions, BrowserFrameTargets, captureBrowserFrames, registerBrowserFrameTargets, withBrowserActionFrame } from "./browser-controller-frames.mjs";
 import {
   BrowserActionError,
   performBrowserAction,
@@ -63,6 +63,7 @@ export class BrowserCdpClient {
     this.sessionsByTarget = new Map();
     this.targetsBySession = new Map();
     this.targetsByFrame = new BrowserFrameTargets();
+    this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
     this.targetsByDownload = new Map();
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
@@ -84,6 +85,7 @@ export class BrowserCdpClient {
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
           this.targetsByFrame.removeTarget(targetId);
+          await this.frameSessions.removeTarget(targetId);
         }
       }
       const inspected = await Promise.all(
@@ -103,6 +105,7 @@ export class BrowserCdpClient {
         this.sessionsByTarget.clear();
         this.targetsBySession.clear();
         this.targetsByFrame.clear();
+        this.frameSessions.clear();
         this.targetsByDownload.clear();
         this.documentIdsByTarget.clear();
       }
@@ -118,6 +121,7 @@ export class BrowserCdpClient {
     this.sessionsByTarget.clear();
     this.targetsBySession.clear();
     this.targetsByFrame.clear();
+    await this.frameSessions.close();
     this.targetsByDownload.clear();
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
@@ -135,6 +139,7 @@ export class BrowserCdpClient {
     this.sessionsByTarget.clear();
     this.targetsBySession.clear();
     this.targetsByFrame.clear();
+    this.frameSessions.clear();
     this.targetsByDownload.clear();
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
@@ -510,16 +515,20 @@ export class BrowserCdpClient {
         connection.send("Runtime.enable", {}, sessionId),
         connection.send("Network.enable", {}, sessionId),
         connection.send("Inspector.enable", {}, sessionId),
+        this.frameSessions.start(connection, sessionId),
       ]);
     } catch (error) {
       this.sessionsByTarget.delete(targetId);
       this.targetsBySession.delete(sessionId);
+      await this.frameSessions.removeTarget(targetId);
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       throw error;
     }
     return sessionId;
   }
 
   recordConnectionEvent(message) {
+    if (this.frameSessions.observe(message, this.connection)) return;
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
@@ -527,6 +536,7 @@ export class BrowserCdpClient {
       if (typeof targetId === "string") {
         this.sessionsByTarget.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
+        void this.frameSessions.removeTarget(targetId);
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));

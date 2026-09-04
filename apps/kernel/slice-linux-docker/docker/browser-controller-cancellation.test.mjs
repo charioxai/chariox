@@ -5,7 +5,7 @@ import test from "node:test";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 
-test("stdio cancellation interrupts a waiting action without losing the browser", async (t) => {
+test("stdio cancellation interrupts a waiting action without losing the browser", { timeout: 5_000 }, async (t) => {
   let blocked = true;
   let holdMouseMove = false;
   let presses = 0;
@@ -29,6 +29,8 @@ test("stdio cancellation interrupts a waiting action without losing the browser"
           observed.resolve();
           return { result: { value: blocked ? { state: "disabled" } : { state: "ready", x: 10, y: 10, width: 20, height: 20 } } };
         case "Target.setDiscoverTargets":
+        case "Target.setAutoAttach":
+        case "Target.detachFromTarget":
         case "Page.enable":
         case "Page.setLifecycleEventsEnabled":
         case "Runtime.enable":

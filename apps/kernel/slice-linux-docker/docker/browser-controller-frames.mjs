@@ -14,19 +14,22 @@ export class BrowserFrameTargets {
   }
   replace(targetId, trees) {
     this.removeTarget(targetId);
+    this.merge(targetId, trees);
+  }
+  merge(targetId, trees) {
     const visit = (node) => {
       if (!this.add(targetId, node?.frame?.id, node?.frame?.parentId)) return;
       for (const child of node.childFrames ?? []) visit(child);
     };
     for (const tree of trees) visit(tree);
   }
-  record(message, targetId) {
+  record(message, targetId, rootSession = true) {
     if (!targetId) return;
     const params = message.params ?? {};
     if (message.method === "Page.frameAttached") this.add(targetId, params.frameId, params.parentFrameId);
     if (message.method === "Page.frameNavigated") {
       const frame = params.frame;
-      if (!frame?.parentId) this.removeTarget(targetId);
+      if (!frame?.parentId && rootSession) this.removeTarget(targetId);
       else this.remove(frame.id);
       this.add(targetId, frame?.id, frame?.parentId);
     }
@@ -50,6 +53,99 @@ export class BrowserFrameTargets {
         }
       }
     }
+  }
+}
+
+// Keep nested isolated-frame lifecycle events observable between snapshots.
+// Only iframe targets are attached. A paused child is always resumed, including
+// setup failure, overflow, root removal and controller shutdown.
+export class BrowserFrameSessions {
+  constructor(registry, rootTargetForSession) {
+    this.registry = registry;
+    this.rootTargetForSession = rootTargetForSession;
+    this.sessions = new Map();
+    this.pending = new Set();
+  }
+  clear() { this.sessions.clear(); }
+  removeTarget(targetId) {
+    return this.removeWhere((entry) => entry.targetId === targetId);
+  }
+  close() { return this.removeWhere(() => true); }
+  async removeWhere(matches) {
+    const removed = [];
+    for (const [id, entry] of this.sessions) {
+      if (!matches(entry, id)) continue;
+      this.sessions.delete(id);
+      removed.push(this.release(entry.connection, id, true));
+    }
+    await Promise.all(removed);
+  }
+  removeSession(sessionId) {
+    const removed = new Set([sessionId]);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [id, entry] of this.sessions) {
+        if (!removed.has(id) && removed.has(entry.parentSessionId)) { removed.add(id); changed = true; }
+      }
+    }
+    return this.removeWhere((_entry, id) => removed.has(id));
+  }
+  start(connection, sessionId) {
+    return connection.send("Target.setAutoAttach", {
+      autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
+      filter: [{ type: "iframe" }, { exclude: true }],
+    }, sessionId);
+  }
+  observe(message, connection) {
+    const params = message?.params ?? {};
+    if (message?.method === "Target.attachedToTarget" && params.targetInfo?.type === "iframe") {
+      const targetId = this.sessions.get(message.sessionId)?.targetId ?? this.rootTargetForSession(message.sessionId);
+      const childSession = params.sessionId;
+      if (typeof childSession !== "string" || !childSession) return false;
+      if (!targetId) {
+        if (params.waitingForDebugger !== true) return false;
+        void this.release(connection, childSession, true);
+        return true;
+      }
+      const entry = { targetId, parentSessionId: message.sessionId, connection };
+      if (this.pending.size >= MAX_FRAMES || [...this.sessions.values()].filter((current) => current.targetId === targetId).length >= MAX_FRAMES) {
+        void this.release(connection, childSession, true);
+        return true;
+      }
+      this.sessions.set(childSession, entry);
+      const pending = this.initialize(connection, childSession, entry);
+      this.pending.add(pending);
+      void pending.finally(() => this.pending.delete(pending));
+      return true;
+    }
+    if (message?.method === "Target.detachedFromTarget" && this.sessions.has(params.sessionId)) {
+      void this.removeSession(params.sessionId);
+      return true;
+    }
+    const entry = this.sessions.get(message?.sessionId);
+    if (!entry) return false;
+    this.registry.record(message, entry.targetId, false);
+    return true;
+  }
+  async initialize(connection, sessionId, entry) {
+    let failed = false;
+    try {
+      await connection.send("Page.enable", {}, sessionId);
+      const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+      if (this.sessions.get(sessionId) !== entry) return;
+      this.registry.merge(entry.targetId, [frameTree]);
+      await this.start(connection, sessionId);
+    } catch {
+      failed = true;
+    } finally {
+      const removed = this.sessions.get(sessionId) !== entry;
+      if (failed && !removed) this.sessions.delete(sessionId);
+      await this.release(connection, sessionId, failed || removed);
+    }
+  }
+  async release(connection, sessionId, detach) {
+    await connection.send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => {});
+    if (detach) await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
   }
 }
 

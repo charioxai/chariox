@@ -399,7 +399,8 @@ async function uploadReference(request, target) {
 }
 
 for (const layout of ["page", "same-site", "isolated", "nested-isolated"]) {
-test(`${layout} download persists real bytes with tab-attributed progress and a safe filename`, async () => {
+for (const late of layout === "page" ? [false] : [false, true]) {
+test(`${late ? "late " : ""}${layout} download persists real bytes with tab-attributed progress and a safe filename`, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-download-"));
   try {
     await withCrossOriginFixture(async (url) => {
@@ -413,16 +414,27 @@ test(`${layout} download persists real bytes with tab-attributed progress and a 
         const target = reconciled.tabs[0];
         const configured = await request("browser.downloads.configure", target);
         assert.equal(configured.ok, true, JSON.stringify(configured.error));
-        const snapshot = await request("browser.snapshot", target);
-        const node = snapshot.result.accessibility_nodes.find((node) => node.role === "link" && node.name === "Download");
-        assert.ok(node);
-        const clicked = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "click" } });
-        assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+        if (late) {
+          await page.locator("iframe").evaluate((frame) => frame.replaceWith(frame.cloneNode()));
+          await link.waitFor();
+        }
+        if (late) {
+          await link.evaluate((link) => link.addEventListener("click", () => { link.dataset.activated = "true"; }, { once: true }));
+          await link.press("Enter");
+          assert.equal(await link.getAttribute("data-activated"), "true", "the fixture link must actually activate");
+        }
+        else {
+          const snapshot = await request("browser.snapshot", target);
+          const node = snapshot.result.accessibility_nodes.find((node) => node.role === "link" && node.name === "Download");
+          assert.ok(node);
+          const clicked = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "click" } });
+          assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+        }
         let cursor = reconciled.event_cursor;
         const events = [];
         const deadline = Date.now() + 5_000;
         while (!events.some((event) => event.kind === "download_progress" && event.data.state === "completed")) {
-          assert.ok(Date.now() < deadline, "download must finish within the bounded fixture timeout");
+          assert.ok(Date.now() < deadline, `download must finish within the bounded fixture timeout: ${JSON.stringify(events.filter((event) => event.kind.startsWith("download_")))}`);
           const polled = await request("browser.events.poll", { browser_generation: reconciled.browser_generation, cursor });
           assert.equal(polled.ok, true, JSON.stringify(polled.error));
           assert.equal(polled.result.replay_gap, false);
@@ -445,6 +457,7 @@ test(`${layout} download persists real bytes with tab-attributed progress and a 
     await rm(directory, { recursive: true, force: true });
   }
 });
+}
 }
 
 async function withCrossOriginFixture(run, {
