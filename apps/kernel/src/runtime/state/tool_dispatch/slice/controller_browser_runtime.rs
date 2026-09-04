@@ -142,11 +142,11 @@ impl KernelRuntimeState {
                     .await
             }
             SLICE_BROWSER_DOWNLOADS_TOOL => {
-                parse_controller_tool_arguments::<SliceBrowserDownloadsArgs>(
+                let args = parse_controller_tool_arguments::<SliceBrowserDownloadsArgs>(
                     arguments,
                     "runtime_tool_slice_browser_downloads",
                 )?;
-                self.controller_browser_downloads_tool_result(session_id, slice_id, agent_id)
+                self.controller_browser_downloads_tool_result(session_id, slice_id, agent_id, args)
                     .await
             }
             SLICE_BROWSER_UPLOAD_TOOL => {

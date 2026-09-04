@@ -116,6 +116,112 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     assert_eq!(downloads.payload["enabled"], true);
     assert_eq!(downloads.payload["tab_id"], tab_id);
 
+    let cancel_args = json!({"cancel": {
+        "browser_generation": status["browser_generation"], "guid": "worker-active-download"
+    }});
+    for (args, expected) in [
+        (
+            json!({"cancel":{"browser_generation":0,"guid":"worker-active-download"}}),
+            "generation",
+        ),
+        (
+            json!({"cancel":{"browser_generation":status["browser_generation"],"guid":"../download"}}),
+            "GUID",
+        ),
+        (
+            json!({"cancel":{"browser_generation":status["browser_generation"].as_u64().unwrap() + 1,"guid":"worker-active-download"}}),
+            "stale_browser_generation",
+        ),
+        (
+            json!({"cancel":{"browser_generation":status["browser_generation"],"guid":"unobserved-download"}}),
+            "browser_download_not_active",
+        ),
+    ] {
+        let denied = runtime
+            .dispatch_authenticated_runtime_tool_call(token, "slice_browser_downloads", args)
+            .await
+            .expect_err("invalid or unobserved cancellation must fail closed");
+        assert!(denied.to_string().contains(expected), "{denied}");
+    }
+    let desktop = json!({"kind":"desktop"});
+    dispatch_json(
+        &fixture.home,
+        json!({"RequestRoomEnvironmentInputTakeover":{
+            "session_id":room,"target":desktop
+        }}),
+    )
+    .await
+    .expect("human owns the desktop before cancellation");
+    let denied = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_downloads",
+            cancel_args.clone(),
+        )
+        .await
+        .expect_err("agent download cancellation must respect human ownership");
+    assert!(denied.to_string().contains("belongs to"), "{denied}");
+    dispatch_json(
+        &fixture.home,
+        json!({"ReleaseRoomEnvironmentInput":{
+            "session_id":room,"target":desktop
+        }}),
+    )
+    .await
+    .expect("release human ownership before retrying cancellation");
+    let canceled = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_downloads",
+            cancel_args.clone(),
+        )
+        .await
+        .expect("download cancellation crosses the authenticated worker relay");
+    assert!(canceled.ok, "{:?}", canceled.payload);
+    assert_eq!(canceled.payload["cancellation_requested"], true);
+    assert_eq!(canceled.payload["guid"], "worker-active-download");
+    assert_eq!(
+        canceled.payload["actor_id"],
+        crate::session::agent_environment_actor_id(agent_id)
+    );
+    assert!(canceled.payload["action_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+    let state = dispatch_json(
+        &fixture.home,
+        json!({"GetRoomEnvironmentState":{"session_id":room}}),
+    )
+    .await
+    .expect("read the shared action history after cancellation");
+    let environment = &state["RoomEnvironmentState"]["environment"];
+    let action = environment["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["action_id"] == canceled.payload["action_id"])
+        .expect("cancellation must be attributed in the Room action history");
+    assert_eq!(action["kind"], "download_cancel");
+    assert_eq!(action["state"], "completed");
+    assert_eq!(action["actor_id"], canceled.payload["actor_id"]);
+    assert_eq!(action["mode"], "browser");
+    assert_eq!(action["targets"], json!([{"kind":"desktop"}]));
+    assert_eq!(
+        canceled.payload["environment_id"],
+        environment["environment_id"]
+    );
+    assert_eq!(
+        canceled.payload["runtime_generation"],
+        action["runtime_generation"]
+    );
+    let repeated = runtime
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_downloads", cancel_args)
+        .await
+        .expect_err("a terminal download cannot be canceled again");
+    assert!(
+        repeated.to_string().contains("browser_download_not_active"),
+        "{repeated}"
+    );
+
     let upload_path = fixture._worker_state.root.join("relay-upload.txt");
     std::fs::write(&upload_path, b"relay upload").expect("write bounded upload fixture");
     let upload = runtime
@@ -154,10 +260,58 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     assert_eq!(physical["dialog"]["accept"], true);
     assert_eq!(physical["dialog"]["promptText"], "approved by home");
     assert_eq!(physical["downloads"]["behavior"], "allowAndName");
+    assert_eq!(physical["canceledDownload"], "worker-active-download");
     assert_eq!(physical["upload"]["backendNodeId"], 104);
     assert_eq!(physical["upload"]["fileCount"], 1);
     assert_eq!(physical["permission"]["setting"], "denied");
     assert_eq!(physical["permission"]["origin"], "https://worker.test");
 
     std::fs::remove_file(upload_path).expect("remove upload fixture");
+}
+
+pub(super) async fn check_cancellation_without_tabs(fixture: &LiveWorker, token: &str) {
+    let runtime = &fixture.home.runtime_state;
+    runtime
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_downloads", json!({}))
+        .await
+        .expect("start another background download before the user closes the pages");
+    let status = runtime
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+        .await
+        .expect("observe current browser generation");
+    let close = fixture._worker_state.root.join("close-browser-tabs");
+    std::fs::write(&close, b"close").expect("inject external browser page closure");
+    let canceled = runtime.dispatch_authenticated_runtime_tool_call(token, "slice_browser_downloads", json!({
+        "cancel":{"browser_generation":status.payload["browser_generation"],"guid":"worker-active-download"}
+    })).await;
+    std::fs::remove_file(close).expect("remove external browser closure fixture");
+    let canceled =
+        canceled.expect("download cancellation must work with no remaining browser tabs");
+    assert!(canceled.ok, "{:?}", canceled.payload);
+    let environment = runtime
+        .room_environment_snapshot(&fixture.rooms[0])
+        .unwrap();
+    assert!(
+        environment.tabs.is_empty(),
+        "no current page may be required to cancel a download"
+    );
+    assert!(environment.focused_tab_id.is_none());
+    assert_eq!(canceled.payload["cancellation_requested"], true);
+    let events = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_events",
+            json!({
+                "browser_generation":status.payload["browser_generation"],"cursor":0,"limit":200
+            }),
+        )
+        .await
+        .expect("observe terminal progress after page closure");
+    assert!(events.payload["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["kind"] == "download_progress"
+            && event["data"]["guid"] == "worker-active-download"
+            && event["data"]["state"] == "canceled"));
 }

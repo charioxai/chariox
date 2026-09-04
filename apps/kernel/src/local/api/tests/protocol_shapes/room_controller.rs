@@ -13,8 +13,45 @@ use crate::transport::room_browser_controller::{
 };
 
 #[test]
+fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_tab() {
+    use crate::runtime::browser_controller_file_transfer::{
+        BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
+    };
+    use crate::transport::room_browser_controller::RoomBrowserControllerResult;
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 304);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
+    let command = RoomBrowserControllerCommand::CancelDownload {
+        cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
+    };
+    assert_eq!(
+        serde_json::to_value(&command).unwrap(),
+        serde_json::json!({
+            "kind": "cancel_download", "cancellation": {"browser_generation": 2, "guid": "download-a"}
+        })
+    );
+    let result = RoomBrowserControllerResult::DownloadCancellation {
+        result: Some(BrowserControllerDownloadCancellationResult {
+            browser_generation: 2,
+            guid: "download-a".into(),
+            cancellation_requested: true,
+        }),
+    };
+    assert_eq!(
+        serde_json::to_value(&result).unwrap(),
+        serde_json::json!({
+            "kind": "download_cancellation", "result": {"browser_generation": 2, "guid": "download-a", "cancellation_requested": true}
+        })
+    );
+    let action =
+        crate::session::EnvironmentActionRequest::browser_download_cancellation("agent:a", 1);
+    assert_eq!(action.mode, crate::session::EnvironmentMode::Browser);
+    assert_eq!(action.targets, vec![crate::session::InputTarget::Desktop]);
+    assert!(action.tab_preconditions.is_empty());
+}
+
+#[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 39);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -56,7 +93,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 39);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -148,8 +185,8 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 303);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 39);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 304);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -425,6 +462,12 @@ fn room_controller_protocol_shapes_are_versioned() {
                 document_id: "doc-1".into(),
             },
             serde_json::json!({"kind":"configure_downloads","target_id":"target-1","document_id":"doc-1"}),
+        ),
+        (
+            RoomBrowserControllerCommand::CancelDownload {
+                cancellation: crate::runtime::browser_controller_file_transfer::BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
+            },
+            serde_json::json!({"kind":"cancel_download","cancellation":{"browser_generation":2,"guid":"download-a"}}),
         ),
         (
             RoomBrowserControllerCommand::Upload {

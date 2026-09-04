@@ -33,6 +33,7 @@ impl KernelRuntimeState {
                 | Command::Dialog { .. }
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
+                | Command::CancelDownload { .. }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
@@ -416,6 +417,9 @@ async fn execute_local(
         } => processes
             .configure_browser_downloads(&session_id, &target_id, &document_id)
             .map(|result| Response::Downloads { result }),
+        Command::CancelDownload { cancellation } => processes
+            .cancel_browser_download(&session_id, &cancellation)
+            .map(|result| Response::DownloadCancellation { result }),
         Command::Upload {
             target_id,
             document_id,

@@ -20,6 +20,11 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     assert_eq!(batch.payload["browser_generation"], browser_generation);
     let events = batch.payload["events"].as_array().expect("browser events");
     assert!(!events.is_empty());
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "download_progress"
+            && event["data"]["guid"] == "worker-active-download"
+            && event["data"]["state"] == "canceled"));
 
     let kinds = events
         .iter()

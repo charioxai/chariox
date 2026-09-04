@@ -343,6 +343,7 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
         agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserDownloadsArgs,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let environment = ensure_controller_browser_environment(
             self,
@@ -350,6 +351,32 @@ impl KernelRuntimeState {
             "runtime_tool_slice_browser_downloads",
         )
         .await?;
+        if let Some(cancel) = args.cancel {
+            let cancellation =
+                crate::runtime::browser_controller_file_transfer::BrowserDownloadCancellation::new(
+                    cancel.browser_generation,
+                    cancel.guid,
+                )
+                .map_err(|message| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_downloads",
+                    message,
+                })?;
+            let execution = self
+                .cancel_browser_download_as_agent(session_id, agent_id, cancellation)
+                .await?;
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "source": "browser_controller", "slice_id": slice_id, "agent_id": agent_id,
+                    "session_id": session_id, "environment_id": execution.environment_id,
+                    "runtime_generation": execution.runtime_generation,
+                    "action_id": execution.action_id, "actor_id": execution.actor_id,
+                    "browser_generation": execution.value.browser_generation,
+                    "guid": execution.value.guid,
+                    "cancellation_requested": execution.value.cancellation_requested,
+                }),
+            });
+        }
         let tab_id = environment
             .focused_tab_id
             .ok_or_else(|| DaemonError::LocalTransport {
