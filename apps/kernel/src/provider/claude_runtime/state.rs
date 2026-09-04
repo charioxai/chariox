@@ -48,6 +48,7 @@ pub struct ClaudeRuntimeState {
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
     pub(super) emitted_text_by_block: BTreeMap<String, String>,
+    pub(super) tool_transcript: super::tool_transcript::ClaudeToolTranscript,
     pub(super) completed_text_blocks: BTreeSet<String>,
     pub(super) exit_reported: bool,
 }

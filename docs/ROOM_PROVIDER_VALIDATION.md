@@ -96,6 +96,22 @@ still runs only at the final reviewed, merge-ready gate.
 
 ## Evidence and limits
 
+### Claude tool-result history
+
+Claude stream-json assistant `tool_use` events start a running tool transcript
+entry. Matching user `tool_result` events complete the same entry or attach
+the actual tool error, preserving the invocation input and tool ID. A rejected
+tool is not by itself a failed provider turn. Text result blocks are retained;
+image payloads are not copied into this textual projection. Unknown or duplicate
+results are ignored, and pending invocation context clears on prompt reset,
+settlement, cancellation and runtime restart.
+
+The isolated tests exercise the actual projection source with the existing
+serde_json dependency. They do not prove the full Claude event-drain wiring or
+a live provider error. The kernel test
+`claude_stream_projects_matching_tool_result_error_and_input` and the live
+provider/Web/TUI recovery drill must also pass before accepting that coverage.
+
 ### Controller reference recovery
 
 Run the real-Chrome controller request tests before the live provider drill:
