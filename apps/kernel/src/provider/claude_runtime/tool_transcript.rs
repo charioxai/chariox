@@ -87,6 +87,7 @@ pub(super) struct ClaudeToolTranscript {
     pending_bytes: usize,
     truncated: bool,
     truncation_reported: bool,
+    unsupported_results: Vec<Value>,
 }
 
 struct PendingTool {
@@ -109,6 +110,7 @@ impl PendingTool {
 
 impl ClaudeToolTranscript {
     pub(super) fn observe(&mut self, value: &Value) -> Vec<Value> {
+        self.unsupported_results.clear();
         let kind = value.get("type").and_then(Value::as_str);
         let message = value.get("message").unwrap_or(value);
         let Some(content) = message.get("content").and_then(Value::as_array) else {
@@ -147,7 +149,14 @@ impl ClaudeToolTranscript {
                     self.truncated = true;
                     return None;
                 }
-                if self.pending.contains_key(id) || is_unsupported_claude_stream_json_tool(name) {
+                if is_unsupported_claude_stream_json_tool(name) {
+                    self.unsupported_results.push(json!({
+                        "type": "tool_result", "tool_use_id": id, "is_error": true,
+                        "content": "Chariox does not execute Claude stream-json tool `ToolSearch` in this runtime path. If this is a Chariox workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly.",
+                    }));
+                    return None;
+                }
+                if self.pending.contains_key(id) {
                     return None;
                 }
                 if self.pending.len() >= PENDING_ENTRIES {
@@ -175,6 +184,11 @@ impl ClaudeToolTranscript {
         self.pending_bytes = 0;
         self.truncated = false;
         self.truncation_reported = false;
+        self.unsupported_results.clear();
+    }
+
+    pub(super) fn take_unsupported_results(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.unsupported_results)
     }
 
     pub(super) fn take_truncation_notice(&mut self) -> bool {
@@ -186,7 +200,7 @@ impl ClaudeToolTranscript {
     }
 }
 
-pub(super) fn is_unsupported_claude_stream_json_tool(name: &str) -> bool {
+fn is_unsupported_claude_stream_json_tool(name: &str) -> bool {
     name == "ToolSearch"
 }
 
@@ -217,6 +231,26 @@ mod tests {
         let finished = transcript.observe(&result("large", json!("done")));
         assert_eq!(finished[0]["input"]["chariox_truncated"], true);
         assert_eq!(finished[0]["output"], "done");
+    }
+
+    #[test]
+    fn unsupported_rejections_share_message_and_identity_budgets() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let mut blocks =
+            vec![invocation(&"x".repeat(1_000_000), "ToolSearch")["message"]["content"][0].clone()];
+        blocks.extend((0..1000).map(|index| {
+            invocation(&format!("id-{index}"), "ToolSearch")["message"]["content"][0].clone()
+        }));
+        assert!(transcript
+            .observe(&json!({"type":"assistant","message":{"content":blocks}}))
+            .is_empty());
+        let rejected = transcript.take_unsupported_results();
+        assert_eq!(rejected.len(), 63);
+        assert!(serde_json::to_vec(&rejected).unwrap().len() < 32 * 1024);
+        assert_eq!(rejected[0]["tool_use_id"], "id-0");
+        assert_eq!(rejected[0]["is_error"], true);
+        assert!(transcript.take_truncation_notice());
+        assert!(transcript.take_unsupported_results().is_empty());
     }
 
     #[test]
