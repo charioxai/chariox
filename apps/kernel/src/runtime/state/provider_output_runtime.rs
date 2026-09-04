@@ -254,12 +254,14 @@ impl KernelRuntimeState {
         {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         };
@@ -270,6 +272,7 @@ impl KernelRuntimeState {
         else {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         };
@@ -286,6 +289,7 @@ impl KernelRuntimeState {
                 ) {
                     return Ok(crate::app::ProviderRunExitSessionSummary {
                         had_active_prompt: true,
+                        cancelled_prompt: false,
                         started_next_prompt: false,
                     });
                 }

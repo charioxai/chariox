@@ -37,6 +37,7 @@ impl KernelRuntimeState {
             }
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -58,6 +59,7 @@ impl KernelRuntimeState {
                 );
                 return Ok(crate::app::ProviderRunExitSessionSummary {
                     had_active_prompt: false,
+                    cancelled_prompt: false,
                     started_next_prompt: false,
                 });
             }
@@ -81,6 +83,7 @@ impl KernelRuntimeState {
             let _ = owned.session_snapshot(session_id);
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         };
@@ -106,6 +109,7 @@ impl KernelRuntimeState {
             let _ = owned.session_snapshot(session_id);
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -127,6 +131,7 @@ impl KernelRuntimeState {
             );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -156,6 +161,7 @@ impl KernelRuntimeState {
             );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -182,6 +188,7 @@ impl KernelRuntimeState {
                 );
                 return Ok(crate::app::ProviderRunExitSessionSummary {
                     had_active_prompt: true,
+                    cancelled_prompt: false,
                     started_next_prompt: false,
                 });
             }
@@ -207,6 +214,7 @@ impl KernelRuntimeState {
             );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -226,6 +234,7 @@ impl KernelRuntimeState {
                 );
                 return Ok(crate::app::ProviderRunExitSessionSummary {
                     had_active_prompt: true,
+                    cancelled_prompt: false,
                     started_next_prompt: false,
                 });
             }
@@ -243,6 +252,7 @@ impl KernelRuntimeState {
             );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -262,6 +272,7 @@ impl KernelRuntimeState {
             );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
@@ -272,6 +283,7 @@ impl KernelRuntimeState {
                 let _ = owned.session_snapshot(session_id);
                 return Ok(crate::app::ProviderRunExitSessionSummary {
                     had_active_prompt: true,
+                    cancelled_prompt: false,
                     started_next_prompt: false,
                 });
             }
@@ -294,6 +306,7 @@ impl KernelRuntimeState {
             }
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: true,
                 started_next_prompt: cancellation.cancellation.started_next.is_some(),
             });
         }
@@ -320,6 +333,7 @@ impl KernelRuntimeState {
                     let _ = owned.session_snapshot(session_id);
                     return Ok(crate::app::ProviderRunExitSessionSummary {
                         had_active_prompt: true,
+                        cancelled_prompt: false,
                         started_next_prompt: false,
                     });
                 }
@@ -438,6 +452,7 @@ impl KernelRuntimeState {
             );
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         };
@@ -644,6 +659,7 @@ impl KernelRuntimeState {
         tokio::spawn(continuation);
         Ok(crate::app::ProviderRunExitSessionSummary {
             had_active_prompt: true,
+            cancelled_prompt: false,
             started_next_prompt: completion.completion.started_next.is_some(),
         })
     }
