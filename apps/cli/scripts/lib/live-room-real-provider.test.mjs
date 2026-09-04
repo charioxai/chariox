@@ -43,7 +43,7 @@ test("failure retains lifecycle and unrecognized provider error without copying 
   const run = fixture({ turns: [{ lifecycle: "completed", entries: [], blobs: [],
     summary: entry("provider_error", `Unclassified provider failure ${secret}`),
   }] })
-  await assert.rejects(runRoomRealProvider(run.input), /fixture action timeout/)
+  await assert.rejects(runRoomRealProvider(run.input), /provider turn failed before/)
   const diagnostic = run.checkpoints.at(-1).diagnostic
   assert.equal(diagnostic.agentState, "Working")
   assert.equal(diagnostic.promptStatus, "running")
@@ -148,4 +148,30 @@ test("successful provider action still requires physical and both TUI observatio
   assert.deepEqual(observed, ["POINTER_CLICK_COUNT=2", "both-tuis"])
   assert.equal(result.actionId, "action-1")
   assert.equal(run.calls.some((r) => r.name === "getSessionHistoryOutline"), false)
+})
+
+for (const [message, expected] of [
+  ["API key is missing", "missing_api_key"],
+  ["OpenCode MCP server is needs_client_registration", "mcp_setup"],
+  ["OpenCode reported an unknown assistant error", "unknown_provider_error"],
+  ["OpenCode request failed after 3 attempts", "provider_request_failed"],
+  ["Invalid schema for function", "invalid_tool_schema"],
+  ["ProviderModelNotFoundError", "model_unavailable"],
+]) {
+  test(`classifies ${expected} without retaining its payload`, async () => {
+    const run = fixture({ turns: [{ lifecycle: "completed", entries: [entry("provider_error", `${message}: ${secret}`)], blobs: [] }] })
+    await assert.rejects(runRoomRealProvider(run.input))
+    assert.ok(run.checkpoints.at(-1).diagnostic.codes.includes(expected))
+    assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+  })
+}
+
+test("completed error turn ends the action wait without exhausting its deadline", async () => {
+  const run = fixture({ turns: [{ lifecycle: "completed", entries: [entry("provider_error", secret)], blobs: [] }] })
+  run.input.waitFor = async (check) => {
+    const terminal = await check()
+    assert.ok(terminal, "a completed provider failure must stop the polling loop")
+    return terminal
+  }
+  await assert.rejects(runRoomRealProvider(run.input), /provider turn failed before/)
 })
