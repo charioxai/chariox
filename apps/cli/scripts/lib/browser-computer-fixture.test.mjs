@@ -130,6 +130,40 @@ test("fixture provides authenticated mail without exposing its password", async 
   }
 })
 
+test("fixture can invalidate an external service session without erasing the browser cookie", async () => {
+  const password = "fixture-test-password"
+  const fixture = await startBrowserComputerFixture({ password })
+  try {
+    const login = await fetch(`${fixture.origin}/mail/login`, {
+      method: "POST",
+      body: new URLSearchParams({ email: fixture.account, password }),
+      redirect: "manual",
+    })
+    const cookie = login.headers.get("set-cookie")
+    assert.equal(login.status, 303)
+    assert.match(cookie, /^chariox_fixture_session=/)
+    assert.equal(await fixture.invalidateSessions(), 1)
+
+    const invalidated = await fetch(`${fixture.origin}/mail/inbox`, {
+      headers: { cookie },
+      redirect: "manual",
+    })
+    assert.equal(invalidated.status, 303)
+    assert.equal(invalidated.headers.get("location"), "/mail/login")
+    assert.equal(invalidated.headers.get("set-cookie"), null)
+
+    const relogin = await fetch(`${fixture.origin}/mail/login`, {
+      method: "POST",
+      body: new URLSearchParams({ email: fixture.account, password }),
+      redirect: "manual",
+    })
+    assert.equal(relogin.status, 303)
+    assert.notEqual(relogin.headers.get("set-cookie"), cookie)
+  } finally {
+    await fixture.close()
+  }
+})
+
 test("fixture validates required credentials and releases its listener", async () => {
   await assert.rejects(() => startBrowserComputerFixture(), /password is required/)
   const fixture = await startBrowserComputerFixture({ password: "fixture-test-password" })
