@@ -232,6 +232,18 @@ impl EnvironmentActionRequest {
         }
     }
 
+    pub(crate) fn browser_download_cancellation(
+        actor_id: impl Into<String>,
+        runtime_generation: u64,
+    ) -> Self {
+        // A download outlives its tab. Reserve the Room desktop, never whichever
+        // tab happens to be focused when cancellation is requested.
+        let mut request =
+            Self::computer_mutation(actor_id, runtime_generation, "download_cancel", None);
+        request.mode = EnvironmentMode::Browser;
+        request
+    }
+
     pub fn with_idempotency_key(mut self, idempotency_key: impl Into<String>) -> Self {
         self.idempotency_key = Some(idempotency_key.into());
         self

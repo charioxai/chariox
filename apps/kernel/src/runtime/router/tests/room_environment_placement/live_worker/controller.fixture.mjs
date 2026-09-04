@@ -34,10 +34,24 @@ const chromium = {
   close: async () => { state.open = false; persist(); },
   async send(method, params = {}, sessionId) {
     switch (method) {
-      case "Target.getTargets": return { targetInfos: [
+      case "Target.getTargets": {
+        // External browser fault: the user can close every page while a
+        // browser-owned download continues in the background.
+        if (existsSync(join(dirname(pidFile), "close-browser-tabs"))) {
+          if (!state.tabsClosed) {
+            state.tabsClosed = true;
+            for (const targetId of ["worker-tab", ...(state.popup ? ["worker-popup"] : [])]) {
+              emit({ method: "Target.targetDestroyed", params: { targetId } });
+            }
+          }
+          return { targetInfos: [] };
+        }
+        state.tabsClosed = false;
+        return { targetInfos: [
         { type: "page", targetId: "worker-tab", url: state.url, title: "Worker browser" },
         ...(state.popup ? [{ type: "page", targetId: "worker-popup", url: "https://popup.worker.test/", title: "Worker popup" }] : []),
-      ] };
+        ] };
+      }
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
       case "Page.getFrameTree": return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
@@ -82,6 +96,7 @@ const chromium = {
       }
       case "Runtime.callFunctionOn": {
         if (!["worker-save", "worker-note", "worker-shadow", "worker-frame"].includes(params.objectId)) throw new Error("wrong worker object");
+        if (params.functionDeclaration.includes('this.localName === "input"')) return { result: { value: params.objectId === "worker-note" ? "file" : "invalid" } };
         // External page fault injection: keep the button disabled until the
         // test releases it. No Chariox state or controller behavior is mocked.
         if ((params.objectId === "worker-save" && existsSync(join(dirname(pidFile), "hold-click"))) ||
@@ -166,8 +181,17 @@ const chromium = {
         emit({ method: "Browser.downloadProgress", params: {
           guid: "worker-download", state: "completed", receivedBytes: 12, totalBytes: 12,
         } });
+        emit({ method: "Browser.downloadWillBegin", params: {
+          frameId: "worker-frame", guid: "worker-active-download", url: "https://worker.test/large", suggestedFilename: "large.txt",
+        } });
         return {};
-      case "DOM.setFileInputFiles": state.upload = { backendNodeId: params.backendNodeId, fileCount: params.files.length }; persist(); return {};
+      case "Browser.cancelDownload":
+        if (params.guid !== "worker-active-download") throw new Error("wrong active download");
+        state.canceledDownload = params.guid;
+        persist();
+        emit({ method: "Browser.downloadProgress", params: { guid: params.guid, state: "canceled", receivedBytes: 4, totalBytes: 100 } });
+        return {};
+      case "DOM.setFileInputFiles": state.upload = { backendNodeId: params.objectId === "worker-note" ? 104 : params.backendNodeId, fileCount: params.files.length }; persist(); return {};
       case "Browser.setPermission":
         state.permission = params;
         persist();
@@ -199,6 +223,8 @@ const chromium = {
         emit({ method: "Page.loadEventFired", sessionId: "worker-cdp-session", params: {} });
         return {};
       case "Target.setDiscoverTargets":
+      case "Target.setAutoAttach":
+      case "Target.detachFromTarget":
       case "Page.enable":
       case "Page.setLifecycleEventsEnabled":
       case "Runtime.enable":

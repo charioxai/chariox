@@ -19,7 +19,8 @@ use super::browser_controller_compatibility::{
 };
 use super::browser_controller_event::{BrowserControllerEventBatch, MAX_BROWSER_EVENT_POLL_LIMIT};
 use super::browser_controller_file_transfer::{
-    BrowserControllerDownloadsResult, BrowserControllerUploadResult, BrowserUploadFiles,
+    BrowserControllerDownloadCancellationResult, BrowserControllerDownloadsResult,
+    BrowserControllerUploadResult, BrowserDownloadCancellation, BrowserUploadFiles,
 };
 use super::browser_controller_permission::{
     BrowserControllerPermissionResult, BrowserPermissionName, BrowserPermissionSetting,
@@ -153,6 +154,12 @@ pub(crate) trait BrowserControllerProcessBackend {
         _document_id: &str,
     ) -> Result<BrowserControllerDownloadsResult, String> {
         Err("browser controller backend does not support downloads".to_string())
+    }
+    fn cancel_browser_download(
+        &mut self,
+        _cancellation: &BrowserDownloadCancellation,
+    ) -> Result<BrowserControllerDownloadCancellationResult, String> {
+        Err("browser controller backend does not support download cancellation".to_string())
     }
     fn upload_browser_files(
         &mut self,
@@ -672,6 +679,21 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    fn cancel_browser_download(
+        &mut self,
+        cancellation: &BrowserDownloadCancellation,
+    ) -> Result<BrowserControllerDownloadCancellationResult, String> {
+        let response = self.request(
+            "browser.downloads.cancel",
+            serde_json::to_value(cancellation).map_err(|error| error.to_string())?,
+        )?;
+        let result = response.into_result::<BrowserControllerDownloadCancellationResult>(
+            "browser.downloads.cancel",
+        )?;
+        result.validate(cancellation)?;
+        Ok(result)
+    }
+
     fn upload_browser_files(
         &mut self,
         target_id: &str,
@@ -989,6 +1011,15 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .configure_browser_downloads(target_id, document_id)
     }
 
+    pub(crate) fn cancel_browser_download(
+        &mut self,
+        session_id: &str,
+        cancellation: &BrowserDownloadCancellation,
+    ) -> Result<BrowserControllerDownloadCancellationResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor.cancel_browser_download(cancellation)
+    }
+
     pub(crate) fn upload_browser_files(
         &mut self,
         session_id: &str,
@@ -1249,6 +1280,22 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn cancel_browser_download(
+        &self,
+        session_id: &str,
+        cancellation: &BrowserDownloadCancellation,
+    ) -> Result<Option<BrowserControllerDownloadCancellationResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .cancel_browser_download(session_id, cancellation)
+            .map(Some)
+    }
+
     pub(crate) fn upload_browser_files(
         &self,
         session_id: &str,
@@ -1467,6 +1514,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .configure_browser_downloads(target_id, document_id)
+    }
+
+    fn cancel_browser_download(
+        &mut self,
+        cancellation: &BrowserDownloadCancellation,
+    ) -> Result<BrowserControllerDownloadCancellationResult, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.cancel_browser_download(cancellation)
     }
 
     fn upload_browser_files(
