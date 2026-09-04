@@ -25,6 +25,7 @@ export async function runRoomEnvironmentCompanion(input) {
     environmentId: input.ready.environmentId,
     timeoutMs,
     pollIntervalMs: 100,
+    sleep: input.sleep,
   })
   validateCompanionResult(companion)
   if (input.ready.realProvider) {

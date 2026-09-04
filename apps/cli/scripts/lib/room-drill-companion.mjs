@@ -35,7 +35,7 @@ export async function waitForRoomDrillCompanionResult(directory, options) {
         if (error instanceof CompanionFailureError) throw error
       }
     }
-    await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())))
+    await (options.sleep ?? sleep)(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())))
   }
   const detail = lastReadError ? `: ${lastReadError.message}` : ""
   throw new Error(`Room drill companion timed out after ${timeoutMs}ms${detail}`)

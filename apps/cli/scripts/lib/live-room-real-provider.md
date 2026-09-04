@@ -62,6 +62,12 @@ resource-producing processes before final Docker removal, and still checks
 container, volume, temporary-state and listener removal. SIGKILL cannot run
 JavaScript cleanup and is not a graceful interruption path.
 
+The pending Web companion result wait uses the same interruptible sleep as the
+rest of the OSS drill. SIGINT or SIGTERM must enter protected cleanup without
+waiting for the companion deadline, even when Web has not returned a result.
+The normal `test:room-provider` command includes real child-process checks for
+both signals, repeated signals during cleanup, and temporary-state removal.
+
 `CHARIOX_ROOM_DRILL_IMPORT_FIRST=1` additionally runs the public slice account
 import operation before spawning. Keep this separate from the normal automatic
 transfer path so import-and-launch regressions can be reproduced.
