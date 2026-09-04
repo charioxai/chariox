@@ -36,6 +36,20 @@ notices in both local and remote TUI. A textual provider success claim is not
 acceptance. `real-provider.json` records the last completed phase; overall success
 also requires `result.json` and successful cleanup.
 
+On prompt rejection or action timeout, the checkpoint records bounded diagnostic
+evidence before cleanup. It contains allowlisted agent/activity/turn states,
+entry and action counts, and fixed error-pattern codes, never raw provider
+text, tool arguments, endpoints or exception messages. A tool-name mention is
+only a diagnostic hint, not proof that a tool ran. The Room ledger and physical
+effect remain the acceptance criteria. Diagnostics inspect at most two turns,
+256 entries, eight blobs advertised at no more than 32 KiB characters each and
+128 KiB characters total, with an eight-second request deadline. Oversized or
+unavailable content is reported as partial coverage. The server response size
+is still governed by the existing transport bounds; these are inspection and
+request budgets, not a new transport limit. An empty code set means no recognized
+error pattern, not a healthy provider. Existing partial evidence survives a
+later diagnostic failure.
+
 `CHARIOX_ROOM_DRILL_IMPORT_FIRST=1` additionally runs the public slice account
 import operation before spawning. Keep this separate from the normal automatic
 transfer path so import-and-launch regressions can be reproduced.

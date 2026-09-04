@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { captureRoomProviderDiagnostic } from "./live-room-provider-diagnostic.mjs"
 
 // Opt-in only: this runs a paid, official provider through the kernel, not a
 // driver impersonating an agent by calling its MCP endpoint.
@@ -29,16 +30,16 @@ export async function runRoomRealProvider(input) {
     sessionId, "real-provider-drill",
   )), "SessionAttached").attachment
   await input.checkpoint({ phase: "prompting", provider: options.provider, agentId: agent.id })
-  await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, [
+  const actorId = `agent:${agent.id}`
+  let action
+  try {
+    unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, [
     "You are validating the Chariox Room computer. Use only the Chariox runtime MCP tools.",
     "Call slice_mouse exactly once with action=click, x=640, y=400, button=left.",
     "The Room desktop is already running. Do not launch a browser, navigate, use shell commands,",
     "edit any files, or call any external service. Do not use a provider-native browser tool.",
     "After that single click, stop and report whether the tool succeeded.",
-  ].join(" "), []))
-  const actorId = `agent:${agent.id}`
-  let action
-  try {
+    ].join(" "), [])), "PromptSubmitted")
     action = await input.waitFor(async () => {
       const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
         sessionId, null, 100,
@@ -47,33 +48,10 @@ export async function runRoomRealProvider(input) {
         && item.kind === "pointer_click" && item.state === "completed") ?? false
     }, 180_000, "official provider did not complete a Room computer click")
   } catch (error) {
-    // Retain fixed diagnostic codes before the outer fixture removes runtime
-    // history. Never copy raw provider output, credentials, or MCP endpoints.
-    const codes = await input.withTimeout(captureFailureCodes(), 10_000, "provider diagnostic")
-      .catch(() => ["diagnostic_unavailable"])
-    await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, codes })
+    const diagnostic = await captureRoomProviderDiagnostic({ ...input, agentId: agent.id })
+      .catch(() => ({ codes: ["diagnostic_unavailable"] }))
+    await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, diagnostic })
     throw error
-  }
-  async function captureFailureCodes() {
-    const outline = unwrap(await client.send(requests.getSessionHistoryOutlineRequest(
-      sessionId, [agent.id], 2,
-    )), "SessionHistoryOutline")
-    const codes = new Set()
-    for (const turn of outline.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []) {
-      const entries = [...(turn.entries ?? [])]
-      for (const blob of turn.blobs ?? []) {
-        const content = unwrap(await client.send(requests.getSessionHistoryBlobContentRequest(
-          sessionId, agent.id, blob.blob_id,
-        )), "SessionHistoryBlobContent")
-        entries.push(...(content.entries ?? []))
-      }
-      for (const { entry } of entries) {
-        for (const code of ["codex_endpoint_unhealthy", "claude_endpoint_unhealthy", "opencode_endpoint_unhealthy", "provider launch", "unauthorized", "rate limit"]) {
-          if (String(entry?.text ?? "").toLowerCase().includes(code)) codes.add(code)
-        }
-      }
-    }
-    return [...codes]
   }
   assert.equal(action.mode, "computer")
   assert.equal(action.arguments.x, 640)
