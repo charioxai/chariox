@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { captureRoomProviderDiagnostic } from "./live-room-provider-diagnostic.mjs"
+import { assertRoomBrowserRecoveryActions, observeRoomStaleToolError } from "./live-room-browser-recovery.mjs"
 
 // Opt-in only: this runs a paid, official provider through the kernel, not a
 // driver impersonating an agent by calling its MCP endpoint.
@@ -19,12 +20,21 @@ export function roomRealProviderOptions(env) {
   const browserLayout = env.CHARIOX_ROOM_DRILL_BROWSER_LAYOUT
   assert.ok(browserLayout === undefined || browserTask === "form", "Browser layout requires the form task")
   assert.ok(browserLayout === undefined || ["page", "nested-frame", "shadow-root"].includes(browserLayout), "invalid Browser layout")
-  return { provider, model, mode, ...(browserTask ? { browserTask } : {}), ...(browserLayout ? { browserLayout } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
+  const browserMutation = env.CHARIOX_ROOM_DRILL_BROWSER_MUTATION
+  assert.ok(browserMutation === undefined || browserTask === "form", "Browser mutation requires the form task")
+  assert.ok(browserMutation === undefined || browserMutation === "replace-field", "invalid Browser mutation")
+  return { provider, model, mode, ...(browserTask ? { browserTask } : {}), ...(browserLayout ? { browserLayout } : {}),
+    ...(browserMutation ? { browserMutation } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
 }
 
 export async function runRoomRealProvider(input) {
   const result = await runRoomRealProviderAction(input)
   await input.waitForPhysicalEffect(result.expectedPhysicalEffect)
+  if (result.browserMutation === "replace-field") {
+    await input.waitForPhysicalEffect("BROWSER_STALE_RECOVERY_ACCEPTED")
+    await input.waitForTuis(new RegExp(`^Room action #${result.replacementActionSequence}: real-${result.provider} · browser click · completed$`))
+    await input.waitForTuis(new RegExp(`^Room action #${result.staleActionSequence}: real-${result.provider} · browser fill · failed \\(controller_failure\\)$`))
+  }
   if (result.browserTask === "form") {
     await input.waitForPhysicalEffect("BROWSER_FORM_ACCEPTED")
     await input.waitForTuis(new RegExp(`^Room action #${result.fillActionSequence}: real-${result.provider} · browser fill · completed$`))
@@ -48,6 +58,7 @@ export async function runRoomRealProviderAction(input) {
   const mode = options.mode ?? "computer"
   assert.ok(["computer", "browser"].includes(mode), "select Browser or Computer provider mode")
   const form = mode === "browser" && options.browserTask === "form"
+  const recovery = form && options.browserMutation === "replace-field"
   const actionKind = mode === "browser" ? (form ? "submit" : "click") : "pointer_click"
   assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
   if (options.importFirst) {
@@ -69,6 +80,7 @@ export async function runRoomRealProviderAction(input) {
   const actorId = `agent:${agent.id}`
   let action
   let fillAction
+  let recoveryActions
   let verifiedAgent = agent
   let baselineSequence = 0
   const priorTurnIds = new Set()
@@ -105,6 +117,11 @@ export async function runRoomRealProviderAction(input) {
     const prompt = form ? [
       "You are validating the Chariox Room browser. Use only the Chariox runtime MCP tools.",
       "Use slice_browser_find with query='Browser sample' and kind=field.",
+      ...(recovery ? [
+        "Keep that original field_id. Find the button 'Replace Browser field' and click it exactly once with slice_browser_click.",
+        "Now try slice_browser_fill exactly once with the ORIGINAL field_id and text='STALE ATTEMPT MUST NOT LAND'. This attempt must fail because the field was replaced.",
+        "If it fails, use slice_browser_find again with query='Browser sample' and kind=field to rediscover the replacement. Do not reuse the original reference.",
+      ] : []),
       "Call slice_browser_fill with that returned opaque field_id and text='Chariox form sample'.",
       "Then use slice_browser_find with query='Submit Browser form' and kind=button.",
       "Call slice_browser_submit once with the returned button field_id to submit its form.",
@@ -135,6 +152,7 @@ export async function runRoomRealProviderAction(input) {
         && item.kind === actionKind && item.state === "completed")
       if (completed) {
         if (form) fillAction = assertRoomBrowserFormActions(actions, completed, baselineSequence)
+        if (recovery) recoveryActions = assertRoomBrowserRecoveryActions(actions, completed, baselineSequence)
         return completed
       }
       // Ignore turns predating this prompt when Web reuses an idle agent.
@@ -155,6 +173,8 @@ export async function runRoomRealProviderAction(input) {
       return false
     }, 180_000, `official provider did not complete a Room ${mode} ${actionKind}`)
     if (action.providerFailed) throw new Error("official provider turn failed before completing the Room action")
+    if (recovery) await input.waitFor(() => observeRoomStaleToolError(input, agent.id, priorTurnIds),
+      15_000, "provider tool history did not confirm stale_element_reference")
   } catch (error) {
     const diagnostic = await captureRoomProviderDiagnostic({ ...input, agentId: agent.id })
       .catch(() => ({ codes: ["diagnostic_unavailable"] }))
@@ -168,6 +188,9 @@ export async function runRoomRealProviderAction(input) {
     baselineSequence, actionSequence: action.sequence,
     ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, fillActionSequence: fillAction.sequence } : {}),
     ...(options.browserLayout ? { browserLayout: options.browserLayout } : {}),
+    ...(recovery ? { browserMutation: options.browserMutation, staleErrorObserved: true,
+      replacementActionId: recoveryActions.replacement.action_id, replacementActionSequence: recoveryActions.replacement.sequence,
+      staleActionId: recoveryActions.stale.action_id, staleActionSequence: recoveryActions.stale.sequence } : {}),
     expectedPhysicalEffect: input.expectedPhysicalEffect ?? (form ? "POINTER_CLICK_COUNT=1" : "POINTER_CLICK_COUNT=2"),
   }
   await input.checkpoint({ phase: "action-completed", ...result })

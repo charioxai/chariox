@@ -10,6 +10,42 @@ import { performBrowserAction } from "../../../kernel/slice-linux-docker/docker/
 assert.ok(process.env.PLAYWRIGHT_MODULE, "set PLAYWRIGHT_MODULE to the installed Playwright module; this test never downloads dependencies")
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE)
 
+test("replacement fixture detaches the old field and refuses acceptance after stale input lands", async () => {
+  const options = { mode: "browser", browserTask: "form", browserMutation: "replace-field" }
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html" })
+    response.end(`<main><div id="state">READY</div></main><script>${roomProviderBrowserFixture(options, request.url).script}</script>`)
+  })
+  let browser
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+    browser = await chromium.launch({ channel: "chrome", headless: true })
+    const page = await browser.newPage()
+    const url = `http://127.0.0.1:${server.address().port}/click`
+    await page.goto(url)
+    assert.equal(await page.getByRole("button", { name: "Replace Browser field", exact: true }).count(), 1)
+    const old = await page.getByLabel("Browser sample").elementHandle()
+    await page.getByRole("button", { name: "Replace Browser field", exact: true }).click()
+    assert.equal(await old.evaluate((node) => node.isConnected), false)
+    assert.equal(await page.getByLabel("Browser sample").inputValue(), "")
+    await page.getByLabel("Browser sample").fill("Chariox form sample")
+    await page.getByRole("button", { name: "Submit Browser form", exact: true }).click()
+    await page.getByText("BROWSER_STALE_RECOVERY_ACCEPTED", { exact: true }).waitFor()
+
+    await page.goto(url)
+    await page.getByRole("button", { name: "Replace Browser field", exact: true }).click()
+    await page.getByLabel("Browser sample").fill("STALE ATTEMPT MUST NOT LAND")
+    await page.getByLabel("Browser sample").fill("Chariox form sample")
+    await page.getByRole("button", { name: "Submit Browser form", exact: true }).click()
+    await page.waitForURL(/browser_sample=/)
+    assert.equal(await page.getByText("BROWSER_FORM_ACCEPTED", { exact: true }).count(), 0)
+    assert.equal(await page.getByText("BROWSER_STALE_RECOVERY_ACCEPTED", { exact: true }).count(), 0)
+  } finally {
+    await browser?.close()
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 test("nested-frame form controls exist only inside two frames and submit to the top page", async () => {
   let browser
   const fixtureOptions = { mode: "browser", browserTask: "form", browserLayout: "nested-frame" }

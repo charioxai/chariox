@@ -3,7 +3,16 @@ export function roomActionNoticePattern(action) {
     || !["browser", "computer"].includes(action.mode) || !/^[a-z_]+$/.test(action.kind)) {
     throw new Error("invalid Room action notice identity")
   }
-  return new RegExp(`^Room action #${action.sequence}: .+ · ${action.mode} ${action.kind} · completed$`)
+  let outcome = "completed"
+  if (action.state === "failed") {
+    if (action.outcome?.status !== "failed" || !["controller_failure", "process_lost"].includes(action.outcome.code)) {
+      throw new Error("invalid Room failure notice outcome")
+    }
+    outcome = `failed \\(${action.outcome.code}\\)`
+  } else if (action.state !== undefined && action.state !== "completed") {
+    throw new Error("Room notice requires a completed or failed action")
+  }
+  return new RegExp(`^Room action #${action.sequence}: .+ · ${action.mode} ${action.kind} · ${outcome}$`)
 }
 
 export function automationNoticeTexts(snapshot) {

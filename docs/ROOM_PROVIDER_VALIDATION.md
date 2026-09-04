@@ -19,6 +19,7 @@ Set these environment variables when running the paired Cloud
 | `CHARIOX_ROOM_DRILL_PROVIDER_MODE` | `browser` or `computer`, default `computer` |
 | `CHARIOX_ROOM_DRILL_BROWSER_TASK` | optional `click` or `form`, only in Browser mode |
 | `CHARIOX_ROOM_DRILL_BROWSER_LAYOUT` | optional `page`, `nested-frame` or `shadow-root`, only with the form task |
+| `CHARIOX_ROOM_DRILL_BROWSER_MUTATION` | optional `replace-field`, only with the form task |
 | `CHARIOX_OSS_REPO` | absolute path to the matching OSS worktree |
 | `CHARIOX_SLICE_DOCKER_PROVISIONER` | that worktree's `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh` |
 | `CHARIOX_ROOM_DRILL_IMAGE` | prebuilt image matching the runtime source fingerprint |
@@ -59,6 +60,25 @@ values produce the success marker. The accepted page returns to the normal
 layout so the same human keyboard/selection/scroll checks can follow.
 These cases do not prove cross-origin frames, closed shadow roots or stale
 references. Each still needs its own acceptance case.
+
+With `CHARIOX_ROOM_DRILL_BROWSER_MUTATION=replace-field`, the provider first
+discovers the field, then clicks a fixture button that replaces it. It must try
+the original reference once with a sentinel value, receive a stale-reference
+error, rediscover the replacement and fill/submit successfully. Acceptance
+requires exactly four fresh actions in one tab by the same actor: replacement
+click, failed fill, completed fill, completed submit. Both TUIs must show the
+failure as well as the successful actions. The kernel history records the
+bounded `controller_failure` outcome; bounded provider-tool output separately
+must prove `stale_element_reference`. Prompt text and model claims cannot
+satisfy that check. A provider without projected tool-result errors cannot
+pass this evidence gate.
+
+The page records whether the rejected sentinel ever landed before the correct
+fill, and the server emits `BROWSER_STALE_RECOVERY_ACCEPTED` only for a replaced
+field with that safety check intact. Web must paint the accepted page before
+human takeover. The reduced fixture test deliberately inserts the sentinel,
+overwrites it, and verifies the server still rejects acceptance. The recovery
+drill is opt-in; adding it does not establish a live provider pass.
 
 Before a paid provider run, check the physical fixture structures with an
 already-installed Playwright module and Chrome:
