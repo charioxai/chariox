@@ -189,11 +189,11 @@ impl KernelRuntimeState {
             tab_id,
             document_revision,
         );
-        self.execute_environment_mutation_as_agent(session_id, request, execution_id, execution)
+        self.execute_browser_mutation(session_id, request, execution_id, execution)
             .await
     }
 
-    pub(super) async fn execute_environment_mutation_as_agent<T, F>(
+    pub(super) async fn execute_browser_mutation<T, F>(
         &self,
         session_id: &str,
         request: EnvironmentActionRequest,

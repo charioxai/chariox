@@ -242,3 +242,25 @@ export function submitRoomEnvironmentActionRequest(
     },
   }
 }
+
+export type RoomEnvironmentHumanBrowserAction = {
+  readonly kind: "history"
+  readonly tab_id: string
+  readonly action: "back" | "forward" | "reload"
+}
+
+export function submitRoomEnvironmentBrowserActionRequest(
+  sessionId: string,
+  runtimeGeneration: number,
+  idempotencyKey: string,
+  action: RoomEnvironmentHumanBrowserAction,
+) {
+  return {
+    SubmitRoomEnvironmentBrowserAction: {
+      session_id: sessionId,
+      runtime_generation: runtimeGeneration,
+      idempotency_key: idempotencyKey,
+      action,
+    },
+  }
+}

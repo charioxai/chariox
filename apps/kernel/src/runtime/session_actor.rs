@@ -45,6 +45,7 @@ impl SessionActor {
                 | LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_)
                 | LocalDaemonRequest::ReleaseRoomEnvironmentInput(_)
                 | LocalDaemonRequest::SubmitRoomEnvironmentAction(_)
+                | LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_)
                 | LocalDaemonRequest::ReadRoomEnvironmentClipboard(_)
                 | LocalDaemonRequest::CancelRoomEnvironmentAction(_)
                 | LocalDaemonRequest::CreateAgentPromptSchedule(_)

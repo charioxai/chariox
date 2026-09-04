@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 304 adds kernel-owned browser download cancellation.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 304;
+/// Version 305 adds authenticated human Room browser actions.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 305;
