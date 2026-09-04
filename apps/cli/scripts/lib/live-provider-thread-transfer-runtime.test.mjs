@@ -25,12 +25,23 @@ import {
   providerThreadKernelEventSnapshot,
   providerRunSnapshot,
   providersNeedClaudeCredentials,
+  relayClaims,
   terminalProviderHistoryError,
   sliceRestartContinuityChecks,
   sliceShutdownCheckpointChecks,
   workerResumeDaemonEnv,
   writeClaudeCredentialsPayload,
 } from "./live-provider-thread-transfer-runtime.mjs"
+
+test("local provider transfer tokens do not claim an unverified key binding", () => {
+  const claims = relayClaims({
+    subject: "kernel-1",
+    subjectKind: "kernel",
+    actions: ["daemon_register"],
+  })
+
+  assert.equal(claims.public_key_thumbprint, null)
+})
 
 test("provider thread drill accepts the explicit slice shutdown scenario", () => {
   assert.equal(parseArgs(["--drill", "slice-shutdown"]).drill, "slice-shutdown")
