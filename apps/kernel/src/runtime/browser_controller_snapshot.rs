@@ -403,6 +403,21 @@ fn validate_optional_reference(reference: Option<&str>) -> Result<(), String> {
 }
 
 fn validate_node_reference(reference: &str) -> Result<(), String> {
+    let reference = if let Some(frame_reference) = reference.strip_prefix("frame:") {
+        let mut parts = frame_reference.splitn(3, ':');
+        for _ in 0..2 {
+            if !parts.next().is_some_and(|identity| {
+                identity.len() == 32 && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }) {
+                return Err(
+                    "browser controller snapshot returned an invalid frame reference".to_string(),
+                );
+            }
+        }
+        parts.next().unwrap_or_default()
+    } else {
+        reference
+    };
     let Some(sequence) = reference.strip_prefix("backend:") else {
         return Err("browser controller snapshot returned an invalid node reference".to_string());
     };
@@ -429,6 +444,41 @@ fn is_form_control(node_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_renderer_references_validate_and_project_to_opaque_elements() {
+        let reference =
+            "frame:0123456789ABCDEF0123456789ABCDEF:FEDCBA9876543210FEDCBA9876543210:backend:7";
+        let mut snapshot = valid_snapshot();
+        snapshot.dom_nodes[0].node_ref = reference.to_string();
+        snapshot
+            .validate("target-a", "loader-a")
+            .expect("isolated reference validates");
+        let room = snapshot
+            .into_room_snapshot(
+                "room-1".to_string(),
+                "environment-1".to_string(),
+                1,
+                "tab-1".to_string(),
+                1,
+                &BTreeMap::from([(reference.to_string(), "element-1".to_string())]),
+            )
+            .expect("isolated reference maps");
+        assert_eq!(room.dom_nodes[0].element_ref, "element-1");
+        for invalid in [
+            "frame::loader:backend:7",
+            "frame:0123456789ABCDEF0123456789ABCDEF:bad-loader:backend:7",
+            "frame:ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ:FEDCBA9876543210FEDCBA9876543210:backend:7",
+            "frame:0123456789ABCDEF0123456789ABCDEF:FEDCBA9876543210FEDCBA9876543210:backend:x",
+        ] {
+            let mut snapshot = valid_snapshot();
+            snapshot.dom_nodes[0].node_ref = invalid.to_string();
+            assert!(
+                snapshot.validate("target-a", "loader-a").is_err(),
+                "{invalid}"
+            );
+        }
+    }
 
     #[test]
     fn validation_rejects_raw_form_values_and_invalid_bounds() {

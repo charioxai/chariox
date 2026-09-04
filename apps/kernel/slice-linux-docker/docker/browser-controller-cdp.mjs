@@ -1,7 +1,7 @@
 import {
   BrowserSnapshotError,
-  captureBrowserSnapshot,
 } from "./browser-controller-snapshot.mjs";
+import { captureBrowserFrames, withBrowserActionFrame } from "./browser-controller-frames.mjs";
 import {
   BrowserActionError,
   performBrowserAction,
@@ -244,7 +244,7 @@ export class BrowserCdpClient {
       revision: snapshotRevision,
     });
     try {
-      return await captureBrowserSnapshot({
+      return await captureBrowserFrames({
         connection,
         sessionId,
         targetId,
@@ -281,7 +281,7 @@ export class BrowserCdpClient {
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
     try {
-      const result = await performBrowserAction({
+      const result = await withBrowserActionFrame({
         connection,
         sessionId,
         targetId,
@@ -290,7 +290,7 @@ export class BrowserCdpClient {
         action: rawRequest?.action,
         timeoutMs: rawRequest?.timeout_ms,
         signal,
-      });
+      }, performBrowserAction);
       return {
         browser_generation: this.browserGeneration,
         ...result,
