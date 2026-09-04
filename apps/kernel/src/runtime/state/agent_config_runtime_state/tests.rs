@@ -5,6 +5,9 @@ use tokio::sync::Mutex;
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
 
+#[path = "tests/substitute_launch_identity.rs"]
+mod substitute_launch_identity;
+
 #[test]
 fn remote_extension_manifest_pending_revoke_uses_explicit_intent_not_hash_change() {
     let previous = crate::extension::RemoteExtensionManifestSyncStatus::synced(

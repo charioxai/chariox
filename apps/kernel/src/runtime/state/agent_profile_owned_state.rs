@@ -283,7 +283,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         caller_user_id: &str,
         action: crate::local::AgentSubstituteAction,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+    ) -> Result<(crate::agent::AgentInstance, Option<String>), DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -292,7 +292,8 @@ impl KernelRuntimeOwnedState {
             });
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent substitutes")?;
-        match action {
+        let retired_run = self.prepare_agent_substitute_transition(&agent, &action)?;
+        let updated = match action {
             crate::local::AgentSubstituteAction::Add {
                 provider,
                 model,
@@ -424,6 +425,7 @@ impl KernelRuntimeOwnedState {
             crate::local::AgentSubstituteAction::Primary {} => {
                 self.agent_store.deactivate_agent_substitute(agent_id)
             }
-        }
+        }?;
+        Ok((updated, retired_run))
     }
 }

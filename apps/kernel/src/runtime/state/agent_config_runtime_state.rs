@@ -1045,9 +1045,21 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         action: crate::local::AgentSubstituteAction,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent =
+        let (agent, retired_run) =
             self.owned
                 .update_agent_substitutes(session_id, agent_id, caller_user_id, action)?;
+        if let Some(provider_run_id) = retired_run {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        }
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }

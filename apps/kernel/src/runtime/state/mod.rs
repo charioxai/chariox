@@ -240,6 +240,7 @@ mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
+mod agent_substitute_transition_owned_state;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
