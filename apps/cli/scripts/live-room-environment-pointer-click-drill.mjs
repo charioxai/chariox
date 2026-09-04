@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
+import { startRoomSliceWithForwarding } from "./lib/room-colima-forwarding.mjs"
 import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
@@ -165,6 +166,7 @@ const tempRootPromise = realProviderOptions
     .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
   : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
+let localForwarding = null
 const resources = []
 let client = null
 let observerClient = null
@@ -329,7 +331,18 @@ async function run() {
   assert.equal(binding.session_id, sessionId)
   assert.equal(binding.slice_id, slice.id)
 
-  await client.send(requests.startSliceRequest(slice.id))
+  localForwarding = await startRoomSliceWithForwarding({
+    sshConfig: process.env.CHARIOX_ROOM_DRILL_COLIMA_SSH_CONFIG,
+    slice,
+    startSlice: () => client.send(requests.startSliceRequest(slice.id)),
+    containerExists: async () => (await runCommand("docker", ["container", "inspect",
+      "--format", "{{.Id}}", containerName], 2000)).code === 0,
+  })
+  if (localForwarding) sourceIdentity.localForwarding = {
+    kind: "drill-owned-colima-ssh",
+    ports: localForwarding.ports,
+    loopbackOnly: true,
+  }
   slice = await waitForSliceRunning(slice.id)
   sliceRuntimeIdentity = await inspectSliceRuntimeIdentity()
   assert.equal(
@@ -2761,6 +2774,7 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  try { localForwarding?.assertHealthy() } catch (error) { failure ??= error }
   if (failure) {
     // Capture the failure before teardown adds disconnect/retry noise.
     const privateRelayPort = slice?.local_docker_ports?.relay
@@ -2809,6 +2823,7 @@ async function cleanup() {
   localAutomation?.close()
   remoteAutomation?.close()
   await closeFixtureServer()
+  if (localForwarding) await localForwarding.close().catch((error) => { failure ??= error })
   for (const child of children.toReversed()) await terminateChild(child)
   // Stop resource producers before the final removal, including a kernel that
   // was still provisioning when interrupted. Otherwise a late container can
@@ -2830,7 +2845,8 @@ async function cleanup() {
   resources.push(after)
   const containerGone = (await runCommand("docker", ["container", "inspect", containerName], 20_000)).code !== 0
   const volumeGone = (await runCommand("docker", ["volume", "inspect", homeVolume], 20_000)).code !== 0
-  const ports = [relayPort, kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, fixture?.port].filter(Number.isInteger)
+  const ports = [...new Set([relayPort, kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3,
+    fixture?.port, ...(localForwarding?.ports ?? [])].filter(Number.isInteger))]
   const occupiedPorts = []
   for (const port of ports) {
     if (!(await portIsAvailable(port))) occupiedPorts.push(port)

@@ -93,7 +93,7 @@
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
     "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js && bun test ./src/cli-dialog-overlay.bun-test.ts && pnpm run test:room-provider",
-    "test:room-provider": "node --test --test-concurrency=1 scripts/lib/live-room-real-provider.test.mjs scripts/lib/live-room-browser-recovery.test.mjs scripts/lib/live-room-environment-companion-verifier.test.mjs scripts/lib/room-tui-notices.test.mjs scripts/lib/room-provider-browser-fixture.test.mjs scripts/lib/room-browser-click-fixture.test.mjs scripts/lib/room-kernel-diagnostics.test.mjs",
+    "test:room-provider": "node --test --test-concurrency=1 scripts/lib/live-room-real-provider.test.mjs scripts/lib/live-room-browser-recovery.test.mjs scripts/lib/live-room-environment-companion-verifier.test.mjs scripts/lib/room-tui-notices.test.mjs scripts/lib/room-provider-browser-fixture.test.mjs scripts/lib/room-browser-click-fixture.test.mjs scripts/lib/room-kernel-diagnostics.test.mjs scripts/lib/room-colima-forwarding.test.mjs",
     "test:room-provider-browser": "node --test --test-concurrency=1 scripts/lib/room-provider-browser-fixture.browser-test.mjs",
     "start": "bun dist/index.js",
     "dev": "pnpm run build && bun dist/index.js",

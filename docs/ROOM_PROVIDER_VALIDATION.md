@@ -5,6 +5,32 @@ normal slice-backed agent path. The test driver does not impersonate an agent
 with direct MCP calls. Use them before managed-machine validation and public
 benchmarks, following `BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`.
 
+### Explicit Colima forwarding for local drills
+
+If the relay port works inside the Colima VM but macOS cannot reach its
+published loopback port, the local Room drill can own its forwarding:
+
+```sh
+export CHARIOX_ROOM_DRILL_COLIMA_SSH_CONFIG=/absolute/path/to/colima/ssh_config
+```
+
+This is opt-in local test infrastructure, not a runtime transport replacement
+or a repair of Colima's shared auto-forwarder. The normal kernel/relay/provider
+paths remain unchanged. Use the existing trusted Colima SSH configuration.
+The helper forwards only the drill-owned slice's assigned kernel, relay,
+viewer and provider ports to the same loopback ports inside Colima. It starts
+after container creation, so the kernel's initial port-availability check is
+not obstructed, and requires SSH confirmation of every listener. A failed
+forward waits for in-flight provisioning to settle before cleanup can proceed.
+
+One SSH process uses no shared control socket, no control master and no
+persistent connection. Startup failure terminates that process; normal/failure
+cleanup closes it before checking every forwarded port for leaked listeners.
+Unexpected SSH exit cannot produce a passing cleanup. Source evidence records
+the forwarding mode and port numbers, not SSH diagnostics or configuration
+contents. The helper never restarts Colima, edits its configuration, or acts on
+another task's SSH process. Unset the variable for normal Docker forwarding.
+
 ## Select the case
 
 Set these environment variables when running the paired Cloud
