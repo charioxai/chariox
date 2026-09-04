@@ -18,6 +18,12 @@ isolation and dropped capabilities. Ordinary fixture modes and user settings
 are unchanged. Do not use this local drill setting as managed-host acceptance;
 managed hosts additionally require the dedicated rootless Docker boundary.
 
+The empty provider workspace is under a private `mkdtemp` directory in
+`~/.chariox/dev/browser-computer-use/`, not macOS `/var/folders`, which Colima
+does not share by default. Only that empty child workspace is made writable
+across provider user namespaces. The parent remains private and is deleted
+with the rest of the drill state.
+
 The kernel resolves the default linked provider profile and transfers it through
 the normal slice-backed agent launch. The drill does not copy credentials or call
 the provider's SDK, nor does it issue MCP calls on behalf of the agent. Local and

@@ -156,7 +156,10 @@ const directDaemonEnvironmentNames = [
   "CHARIOX_RELAY_TOKEN",
   "CHARIOX_SESSION_HISTORY_DIR",
 ]
-const tempRootPromise = mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
+const tempRootPromise = realProviderOptions
+  ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
+    .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
+  : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 const resources = []
 let client = null
