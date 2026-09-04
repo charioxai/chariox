@@ -7,7 +7,7 @@ import {
 } from "./drill-secrets.mjs"
 import { validateDrillTimestampOrder } from "./drill-time.mjs"
 
-export const BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA = "chariox.browser_computer.functional_evidence.v1"
+export const BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA = "chariox.browser_computer.functional_evidence.v2"
 
 const CASES = deepFreeze([
   functionalCase("browser.discovery", "browser", [
@@ -26,6 +26,12 @@ const CASES = deepFreeze([
     "indexed-db-restored",
     "cache-storage-restored",
     "service-worker-restored",
+  ]),
+  functionalCase("browser.authentication", "browser", [
+    "oauth-popup-callback-completed",
+    "service-session-invalidation-distinguished",
+    "browser-state-present-during-reauth",
+    "reauthentication-restores-use",
   ]),
   functionalCase("browser.structures", "browser", [
     "nested-frame-target",

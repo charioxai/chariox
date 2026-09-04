@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { startBrowserComputerFixture } from "../../../cli/scripts/lib/browser-computer-fixture.mjs";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
@@ -80,6 +81,81 @@ test("popup tabs are discovered, activated, and closed through stable controller
     assert.deepEqual(afterClose.tabs.map((tab) => tab.target_id), [original.target_id]);
     assert.equal(afterClose.focused_target_id, original.target_id);
   });
+});
+
+test("OAuth popup redirect and callback preserve stable tabs and authenticate the original page", async () => {
+  const fixture = await startBrowserComputerFixture({ password: "fixture-oauth-password" });
+  try {
+    await withController(async ({ page, request }) => {
+      await page.goto(`${fixture.origin}/oauth/start`);
+      const original = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      const startSnapshot = await request("browser.snapshot", original);
+      const signIn = startSnapshot.result.accessibility_nodes.find(
+        (node) => node.role === "link" && node.name === "Sign in with Fixture",
+      );
+      assert.ok(signIn);
+
+      const popupOpened = page.waitForEvent("popup");
+      const opened = await request("browser.action", {
+        ...original,
+        node_ref: signIn.node_ref,
+        action: { kind: "click" },
+      });
+      assert.equal(opened.ok, true, JSON.stringify(opened.error));
+      const popupPage = await popupOpened;
+      await popupPage.waitForURL(/\/oauth\/authorize\?state=/);
+
+      const withPopup = (await request("browser.reconcile", { viewport })).result;
+      const popup = withPopup.tabs.find((tab) => tab.target_id !== original.target_id);
+      assert.ok(popup);
+      assert.match(popup.url, /\/oauth\/authorize\?state=/);
+      const activated = await request("browser.tab", { ...popup, action: "activate" });
+      assert.equal(activated.ok, true, JSON.stringify(activated.error));
+
+      const authorizeSnapshot = await request("browser.snapshot", popup);
+      const authorize = authorizeSnapshot.result.accessibility_nodes.find(
+        (node) => node.role === "button" && node.name === "Authorize Fixture account",
+      );
+      assert.ok(authorize);
+      const callbackReached = popupPage.waitForURL(/\/oauth\/callback\?/);
+      const authorized = await request("browser.action", {
+        ...popup,
+        node_ref: authorize.node_ref,
+        action: { kind: "click" },
+      });
+      assert.equal(authorized.ok, true, JSON.stringify(authorized.error));
+      await callbackReached;
+      await page.waitForFunction(() => document.querySelector("#oauth-status")?.textContent?.includes("CHARIOX_FIXTURE_OAUTH_AUTHENTICATED"));
+
+      const afterCallback = (await request("browser.reconcile", { viewport })).result;
+      const callbackTab = afterCallback.tabs.find((tab) => tab.target_id === popup.target_id);
+      assert.ok(callbackTab);
+      assert.notEqual(callbackTab.document_id, popup.document_id);
+      assert.equal(afterCallback.tabs.find((tab) => tab.target_id === original.target_id)?.document_id, original.document_id);
+      assert.match(await page.locator("#oauth-status").textContent(), /agent@chariox\.test/);
+      assert.match(await page.evaluate(async () => await fetch("/mail/inbox").then((response) => response.text())), /CHARIOX_FIXTURE_INBOX/);
+
+      const callbackSnapshot = await request("browser.snapshot", callbackTab);
+      const finish = callbackSnapshot.result.accessibility_nodes.find(
+        (node) => node.role === "button" && node.name === "Complete sign-in",
+      );
+      assert.ok(finish);
+      const popupClosed = popupPage.waitForEvent("close");
+      const finished = await request("browser.action", {
+        ...callbackTab,
+        node_ref: finish.node_ref,
+        action: { kind: "click" },
+      });
+      assert.equal(finished.ok, true, JSON.stringify(finished.error));
+      await popupClosed;
+
+      const settled = (await request("browser.reconcile", { viewport })).result;
+      assert.deepEqual(settled.tabs.map((tab) => tab.target_id), [original.target_id]);
+      assert.equal(settled.focused_target_id, original.target_id);
+    });
+  } finally {
+    await fixture.close();
+  }
 });
 
 async function fixtureField(page, layout) {
