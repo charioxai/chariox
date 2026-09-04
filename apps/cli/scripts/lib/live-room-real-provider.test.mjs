@@ -347,8 +347,12 @@ for (const [message, expected] of [
   ["ProviderModelNotFoundError", "model_unavailable"],
   ["Provider session failed: Token refresh failed: 401", "auth_refresh_failed"],
   ["You've hit your limit · resets in 2 hours", "usage_limit"],
+  ["You've hit your usage limit", "usage_limit"],
+  ["You have hit your usage limit", "usage_limit"],
+  ["Fable 5 now uses usage credits and you don't have usage credits", "usage_limit"],
   ["You're out of extra usage", "usage_limit"],
   ["API Error: 529 overloaded_error", "provider_request_failed"],
+  ["Claude Code reported an error", "unknown_provider_error"],
 ]) {
   test(`classifies ${expected} without retaining its payload`, async () => {
     const run = fixture({ turns: [{ lifecycle: "completed", entries: [entry("provider_error", `${message}: ${secret}`)], blobs: [] }] })
