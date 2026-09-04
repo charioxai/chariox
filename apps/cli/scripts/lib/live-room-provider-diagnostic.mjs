@@ -67,7 +67,7 @@ export async function captureRoomProviderDiagnostic(input) {
     if (tool && /\bslice_mouse\b/.test(text)) result.computerToolMentioned = true
     return text
   }
-  const inspectEntry = (item, seen) => {
+  const inspectEntry = (item, seen, discovered) => {
     if (!item?.entry) return
     if (inspectedEntries >= 256) { result.truncated = true; return }
     inspectedEntries += 1
@@ -89,7 +89,8 @@ export async function captureRoomProviderDiagnostic(input) {
         if (tool === "slice_browser_find" && value.status === "completed") {
           const output = typeof value.output === "string" ? JSON.parse(value.output) : value.output
           const matches = output?.browser?.matches ?? output?.payload?.browser?.matches
-          if (Array.isArray(matches)) {
+          if (Array.isArray(matches) && (!Number.isSafeInteger(item.entry_index) || !discovered.has(item.entry_index))) {
+            if (Number.isSafeInteger(item.entry_index)) discovered.add(item.entry_index)
             if (result.browserFindResults.length < 16) {
               const query = [
                 ["Browser sample", "field"], ["Replace Browser field", "replacement"], ["Submit Browser form", "submit"],
@@ -122,11 +123,12 @@ export async function captureRoomProviderDiagnostic(input) {
     if (turns.length > 2) result.truncated = true
     for (const turn of turns.slice(0, 2)) {
       const seen = new Set()
+      const discovered = new Set()
       result.turns.push({ lifecycle: known(turn.lifecycle, ["open", "completed", "cancelled"]) })
-      inspectEntry(turn.user_prompt, seen)
-      for (const item of (turn.entries ?? []).slice(0, 256)) inspectEntry(item, seen)
+      inspectEntry(turn.user_prompt, seen, discovered)
+      for (const item of (turn.entries ?? []).slice(0, 256)) inspectEntry(item, seen, discovered)
       if ((turn.entries?.length ?? 0) > 256) result.truncated = true
-      inspectEntry(turn.summary, seen)
+      inspectEntry(turn.summary, seen, discovered)
       if ((turn.blobs?.length ?? 0) > 16) result.truncated = true
       for (const blob of (turn.blobs ?? []).slice(0, 16)) {
         result.blobCounts[known(blob.kind, entryKinds)] += 1
@@ -143,7 +145,7 @@ export async function captureRoomProviderDiagnostic(input) {
         requestedBlobChars += blob.total_chars
         await section("blob_unavailable", async () => {
           const content = await request(requests.getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id), "SessionHistoryBlobContent")
-          for (const item of (content.entries ?? []).slice(0, 256)) inspectEntry(item, seen)
+          for (const item of (content.entries ?? []).slice(0, 256)) inspectEntry(item, seen, discovered)
           if ((content.entries?.length ?? 0) > 256) result.truncated = true
         })
       }

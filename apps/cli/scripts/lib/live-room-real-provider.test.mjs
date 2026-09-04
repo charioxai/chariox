@@ -346,14 +346,14 @@ test("diagnostics identify only allowlisted tool names from actual tool records"
 })
 
 test("diagnostics classify Browser discovery outcomes without retaining queries or results", async () => {
-  const discovery = (query, matches) => entry("provider_tool", JSON.stringify({
+  const discovery = (query, matches, index) => entry("provider_tool", JSON.stringify({
     tool: "mcp__chariox__slice_browser_find", status: "completed", input: { query },
     output: JSON.stringify({ browser: { matches } }),
-  }))
+  }), index)
   const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: [
-    discovery("Submit Browser form", []),
-    discovery("Browser sample", [{ label: secret, field_id: secret }]),
-    discovery(secret, [{ label: secret }]),
+    discovery("Submit Browser form", [], 1),
+    discovery("Browser sample", [{ label: secret, field_id: secret }], 2),
+    discovery(secret, [{ label: secret }], 3),
     entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "running",
       input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } })),
     entry("provider_output", JSON.stringify({ tool: "slice_browser_find", status: "completed",
@@ -369,12 +369,38 @@ test("diagnostics classify Browser discovery outcomes without retaining queries 
 test("Browser discovery diagnostics retain at most sixteen bounded counts", async () => {
   const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
     input: { query: "Browser sample" }, output: { browser: { matches: Array(150).fill(null) } } }))
-  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: Array(17).fill(record) }] })
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [],
+    entries: Array.from({ length: 17 }, (_, entry_index) => ({ ...record, entry_index })),
+  }] })
   await assert.rejects(runRoomRealProvider(run.input))
   const diagnostic = run.checkpoints.at(-1).diagnostic
   assert.equal(diagnostic.browserFindResults.length, 16)
   assert.equal(diagnostic.browserFindResults[0].matches, 100)
   assert.equal(diagnostic.truncated, true)
+})
+
+test("Browser discovery counts one entry represented by both preview and hydrated history", async () => {
+  const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+    input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } }), 7)
+  const run = fixture({ turns: [{ lifecycle: "completed", entries: [], summary: record,
+    blobs: [{ blob_id: "find", kind: "provider_tool", total_chars: 300 }],
+  }], blobs: { find: [record] } })
+  await assert.rejects(runRoomRealProvider(run.input))
+  const diagnostic = run.checkpoints.at(-1).diagnostic
+  assert.equal(diagnostic.entryCounts.provider_tool, 1)
+  assert.deepEqual(diagnostic.browserFindResults, [{ query: "submit", matches: 0 }])
+  assert.equal(diagnostic.truncated, false)
+})
+
+test("a truncated preview does not suppress its hydrated Browser discovery result", async () => {
+  const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+    input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } }), 7)
+  const run = fixture({ turns: [{ lifecycle: "completed", entries: [],
+    summary: entry("provider_tool", '{"tool":"slice_browser_find"', 7),
+    blobs: [{ blob_id: "find", kind: "provider_tool", total_chars: 300 }],
+  }], blobs: { find: [record] } })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [{ query: "submit", matches: 0 }])
 })
 
 test("prompt rejection fails immediately rather than waiting for an impossible action", async () => {
