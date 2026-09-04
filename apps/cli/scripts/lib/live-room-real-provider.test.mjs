@@ -65,7 +65,31 @@ test("a completed click from before this prompt cannot satisfy the action wait",
   await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
 })
 
-function fixture({ turns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices } = {}) {
+test("an older failed turn cannot abort the reused agent's current prompt", async () => {
+  const old = { turn_id: "old", lifecycle: "completed", entries: [entry("provider_error", "old error")], blobs: [] }
+  const actions = []
+  const run = fixture({ actions, priorTurns: [old], turns: [
+    { turn_id: "current", lifecycle: "open", entries: [], blobs: [] }, old,
+  ] })
+  run.input.agent = { id: "agent-2" }
+  run.input.waitFor = async (check) => {
+    assert.equal(await check(), false, "old failure must not end the current action wait")
+    actions.push({ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+      action_id: "new", sequence: 8, arguments: { x: 640, y: 400, button: "left", click_count: 1 } })
+    return await check()
+  }
+  assert.equal((await runRoomRealProviderAction(run.input)).actionId, "new")
+})
+
+test("reused agent with an in-flight turn is rejected before prompt submission", async () => {
+  const run = fixture({ state: { SessionState: { session: { agents: [{ id: "agent-2", provider: "opencode", model: "fixture",
+    account_profile: "default", session_id: "room", is_processing: true }] } } } })
+  run.input.agent = { id: "agent-2" }
+  await assert.rejects(runRoomRealProviderAction(run.input), /must be idle/)
+  assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+function fixture({ turns = [], priorTurns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices } = {}) {
   const checkpoints = []
   const calls = []
   const requests = Object.fromEntries([
@@ -86,10 +110,12 @@ function fixture({ turns = [], blobs = {}, submit, state, actions = [], priorAct
         } } }
         case "listSlices": return { SlicesListed: { slices: slices ?? [{ id: "slice", agent_ids: ["agent-2"] }] } }
         case "getSessionState": return state ?? { SessionState: {
-          session: { agents: [{ id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default", state: "Working" }] },
+          session: { agents: [{ id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default", state: "Working", is_processing: false }] },
           agent_activity: { "agent-2": { status: "working", prompt_status: "running", active_turn: { phase: "awaiting_first_output" } } },
         } }
-        case "getSessionHistoryOutline": return { SessionHistoryOutline: { agents: [{ agent_id: "agent-2", turns }] } }
+        case "getSessionHistoryOutline": return { SessionHistoryOutline: { agents: [{ agent_id: "agent-2",
+          turns: calls.some((call) => call.name === "submitPrompt") ? turns : priorTurns,
+        }] } }
         case "getSessionHistoryBlobContent": return { SessionHistoryBlobContent: { entries: blobs[request.args[2]] ?? [] } }
         default: throw new Error("unexpected fixture request")
       }

@@ -86,6 +86,8 @@ kernel state and checks membership of the intended slice before submitting a
 prompt. Reported provider identity comes from that verified configuration.
 An action-sequence baseline captured after Web readiness excludes clicks from
 earlier turns. A supplied agent cannot be combined with import-first.
+Reused agents must be idle. Their pre-prompt turn IDs are also baselined so an
+older completed error cannot abort the new prompt while its turn is still open.
 
 The isolated provider mode still verifies physical input and both TUIs through
 `runRoomRealProvider`. Structured Browser operations, persistence, permission
