@@ -115,7 +115,7 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
-    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", ...(form ? ["BROWSER_FORM_ACCEPTED"] : []), "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
+    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", ...(form ? ["BROWSER_FORM_ACCEPTED"] : providerMode === "browser" ? ["BROWSER_CLICK_ACCEPTED"] : []), "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
       "WEB_DRAG_SELECTION_OK WINDOW_GEOMETRY_STABLE", "WEB_SCROLL_BOTH_AXES_OK"])
     const expectedNotices = [...(form ? [5] : []), ...(includeProvider ? [6] : []), 7, 8, 9, 10, 11, 12]
     assert.deepEqual(noticed, { local: expectedNotices, remote: expectedNotices })
