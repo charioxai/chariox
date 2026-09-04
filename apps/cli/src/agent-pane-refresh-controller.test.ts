@@ -139,6 +139,26 @@ test("agent history refresh recovers a completed response without loading unrela
   assert.deepEqual(harness.paneEntries.b?.map((entry) => entry.text), ["keep me"])
 })
 
+for (const targeted of [false, true]) {
+  test(`Room action notices survive completed provider history refresh, targeted=${targeted}`, async () => {
+    const notice = { id: 3, role: "notice", text: "Room action #2: Codex · computer pointer_click · completed",
+      mergeKey: "room-environment:session-1:environment-1:8:0" } as TranscriptEntry
+    const current = { a: [{ id: 1, role: "user", turnId: 1, text: "click" } as TranscriptEntry, notice] }
+    const harness = createHarness({ split: false, currentEntries: current,
+      historyPages: { "a:null": { entries: [
+        { id: 1, role: "user", turnId: 4, text: "click" },
+        { id: 2, role: "assistant", turnId: 4, text: "clicked" },
+      ], nextCursor: null } },
+    })
+    if (targeted) await harness.controller.refreshAgentHistories(session("a"), ["a"])
+    else await harness.controller.refresh(session("a"))
+    assert.deepEqual(harness.paneEntries.a?.map((entry) => entry.text), ["click", "clicked", notice.text])
+    current.a = harness.paneEntries.a!
+    await harness.controller.refreshAgentHistories(session("a"), ["a"])
+    assert.equal(harness.paneEntries.a?.filter((entry) => entry.text === notice.text).length, 1)
+  })
+}
+
 function createHarness(options: {
   split: boolean
   currentFocusedAgentId?: string | null

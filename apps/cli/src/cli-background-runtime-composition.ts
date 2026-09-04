@@ -235,7 +235,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     sessionId: () => deps.sessionState().id,
     nowMs: Date.now,
     send: (request) => deps.client.send(request),
-    appendNotice: (message) => deps.appendNotice(message, "muted"),
+    appendNotice: (message, key) => deps.appendNotice(message, "muted", key),
     recordDaemonActivity,
   })
 
