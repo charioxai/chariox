@@ -218,6 +218,52 @@ export class BrowserCdpClient {
     };
   }
 
+  async manageTab(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const action = rawRequest?.action;
+    if (action !== "activate" && action !== "close") {
+      throw new BrowserControllerError(
+        "browser_tab_action_invalid",
+        "browser tab action must be activate or close",
+      );
+    }
+    const connection = await this.ensureConnection();
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const target = targetInfos.find(
+      (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
+    );
+    if (!target) {
+      throw new BrowserControllerError(
+        "browser_target_not_found",
+        `browser target ${JSON.stringify(targetId)} is not available`,
+      );
+    }
+    if (this.documentIdsByTarget.get(targetId) !== documentId) {
+      throw new BrowserControllerError(
+        "stale_document_reference",
+        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
+      );
+    }
+    if (action === "activate") {
+      await connection.send("Target.activateTarget", { targetId });
+    } else {
+      const result = await connection.send("Target.closeTarget", { targetId });
+      if (result?.success !== true) {
+        throw new BrowserControllerError(
+          "browser_tab_close_failed",
+          `browser target ${JSON.stringify(targetId)} did not close`,
+        );
+      }
+    }
+    return {
+      browser_generation: this.browserGeneration,
+      target_id: targetId,
+      document_id: documentId,
+      action,
+    };
+  }
+
   async snapshot(rawRequest) {
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(

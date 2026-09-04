@@ -146,6 +146,52 @@ test("a detached target session is discarded before the next reconcile", async (
   );
 });
 
+test("tab lifecycle operations stay document-bound and use browser target commands", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+
+  const activated = await browser.manageTab({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "activate",
+  });
+  const closed = await browser.manageTab({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "close",
+  });
+
+  assert.deepEqual(activated, {
+    browser_generation: 1,
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "activate",
+  });
+  assert.deepEqual(closed, {
+    browser_generation: 1,
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "close",
+  });
+  assert.deepEqual(
+    connection.calls.find((call) => call.method === "Target.activateTarget")?.params,
+    { targetId: "target-a" },
+  );
+  assert.deepEqual(
+    connection.calls.find((call) => call.method === "Target.closeTarget")?.params,
+    { targetId: "target-a" },
+  );
+  await assert.rejects(
+    browser.manageTab({ target_id: "target-b", document_id: "loader-old", action: "activate" }),
+    (error) => error.code === "stale_document_reference",
+  );
+  await assert.rejects(
+    browser.manageTab({ target_id: "target-b", document_id: "loader-b", action: "detach" }),
+    (error) => error.code === "browser_tab_action_invalid",
+  );
+});
+
 test("legacy navigation and waits reuse the reconciled target session", async () => {
   const connection = new CompatibilityConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
@@ -666,6 +712,9 @@ class FakeConnection {
     }
     if (method === "Target.attachToTarget") {
       return { sessionId: params.targetId === "target-a" ? "session-a" : "session-b" };
+    }
+    if (method === "Target.closeTarget") {
+      return { success: true };
     }
     if (method === "Page.getFrameTree") {
       return {

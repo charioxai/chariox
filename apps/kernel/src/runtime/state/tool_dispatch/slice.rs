@@ -282,6 +282,21 @@ impl KernelRuntimeState {
                 let output = run_slice_screen_command(vec!["browser-status".to_string()]).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
+            crate::transport::runtime_tools::SLICE_BROWSER_TAB_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserTabArgs>(
+                    arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_tab",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_tab",
+                    message:
+                        "browser tab lifecycle requires the long-running Room browser controller"
+                            .to_string(),
+                });
+            }
             crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::SliceBrowserFindArgs,

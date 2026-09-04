@@ -19,6 +19,7 @@ let state = existsSync(stateFile)
 state.clickCount ??= 0;
 state.url ??= "https://worker.test/";
 state.documentId ??= "worker-document";
+state.focusedTarget ??= "worker-tab";
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
 const subscribers = new Set();
 const emit = (message) => {
@@ -62,7 +63,22 @@ const chromium = {
         state.documentId = "worker-navigated-document";
         persist();
         return { frameId: "worker-frame", loaderId: state.documentId };
-      case "Runtime.evaluate": return { result: { value: true } };
+      case "Runtime.evaluate": return { result: { value:
+        state.focusedTarget === (sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab")
+      } };
+      case "Target.activateTarget":
+        state.focusedTarget = params.targetId;
+        persist();
+        return {};
+      case "Target.closeTarget":
+        if (params.targetId === "worker-popup" && state.popup) {
+          state.popup = false;
+          state.focusedTarget = "worker-tab";
+          persist();
+          emit({ method: "Target.targetDestroyed", params: { targetId: "worker-popup" } });
+          return { success: true };
+        }
+        return { success: false };
       case "Accessibility.getFullAXTree": return { nodes: [{
         nodeId: "ax-save", backendDOMNodeId: 103, ignored: false,
         role: { value: "button" }, name: { value: state.submitted === null ? (state.saved ? "Saved on worker" : "Save on worker") : `Submitted: ${state.submitted}` },

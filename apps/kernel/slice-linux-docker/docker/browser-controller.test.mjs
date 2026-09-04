@@ -37,6 +37,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "snapshot", request });
       return { target_id: request.target_id, document_id: request.document_id };
     },
+    manageTab: async (request) => {
+      calls.push({ method: "tab", request });
+      return { target_id: request.target_id, action: request.action };
+    },
     performAction: async (request) => {
       calls.push({ method: "action", request });
       return { action_kind: request.action.kind };
@@ -88,6 +92,14 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       id: 2,
       method: "browser.snapshot",
       params: { target_id: "target-a", document_id: "loader-a" },
+    },
+    { browser },
+  );
+  const tab = await handleBrowserControllerRequest(
+    {
+      id: 12,
+      method: "browser.tab",
+      params: { target_id: "target-a", document_id: "loader-a", action: "activate" },
     },
     { browser },
   );
@@ -194,6 +206,7 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     target_id: "target-a",
     document_id: "loader-a",
   });
+  assert.deepEqual(tab.result, { target_id: "target-a", action: "activate" });
   assert.deepEqual(action.result, { action_kind: "click" });
   assert.deepEqual(dialog.result, { action: "dismiss" });
   assert.deepEqual(navigation.result, { url: "https://example.test/settings" });
@@ -208,6 +221,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     {
       method: "snapshot",
       request: { target_id: "target-a", document_id: "loader-a" },
+    },
+    {
+      method: "tab",
+      request: { target_id: "target-a", document_id: "loader-a", action: "activate" },
     },
     {
       method: "action",

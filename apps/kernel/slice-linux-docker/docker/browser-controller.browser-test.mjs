@@ -45,6 +45,43 @@ test(`replaced ${layout} fields reject their old reference and can be rediscover
 });
 }
 
+test("popup tabs are discovered, activated, and closed through stable controller operations", async () => {
+  await withController(async ({ page, request }) => {
+    await page.setContent('<a target="_blank" href="about:blank">Open popup</a>');
+    const original = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const snapshot = await request("browser.snapshot", original);
+    const link = snapshot.result.accessibility_nodes.find(
+      (node) => node.role === "link" && node.name === "Open popup",
+    );
+    assert.ok(link);
+
+    const popupOpened = page.waitForEvent("popup");
+    const clicked = await request("browser.action", {
+      ...original,
+      node_ref: link.node_ref,
+      action: { kind: "click" },
+    });
+    assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+    const popupPage = await popupOpened;
+    await popupPage.waitForLoadState();
+
+    const withPopup = (await request("browser.reconcile", { viewport })).result;
+    assert.equal(withPopup.tabs.length, 2);
+    const popup = withPopup.tabs.find((tab) => tab.target_id !== original.target_id);
+    assert.ok(popup);
+    const activated = await request("browser.tab", { ...popup, action: "activate" });
+    assert.equal(activated.ok, true, JSON.stringify(activated.error));
+    const active = (await request("browser.reconcile", { viewport })).result;
+    assert.equal(active.focused_target_id, popup.target_id);
+
+    const closed = await request("browser.tab", { ...popup, action: "close" });
+    assert.equal(closed.ok, true, JSON.stringify(closed.error));
+    const afterClose = (await request("browser.reconcile", { viewport })).result;
+    assert.deepEqual(afterClose.tabs.map((tab) => tab.target_id), [original.target_id]);
+    assert.equal(afterClose.focused_target_id, original.target_id);
+  });
+});
+
 async function fixtureField(page, layout) {
   await page.goto("data:text/html,<main></main>");
   await page.evaluate((layout) => {

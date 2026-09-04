@@ -19,7 +19,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 304);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 41);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
     };
@@ -51,7 +51,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 41);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -93,7 +93,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 41);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -186,7 +186,7 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 304);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 40);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 41);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -229,6 +229,17 @@ fn room_controller_protocol_shapes_are_versioned() {
                 execution_id: "11111111111111111111111111111111".into(),
             },
             serde_json::json!({"kind":"cancel_action","execution_id":"11111111111111111111111111111111"}),
+        ),
+        (
+            RoomBrowserControllerCommand::Tab {
+                target_id: "target-popup".into(),
+                document_id: "document-popup".into(),
+                action: crate::runtime::browser_controller_tab::BrowserTabAction::Close,
+            },
+            serde_json::json!({
+                "kind":"tab","target_id":"target-popup","document_id":"document-popup",
+                "action":"close"
+            }),
         ),
         (
             RoomBrowserControllerCommand::ComputerInput {
@@ -582,6 +593,10 @@ fn room_controller_protocol_shapes_are_versioned() {
             }],"shadow_roots":[],
             "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":1,"node_name":"BUTTON",
                 "text":"","attributes":{},"bounds":{"x":1.5,"y":2.0,"width":3.0,"height":4.0}}]
+        }}),
+        serde_json::json!({"kind":"tab","result":{
+            "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
+            "action":"activate"
         }}),
         serde_json::json!({"kind":"navigation","result":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-2",

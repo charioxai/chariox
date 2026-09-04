@@ -129,6 +129,31 @@ impl KernelRuntimeState {
         run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await
     }
 
+    pub(super) async fn controller_browser_tab_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserTabArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let action = match args.action.as_str() {
+            "activate" => crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+            "close" => crate::runtime::browser_controller_tab::BrowserTabAction::Close,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_tab",
+                    message: format!("unsupported browser tab action `{other}`"),
+                });
+            }
+        };
+        let execution = self
+            .manage_browser_environment_tab_as_agent(session_id, agent_id, &args.tab_id, action)
+            .await?;
+        Ok(controller_browser_tab_tool_result(
+            slice_id, agent_id, action, execution,
+        ))
+    }
+
     pub(super) async fn controller_browser_find_tool_result(
         &self,
         session_id: &str,

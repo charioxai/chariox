@@ -35,6 +35,12 @@ export async function handleBrowserControllerRequest(
         await browser.snapshot(request.params),
       );
     }
+    if (request.method === "browser.tab") {
+      return successResponse(
+        request.id,
+        await browser.manageTab(request.params),
+      );
+    }
     if (request.method === "browser.action") {
       return successResponse(
         request.id,
