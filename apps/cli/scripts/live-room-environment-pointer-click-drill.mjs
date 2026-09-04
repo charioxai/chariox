@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
+import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
@@ -239,6 +240,7 @@ async function run() {
   const kernelEnv = {
     ...process.env,
     CHARIOX_HOME: path.join(tempRoot, "home"),
+    CHARIOX_LOG_DIR: path.join(tempRoot, "kernel-logs"),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(kernelPort + 1),
     CHARIOX_CODEX_PORT: String(kernelPort + 2),
@@ -2794,6 +2796,15 @@ async function cleanup() {
   remoteAutomation?.close()
   await closeFixtureServer()
   for (const child of children.toReversed()) await terminateChild(child)
+  if (failure) {
+    const diagnostic = await captureRoomKernelDiagnostics(path.join(tempRoot, "kernel-logs"), {
+      primary: `ws://127.0.0.1:${relayPort}`,
+      private: slice?.relay_endpoint?.private ? slice.relay_endpoint.url : undefined,
+    }).catch(() => ({ status: "unavailable" }))
+    await writeFile(path.join(evidenceRoot, "kernel-connection-diagnostic.json"),
+      `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 })
+      .catch(() => undefined)
+  }
   // Stop resource producers before the final removal, including a kernel that
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
