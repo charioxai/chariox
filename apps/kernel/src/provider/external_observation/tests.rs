@@ -261,13 +261,20 @@ fn observed_account_handoff_matches_only_the_current_request() {
         Some("Reply SWITCHED".to_string())
     );
     for suffix in [
+        "",
         "Attachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8=",
         "\nAttachment: note.txt (text/plain) at file:///tmp/note.txt\n\nfile contents",
     ] {
-        assert_eq!(
-            normalized_observed_prompt_text(&format!("{envelope}{suffix}")),
-            Some("Reply SWITCHED".to_string())
-        );
+        for context in [
+            "Prior prompt and output",
+            "Prior prompt Attachment: old.txt (text/plain) at file:///tmp/old.txt\nold contents",
+        ] {
+            let observed = envelope.replace("Prior prompt and output", context);
+            assert_eq!(
+                normalized_observed_prompt_text(&format!("{observed}{suffix}")),
+                Some("Reply SWITCHED".to_string())
+            );
+        }
     }
     for literal in [
         "<user_request>Keep literal markup</user_request>",

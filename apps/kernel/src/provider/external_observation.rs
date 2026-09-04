@@ -381,10 +381,10 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
-    let without_provider_attachment_suffix = strip_observed_provider_attachment_suffix(text);
-    let without_account_handoff =
-        strip_observed_account_handoff(without_provider_attachment_suffix);
-    let without_attachments = strip_observed_attachment_markup(without_account_handoff);
+    let without_account_handoff = strip_observed_account_handoff(text);
+    let without_provider_attachment_suffix =
+        strip_observed_provider_attachment_suffix(without_account_handoff);
+    let without_attachments = strip_observed_attachment_markup(without_provider_attachment_suffix);
     let normalized = strip_observed_generated_prompt_context(&without_attachments)
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -408,10 +408,18 @@ fn strip_observed_account_handoff(text: &str) -> &str {
     let Some((_, request)) = transition.split_once("<user_request>") else {
         return text;
     };
-    request
-        .trim_end()
-        .strip_suffix("</user_request>")
-        .unwrap_or(text)
+    // Only a suffix after the current request can be a provider attachment.
+    // Carried history may itself contain attachment headers or request tags.
+    for (end, closing) in request.match_indices("</user_request>") {
+        let suffix = &request[end + closing.len()..];
+        if strip_observed_provider_attachment_suffix(suffix)
+            .trim()
+            .is_empty()
+        {
+            return &request[..end];
+        }
+    }
+    text
 }
 
 fn strip_observed_provider_attachment_suffix(text: &str) -> &str {
