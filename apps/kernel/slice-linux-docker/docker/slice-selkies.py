@@ -44,16 +44,43 @@ def write_state(directory, record):
         Path(filename).unlink(missing_ok=True)
 
 
+def process_start_identity(pid):
+    # Linux start ticks and boot ID do not move when the VM wall clock is
+    # corrected. psutil.create_time() is derived from wall-clock boot time.
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+    return {"boot_id": boot_id, "start_ticks": int(fields[19])}
+
+
+def process_record(process):
+    return {"pid": process.pid, "created": process.create_time(),
+            **process_start_identity(process.pid)}
+
+
+def process_key(record):
+    if "boot_id" in record or "start_ticks" in record:
+        return (record["pid"], record.get("boot_id"), record.get("start_ticks"))
+    return (record["pid"], record["created"])
+
+
 def owned_process(record):
     if record is None:
         return None
     try:
         process = psutil.Process(record["pid"])
-        if (process.create_time() == record["created"]
+        if "boot_id" in record or "start_ticks" in record:
+            identity = process_start_identity(process.pid)
+            same_process = (identity["boot_id"] == record.get("boot_id")
+                            and identity["start_ticks"] == record.get("start_ticks"))
+        else:
+            # Older records retain the strict check. Never adopt a legacy PID
+            # by adding a timestamp tolerance or trusting a health response.
+            same_process = process.create_time() == record["created"]
+        if (same_process
                 and process.uids().real == os.getuid()
                 and process.status() != psutil.STATUS_ZOMBIE):
             return process
-    except psutil.NoSuchProcess:
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError, IndexError):
         pass
     return None
 
@@ -139,7 +166,7 @@ def start(directory, *, port=None, display=None):
             child = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
                                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         process = psutil.Process(child.pid)
-        record = {"pid": child.pid, "created": process.create_time(), "port": port,
+        record = {**process_record(process), "port": port,
                   "display": display, "master_token": token}
         write_state(directory, record)
         deadline = time.monotonic() + 15

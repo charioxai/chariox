@@ -78,14 +78,14 @@ class ViewerAccess:
                     record = lifecycle.read_state(directory)
                 if lifecycle.owned_process(record) is None or not lifecycle.healthy(record):
                     raise PrivateStreamError("private streamer is not healthy")
-                self.generation = (record["pid"], record["created"])
+                self.generation = lifecycle.process_key(record)
                 self.origin = lifecycle.endpoint(record)
                 viewers = {token: owner for token, owner in record.get("viewers", {}).items()
                            if lifecycle.owned_process(owner) is not None}
                 if len(viewers) >= 8:
                     raise PrivateStreamError("private streamer viewer capacity reached")
                 process = psutil.Process()
-                viewers[self.token] = {"pid": process.pid, "created": process.create_time()}
+                viewers[self.token] = lifecycle.process_record(process)
                 record["viewers"] = viewers
                 publish(directory, record)
             return self
@@ -97,7 +97,7 @@ class ViewerAccess:
         if self.generation is None:
             return
         with locked_state() as (directory, record):
-            if (record is None or (record["pid"], record["created"]) != self.generation
+            if (record is None or lifecycle.process_key(record) != self.generation
                     or lifecycle.owned_process(record) is None):
                 return
             record.setdefault("viewers", {}).pop(self.token, None)
