@@ -1,7 +1,9 @@
 // Failure evidence for the owned drill slice, before lifecycle cleanup erases
 // the process record. Never copy raw streamer logs or private token records.
 const probe = `
-import json, sys
+import json, os, sys
+from pathlib import Path
+import psutil
 sys.path.insert(0, '/opt/chariox-slice')
 from selkies_viewers import lifecycle
 directory = lifecycle.state_directory()
@@ -9,6 +11,39 @@ record = lifecycle.read_state(directory)
 process = lifecycle.owned_process(record)
 result = {'recorded': record is not None, 'owned': process is not None,
           'healthy': lifecycle.healthy(record)}
+if record is not None:
+    try:
+        candidate = psutil.Process(record['pid'])
+        result['recordedProcess'] = {
+            'exists': True,
+            'sameCreationTime': candidate.create_time() == record['created'],
+            'sameUser': candidate.uids().real == os.getuid(),
+            'status': candidate.status(),
+        }
+    except psutil.NoSuchProcess:
+        result['recordedProcess'] = {'exists': False}
+    except psutil.AccessDenied:
+        result['recordedProcess'] = {'accessDenied': True}
+# cgroup counters survive a killed process, unlike instantaneous docker stats.
+# Only numeric allowlisted fields are retained; no environment or command line.
+cgroup = Path('/sys/fs/cgroup')
+result['cgroup'] = {}
+for name in ['memory.current', 'memory.peak', 'memory.max', 'pids.current', 'pids.max']:
+    try:
+        value = (cgroup / name).read_text()[:128].strip()
+        if value == 'max' or value.isdecimal():
+            result['cgroup'][name] = value if value == 'max' else int(value)
+    except OSError:
+        pass
+try:
+    values = {}
+    for line in (cgroup / 'memory.events').read_text()[:4096].splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in ['low', 'high', 'max', 'oom', 'oom_kill', 'oom_group_kill'] and parts[1].isdecimal():
+            values[parts[0]] = int(parts[1])
+    result['cgroup']['memory.events'] = values
+except OSError:
+    pass
 if process is not None:
     result.update(pid=process.pid, processStatus=process.status())
 try:
