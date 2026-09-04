@@ -84,8 +84,8 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         pty_program: Some("/bin/sh".to_string()),
         pty_args: vec!["-c".to_string(), r#"
 while IFS= read -r line; do
-    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Fixture Claude login required"}'
     : > "$CHARIOX_TEST_RECEIVED"
+    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Fixture Claude login required"}'
 done
 "#.to_string()],
         pty_env: [("CHARIOX_TEST_RECEIVED".to_string(), received.display().to_string())].into(),
