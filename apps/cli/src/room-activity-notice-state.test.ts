@@ -5,7 +5,7 @@ import { retainRoomActivityNotices, roomActivityNoticeKey } from "./room-activit
 
 const notice = (cursor: number, text = `action ${cursor}`, session = "room") => ({
   id: cursor, role: "notice", text, turnId: 9,
-  mergeKey: roomActivityNoticeKey(session, "environment", cursor, 0),
+  mergeKey: roomActivityNoticeKey(session, "environment", "events", cursor, 0),
 } as TranscriptEntry)
 
 test("Room notices retain kernel-derived identity, not text matching or provider turn IDs", () => {
@@ -16,7 +16,7 @@ test("Room notices retain kernel-derived identity, not text matching or provider
   assert.ok(result.every(e => e.turnId === undefined && e.turnTracking === "none"))
   assert.equal(new Set(result.map(e => e.id)).size, result.length)
   assert.deepEqual(retainRoomActivityNotices(result, current, "room"), result)
-  assert.notEqual(roomActivityNoticeKey("a:b", "c", 1, 0), roomActivityNoticeKey("a", "b:c", 1, 0))
+  assert.notEqual(roomActivityNoticeKey("a:b", "c", "events", 1, 0), roomActivityNoticeKey("a", "b:c", "events", 1, 0))
 })
 
 test("Room notice retention bounds entry count and text without dropping provider history", () => {
