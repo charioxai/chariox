@@ -19,6 +19,16 @@ use crate::error::DaemonError;
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+const OPENCODE_CONFIG_FILES: [&str; 6] = [
+    "config",
+    "config.json",
+    "opencode.json",
+    "opencode.jsonc",
+    "tui.json",
+    "tui.jsonc",
+];
+#[path = "account_profile_replica_refresh.rs"]
+mod replica_refresh;
 #[cfg(test)]
 #[path = "account_profile_materialization_tests.rs"]
 mod materialization_tests;
@@ -1620,7 +1630,28 @@ impl ProviderAccountProfileRegistry {
             ));
         }
 
-        let backup_root = (managed_root_exists && !adopt_interrupted_managed_publication)
+        let mut file_refresh = if provider == "opencode"
+            && managed_context.is_none()
+            && replace_existing_replica
+            && managed_root_exists
+        {
+            match replica_refresh::ReplicaFileRefresh::publish(
+                &managed_root,
+                &staging_root,
+                &decoded_files,
+            ) {
+                Ok(refresh) => Some(refresh),
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&staging_root);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        let backup_root = (managed_root_exists
+            && !adopt_interrupted_managed_publication
+            && file_refresh.is_none())
             .then(|| unique_sibling_path(&managed_root, "backup"));
         if let Some(backup_root) = &backup_root {
             if let Err(error) = fs::rename(&managed_root, backup_root) {
@@ -1628,7 +1659,9 @@ impl ProviderAccountProfileRegistry {
                 return Err(registry_io("materialize account profile")(error));
             }
         }
-        let publication_result = if adopt_interrupted_managed_publication {
+        let publication_result = if file_refresh.is_some() {
+            fs::remove_dir_all(&staging_root).map_err(registry_io("clean account refresh staging"))
+        } else if adopt_interrupted_managed_publication {
             fs::remove_dir_all(&staging_root)
                 .map_err(registry_io("recover managed account profile publication"))
                 .and_then(|_| sync_private_tree(&managed_root))
@@ -1639,6 +1672,10 @@ impl ProviderAccountProfileRegistry {
                 .and_then(|_| sync_directory(managed_parent))
         };
         if let Err(error) = publication_result {
+            if let Some(refresh) = &mut file_refresh {
+                refresh.rollback()?;
+                return Err(error);
+            }
             let failed_root = unique_sibling_path(&managed_root, "failed");
             let _ = fs::rename(&managed_root, &failed_root);
             if let Some(backup_root) = &backup_root {
@@ -1735,6 +1772,10 @@ impl ProviderAccountProfileRegistry {
             if managed_context.is_some() {
                 return Err(error);
             }
+            if let Some(refresh) = &mut file_refresh {
+                refresh.rollback()?;
+                return Err(error);
+            }
             let failed_root = unique_sibling_path(&managed_root, "failed");
             let _ = fs::rename(&managed_root, &failed_root);
             if let Some(backup_root) = &backup_root {
@@ -1743,6 +1784,9 @@ impl ProviderAccountProfileRegistry {
             let _ = fs::remove_dir_all(&failed_root);
             let _ = sync_directory(managed_parent);
             return Err(error);
+        }
+        if let Some(refresh) = &mut file_refresh {
+            refresh.commit();
         }
         if let Some(backup_root) = &backup_root {
             let _ = fs::remove_dir_all(backup_root);
@@ -2565,25 +2609,17 @@ fn materialization_files(
                 &["auth.json"],
                 &mut files,
             )?;
-            let config_files = [
-                "config",
-                "config.json",
-                "opencode.json",
-                "opencode.jsonc",
-                "tui.json",
-                "tui.jsonc",
-            ];
             collect_optional_profile_files(
                 &xdg_config_home.join("opencode"),
                 "config/opencode",
-                &config_files,
+                &OPENCODE_CONFIG_FILES,
                 &mut files,
             )?;
             if opencode_config_dir != &xdg_config_home.join("opencode") {
                 collect_optional_profile_files(
                     opencode_config_dir,
                     "opencode-config",
-                    &config_files,
+                    &OPENCODE_CONFIG_FILES,
                     &mut files,
                 )?;
             }
