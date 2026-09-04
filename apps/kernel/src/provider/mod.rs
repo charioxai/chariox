@@ -85,7 +85,7 @@ pub use opencode_client::{
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, provider_retry_status,
+    classify_provider_terminal_failure_text, claude_native_stop_failure, provider_retry_status,
     PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{

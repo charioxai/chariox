@@ -124,6 +124,47 @@ fn provider_normalized_text_has_error_frame(normalized: &str) -> bool {
     })
 }
 
+/// Only native failure hooks may supply this frame. Normal Stop output and transcript
+/// prose are not failure signals, even if they contain identical words.
+pub(crate) fn claude_native_stop_failure(event: &serde_json::Value) -> Option<String> {
+    if event
+        .get("hook_event_name")
+        .and_then(serde_json::Value::as_str)
+        != Some("StopFailure")
+    {
+        return None;
+    }
+    let error = event
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            matches!(
+                *code,
+                "rate_limit"
+                    | "billing_error"
+                    | "authentication_failed"
+                    | "oauth_org_not_allowed"
+                    | "invalid_request"
+                    | "model_not_found"
+                    | "server_error"
+                    | "max_output_tokens"
+            )
+        })
+        .unwrap_or("unknown");
+    let detail = ["last_assistant_message", "error_details"]
+        .into_iter()
+        .find_map(|key| {
+            event
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+        })
+        .map(compact_provider_error_snippet)
+        .unwrap_or_else(|| "Provider ended the turn with an API error".to_string());
+    Some(format!("Claude StopFailure [{error}]: {detail}"))
+}
+
 pub(crate) fn classify_provider_substitutable_failure_text(
     adapter_key: &str,
     text: &str,
@@ -141,7 +182,11 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     let normalized = detail.to_lowercase();
     let substitutable = match adapter_key {
         "codex" | "opencode" => provider_normalized_text_reports_resource_limit(&normalized),
-        "claude" => claude_normalized_text_reports_resource_limit_dialog(&normalized),
+        "claude" => {
+            claude_normalized_text_reports_resource_limit_dialog(&normalized)
+                || normalized.starts_with("claude stopfailure [rate_limit]: ")
+                || normalized.starts_with("claude stopfailure [billing_error]: ")
+        }
         _ => false,
     };
     if !substitutable {
@@ -237,7 +282,7 @@ mod tests {
     use super::{
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
-        provider_retry_status,
+        claude_native_stop_failure, provider_retry_status,
     };
 
     #[test]
@@ -352,6 +397,52 @@ mod tests {
             classify_provider_substitutable_failure_text("claude", "You've hit your usage limit.")
                 .expect("Claude usage limit should activate an available substitute");
         assert!(substitute_failure.contains("substitutable resource limit"));
+    }
+
+    #[test]
+    fn claude_stop_failure_uses_authoritative_code_not_assistant_prose() {
+        for code in [
+            "rate_limit",
+            "billing_error",
+            "authentication_failed",
+            "server_error",
+            "unknown",
+        ] {
+            let event = serde_json::json!({
+                "hook_event_name": "StopFailure",
+                "error": code,
+                "last_assistant_message": "You've hit your session limit · resets 4am"
+            });
+            let failure = claude_native_stop_failure(&event).unwrap();
+            assert_eq!(
+                classify_provider_substitutable_failure_text("claude", &failure).is_some(),
+                matches!(code, "rate_limit" | "billing_error")
+            );
+            assert!(
+                classify_provider_terminal_failure_output_text("claude", &failure).is_none(),
+                "plain assistant text imitating a hook frame is not authoritative"
+            );
+        }
+        for event_name in ["Stop", "SessionEnd", "assistant"] {
+            assert!(claude_native_stop_failure(&serde_json::json!({
+                "hook_event_name": event_name,
+                "error": "rate_limit",
+                "last_assistant_message": "You've hit your session limit"
+            }))
+            .is_none());
+        }
+        let failure = claude_native_stop_failure(&serde_json::json!({
+            "hook_event_name": "StopFailure", "error": "rate_limit"
+        }))
+        .unwrap();
+        assert!(
+            classify_provider_substitutable_failure_text("claude", &failure).is_some(),
+            "documented optional error text must not disable failure handling"
+        );
+        let failure = claude_native_stop_failure(&serde_json::json!({
+            "hook_event_name": "StopFailure", "error": "billing_error", "error_details": "insufficient credit"
+        })).unwrap();
+        assert!(failure.ends_with("insufficient credit"));
     }
 
     #[test]

@@ -7,37 +7,83 @@ use crate::account_profile::{
 
 #[tokio::test]
 async fn automatic_substitution_settles_failure_before_relaunching_queued_work() {
-    assert_queued_substitution(false).await;
+    assert_queued_substitution(false, false).await;
 }
 
 #[tokio::test]
 async fn automatic_substitution_advances_a_queued_workflow_once() {
-    assert_queued_substitution(true).await;
+    assert_queued_substitution(true, false).await;
 }
 
-async fn assert_queued_substitution(workflow_prompt: bool) {
+#[tokio::test]
+async fn claude_stop_failure_hook_activates_substitute_without_replaying_failed_prompt() {
+    assert_queued_substitution(false, true).await;
+}
+
+#[tokio::test]
+async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() {
+    assert_queued_substitution(true, true).await;
+}
+
+async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     let (runtime, session_id, agent_id, profile_id) =
         runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+    let starter_provider = if claude_hook {
+        "claude-headless"
+    } else {
+        "opencode"
+    };
+    let starter_model = if claude_hook {
+        "claude-opus-4-8"
+    } else {
+        "opencode-go/deepseek-v4-pro"
+    };
+    let starter_account = if claude_hook { "default" } else { &profile_id };
     runtime
         .owned
         .agent_store
         .set_agent_runtime_profile_with_account_profile(
             &agent_id,
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro".to_string()),
+            starter_provider,
+            Some(starter_model.to_string()),
             Some("high".to_string()),
-            Some(profile_id.clone()),
+            Some(starter_account.to_string()),
             crate::provider::ProviderResumeState::default(),
         )
         .unwrap();
     let request = crate::provider::LaunchProviderRequest::new(
         &session_id,
-        "opencode",
-        "opencode",
-        &profile_id,
-        "opencode-go/deepseek-v4-pro",
+        if claude_hook { "claude" } else { "opencode" },
+        starter_provider,
+        starter_account,
+        starter_model,
     )
     .with_agent_id(&agent_id);
+    let hook_root = std::env::temp_dir().join(format!(
+        "chariox-stop-failure-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut hook_env = std::collections::BTreeMap::new();
+    if claude_hook {
+        std::fs::create_dir(&hook_root).unwrap();
+        let context = hook_root.join("hidden-context.txt");
+        let events = hook_root.join("events.jsonl");
+        std::fs::write(&context, "").unwrap();
+        std::fs::write(hook_root.join("active-prompt-id"), "injected:failed-prompt").unwrap();
+        std::fs::write(&events, serde_json::json!({
+            "hook_event_name": "StopFailure",
+            "error": "rate_limit",
+            "last_assistant_message": "You've hit your session limit · resets 4am (Europe/Madrid)"
+        }).to_string()).unwrap();
+        hook_env.insert(
+            "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+            context.display().to_string(),
+        );
+        hook_env.insert(
+            "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+            events.display().to_string(),
+        );
+    }
     let mut run = crate::provider::RuntimeProviderRun::new(
         "failed-go-run",
         &request,
@@ -47,7 +93,7 @@ async fn assert_queued_substitution(workflow_prompt: bool) {
             pty_target: None,
             pty_program: None,
             pty_args: Vec::new(),
-            pty_env: std::collections::BTreeMap::new(),
+            pty_env: hook_env,
             pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: Some("test-go-runtime".to_string()),
@@ -124,10 +170,39 @@ async fn assert_queued_substitution(workflow_prompt: bool) {
         })
         .await
         .unwrap();
-    runtime
-        .fail_owned_provider_prompt(&session_id, run.id(), "insufficient balance", true)
-        .await
-        .expect("pending work must not relaunch the exhausted account before failover");
+    if claude_hook {
+        let result = runtime
+            .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)
+            .await;
+        std::fs::remove_dir_all(&hook_root).unwrap();
+        assert_eq!(runtime.owned.agent_store.get_agent(&agent_id).unwrap().active_substitute_index(), Some(0),
+            "StopFailure must select a substitute, not complete the prompt; pump result: {result:?}");
+        result.expect("failure hook should settle without reading a missing PTY");
+        runtime
+            .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .active_substitute_index(),
+            Some(0),
+            "revisiting a failed provider must not advance substitution twice"
+        );
+        let diagnostic = runtime.owned.provider_store.get_run(run.id()).unwrap();
+        assert!(diagnostic
+            .terminal_diagnostic()
+            .unwrap()
+            .contains("session limit"));
+    } else {
+        runtime
+            .fail_owned_provider_prompt(&session_id, run.id(), "insufficient balance", true)
+            .await
+            .expect("pending work must not relaunch the exhausted account before failover");
+    }
     let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
     assert_eq!(agent.active_substitute_index(), Some(0));
     assert_eq!(agent.model(), Some("opencode/deepseek-v4-pro"));

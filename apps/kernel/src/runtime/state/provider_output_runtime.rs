@@ -76,6 +76,15 @@ impl KernelRuntimeState {
                     )
                 })
                 .await?;
+            if let Some(message) = outcome.terminal_failure {
+                let run = owned
+                    .provider_store
+                    .record_terminal_diagnostic(provider_run_id, message.clone())?;
+                owned.provider_run_projection.update(run);
+                self.fail_owned_provider_prompt(session_id, provider_run_id, &message, true)
+                    .await?;
+                return Ok(Vec::new());
+            }
             if outcome.needs_deferred_transcript_drain {
                 // The final Claude transcript flush can trail the Stop event;
                 // wait for it off the app lock so the whole daemon stays
