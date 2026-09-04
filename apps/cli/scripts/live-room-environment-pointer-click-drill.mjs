@@ -2005,6 +2005,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
   const noticePattern = roomActionNoticePattern
   return await runRoomEnvironmentCompanion({
     env: process.env,
+    sleep,
     prepare: async () => {
       // The keyboard/clipboard drills navigate away from the original click page.
       // Give the Web companion a fresh physical page, not the last drill's form.
