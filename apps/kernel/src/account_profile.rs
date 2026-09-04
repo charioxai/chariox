@@ -2850,7 +2850,7 @@ fn claude_credentials_are_portable(contents: &[u8]) -> bool {
             value
                 .pointer("/claudeAiOauth/refreshToken")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|refresh_token| !refresh_token.is_empty())
+                .is_some_and(|refresh_token| !refresh_token.trim().is_empty())
         })
 }
 

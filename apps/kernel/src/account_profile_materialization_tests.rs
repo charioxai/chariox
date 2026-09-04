@@ -81,6 +81,7 @@ fn claude_account_export_rejects_settings_without_transferable_credentials() {
         "not-json",
         r#"{"claudeAiOauth":{"accessToken":"fixture-access-only"}}"#,
         r#"{"claudeAiOauth":{"accessToken":"","refreshToken":""}}"#,
+        r#"{"claudeAiOauth":{"refreshToken":" \t\r\n"}}"#,
     ] {
         fs::write(
             Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json"),
