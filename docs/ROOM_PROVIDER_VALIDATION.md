@@ -69,6 +69,13 @@ PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs pnpm --filter @chariox/
 
 This explicit browser integration test never downloads dependencies. The normal
 focused suite remains browser-independent; final validation must run both.
+The nested-frame case also captures the real controller snapshot and fills and
+submits through its returned backend references. Snapshot collection reads
+each frame's accessibility tree, shares the existing node budget across frames,
+caps traversal at 64 frames and rejects a changed frame tree during capture.
+The shadow case currently proves controller discovery and physical fixture
+submission only. Controller fill has a separately tracked focus regression;
+do not count this fixture test as shadow-DOM action acceptance yet.
 
 Both cases check the authoritative provider configuration, Room/slice
 membership, agent attribution and an action sequence newer than the pre-prompt
