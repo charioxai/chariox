@@ -514,6 +514,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         }
 
+        let account_profile =
+            self.resolve_leased_profile_account(&leased_agent, &provider, &account_profile)?;
         let profile_changed = leased_agent.provider != provider
             || leased_agent.account_profile != account_profile
             || leased_agent.model != model
@@ -743,6 +745,106 @@ impl<'a> RemoteLeaseRuntime<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leased_profile_update_rejects_missing_account_without_retiring_provider() {
+        assert_leased_profile_account_rejection(false);
+    }
+
+    #[test]
+    fn leased_profile_update_rejects_another_owners_account_without_retiring_provider() {
+        assert_leased_profile_account_rejection(true);
+    }
+
+    fn assert_leased_profile_account_rejection(wrong_owner: bool) {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        let requested_account = if wrong_owner {
+            app.provider_account_profile_registry()
+                .create_managed("unrelated-owner", "codex", "Unrelated")
+                .unwrap()
+                .profile_id
+        } else {
+            "missing-worker-account".into()
+        };
+        let run = app
+            .providers_mut()
+            .launch_run_detached(
+                crate::provider::LaunchProviderRequest::new(
+                    &leased_agent.backing_session_id,
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "old-model",
+                )
+                .with_agent_id(&leased_agent.backing_agent_id),
+            )
+            .unwrap();
+        let before = serde_json::to_value(
+            app.agents()
+                .get_agent(&leased_agent.backing_agent_id)
+                .unwrap(),
+        )
+        .unwrap();
+        let result = RemoteLeaseRuntime::new(&mut app).update_leased_agent_profile(
+            &leased_agent.id,
+            "codex".into(),
+            requested_account.clone(),
+            Some("new-model".into()),
+            Some("low".into()),
+        );
+        assert!(
+            result.is_err(),
+            "worker must validate its account before accepting a profile change"
+        );
+        assert!(!result.unwrap_err().to_string().contains(&requested_account));
+        assert_eq!(
+            serde_json::to_value(
+                app.agents()
+                    .get_agent(&leased_agent.backing_agent_id)
+                    .unwrap()
+            )
+            .unwrap(),
+            before
+        );
+        assert_eq!(
+            app.providers().get_run(run.id()).unwrap().state(),
+            ProviderRunState::Running
+        );
+        assert_eq!(
+            app.leased_agents
+                .get(&leased_agent.id)
+                .unwrap()
+                .account_profile,
+            leased_agent.account_profile
+        );
+    }
+
+    #[test]
+    fn leased_profile_update_resolves_default_to_lease_owners_stable_account() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        let profile = app
+            .provider_account_profile_registry()
+            .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+            .unwrap();
+        let updated = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_profile(
+                &leased_agent.id,
+                "codex".into(),
+                "default".into(),
+                Some("new-model".into()),
+                Some("low".into()),
+            )
+            .unwrap();
+        assert_ne!(updated.account_profile, "default");
+        assert_eq!(updated.account_profile, profile.profile_id);
+        assert_eq!(
+            app.agents()
+                .get_agent(&leased_agent.backing_agent_id)
+                .unwrap()
+                .provider_account_profile(),
+            profile.profile_id
+        );
+    }
 
     #[test]
     fn leased_agent_config_update_ignores_legacy_processing_without_active_prompt() {

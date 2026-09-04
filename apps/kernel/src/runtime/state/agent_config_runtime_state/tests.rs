@@ -179,6 +179,25 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
 
 #[tokio::test]
 async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket() {
+    assert_remote_agent_profile_response(None).await;
+}
+
+#[tokio::test]
+async fn remote_agent_profile_update_rejects_mismatched_worker_acknowledgement() {
+    for field in [
+        "agent",
+        "lease",
+        "home_agent",
+        "provider",
+        "account",
+        "model",
+        "effort",
+    ] {
+        assert_remote_agent_profile_response(Some(field)).await;
+    }
+}
+
+async fn assert_remote_agent_profile_response(mismatched_field: Option<&str>) {
     let mut config = crate::config::DaemonConfig::for_tests();
     let relay_url = "ws://127.0.0.1:1".to_string();
     config.relay_url = Some(relay_url.clone());
@@ -329,6 +348,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             .expect("seeded codex default should resolve")
             .profile_id
     };
+    let before_profile = serde_json::to_value(&updated).unwrap();
     let profile_update = tokio::spawn({
         let runtime = runtime.clone();
         let session_id = session_id.clone();
@@ -382,7 +402,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             && model.as_deref() == Some("gpt-5.4")
             && effort.as_deref() == Some("high")
     ));
-    let response = crate::transport::relay_peer::RelayPeerResponse::LeasedAgentProfileUpdated {
+    let mut response = crate::transport::relay_peer::RelayPeerResponse::LeasedAgentProfileUpdated {
         leased_agent: crate::execution_lease::LeasedAgent {
             id: "leased-agent-1".to_string(),
             lease_id: "lease-1".to_string(),
@@ -407,6 +427,22 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             created_at_ms: 1,
         },
     };
+    if let crate::transport::relay_peer::RelayPeerResponse::LeasedAgentProfileUpdated {
+        leased_agent,
+    } = &mut response
+    {
+        match mismatched_field {
+            Some("agent") => leased_agent.id = "another-leased-agent".to_string(),
+            Some("lease") => leased_agent.lease_id = "another-lease".to_string(),
+            Some("home_agent") => leased_agent.home_agent_id = "another-home-agent".to_string(),
+            Some("provider") => leased_agent.provider = "opencode".to_string(),
+            Some("account") => leased_agent.account_profile = "another-account".to_string(),
+            Some("model") => leased_agent.model = Some("another-model".to_string()),
+            Some("effort") => leased_agent.effort = None,
+            None => {}
+            _ => panic!("unknown mismatch fixture"),
+        }
+    }
     let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
         &target_config.relay_private_key,
         &home_public_key,
@@ -420,10 +456,19 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
         encrypted_response,
     )
     .await;
-    let updated = profile_update
+    let result = profile_update
         .await
-        .expect("profile update task should join")
-        .expect("profile update should complete through the connected relay");
+        .expect("profile update task should join");
+    if let Some(field) = mismatched_field {
+        let error = result.expect_err(&format!(
+            "must reject a worker acknowledgement with mismatched {field}"
+        ));
+        assert!(error.to_string().contains("does not match"));
+        let current = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        assert_eq!(serde_json::to_value(current).unwrap(), before_profile);
+        return;
+    }
+    let updated = result.expect("profile update should complete through the connected relay");
     assert_eq!(updated.provider(), "codex");
     assert_eq!(updated.model(), Some("gpt-5.4"));
     assert_eq!(updated.effort(), Some("high"));

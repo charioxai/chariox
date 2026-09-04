@@ -5,6 +5,29 @@
 
 use super::*;
 
+impl owned::OwnedRemoteAgentProfileUpdate {
+    pub(super) fn validate_worker_acknowledgement(
+        &self,
+        home_agent_id: &str,
+        leased_agent: &crate::execution_lease::LeasedAgent,
+    ) -> Result<(), DaemonError> {
+        if leased_agent.id != self.leased_agent_id
+            || leased_agent.lease_id != self.execution_lease_id
+            || leased_agent.home_agent_id != home_agent_id
+            || leased_agent.provider != self.provider
+            || leased_agent.account_profile != self.account_profile
+            || leased_agent.model != self.model
+            || leased_agent.effort != self.effort
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update remote leased agent profile",
+                message: "the worker acknowledgement does not match the requested agent, lease, or provider profile; the home profile was not changed".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn update_agent_profile(
         &self,
@@ -141,6 +164,7 @@ impl KernelRuntimeOwnedState {
                 .remote_execution()
                 .map(|binding| owned::OwnedRemoteAgentProfileUpdate {
                     worker_kernel_id: binding.worker_kernel_id.clone(),
+                    execution_lease_id: binding.execution_lease_id.clone(),
                     leased_agent_id: binding.leased_agent_id.clone(),
                     relay_url: binding.relay_url.clone(),
                     relay_token: binding.relay_token.clone(),

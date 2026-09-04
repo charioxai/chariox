@@ -957,7 +957,7 @@ impl KernelRuntimeState {
                 daemon_alias: None,
             };
             let request = RelayPeerRequest::UpdateLeasedAgentProfile {
-                leased_agent_id: remote_update.leased_agent_id,
+                leased_agent_id: remote_update.leased_agent_id.clone(),
                 provider: remote_update.provider.clone(),
                 account_profile: remote_update.account_profile.clone(),
                 model: remote_update.model.clone(),
@@ -981,7 +981,9 @@ impl KernelRuntimeState {
                 }
             };
             match response {
-                Ok(RelayPeerResponse::LeasedAgentProfileUpdated { .. }) => {}
+                Ok(RelayPeerResponse::LeasedAgentProfileUpdated { leased_agent }) => {
+                    remote_update.validate_worker_acknowledgement(agent_id, &leased_agent)?;
+                }
                 Ok(other) => {
                     return Err(DaemonError::LocalTransport {
                         operation: "update remote leased agent profile",
