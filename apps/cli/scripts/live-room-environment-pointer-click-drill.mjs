@@ -43,6 +43,7 @@ import {
   automationNoticeEntries,
   automationNoticeIds,
   automationNoticeTexts,
+  roomActionNoticePattern,
 } from "./lib/room-tui-notices.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -1983,7 +1984,7 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 }
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
-  const noticePattern = (action) => new RegExp(`^Room action #${action.sequence}: .+ · computer ${action.kind} · completed$`)
+  const noticePattern = roomActionNoticePattern
   return await runRoomEnvironmentCompanion({
     env: process.env,
     prepare: async () => {
