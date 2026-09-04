@@ -147,7 +147,7 @@ test("a detached target session is discarded before the next reconcile", async (
 });
 
 test("tab lifecycle operations stay document-bound and use browser target commands", async () => {
-  const connection = new FakeConnection();
+  const connection = new DelayedTargetCloseConnection(1);
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
   await browser.reconcile(viewport);
 
@@ -189,6 +189,42 @@ test("tab lifecycle operations stay document-bound and use browser target comman
   await assert.rejects(
     browser.manageTab({ target_id: "target-b", document_id: "loader-b", action: "detach" }),
     (error) => error.code === "browser_tab_action_invalid",
+  );
+});
+
+test("tab close settles target removal before reporting completion", async () => {
+  const connection = new DelayedTargetCloseConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+
+  const closed = await browser.manageTab({
+    target_id: "target-b",
+    document_id: "loader-b",
+    action: "close",
+  });
+
+  assert.equal(closed.action, "close");
+  assert.equal(connection.closurePolls, 2);
+  const reconciled = await browser.reconcile(viewport);
+  assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-a"]);
+  assert.equal(reconciled.focused_target_id, "target-a");
+});
+
+test("tab close fails within the request timeout when Chrome retains the target", async () => {
+  const connection = new DelayedTargetCloseConnection(Number.POSITIVE_INFINITY);
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+    requestTimeoutMs: 1,
+  });
+  await browser.reconcile(viewport);
+
+  await assert.rejects(
+    browser.manageTab({
+      target_id: "target-b",
+      document_id: "loader-b",
+      action: "close",
+    }),
+    (error) => error.code === "browser_tab_close_failed" && /within 1ms/.test(error.message),
   );
 });
 
@@ -732,6 +768,40 @@ class FakeConnection {
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
     if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
+  }
+}
+
+class DelayedTargetCloseConnection extends FakeConnection {
+  constructor(closurePollsBeforeRemoval = 2) {
+    super();
+    this.closingTargetId = null;
+    this.closurePolls = 0;
+    this.closurePollsBeforeRemoval = closurePollsBeforeRemoval;
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Target.closeTarget") {
+      this.calls.push({ method, params, sessionId });
+      this.closingTargetId = params.targetId;
+      return { success: true };
+    }
+    if (method === "Target.getTargets" && this.closingTargetId) {
+      this.calls.push({ method, params, sessionId });
+      this.closurePolls += 1;
+      const targetInfos = [
+        { targetId: "target-a", type: "page", url: "https://a.test/", title: "A" },
+        { targetId: "target-b", type: "page", url: "https://b.test/", title: "B" },
+      ].filter((target) => (
+        target.targetId !== this.closingTargetId
+        || this.closurePolls < this.closurePollsBeforeRemoval
+      ));
+      return { targetInfos };
+    }
+    if (method === "Runtime.evaluate" && sessionId === "session-a" && this.closurePolls >= 2) {
+      this.calls.push({ method, params, sessionId });
+      return { result: { value: true } };
+    }
+    return super.send(method, params, sessionId);
   }
 }
 
