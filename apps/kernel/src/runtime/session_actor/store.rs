@@ -7,9 +7,9 @@ use crate::local::{
     ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    SubmitRoomEnvironmentActionRequest, UpdateProjectWorkspacesRequest,
-    UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
-    UpdateSessionConfigRequest,
+    SubmitRoomEnvironmentActionRequest, SubmitRoomEnvironmentBrowserActionRequest,
+    UpdateProjectWorkspacesRequest, UpdateRoomEnvironmentPointerRequest,
+    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -366,6 +366,32 @@ impl SessionRuntimeStore {
         let result = self
             .state
             .execute_human_room_environment_action(request, actor)
+            .await
+            .map(
+                |(action_id, environment)| LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+                    action_id,
+                    environment,
+                },
+            );
+        (result, None)
+    }
+
+    pub(super) async fn submit_room_environment_browser_action(
+        &self,
+        request: SubmitRoomEnvironmentBrowserActionRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .execute_human_room_environment_browser_action(request, actor)
             .await
             .map(
                 |(action_id, environment)| LocalDaemonResponse::RoomEnvironmentActionSubmitted {

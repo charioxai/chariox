@@ -392,6 +392,80 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         }));
     }
 
+    let browser_target = json!({"kind":"browser_tab","id":history_tab_id});
+    let human_history_request = json!({
+        "SubmitRoomEnvironmentBrowserAction": {
+            "session_id": room,
+            "runtime_generation": environment.runtime_generation,
+            "idempotency_key": "human-history-back-1",
+            "action": {
+                "kind": "history",
+                "tab_id": history_tab_id,
+                "action": "back"
+            }
+        }
+    });
+    let denied = dispatch_json(&fixture.home, human_history_request.clone())
+        .await
+        .expect_err("human Browser history requires explicit tab takeover");
+    assert!(
+        denied
+            .to_string()
+            .contains("environment_input_takeover_required"),
+        "{denied}"
+    );
+    dispatch_json(
+        &fixture.home,
+        json!({"RequestRoomEnvironmentInputTakeover":{
+            "session_id":room,"target":browser_target.clone()
+        }}),
+    )
+    .await
+    .expect("human takes over the stable Browser tab");
+    let submitted = dispatch_json(&fixture.home, human_history_request.clone())
+        .await
+        .expect("authenticated human history crosses the bound worker relay");
+    let submitted = &submitted["RoomEnvironmentActionSubmitted"];
+    assert_eq!(
+        submitted["environment"]["tabs"][0]["url"],
+        "https://worker.test/"
+    );
+    let human_action_id = submitted["action_id"]
+        .as_str()
+        .expect("human Browser action ID");
+    let action = submitted["environment"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["action_id"] == human_action_id)
+        .expect("attributed human Browser action");
+    assert_eq!(action["mode"], "browser");
+    assert_eq!(action["kind"], "browser_history_back");
+    assert!(action["actor_id"]
+        .as_str()
+        .is_some_and(|actor| actor.starts_with("user:")));
+    assert_eq!(action["state"], "completed");
+    dispatch_json(
+        &fixture.home,
+        json!({"ReleaseRoomEnvironmentInput":{
+            "session_id":room,"target":browser_target
+        }}),
+    )
+    .await
+    .expect("release human Browser tab ownership");
+    let replayed = dispatch_json(&fixture.home, human_history_request)
+        .await
+        .expect("exact history replay does not require a second takeover");
+    assert_eq!(
+        replayed["RoomEnvironmentActionSubmitted"]["action_id"],
+        human_action_id
+    );
+    assert_eq!(
+        replayed["RoomEnvironmentActionSubmitted"]["environment"]["tabs"][0]["url"],
+        "https://worker.test/",
+        "idempotency replay must not move through history twice"
+    );
+
     std::fs::remove_file(upload_path).expect("remove upload fixture");
 }
 

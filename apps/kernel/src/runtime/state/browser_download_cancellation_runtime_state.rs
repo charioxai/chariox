@@ -27,7 +27,7 @@ impl KernelRuntimeState {
             agent_environment_actor_id(agent_id),
             environment.runtime_generation,
         );
-        self.execute_environment_mutation_as_agent(session_id, request, None, async {
+        self.execute_browser_mutation(session_id, request, None, async {
             let response = self
                 .room_browser_controller_command(
                     session_id,

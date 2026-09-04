@@ -240,6 +240,11 @@ impl SessionRuntimeCommandExecutor {
                     .submit_room_environment_action(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => {
+                self.store
+                    .submit_room_environment_browser_action(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => {
                 self.store
                     .read_room_environment_clipboard(request, caller_user_id)

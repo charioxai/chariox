@@ -246,3 +246,28 @@ pub struct SubmitRoomEnvironmentActionRequest {
     pub idempotency_key: String,
     pub action: RoomEnvironmentHumanAction,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomEnvironmentBrowserHistoryAction {
+    Back,
+    Forward,
+    Reload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RoomEnvironmentHumanBrowserAction {
+    History {
+        tab_id: String,
+        action: RoomEnvironmentBrowserHistoryAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmitRoomEnvironmentBrowserActionRequest {
+    pub session_id: String,
+    pub runtime_generation: u64,
+    pub idempotency_key: String,
+    pub action: RoomEnvironmentHumanBrowserAction,
+}

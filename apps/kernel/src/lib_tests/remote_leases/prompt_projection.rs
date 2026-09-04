@@ -1468,7 +1468,11 @@ fn assert_output_only_settlement(provider: &str) {
     // selected provider's actual run identity, not a provider executable.
     RemoteLeaseRuntime::new(&mut app)
         .set_leased_agent_provider_for_test(&leased_agent.id, provider);
-    let model = if provider == "claude" { "sonnet" } else { "gpt-5.4" };
+    let model = if provider == "claude" {
+        "sonnet"
+    } else {
+        "gpt-5.4"
+    };
     let launch_request = crate::provider::LaunchProviderRequest::new(
         &leased_agent.backing_session_id,
         provider,

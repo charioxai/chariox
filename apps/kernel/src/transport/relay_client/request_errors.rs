@@ -84,6 +84,9 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
+            "environment.browser_action.submit"
+        }
         LocalDaemonRequest::ReadRoomEnvironmentClipboard(_) => "environment.clipboard.read",
         LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
