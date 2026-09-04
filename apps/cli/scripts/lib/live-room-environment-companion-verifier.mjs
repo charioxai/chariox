@@ -30,6 +30,7 @@ export async function runRoomEnvironmentCompanion(input) {
     assert.ok(companion.provider, "Web companion omitted required real-provider evidence")
     assert.equal(companion.provider.provider, input.ready.realProvider.provider)
     assert.equal(companion.provider.model, input.ready.realProvider.model)
+    assert.equal(companion.provider.browserLayout, input.ready.realProvider.browserLayout)
     assert.equal(companion.provider.webObserved, true, "Web must observe the provider action")
     assert.ok(typeof companion.provider.agentId === "string" && companion.provider.agentId.length > 0)
     assert.equal(companion.provider.actorId, `agent:${companion.provider.agentId}`)

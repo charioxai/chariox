@@ -6,8 +6,9 @@ import test from "node:test"
 
 import { runRoomEnvironmentCompanion } from "./live-room-environment-companion-verifier.mjs"
 
-for (const scenario of [null, "computer", "browser", "form"]) {
-const form = scenario === "form"
+for (const scenario of [null, "computer", "browser", "form", "nested-frame", "shadow-root"]) {
+const form = ["form", "nested-frame", "shadow-root"].includes(scenario)
+const browserLayout = ["nested-frame", "shadow-root"].includes(scenario) ? scenario : undefined
 const providerMode = form ? "browser" : scenario
 const includeProvider = providerMode !== null
 test(`Room companion verifier uses stable TUI baselines, provider scenario=${scenario}`, async () => {
@@ -55,7 +56,7 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
       actorId: action.actor_id,
       ...(includeProvider ? { provider: { provider: "codex", model: "gpt-5.4", agentId: "agent-real",
         actorId: "agent:agent-real", actionId: providerAction.action_id, webObserved: true,
-        ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, baselineSequence: 1 } : {}),
+        ...(form ? { browserTask: "form", browserLayout, fillActionId: fillAction.action_id, baselineSequence: 1 } : {}),
         screenshot: path.join(root, "provider.png") } } : {}),
       gestures: { dragActionId: dragAction.action_id, scrollActionId: scrollAction.action_id },
       keyboard: {
@@ -86,7 +87,7 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
         keyboardText: "fixture typing",
         keyboardReplacementText: "fixture replacement",
         pointerGestures: true,
-        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode, ...(form ? { browserTask: "form" } : {}) } } : {}),
+        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode, ...(form ? { browserTask: "form", browserLayout } : {}) } } : {}),
       },
       client: {
         send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction, shortcutAction, replacementAction, dragAction, scrollAction,

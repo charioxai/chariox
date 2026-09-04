@@ -18,6 +18,7 @@ Set these environment variables when running the paired Cloud
 | `CHARIOX_ROOM_DRILL_MODEL` | explicit model supported by that official provider |
 | `CHARIOX_ROOM_DRILL_PROVIDER_MODE` | `browser` or `computer`, default `computer` |
 | `CHARIOX_ROOM_DRILL_BROWSER_TASK` | optional `click` or `form`, only in Browser mode |
+| `CHARIOX_ROOM_DRILL_BROWSER_LAYOUT` | optional `page`, `nested-frame` or `shadow-root`, only with the form task |
 | `CHARIOX_OSS_REPO` | absolute path to the matching OSS worktree |
 | `CHARIOX_SLICE_DOCKER_PROVISIONER` | that worktree's `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh` |
 | `CHARIOX_ROOM_DRILL_IMAGE` | prebuilt image matching the runtime source fingerprint |
@@ -50,6 +51,24 @@ Acceptance requires fresh, completed Browser fill and submit actions by the
 same actor, targeting the same tab in that order. Both TUIs must show both
 actions. Web must display the accepted page and remain usable for human input.
 This tests form-driven navigation, not the full navigation and lifecycle matrix.
+
+The `nested-frame` layout puts the only form controls inside two same-origin
+`srcdoc` frames. The `shadow-root` layout puts them inside an open shadow root,
+with no light-DOM copy. Submission navigates the top page; only server-accepted
+values produce the success marker. The accepted page returns to the normal
+layout so the same human keyboard/selection/scroll checks can follow.
+These cases do not prove cross-origin frames, closed shadow roots or stale
+references. Each still needs its own acceptance case.
+
+Before a paid provider run, check the physical fixture structures with an
+already-installed Playwright module and Chrome:
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs pnpm --filter @chariox/cli run test:room-provider-browser
+```
+
+This explicit browser integration test never downloads dependencies. The normal
+focused suite remains browser-independent; final validation must run both.
 
 Both cases check the authoritative provider configuration, Room/slice
 membership, agent attribution and an action sequence newer than the pre-prompt
