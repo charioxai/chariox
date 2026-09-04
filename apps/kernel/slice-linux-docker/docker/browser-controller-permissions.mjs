@@ -1,13 +1,13 @@
 const PERMISSION_DESCRIPTORS = new Map([
-  ["camera", { name: "videoCapture" }],
-  ["clipboard-read-write", { name: "clipboardReadWrite" }],
-  ["clipboard-sanitized-write", { name: "clipboardSanitizedWrite" }],
-  ["display-capture", { name: "displayCapture" }],
+  ["camera", { name: "camera" }],
+  ["clipboard-read-write", { name: "clipboard-read" }],
+  ["clipboard-sanitized-write", { name: "clipboard-write", allowWithoutSanitization: false }],
+  ["display-capture", { name: "display-capture" }],
   ["geolocation", { name: "geolocation" }],
-  ["local-fonts", { name: "localFonts" }],
-  ["microphone", { name: "audioCapture" }],
+  ["local-fonts", { name: "local-fonts" }],
+  ["microphone", { name: "microphone" }],
   ["midi", { name: "midi" }],
-  ["midi-sysex", { name: "midiSysex" }],
+  ["midi-sysex", { name: "midi", sysex: true }],
   ["notifications", { name: "notifications" }],
 ]);
 const PERMISSION_SETTINGS = new Set(["granted", "denied", "prompt"]);

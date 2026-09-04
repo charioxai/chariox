@@ -26,7 +26,7 @@ test("permission decisions are document-bound and scoped to the current HTTP ori
     {
       method: "Browser.setPermission",
       params: {
-        permission: { name: "videoCapture" },
+        permission: { name: "camera" },
         setting: "granted",
         origin: "https://app.example.test",
       },

@@ -487,6 +487,42 @@ async function uploadReference(request, target) {
   return inputs[0].node_ref;
 }
 
+test("permissions reach Chrome and update the requested web permission only", async () => {
+  await withCrossOriginFixture(async (url) => {
+    await withController(async ({ page, request, context }) => {
+      await page.goto(url);
+      const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      const other = await context.newPage();
+      await other.goto(url.replace("127.0.0.1", "localhost"));
+      for (const [permission, descriptor] of [
+        ["geolocation", { name: "geolocation" }],
+        ["notifications", { name: "notifications" }],
+        ["camera", { name: "camera" }],
+        ["microphone", { name: "microphone" }],
+        ["display-capture", { name: "display-capture" }],
+        ["midi", { name: "midi", sysex: false }],
+        ["midi-sysex", { name: "midi", sysex: true }],
+        ["clipboard-read-write", { name: "clipboard-read" }],
+        ["clipboard-sanitized-write", { name: "clipboard-write" }],
+        ["local-fonts", { name: "local-fonts" }],
+      ]) {
+        const otherBefore = await other.evaluate(async (descriptor) => (await navigator.permissions.query(descriptor)).state, descriptor);
+        for (const setting of ["granted", "denied", "prompt"]) {
+          const result = await request("browser.permission", { ...target, permission, setting });
+          assert.equal(result.ok, true, `${permission}/${setting}: ${JSON.stringify(result.error)}`);
+          assert.equal(await page.evaluate(async (descriptor) => (await navigator.permissions.query(descriptor)).state, descriptor), setting, permission);
+          assert.equal(await other.evaluate(async (descriptor) => (await navigator.permissions.query(descriptor)).state, descriptor), otherBefore, "another origin must be unchanged");
+        }
+      }
+      await page.goto(`${url}field?new-document=1`);
+      const stale = await request("browser.permission", { ...target, permission: "geolocation", setting: "granted" });
+      assert.equal(stale.ok, false);
+      assert.equal(stale.error.code, "stale_document_reference");
+      assert.equal(await page.evaluate(async () => (await navigator.permissions.query({ name: "geolocation" })).state), "prompt");
+    });
+  });
+});
+
 async function withCrossOriginFixture(run, {
   sameSite = false, nested = false,
   fieldMarkup = '<label>Sample<input></label><button onclick="document.querySelector(\'output\').textContent=\'accepted\'">Accept</button><output role="status"></output>',
