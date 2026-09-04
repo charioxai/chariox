@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import path from "node:path"
-import { assertRoomRealProviderAction } from "./live-room-real-provider.mjs"
+import { assertRoomRealProviderAction, assertRoomBrowserFormActions } from "./live-room-real-provider.mjs"
 
 import {
   publishRoomDrillCompanionReady,
@@ -45,6 +45,9 @@ export async function runRoomEnvironmentCompanion(input) {
     assert.ok(companion.gestures, "Web companion omitted drag/scroll evidence")
   }
   await input.waitForPhysicalEffect(companion.physicalEffect)
+  if (input.ready.realProvider?.browserTask === "form") {
+    await input.waitForPhysicalEffect("BROWSER_FORM_ACCEPTED")
+  }
   if (companion.keyboard) {
     assert.equal(companion.keyboard.physicalEffect, "WEB_KEYBOARD_TEXT_OK")
     assert.equal(typeof companion.keyboard.actionId, "string")
@@ -79,9 +82,14 @@ export async function runRoomEnvironmentCompanion(input) {
     const action = history.find((item) => item.action_id === provider.actionId)
     assert.ok(action, "real-provider action was absent from kernel history")
     assert.equal(action.actor_id, provider.actorId)
-    assertRoomRealProviderAction(action, input.ready.realProvider.mode)
+    assertRoomRealProviderAction(action, input.ready.realProvider.mode, input.ready.realProvider.browserTask)
     assert.ok(action.sequence < webAction.sequence, "provider action must precede human takeover")
     actions.unshift(action)
+    if (input.ready.realProvider.browserTask === "form") {
+      const fill = assertRoomBrowserFormActions(history, action, provider.baselineSequence)
+      assert.equal(fill.action_id, provider.fillActionId)
+      actions.unshift(fill)
+    }
   }
   if (companion.keyboard) {
     const keyboard = history.find((action) => action.action_id === companion.keyboard.actionId)

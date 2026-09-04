@@ -13,12 +13,19 @@ export function roomRealProviderOptions(env) {
   assert.ok(model, "CHARIOX_ROOM_DRILL_MODEL must explicitly select a provider model")
   const mode = env.CHARIOX_ROOM_DRILL_PROVIDER_MODE ?? "computer"
   assert.ok(["computer", "browser"].includes(mode), "select Browser or Computer provider mode")
-  return { provider, model, mode, accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
+  const browserTask = env.CHARIOX_ROOM_DRILL_BROWSER_TASK
+  assert.ok(browserTask === undefined || mode === "browser", "Browser task requires Browser mode")
+  assert.ok(browserTask === undefined || ["click", "form"].includes(browserTask), "invalid Browser task")
+  return { provider, model, mode, ...(browserTask ? { browserTask } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
 }
 
 export async function runRoomRealProvider(input) {
   const result = await runRoomRealProviderAction(input)
   await input.waitForPhysicalEffect(result.expectedPhysicalEffect)
+  if (result.browserTask === "form") {
+    await input.waitForPhysicalEffect("BROWSER_FORM_ACCEPTED")
+    await input.waitForTuis(new RegExp(`^Room action #${result.fillActionSequence}: real-${result.provider} · browser fill · completed$`))
+  }
   await input.waitForTuis(new RegExp(`^Room action #\\d+: real-${result.provider} · ${result.mode} ${result.actionKind} · completed$`))
   await input.screenshot("after-real-provider-click")
   const verified = {
@@ -37,7 +44,8 @@ export async function runRoomRealProviderAction(input) {
   const { client, requests, sessionId, sliceId, options } = input
   const mode = options.mode ?? "computer"
   assert.ok(["computer", "browser"].includes(mode), "select Browser or Computer provider mode")
-  const actionKind = mode === "browser" ? "click" : "pointer_click"
+  const form = mode === "browser" && options.browserTask === "form"
+  const actionKind = mode === "browser" ? (form ? "submit" : "click") : "pointer_click"
   assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
   if (options.importFirst) {
     await input.checkpoint({ phase: "importing-account", provider: options.provider })
@@ -57,6 +65,7 @@ export async function runRoomRealProviderAction(input) {
   await input.checkpoint({ phase: "prompting", provider: options.provider, agentId: agent.id })
   const actorId = `agent:${agent.id}`
   let action
+  let fillAction
   let verifiedAgent = agent
   let baselineSequence = 0
   const priorTurnIds = new Set()
@@ -90,7 +99,16 @@ export async function runRoomRealProviderAction(input) {
       sessionId, null, 100)), 5_000, "provider action baseline"), "RoomEnvironmentActionHistoryListed").page.actions
     baselineSequence = baseline.reduce((latest, item) => Number.isSafeInteger(item.sequence)
       ? Math.max(latest, item.sequence) : latest, 0)
-    const prompt = mode === "browser" ? [
+    const prompt = form ? [
+      "You are validating the Chariox Room browser. Use only the Chariox runtime MCP tools.",
+      "Use slice_browser_find with query='Browser sample' and kind=field.",
+      "Call slice_browser_fill with that returned opaque field_id and text='Chariox form sample'.",
+      "Then use slice_browser_find with query='Submit Browser form' and kind=button.",
+      "Call slice_browser_submit once with the returned button field_id to submit its form.",
+      "The shared browser is already open. Do not use coordinates, Computer input, shell commands, scripts, or provider-native browser tools.",
+      "Do not navigate independently, open another browser, edit files, or contact external services.",
+      "After form submission, stop and report whether the tool succeeded.",
+    ].join(" ") : mode === "browser" ? [
       "You are validating the Chariox Room browser. Use only the Chariox runtime MCP tools.",
       "Use slice_browser_find with query='Browser action target' and kind=button.",
       "Then call slice_browser_click exactly once with the returned opaque field_id for that button.",
@@ -112,7 +130,10 @@ export async function runRoomRealProviderAction(input) {
       const completed = actions.find((item) => item.actor_id === actorId
         && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence
         && item.kind === actionKind && item.state === "completed")
-      if (completed) return completed
+      if (completed) {
+        if (form) fillAction = assertRoomBrowserFormActions(actions, completed, baselineSequence)
+        return completed
+      }
       // Ignore turns predating this prompt when Web reuses an idle agent.
       // A warning/error on a still-open turn must not abort the action wait.
       if (Date.now() - lastFailureProbe >= 2_000) {
@@ -129,7 +150,7 @@ export async function runRoomRealProviderAction(input) {
         ))) return { providerFailed: true }
       }
       return false
-    }, 180_000, `official provider did not complete a Room ${mode} click`)
+    }, 180_000, `official provider did not complete a Room ${mode} ${actionKind}`)
     if (action.providerFailed) throw new Error("official provider turn failed before completing the Room action")
   } catch (error) {
     const diagnostic = await captureRoomProviderDiagnostic({ ...input, agentId: agent.id })
@@ -137,22 +158,23 @@ export async function runRoomRealProviderAction(input) {
     await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, diagnostic })
     throw error
   }
-  assertRoomRealProviderAction(action, mode)
+  assertRoomRealProviderAction(action, mode, options.browserTask)
   const result = {
     provider: verifiedAgent.provider, model: verifiedAgent.model, accountProfile: verifiedAgent.account_profile ?? "default", importFirst: options.importFirst,
     agentId: agent.id, actorId, actionId: action.action_id, mode, actionKind,
     baselineSequence, actionSequence: action.sequence,
-    expectedPhysicalEffect: input.expectedPhysicalEffect ?? "POINTER_CLICK_COUNT=2",
+    ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, fillActionSequence: fillAction.sequence } : {}),
+    expectedPhysicalEffect: input.expectedPhysicalEffect ?? (form ? "POINTER_CLICK_COUNT=1" : "POINTER_CLICK_COUNT=2"),
   }
   await input.checkpoint({ phase: "action-completed", ...result })
   return result
 }
 
-export function assertRoomRealProviderAction(action, mode = "computer") {
+export function assertRoomRealProviderAction(action, mode = "computer", browserTask = "click") {
   assert.ok(["computer", "browser"].includes(mode), "invalid provider mode")
   assert.equal(action.mode, mode)
   assert.equal(action.state, "completed")
-  assert.equal(action.kind, mode === "browser" ? "click" : "pointer_click")
+  assert.equal(action.kind, mode === "browser" ? (browserTask === "form" ? "submit" : "click") : "pointer_click")
   if (mode === "browser") {
     assert.equal(action.targets?.length, 1, "Browser click must target exactly one tab")
     assert.equal(action.targets[0].kind, "browser_tab")
@@ -163,6 +185,19 @@ export function assertRoomRealProviderAction(action, mode = "computer") {
     assert.equal(action.arguments.button, "left")
     assert.equal(action.arguments.click_count, 1)
   }
+}
+
+export function assertRoomBrowserFormActions(actions, submission, baselineSequence) {
+  assertRoomRealProviderAction(submission, "browser", "form")
+  assert.ok(Number.isSafeInteger(baselineSequence) && baselineSequence >= 0, "invalid form baseline")
+  assert.ok(Number.isSafeInteger(submission.sequence) && submission.sequence > baselineSequence, "submit must be fresh")
+  const fill = actions.find((item) => item.kind === "fill" && item.mode === "browser"
+    && item.state === "completed" && item.actor_id === submission.actor_id
+    && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence && item.sequence < submission.sequence
+    && item.targets?.length === 1 && item.targets[0].kind === "browser_tab"
+    && item.targets[0].id === submission.targets[0].id)
+  assert.ok(fill, "form submission requires a fresh completed fill by the same actor in the same tab")
+  return fill
 }
 
 function unwrap(response, variant) {

@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
+import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import {
   assertRetainedClipboardEvidenceIsRedacted,
@@ -2452,10 +2453,11 @@ async function startFixture() {
       </script></body></html>`)
       return
     }
-    if (request.url !== "/click") {
+    if (new URL(request.url, "http://fixture.invalid").pathname !== "/click") {
       response.writeHead(404).end("not found")
       return
     }
+    const browserFixture = roomProviderBrowserFixture(realProviderOptions, request.url)
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
     response.end(`<!doctype html><html><head><title>Room pointer drill</title><style>
       html,body{width:100%;height:100%;margin:0}body{display:grid;place-items:center;background:#ddd;font:${webPointerGestures ? 20 : 32}px sans-serif}
@@ -2466,12 +2468,8 @@ async function startFixture() {
       main{pointer-events:none;z-index:1}
       #browser-action-target{position:fixed;left:16px;top:16px;z-index:3}
     </style></head><body>${webKeyboardText ? '<input id="web-keyboard" type="password" autocomplete="off" aria-label="Web keyboard fixture">' : ''}${webPointerGestures ? '<input data-web-gesture id="web-selection" readonly value="Select this physical text without moving the Room browser window"><div data-web-gesture id="web-scroller"><div id="web-scroll-content"></div></div>' : ''}<main><div id="state">POINTER_CLICK_READY</div>${webKeyboardText ? '<div id="web-keyboard-status">WEB_KEYBOARD_WAITING</div><div id="web-keyboard-replacement-status">WEB_KEYBOARD_REPLACEMENT_WAITING</div>' : ''}${webPointerGestures ? '<div id="web-drag-status">WEB_DRAG_WAITING</div><div id="web-scroll-status">WEB_SCROLL_WAITING</div>' : ''}</main><script>
-      ${realProviderOptions?.mode === "browser" ? `
-      const browserTarget=document.createElement("button");
-      browserTarget.id="browser-action-target";
-      browserTarget.textContent="Browser action target";
-      document.body.append(browserTarget);` : ''}
-      let clicks=0;document.addEventListener("click",(event)=>{if(event.target.closest("[data-web-gesture]"))return;clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
+      ${browserFixture.script}
+      let clicks=${browserFixture.initialClicks};document.addEventListener("click",(event)=>{if(event.target.closest("[data-web-gesture]"))return;clicks+=1;document.body.style.background="#69d391";document.querySelector("#state").textContent="POINTER_CLICK_COUNT="+clicks})
       ${webPointerGestures ? `
       const selection=document.querySelector("#web-selection");
       let geometry=null;

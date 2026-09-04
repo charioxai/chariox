@@ -17,6 +17,7 @@ Set these environment variables when running the paired Cloud
 | `CHARIOX_ROOM_DRILL_PROVIDER` | `codex`, `claude`, or `opencode` |
 | `CHARIOX_ROOM_DRILL_MODEL` | explicit model supported by that official provider |
 | `CHARIOX_ROOM_DRILL_PROVIDER_MODE` | `browser` or `computer`, default `computer` |
+| `CHARIOX_ROOM_DRILL_BROWSER_TASK` | optional `click` or `form`, only in Browser mode |
 | `CHARIOX_OSS_REPO` | absolute path to the matching OSS worktree |
 | `CHARIOX_SLICE_DOCKER_PROVISIONER` | that worktree's `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh` |
 | `CHARIOX_ROOM_DRILL_IMAGE` | prebuilt image matching the runtime source fingerprint |
@@ -40,6 +41,15 @@ mode adds a fixture button, asks for `slice_browser_find`, then asks for one
 `slice_browser_click` with its opaque `field_id`. The Browser case requires
 a completed `browser/click` action targeting exactly one tab; a Computer
 pointer click cannot satisfy it.
+
+With `CHARIOX_ROOM_DRILL_BROWSER_TASK=form`, the provider discovers the
+`Browser sample` input, fills `Chariox form sample`, discovers the submit
+button and submits its form using opaque field IDs. The fixture server emits
+`BROWSER_FORM_ACCEPTED` only after receiving the expected submitted value.
+Acceptance requires fresh, completed Browser fill and submit actions by the
+same actor, targeting the same tab in that order. Both TUIs must show both
+actions. Web must display the accepted page and remain usable for human input.
+This tests form-driven navigation, not the full navigation and lifecycle matrix.
 
 Both cases check the authoritative provider configuration, Room/slice
 membership, agent attribution and an action sequence newer than the pre-prompt
