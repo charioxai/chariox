@@ -59,6 +59,28 @@ test("a signal during a finishing operation cannot publish success", async () =>
   assert.equal(cleaned, 1)
 })
 
+test("late work cannot use cleanup permission to start another request", async () => {
+  const signals = new EventEmitter()
+  const guard = createDrillInterruption(signals)
+  let sends = 0
+  const client = guard.guardClient({ async send() { sends++ } })
+  let late
+  let lateError
+  await guard.run(async () => {
+    late = new Promise((resolve) => setTimeout(async () => {
+      try { await client.send() } catch (error) { lateError = error.message }
+      resolve()
+    }, 5))
+    signals.emit("SIGINT")
+    guard.check()
+  }, async () => {
+    await late
+    await client.send()
+  }, () => {})
+  assert.equal(lateError, "drill interrupted by SIGINT")
+  assert.equal(sends, 1, "only the cleanup request may run")
+})
+
 test("ordinary failure cleans once and cleanup failure still restores signal handlers", async () => {
   const signals = new EventEmitter()
   const guard = createDrillInterruption(signals)
