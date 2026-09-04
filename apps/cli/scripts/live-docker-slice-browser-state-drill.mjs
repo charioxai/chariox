@@ -46,6 +46,7 @@ const markers = {
   backupMutationTwo: `backup-mutation-two-${process.pid}-${Date.now()}`,
   firstSubject: `M20 first ${process.pid}`,
   secondSubject: `M20 second ${process.pid}`,
+  reauthSubject: `M20 reauth ${process.pid}`,
 }
 const screenshots = {}
 const children = []
@@ -62,6 +63,7 @@ let stateImagesBefore = new Set()
 let rollbackImagesBefore = new Set()
 const sliceRuntime = {}
 const persistenceIdentity = {}
+const externalServiceReauthentication = {}
 const resources = []
 
 await mkdir(artifactDir, { recursive: true })
@@ -344,6 +346,9 @@ async function run() {
   await verifyLocalBrowserStateAfterRestore()
   await screenshot("05-after-repeated-backup-restore")
 
+  log("invalidating the external service session without changing browser state")
+  await verifyExternalServiceReauthentication()
+
   log("verifying restored service worker serves cached content while the fixture is offline")
   await fixture.close()
   await sliceScreen(["open-url", fixtureUrl("/offline-marker")])
@@ -445,6 +450,37 @@ async function runWebmailPhase(label, subject, options = {}) {
   await sliceScreen(["browser-click", "#send"])
   await waitForBrowserText("CHARIOX_FIXTURE_MESSAGE_SENT", 30_000, `${label} message was not sent`)
   await screenshot(`webmail-${label}-sent`)
+}
+
+async function verifyExternalServiceReauthentication() {
+  externalServiceReauthentication.invalidatedSessionCount = fixture.invalidateSessions()
+  assert.equal(
+    externalServiceReauthentication.invalidatedSessionCount,
+    1,
+    "the fixture should invalidate the one browser-authenticated service session",
+  )
+
+  await sliceScreen(["open-url", fixtureUrl("/mail/inbox")])
+  await waitForBrowserText(
+    "Fixture mail login",
+    30_000,
+    "external service invalidation did not return the browser to login",
+  )
+  externalServiceReauthentication.classification = "external_service_reauth"
+  externalServiceReauthentication.exactPrompt = "Fixture mail login"
+  await screenshot("06-external-service-reauth")
+
+  await verifyLocalBrowserStateAfterRestore()
+  externalServiceReauthentication.browserStatePreserved = true
+
+  await runWebmailPhase("external-reauth", markers.reauthSubject)
+  assert.equal(
+    fixture.messages.filter((message) => message.subject === markers.reauthSubject).length,
+    1,
+    "the product should remain usable after external service reauthentication",
+  )
+  externalServiceReauthentication.recovered = true
+  await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(fixture.messages, null, 2))
 }
 
 async function installProgramMarker() {
@@ -871,7 +907,7 @@ async function cleanup() {
 
 async function writeManifest(ok, error = null) {
   await writeFile(path.join(artifactDir, "manifest.json"), JSON.stringify({
-    schema: "chariox.browser_computer.persistence_drill.v2",
+    schema: "chariox.browser_computer.persistence_drill.v3",
     ok,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -887,6 +923,7 @@ async function writeManifest(ok, error = null) {
     fixturePort,
     markers,
     screenshots,
+    externalServiceReauthentication,
     resources,
     assertions: [
       "initial and restored slices retained the 2 GiB memory, no-extra-swap, and one-CPU caps",
@@ -898,6 +935,8 @@ async function writeManifest(ok, error = null) {
       "restored service worker served cached content while the fixture was offline",
       "authenticated browser session survived complete container and home-volume removal",
       "message before save and message after restore were each submitted exactly once",
+      "external service invalidation showed the exact login prompt while persisted browser state remained intact",
+      "reauthentication restored service use and submitted its message exactly once",
       "named backup integrity metadata was recorded and a corrupt archive was rejected before container replacement",
       "the same immutable named backup restored browser and application state twice, once by name and once by id",
     ],

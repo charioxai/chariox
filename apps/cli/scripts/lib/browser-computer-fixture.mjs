@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import http from "node:http"
 
 const DEFAULT_ACCOUNT = "agent@chariox.test"
@@ -34,6 +35,11 @@ export async function startBrowserComputerFixture({
     origin,
     messages,
     uploads,
+    invalidateSessions: () => {
+      const invalidated = sessions.size
+      sessions.clear()
+      return invalidated
+    },
     close: async () => await closeServer(server),
   }
 }
@@ -77,7 +83,7 @@ async function routeRequest({ request, response, account, password, sessions, me
       sendHtml(response, loginPage("Invalid credentials"), 401)
       return
     }
-    const sessionId = `fixture-${Date.now()}-${sessions.size + 1}`
+    const sessionId = `fixture-${randomUUID()}`
     sessions.set(sessionId, account)
     send(response, 303, "", {
       location: "/mail/inbox",

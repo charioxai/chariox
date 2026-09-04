@@ -130,10 +130,15 @@ Drill:
 13. Verify the recorded machine, user, display, profile, and password-store
     identity remains unchanged, including the slice's durable display-port
     assignment and projected viewer URL.
-14. Stop the fixture and verify the restored service worker serves a cached
+14. Invalidate the fixture's service-side session without deleting the
+    browser cookie or profile. Verify the browser shows the exact login prompt
+    while every persisted browser-state marker remains present.
+15. Reauthenticate through the browser UI and send another message to prove
+    the product remains usable after service-side invalidation.
+16. Stop the fixture and verify the restored service worker serves a cached
     marker while its network origin is offline.
-15. Capture screenshots before save, after restore, and during the offline
-    service-worker check.
+17. Capture screenshots before save, after restore, at the reauthentication
+    prompt, and during the offline service-worker check.
 
 Pass criteria:
 
@@ -145,6 +150,8 @@ Pass criteria:
   Chromium profile, and deterministic `basic` password-store policy remain
   stable.
 - Installed program survives.
+- Service-side session invalidation is recorded as external reauthentication,
+  not browser-state loss, and a fresh login restores normal use.
 - No manual file repair is needed after restore.
 
 Run locally with
@@ -220,7 +227,13 @@ Drill:
 14. Ask the agent to open the webmail fixture again.
 15. Ask the agent to send a second message without re-entering the password.
 16. Verify outside the agent context that the second message was received.
-17. Capture screenshots from the web terminal view page before save, after restore, and after the second send.
+17. Invalidate the fixture session without changing browser storage, then
+    verify the exact login prompt appears and all persisted browser markers
+    still pass.
+18. Reauthenticate through the same browser UI, send a third message, and
+    verify it outside the agent context.
+19. Capture screenshots from the web terminal view page before save, after
+    restore, at reauthentication, and after the final send.
 
 Pass criteria:
 
@@ -229,6 +242,8 @@ Pass criteria:
 - After save, container removal, and restore, the agent can open the same browser session without password entry.
 - The second message is sent after restore.
 - Browser cookies, localStorage or IndexedDB, and any relevant profile state survive restore.
+- Service-side invalidation remains distinguishable from local browser-state
+  loss, and reauthentication returns the restored slice to normal use.
 - Screenshots and fixture verification prove the behavior without user intervention.
 
 Failure interpretation:
