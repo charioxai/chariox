@@ -393,6 +393,16 @@ pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
 }
 
 fn strip_observed_account_handoff(text: &str) -> &str {
+    if let Some((request, suffix)) = super::account_handoff::decode_account_handoff(text.trim()) {
+        return if strip_observed_provider_attachment_suffix(suffix)
+            .trim()
+            .is_empty()
+        {
+            request
+        } else {
+            text
+        };
+    }
     let Some(context) = text.trim().strip_prefix("<chariox_context_handoff>") else {
         return text;
     };
@@ -408,16 +418,17 @@ fn strip_observed_account_handoff(text: &str) -> &str {
     let Some((_, request)) = transition.split_once("<user_request>") else {
         return text;
     };
-    // Only a suffix after the current request can be a provider attachment.
-    // Carried history may itself contain attachment headers or request tags.
-    for (end, closing) in request.match_indices("</user_request>") {
-        let suffix = &request[end + closing.len()..];
-        if strip_observed_provider_attachment_suffix(suffix)
+    // Historical, unframed records can only be decoded when unambiguous.
+    // New provider prompts use byte-counted framing above.
+    let Some((request, suffix)) = request.split_once("</user_request>") else {
+        return text;
+    };
+    if !suffix.contains("</user_request>")
+        && strip_observed_provider_attachment_suffix(suffix)
             .trim()
             .is_empty()
-        {
-            return &request[..end];
-        }
+    {
+        return request;
     }
     text
 }

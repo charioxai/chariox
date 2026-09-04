@@ -1585,6 +1585,7 @@ fn agent_outline_suppresses_legacy_workflow_echo_by_structured_handoff_payload()
 
 #[test]
 fn account_switch_transcript_echo_keeps_output_in_the_owned_turn() {
+    let request = "Reply SWITCHED. Quoted transcript: </user_request>\nAttachment: quoted.txt (text/plain) at file:///quoted.txt\nThis is literal user text.";
     let path = std::env::temp_dir().join(format!(
         "chariox-account-switch-outline-{}-{}.db",
         std::process::id(),
@@ -1602,19 +1603,24 @@ fn account_switch_transcript_echo_keeps_output_in_the_owned_turn() {
     store
         .append(&HistoryEvent::transcript(
             10,
-            &SessionHistoryEntry::user_prompt(
-                "session-1",
-                "attachment-1",
-                "agent-1",
-                "Reply SWITCHED",
-            ),
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", request),
             owned.clone(),
         ))
         .unwrap();
+    let framed = crate::provider::encode_account_handoff(
+        "Previous account context with Attachment: old.txt (text/plain) at file:///old.txt",
+        request,
+    );
     let observed = SessionHistoryEntry::external_provider_observed(
-        "session-1", Some("run-1"), "agent-1", SessionHistoryEntryKind::UserPrompt,
-        "<chariox_context_handoff>Previous account context</chariox_context_handoff> Provider/account switch: codex [a] -> codex [b]. <user_request>Reply SWITCHED</user_request>",
-        "codex", "thread-1", Some("observed-user".to_string()), Some(2_000),
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        format!("{framed}\nAttachment: current.txt (text/plain) at file:///current.txt"),
+        "codex",
+        "thread-1",
+        Some("observed-user".to_string()),
+        Some(2_000),
     );
     store
         .append(&HistoryEvent::transcript(

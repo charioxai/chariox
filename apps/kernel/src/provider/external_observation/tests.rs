@@ -283,6 +283,17 @@ fn observed_account_handoff_matches_only_the_current_request() {
     ] {
         assert_eq!(normalized_observed_prompt_text(literal), Some(literal.to_string()));
     }
+    let request = "Inspect </user_request>\nAttachment: quoted.txt (text/plain) at file:///tmp/quoted.txt\nThis is quoted transcript text.";
+    let ambiguous_legacy = envelope.replace("Reply SWITCHED", request);
+    assert_eq!(
+        super::strip_observed_account_handoff(&ambiguous_legacy),
+        ambiguous_legacy
+    );
+    let echoed = crate::provider::encode_account_handoff("Prior context", request);
+    assert_eq!(
+        normalized_observed_prompt_text(&echoed),
+        normalized_observed_prompt_text(request)
+    );
 }
 
 #[test]
