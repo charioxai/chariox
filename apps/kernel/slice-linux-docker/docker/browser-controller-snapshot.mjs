@@ -1,6 +1,7 @@
 const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_STRING_LENGTH = 2_048;
 const DEFAULT_MAX_ATTRIBUTES = 32;
+const DEFAULT_MAX_FRAMES = 64;
 
 export class BrowserSnapshotError extends Error {
   constructor(code, message) {
@@ -20,9 +21,12 @@ export async function captureBrowserSnapshot({
   limits = {},
 }) {
   const options = snapshotLimits(limits);
-  await assertCurrentDocument(connection, sessionId, targetId, documentId);
+  const frames = snapshotFrames(
+    await assertCurrentDocument(connection, sessionId, targetId, documentId),
+    options.maxFrames,
+  );
   const [accessibility, dom] = await Promise.all([
-    connection.send("Accessibility.getFullAXTree", {}, sessionId),
+    captureFrameAccessibility(connection, sessionId, frames, options),
     connection.send(
       "DOMSnapshot.captureSnapshot",
       {
@@ -33,14 +37,23 @@ export async function captureBrowserSnapshot({
       sessionId,
     ),
   ]);
-  await assertCurrentDocument(connection, sessionId, targetId, documentId);
+  const currentFrames = snapshotFrames(
+    await assertCurrentDocument(connection, sessionId, targetId, documentId),
+    options.maxFrames,
+  );
+  if (JSON.stringify(frames) !== JSON.stringify(currentFrames)) {
+    throw new BrowserSnapshotError(
+      "stale_document_reference",
+      "browser frame tree changed during snapshot capture",
+    );
+  }
   const compactedDom = compactDomSnapshot(dom, options);
   return {
     browser_generation: browserGeneration,
     target_id: targetId,
     document_id: documentId,
     snapshot_revision: snapshotRevision,
-    accessibility_nodes: compactAccessibilityNodes(accessibility?.nodes, options),
+    accessibility_nodes: accessibility,
     ...compactedDom,
   };
 }
@@ -56,6 +69,7 @@ function snapshotLimits(rawLimits) {
       rawLimits.maxAttributes,
       DEFAULT_MAX_ATTRIBUTES,
     ),
+    maxFrames: positiveBound(rawLimits.maxFrames, DEFAULT_MAX_FRAMES),
   };
 }
 
@@ -74,6 +88,43 @@ async function assertCurrentDocument(connection, sessionId, targetId, documentId
       `browser target ${JSON.stringify(targetId)} moved from document ${JSON.stringify(documentId)} to ${JSON.stringify(currentDocumentId ?? null)}`,
     );
   }
+  return frameTree?.frameTree;
+}
+
+function snapshotFrames(frameTree, maxFrames) {
+  const pending = [frameTree];
+  const frames = [];
+  while (pending.length) {
+    const tree = pending.shift();
+    if (frames.length + pending.length >= maxFrames) {
+      throw new BrowserSnapshotError("snapshot_frame_limit", "browser frame tree exceeded its frame bound");
+    }
+    frames.push({ id: tree?.frame?.id, loaderId: tree?.frame?.loaderId });
+    pending.push(...(tree?.childFrames ?? []));
+  }
+  return frames;
+}
+
+async function captureFrameAccessibility(connection, sessionId, frames, options) {
+  const nodes = [];
+  const seen = new Set();
+  for (const frame of frames) {
+    if (nodes.length >= options.maxNodes) break;
+    const tree = await connection.send(
+      "Accessibility.getFullAXTree",
+      frame.id ? { frameId: frame.id } : {},
+      sessionId,
+    );
+    // AX node IDs belong to each frame's tree. Resolve their relationships
+    // before joining frames through the shared backend DOM references.
+    for (const node of compactAccessibilityNodes(tree?.nodes, { ...options, maxNodes: options.maxNodes - nodes.length })) {
+      if (!seen.has(node.node_ref)) {
+        seen.add(node.node_ref);
+        nodes.push(node);
+      }
+    }
+  }
+  return nodes;
 }
 
 function compactAccessibilityNodes(rawNodes, options) {
