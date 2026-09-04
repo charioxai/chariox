@@ -49,9 +49,10 @@ export async function observeRoomStaleToolError(input, agentId, priorTurnIds) {
     try { tool = JSON.parse(item.entry.text) } catch { return false }
     if (!tool?.tool?.endsWith?.("slice_browser_fill") || tool.input?.text !== "STALE ATTEMPT MUST NOT LAND") return false
     const hasCode = (value) => typeof value === "string" && /\b(?:environment_)?stale_element_reference\b/.test(value)
-    if (hasCode(tool.error)) return true
+    const failed = tool.status === "failed" || tool.status === "error"
+    if (hasCode(tool.error) && failed) return true
     if (!hasCode(tool.output)) return false
-    if (tool.status === "failed" || tool.status === "error") return true
+    if (failed) return true
     // Codex can finish an MCP request successfully while its result isError
     // records the rejected action. Successful output text alone is not proof.
     try { return JSON.parse(tool.output)?.isError === true } catch { return false }

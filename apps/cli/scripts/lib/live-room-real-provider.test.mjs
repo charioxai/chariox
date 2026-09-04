@@ -69,6 +69,9 @@ test("recovery rejects unrelated, stale, extra or successful attempts", async ()
 
 test("recovery requires actual tool error output, not prompt or model claims", async () => {
   for (const item of [entry("user_prompt", "stale_element_reference"), entry("provider_output", "stale_element_reference"),
+    ...[undefined, "completed", "running"].map((status) => entry("provider_tool", JSON.stringify({
+      tool: "slice_browser_fill", status, input: { text: "STALE ATTEMPT MUST NOT LAND" }, error: "stale_element_reference",
+    }))),
     entry("provider_tool", JSON.stringify({ tool: "slice_browser_fill", input: { text: "STALE ATTEMPT MUST NOT LAND", error: "stale_element_reference" } })),
     entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", error: "stale_element_reference" })),
     entry("provider_tool", JSON.stringify({ tool: "slice_browser_fill", input: { text: "STALE ATTEMPT MUST NOT LAND" }, error: "browser_action_timeout" })),
