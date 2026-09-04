@@ -25,6 +25,10 @@ import {
   navigateBrowser,
   waitForBrowserState,
 } from "./browser-controller-compatibility.mjs";
+import {
+  BrowserHistoryError,
+  navigateBrowserHistory,
+} from "./browser-controller-history.mjs";
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
@@ -358,6 +362,29 @@ export class BrowserCdpClient {
         targetId,
         documentId,
         url: rawRequest?.url,
+      });
+      this.documentIdsByTarget.set(targetId, result.document_id);
+      this.snapshotStateByTarget.delete(targetId);
+      return {
+        browser_generation: this.browserGeneration,
+        ...result,
+      };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async manageHistory(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    try {
+      const result = await navigateBrowserHistory({
+        connection,
+        sessionId,
+        targetId,
+        documentId,
+        action: rawRequest?.action,
       });
       this.documentIdsByTarget.set(targetId, result.document_id);
       this.snapshotStateByTarget.delete(targetId);
@@ -1008,6 +1035,9 @@ function normalizeControllerError(error) {
     return new BrowserControllerError(error.code, error.message);
   }
   if (error instanceof BrowserCompatibilityError) {
+    return new BrowserControllerError(error.code, error.message);
+  }
+  if (error instanceof BrowserHistoryError) {
     return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(

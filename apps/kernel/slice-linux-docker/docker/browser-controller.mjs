@@ -53,6 +53,12 @@ export async function handleBrowserControllerRequest(
         await browser.navigate(request.params),
       );
     }
+    if (request.method === "browser.history") {
+      return successResponse(
+        request.id,
+        await browser.manageHistory(request.params),
+      );
+    }
     if (request.method === "browser.wait") {
       return successResponse(
         request.id,

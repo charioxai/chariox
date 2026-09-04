@@ -49,6 +49,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "navigate", request });
       return { url: request.url };
     },
+    manageHistory: async (request) => {
+      calls.push({ method: "history", request });
+      return { action: request.action };
+    },
     wait: async (request) => {
       calls.push({ method: "wait", request });
       return { kind: request.kind, ok: true };
@@ -140,6 +144,18 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const history = await handleBrowserControllerRequest(
+    {
+      id: 13,
+      method: "browser.history",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-b",
+        action: "back",
+      },
+    },
+    { browser },
+  );
   const wait = await handleBrowserControllerRequest(
     {
       id: 11,
@@ -210,6 +226,7 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
   assert.deepEqual(action.result, { action_kind: "click" });
   assert.deepEqual(dialog.result, { action: "dismiss" });
   assert.deepEqual(navigation.result, { url: "https://example.test/settings" });
+  assert.deepEqual(history.result, { action: "back" });
   assert.deepEqual(wait.result, { kind: "idle", ok: true });
   assert.deepEqual(downloads.result, { enabled: true });
   assert.deepEqual(upload.result, { file_count: 1 });
@@ -249,6 +266,14 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
         target_id: "target-a",
         document_id: "loader-a",
         url: "https://example.test/settings",
+      },
+    },
+    {
+      method: "history",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-b",
+        action: "back",
       },
     },
     {
