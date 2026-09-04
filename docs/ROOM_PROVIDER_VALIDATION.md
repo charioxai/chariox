@@ -1,5 +1,27 @@
 # Room provider Browser and Computer drills
 
+### Claude tool transcript resource limits
+
+Tool invocation/result projection is bounded before retention and output
+serialization. A turn retains at most 64 unmatched invocations and 256 KiB of
+encoded input plus ID/name bytes. Each input is capped at 8 KiB before cloning;
+oversized input is replaced by `{"chariox_truncated":true}`. Pending inputs stay
+encoded instead of retaining expanded JSON trees. IDs and tool names are capped
+at 256 bytes, and projection examines at most 64 content blocks per message.
+
+Results append text incrementally, retaining at most 16 KiB including a visible
+`[chariox: tool transcript truncated]` marker. At most 256 result blocks are
+examined. No unbounded text-block collection/join occurs. Missing or oversized
+identities and exceeded tracking/message budgets produce one transcript-limit
+notice per turn. These limits affect transcript projection, not provider tool
+execution. Completing a tracked call releases its retained byte budget; turn
+reset clears both pending calls and the notice state.
+
+The standalone actual-source test covers oversized input/results, Unicode and
+exact-size boundaries, many unmatched IDs, aggregate byte exhaustion, result
+correlation, slot reuse and reset. Full kernel integration and live Claude
+provider validation remain separate requirements.
+
 These local acceptance cases use an official provider through the kernel's
 normal slice-backed agent path. The test driver does not impersonate an agent
 with direct MCP calls. Use them before managed-machine validation and public
