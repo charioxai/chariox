@@ -208,10 +208,14 @@ impl RoomEnvironment {
         let changed = self
             .tabs
             .reconcile_controller_tabs(observations, focused_runtime_target_id);
+        let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
         self.element_references
             .retain_current(&self.tabs, self.runtime_generation);
         if changed {
             self.emit(EnvironmentEventKind::TabsChanged);
+        }
+        if input_ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
     }
 
@@ -823,9 +827,13 @@ impl RoomEnvironment {
 
     pub fn close_tab(&mut self, tab_id: &str) -> Result<(), EnvironmentError> {
         self.tabs.close(tab_id)?;
+        let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
         self.element_references
             .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
+        if input_ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
         Ok(())
     }
 

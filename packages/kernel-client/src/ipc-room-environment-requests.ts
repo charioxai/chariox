@@ -243,11 +243,17 @@ export function submitRoomEnvironmentActionRequest(
   }
 }
 
-export type RoomEnvironmentHumanBrowserAction = {
-  readonly kind: "history"
-  readonly tab_id: string
-  readonly action: "back" | "forward" | "reload"
-}
+export type RoomEnvironmentHumanBrowserAction =
+  | {
+      readonly kind: "history"
+      readonly tab_id: string
+      readonly action: "back" | "forward" | "reload"
+    }
+  | {
+      readonly kind: "tab"
+      readonly tab_id: string
+      readonly action: "activate" | "close"
+    }
 
 export function submitRoomEnvironmentBrowserActionRequest(
   sessionId: string,

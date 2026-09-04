@@ -208,6 +208,25 @@ impl EnvironmentActionRequest {
         request
     }
 
+    pub fn browser_tab_mutation(
+        actor_id: impl Into<String>,
+        runtime_generation: u64,
+        kind: impl Into<String>,
+        tab_id: impl Into<String>,
+        document_revision: u64,
+    ) -> Self {
+        let tab_id = tab_id.into();
+        let mut request = Self::browser_mutation(
+            actor_id,
+            runtime_generation,
+            kind,
+            tab_id.clone(),
+            document_revision,
+        );
+        request.targets = vec![InputTarget::Desktop, InputTarget::BrowserTab(tab_id)];
+        request
+    }
+
     pub fn computer_mutation(
         actor_id: impl Into<String>,
         runtime_generation: u64,

@@ -136,6 +136,119 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .iter()
         .all(|tab| tab["tab_id"] != popup_tab_id));
 
+    runtime
+        .perform_browser_environment_locator_action_as_agent(
+            room,
+            agent_id,
+            &shadow_button.element_ref,
+            crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
+            crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
+        )
+        .await
+        .expect("agent reopens the popup for authenticated human control");
+    let human_popup_status = runtime
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+        .await
+        .expect("reopened popup is reconciled before human control");
+    let human_popup_tab_id = human_popup_status.payload["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tab| tab["title"] == "Worker popup")
+        .and_then(|tab| tab["tab_id"].as_str())
+        .expect("stable reopened popup tab id")
+        .to_string();
+    let popup_target = json!({"kind":"browser_tab","id":human_popup_tab_id});
+    let activate_popup = json!({
+        "SubmitRoomEnvironmentBrowserAction": {
+            "session_id": room,
+            "runtime_generation": human_popup_status.payload["runtime_generation"],
+            "idempotency_key": "human-popup-activate-1",
+            "action": {
+                "kind": "tab",
+                "tab_id": human_popup_tab_id,
+                "action": "activate"
+            }
+        }
+    });
+    let denied = dispatch_json(&fixture.home, activate_popup.clone())
+        .await
+        .expect_err("human tab activation requires explicit tab takeover");
+    assert!(
+        denied
+            .to_string()
+            .contains("environment_input_takeover_required"),
+        "{denied}"
+    );
+    dispatch_json(
+        &fixture.home,
+        json!({"RequestRoomEnvironmentInputTakeover":{
+            "session_id":room,"target":popup_target
+        }}),
+    )
+    .await
+    .expect("human takes over the reopened popup");
+    let activated = dispatch_json(&fixture.home, activate_popup)
+        .await
+        .expect("authenticated human activates the popup through the bound worker");
+    let activated = &activated["RoomEnvironmentActionSubmitted"];
+    assert_eq!(
+        activated["environment"]["focused_tab_id"],
+        human_popup_tab_id
+    );
+    let activated_action_id = activated["action_id"]
+        .as_str()
+        .expect("human activation action ID");
+    let activated_action = activated["environment"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["action_id"] == activated_action_id)
+        .expect("attributed human activation action");
+    assert_eq!(activated_action["kind"], "browser_tab_activate");
+    assert_eq!(
+        activated_action["targets"],
+        json!([
+            {"kind":"desktop"},
+            {"kind":"browser_tab","id":human_popup_tab_id}
+        ])
+    );
+
+    let close_popup = json!({
+        "SubmitRoomEnvironmentBrowserAction": {
+            "session_id": room,
+            "runtime_generation": activated["environment"]["runtime_generation"],
+            "idempotency_key": "human-popup-close-1",
+            "action": {
+                "kind": "tab",
+                "tab_id": human_popup_tab_id,
+                "action": "close"
+            }
+        }
+    });
+    let closed = dispatch_json(&fixture.home, close_popup.clone())
+        .await
+        .expect("authenticated human closes the popup through the bound worker");
+    let closed = &closed["RoomEnvironmentActionSubmitted"];
+    let close_action_id = closed["action_id"].clone();
+    assert!(closed["environment"]["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|tab| tab["tab_id"] != human_popup_tab_id));
+    assert!(closed["environment"]["input_ownership"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|ownership| ownership["target"] != popup_target));
+    let replayed_close = dispatch_json(&fixture.home, close_popup)
+        .await
+        .expect("exact close replay succeeds after tab removal and ownership cleanup");
+    assert_eq!(
+        replayed_close["RoomEnvironmentActionSubmitted"]["action_id"],
+        close_action_id
+    );
+
     let dialog = runtime
         .dispatch_authenticated_runtime_tool_call(
             token,

@@ -255,12 +255,23 @@ pub enum RoomEnvironmentBrowserHistoryAction {
     Reload,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomEnvironmentBrowserTabAction {
+    Activate,
+    Close,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoomEnvironmentHumanBrowserAction {
     History {
         tab_id: String,
         action: RoomEnvironmentBrowserHistoryAction,
+    },
+    Tab {
+        tab_id: String,
+        action: RoomEnvironmentBrowserTabAction,
     },
 }
 

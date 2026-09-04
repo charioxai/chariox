@@ -193,6 +193,34 @@ impl KernelRuntimeState {
             .await
     }
 
+    pub(crate) async fn execute_browser_tab_mutation_as_agent<T, F>(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        tab_id: &str,
+        document_revision: u64,
+        action_kind: &str,
+        execution_id: Option<&str>,
+        execution: F,
+    ) -> Result<BrowserControllerActionExecution<T>, DaemonError>
+    where
+        F: Future<Output = Result<T, DaemonError>>,
+    {
+        let environment = self
+            .reconcile_room_environment_actors(session_id, None)
+            .map_err(action_environment_error)?;
+        let actor_id = agent_environment_actor_id(agent_id);
+        let request = EnvironmentActionRequest::browser_tab_mutation(
+            &actor_id,
+            environment.runtime_generation,
+            action_kind,
+            tab_id,
+            document_revision,
+        );
+        self.execute_browser_mutation(session_id, request, execution_id, execution)
+            .await
+    }
+
     pub(super) async fn execute_browser_mutation<T, F>(
         &self,
         session_id: &str,
