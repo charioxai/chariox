@@ -58,6 +58,18 @@ fn disable_pty_input_echo(
     Ok(())
 }
 
+#[cfg(unix)]
+fn terminate_pty_process_group(master: &dyn MasterPty) -> bool {
+    master
+        .process_group_leader()
+        .is_some_and(|process_group| (unsafe { libc::kill(-process_group, libc::SIGKILL) }) == 0)
+}
+
+#[cfg(not(unix))]
+fn terminate_pty_process_group(_master: &dyn MasterPty) -> bool {
+    false
+}
+
 #[derive(Clone)]
 pub(crate) struct PtyInputWriter {
     provider_run_id: String,
@@ -593,13 +605,15 @@ impl PtyManager {
             })?;
 
         if status.is_none() {
-            process
-                .child
-                .kill()
-                .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                    message: error.to_string(),
-                })?;
+            if !terminate_pty_process_group(process.master.as_ref()) {
+                process
+                    .child
+                    .kill()
+                    .map_err(|error| DaemonError::PtyCleanup {
+                        provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+                        message: error.to_string(),
+                    })?;
+            }
             process
                 .child
                 .wait()
@@ -836,6 +850,56 @@ mod tests {
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
         assert!(!manager.has_process(run.id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_pty_process_terminates_its_descendants() {
+        let provider_run_id = "provider-run-with-descendant";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:with-descendant".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "trap '' HUP TERM; sleep 30 & printf 'CHILD_PID=%s\\n' \"$!\"; wait"
+                        .to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("PTY process with a descendant should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id)
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+        let child_pid = String::from_utf8_lossy(&output)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("CHILD_PID="))
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .expect("descendant PID should be reported");
+        struct DescendantGuard(u32);
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                let _ = crate::runtime::process_health::terminate_process_tree(self.0);
+            }
+        }
+        let _guard = DescendantGuard(child_pid);
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("PTY process tree cleanup should succeed");
+
+        assert!(
+            !crate::runtime::process_health::process_running(child_pid),
+            "removing the provider PTY left descendant PID {child_pid} running"
+        );
     }
 
     #[test]
