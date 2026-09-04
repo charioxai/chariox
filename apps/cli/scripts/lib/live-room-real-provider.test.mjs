@@ -10,10 +10,13 @@ test("structured Browser mode requires a fresh tab-targeted browser click", asyn
     action_id: "browser-action", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }],
   }] })
   run.input.options.mode = "browser"
+  const physical = []
+  run.input.waitForPhysicalEffect = async (value) => physical.push(value)
   run.input.waitForTuis = async (pattern) => assert.match("Room action #2: real-opencode · browser click · completed", pattern)
   const result = await runRoomRealProvider(run.input)
   assert.equal(result.mode, "browser")
   assert.equal(result.actionId, "browser-action")
+  assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", "BROWSER_CLICK_ACCEPTED"])
   const prompt = run.calls.find((call) => call.name === "submitPrompt").args[3]
   assert.match(prompt, /slice_browser_find/)
   assert.match(prompt, /slice_browser_click/)

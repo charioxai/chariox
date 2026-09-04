@@ -45,6 +45,7 @@ export async function runRoomEnvironmentCompanion(input) {
     assert.ok(companion.gestures, "Web companion omitted drag/scroll evidence")
   }
   await input.waitForPhysicalEffect(companion.physicalEffect)
+  if (input.ready.realProvider?.mode === "browser") await input.waitForPhysicalEffect("BROWSER_CLICK_ACCEPTED")
   if (companion.keyboard) {
     assert.equal(companion.keyboard.physicalEffect, "WEB_KEYBOARD_TEXT_OK")
     assert.equal(typeof companion.keyboard.actionId, "string")
