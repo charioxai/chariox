@@ -49,11 +49,7 @@ test("shadow-root form controls have no light-DOM alternative and submit success
     const page = await browser.newPage()
     await page.goto(`http://127.0.0.1:${server.address().port}/click`)
     assert.equal(await page.locator('xpath=//input[@name="browser_sample"]').count(), 0)
-    // Controller fill into shadow DOM has a separate focus regression.
-    // Keep this case checking discovery and the fixture until that fix lands.
-    await exerciseControllerForm(page, false)
-    await page.getByLabel("Browser sample").fill("Chariox form sample")
-    await page.getByRole("button", { name: "Submit Browser form", exact: true }).click()
+    await exerciseControllerForm(page)
     await page.waitForURL(/browser_sample=Chariox\+form\+sample/)
     assert.equal(await page.getByText("BROWSER_FORM_ACCEPTED", { exact: true }).count(), 1)
   } finally {
@@ -62,7 +58,7 @@ test("shadow-root form controls have no light-DOM alternative and submit success
   }
 })
 
-async function exerciseControllerForm(page, submit = true) {
+async function exerciseControllerForm(page) {
   const cdp = await page.context().newCDPSession(page)
   try {
     const { frameTree } = await cdp.send("Page.getFrameTree")
@@ -82,11 +78,46 @@ async function exerciseControllerForm(page, submit = true) {
       assert.ok(snapshot.dom_nodes.some((node) => node.node_ref === matches[0].node_ref), "accessible control must resolve to a DOM node")
       controls.push(matches[0].node_ref)
     }
-    if (submit) {
-      await performBrowserAction({ ...context, nodeRef: controls[0], action: { kind: "fill", text: "Chariox form sample" } })
-      await performBrowserAction({ ...context, nodeRef: controls[1], action: { kind: "submit" } })
-    }
+    await performBrowserAction({ ...context, nodeRef: controls[0], action: { kind: "fill", text: "Chariox form sample" } })
+    await performBrowserAction({ ...context, nodeRef: controls[1], action: { kind: "submit" } })
   } finally {
     await cdp.detach()
   }
 }
+
+test("document-bound masked fill can focus a password field inside a shadow root", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true })
+  try {
+    const page = await browser.newPage()
+    await page.setContent('<div id="host"></div><button>Other focus target</button>')
+    await page.evaluate(() => {
+      document.querySelector("#host").attachShadow({ mode: "open" }).innerHTML = '<label>Password<input id="password" type="password"></label>'
+    })
+    const cdp = await page.context().newCDPSession(page)
+    const { frameTree } = await cdp.send("Page.getFrameTree")
+    const context = {
+      connection: { send: (method, params) => cdp.send(method, params) },
+      sessionId: "fixture", targetId: frameTree.frame.id, documentId: frameTree.frame.loaderId,
+      browserGeneration: 1, snapshotRevision: 1,
+    }
+    const snapshot = await captureBrowserSnapshot(context)
+    const password = snapshot.dom_nodes.find((node) => node.attributes.id === "password")
+    assert.ok(password)
+    await performBrowserAction({ ...context, nodeRef: password.node_ref, action: {
+      kind: "fill", text: "fixture-only-password", expected_document_url: page.url(),
+    } })
+    assert.equal(await page.getByLabel("Password").inputValue(), "fixture-only-password")
+    await page.getByLabel("Password").evaluate((input) => {
+      input.blur()
+      input.value = ""
+      input.onfocus = () => document.querySelector("button").focus()
+    })
+    await assert.rejects(performBrowserAction({ ...context, nodeRef: password.node_ref, action: {
+      kind: "fill", text: "fixture-only-password", expected_document_url: page.url(),
+    } }), { code: "browser_secret_target_not_focusable" })
+    assert.equal(await page.getByLabel("Password").inputValue(), "", "focus theft must still prevent password insertion")
+    await cdp.detach()
+  } finally {
+    await browser.close()
+  }
+})
