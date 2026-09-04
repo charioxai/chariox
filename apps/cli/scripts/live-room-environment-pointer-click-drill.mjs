@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
+import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
 import {
   assertRetainedClipboardEvidenceIsRedacted,
   assertRetainedTextIsRedacted,
@@ -46,6 +47,7 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
+const realProviderOptions = roomRealProviderOptions(process.env)
 if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
   throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
 }
@@ -477,6 +479,22 @@ async function run() {
     waitForLocalNotice(/^Room input: available$/),
     waitForRemoteNotice(/^Room input: available$/),
   ])
+  if (realProviderOptions) {
+    const provider = await runRoomRealProvider({
+      client, requests, sessionId, sliceId: slice.id, workspace: repoRoot,
+      options: realProviderOptions, waitFor, screenshot,
+      checkpoint: (value) => writeFile(path.join(evidenceRoot, "real-provider.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }),
+      waitForPhysicalEffect: (marker) => waitForBrowserText(marker, 20_000, "provider click did not reach the shared browser"),
+      waitForTuis: (pattern) => Promise.all([waitForLocalNotice(pattern), waitForRemoteNotice(pattern)]),
+    })
+    result = {
+      schema: "chariox.room_environment.real_provider.v1", status: "passed", startedAt,
+      source: sourceIdentity, sliceRuntime: sliceRuntimeIdentity,
+      sessionId, sliceId: slice.id, environmentId: released.environment_id,
+      provider, containerLimits: limits,
+    }
+    return
+  }
   if (companionOnly) {
     companionResult = await runCompanionIfConfigured({
       environment: released,
