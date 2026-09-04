@@ -297,6 +297,26 @@ fn observed_account_handoff_matches_only_the_current_request() {
 }
 
 #[test]
+fn account_handoff_survives_provider_transcript_cleaning() {
+    let request = "Reply SWITCHED. Do not use tools.";
+    let framed = crate::provider::encode_account_handoff(
+        "Previous prompt\n## My request:\nEarlier text\n<runtime-instructions>old context</runtime-instructions>",
+        request,
+    );
+    for suffix in [
+        "",
+        "\nAttachment: note.txt (text/plain) at file:///note.txt",
+    ] {
+        let cleaned = clean_provider_prompt(format!("{framed}{suffix}"))
+            .expect("The real user request must survive provider cleaning");
+        assert_eq!(
+            normalized_observed_prompt_text(&cleaned),
+            Some(request.to_string())
+        );
+    }
+}
+
+#[test]
 fn observed_prompt_text_ignores_chariox_generated_runtime_context() {
     let observed = "run the check <runtime-instructions>generated</runtime-instructions> \
         <native-permission-instructions>generated</native-permission-instructions>";

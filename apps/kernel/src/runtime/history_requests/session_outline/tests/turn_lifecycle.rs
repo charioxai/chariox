@@ -1616,7 +1616,10 @@ fn account_switch_transcript_echo_keeps_output_in_the_owned_turn() {
         Some("run-1"),
         "agent-1",
         SessionHistoryEntryKind::UserPrompt,
-        format!("{framed}\nAttachment: current.txt (text/plain) at file:///current.txt"),
+        crate::provider::clean_provider_prompt(format!(
+            "{framed}\nAttachment: current.txt (text/plain) at file:///current.txt"
+        ))
+        .expect("provider transcript should contain the user prompt"),
         "codex",
         "thread-1",
         Some("observed-user".to_string()),

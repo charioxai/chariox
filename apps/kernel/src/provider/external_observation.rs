@@ -139,6 +139,12 @@ pub(crate) fn text_from_content(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn clean_provider_prompt(prompt: String) -> Option<String> {
+    // Decode before provider wrapper removal or whitespace compaction destroys
+    // the frame's byte offsets. Its request is already the user-authored text.
+    let request = strip_observed_account_handoff(&prompt);
+    if request != prompt {
+        return (!request.trim().is_empty()).then(|| request.trim().to_string());
+    }
     let prompt = strip_observed_generated_prompt_context(prompt.trim()).trim();
     if prompt.is_empty()
         || prompt.starts_with("# AGENTS.md instructions")
