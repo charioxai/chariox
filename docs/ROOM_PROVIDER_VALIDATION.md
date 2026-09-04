@@ -96,6 +96,28 @@ still runs only at the final reviewed, merge-ready gate.
 
 ## Evidence and limits
 
+### Controller reference recovery
+
+Run the real-Chrome controller request tests before the live provider drill:
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs pnpm run test:browser-controller-browser
+```
+
+This uses the normal controller request dispatcher and persistent CDP client,
+not a mocked browser connection. Each case creates and removes its own temporary
+Chrome profile outside the repository, closes the controller and browser, and
+requires an already-installed Chrome. It tests replacement of a field in the
+top page, two nested frames and an open shadow root; top-page navigation; and
+child-frame navigation with an unchanged top document.
+
+Old references must produce `stale_element_reference` or, after top navigation,
+`stale_document_reference`, without inserting text into the replacement. A new
+snapshot must discover a usable field and fill it successfully. Detached nodes
+are rejected immediately, not polled as temporarily hidden elements. These are
+controller-level checks, not proof of provider-led retry, kernel action-history
+projection, concurrent navigation during insertion, or cross-origin recovery.
+
 Keep the exact source/image fingerprints, provider identity, action ID and
 sequence, physical result, Web screenshot, TUI assertions, resource samples,
 outer process exit and cleanup ledger. A provider text response or an early
