@@ -25,6 +25,15 @@ export async function runRoomEnvironmentCompanion(input) {
     pollIntervalMs: 100,
   })
   validateCompanionResult(companion)
+  if (input.ready.realProvider) {
+    assert.ok(companion.provider, "Web companion omitted required real-provider evidence")
+    assert.equal(companion.provider.provider, input.ready.realProvider.provider)
+    assert.equal(companion.provider.model, input.ready.realProvider.model)
+    assert.equal(companion.provider.webObserved, true, "Web must observe the provider action")
+    assert.ok(typeof companion.provider.agentId === "string" && companion.provider.agentId.length > 0)
+    assert.equal(companion.provider.actorId, `agent:${companion.provider.agentId}`)
+    assert.ok(typeof companion.provider.screenshot === "string" && path.isAbsolute(companion.provider.screenshot))
+  }
   if (input.ready.keyboardText) {
     assert.ok(companion.keyboard, "Web companion omitted required keyboard evidence")
   }
@@ -64,6 +73,21 @@ export async function runRoomEnvironmentCompanion(input) {
   assert.equal(webAction.kind, "pointer_click")
   assert.equal(webAction.state, "completed")
   const actions = [webAction]
+  if (input.ready.realProvider) {
+    const provider = companion.provider
+    const action = history.find((item) => item.action_id === provider.actionId)
+    assert.ok(action, "real-provider action was absent from kernel history")
+    assert.equal(action.actor_id, provider.actorId)
+    assert.equal(action.kind, "pointer_click")
+    assert.equal(action.mode, "computer")
+    assert.equal(action.state, "completed")
+    assert.equal(action.arguments.x, 640)
+    assert.equal(action.arguments.y, 400)
+    assert.equal(action.arguments.button, "left")
+    assert.equal(action.arguments.click_count, 1)
+    assert.ok(action.sequence < webAction.sequence, "provider action must precede human takeover")
+    actions.unshift(action)
+  }
   if (companion.keyboard) {
     const keyboard = history.find((action) => action.action_id === companion.keyboard.actionId)
     assert.ok(keyboard, "Web keyboard action was absent from kernel history")

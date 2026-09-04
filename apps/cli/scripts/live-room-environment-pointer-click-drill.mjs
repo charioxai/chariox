@@ -489,7 +489,7 @@ async function run() {
     waitForLocalNotice(/^Room input: available$/),
     waitForRemoteNotice(/^Room input: available$/),
   ])
-  if (realProviderOptions) {
+  if (realProviderOptions && !companionOnly) {
     const provider = await runRoomRealProvider({
       client, requests, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
       options: realProviderOptions, waitFor, withTimeout, screenshot,
@@ -1998,6 +1998,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
       ...(webPointerGestures ? { pointerGestures: true } : {}),
       pointerClickExpectedCount: 1,
+      ...(realProviderOptions ? { realProvider: realProviderOptions, providerWorkspace: fixtureWorkspace } : {}),
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
       relayToken: remoteTuiRelayToken,

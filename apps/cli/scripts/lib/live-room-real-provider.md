@@ -66,6 +66,22 @@ JavaScript cleanup and is not a graceful interruption path.
 import operation before spawning. Keep this separate from the normal automatic
 transfer path so import-and-launch regressions can be reproduced.
 
-This initial case does not yet validate structured Browser operations, Web
-observation of that agent action, persistence, permission denial, or all three
-providers. Those requirements remain in the end-to-end plan.
+## Optional Web companion
+
+With `CHARIOX_ROOM_DRILL_FOCUS=web-companion`, additionally set
+`CHARIOX_ROOM_DRILL_WEB_REAL_PROVIDER=1` and the explicit provider/model above.
+This requires the paired Cloud Web companion implementation. An older companion
+that returns only stub-agent evidence is rejected, not counted as a pass.
+
+The shared `runRoomRealProviderAction` runner can operate on the official agent
+already selected by Web. Its `beforePrompt` callback must finish before prompt
+submission. It proves only the agent-attributed kernel action. The caller must
+separately verify physical input and fresh Web pixels; it cannot claim TUI
+coverage from this helper. The OSS companion verifier then checks the provider
+action against authoritative history and observes it in both TUIs before
+acceptance. Human input must follow the provider action in the same Room.
+
+The isolated provider mode still verifies physical input and both TUIs through
+`runRoomRealProvider`. Structured Browser operations, persistence, permission
+denial and all-provider acceptance remain in the end-to-end plan. The new Web
+mode needs live acceptance and exact-head review in both repositories.
