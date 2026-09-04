@@ -57,14 +57,17 @@ test("failure to apply a cap cannot start or execute inside the slice", async ()
   }
 })
 
-test("invalid caps never prevent stopping a slice", async () => {
-  const { result, calls } = await invoke({ limit: "0", action: "stop" })
-  assert.equal(result.status, 0)
-  assert.ok(calls.some((args) => args[0] === "info"))
-  assert.equal(calls.some((args) => args[0] === "update"), false)
+test("invalid caps never prevent stopping or destroying a running slice", async () => {
+  for (const action of ["stop", "destroy"]) {
+    const { result, calls } = await invoke({ limit: "0", existing: true, running: true, action })
+    assert.equal(result.status, 0)
+    assert.ok(calls.some((args) => args[0] === "stop" && args[1] === "chariox-process-limit-fixture"))
+    if (action === "destroy") assert.ok(calls.some((args) => args[0] === "rm" && args[1] === "chariox-process-limit-fixture"))
+    assert.equal(calls.some((args) => args[0] === "update"), false)
+  }
 })
 
-async function invoke({ limit, existing = false, action = "provision", updateFails = false } = {}) {
+async function invoke({ limit, existing = false, running = false, action = "provision", updateFails = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-process-limit-"))
   try {
     const log = join(root, "docker.jsonl")
@@ -82,8 +85,12 @@ if (args[0] === "container" && args[1] === "inspect") {
   if (process.env.CHARIOX_TEST_EXISTING !== "1") process.exit(1);
   console.log("fixture-image"); process.exit(0);
 }
-if (args[0] === "inspect") { console.log("false"); process.exit(0); }
-if (args[0] === "volume" || args[0] === "create" || args[0] === "start") process.exit(0);
+if (args[0] === "inspect") { console.log(process.env.CHARIOX_TEST_RUNNING === "1" ? "true" : "false"); process.exit(0); }
+if (args[0] === "ps") {
+  if (process.env.CHARIOX_TEST_EXISTING === "1" && (args.includes("-a") || process.env.CHARIOX_TEST_RUNNING === "1")) console.log("chariox-process-limit-fixture");
+  process.exit(0);
+}
+if (["volume", "create", "start", "stop", "rm"].includes(args[0])) process.exit(0);
 if (args[0] === "update") process.exit(process.env.CHARIOX_TEST_UPDATE_FAILS === "1" ? 73 : 0);
 // Stop before running setup inside the fixture container.
 if (args[0] === "exec") process.exit(71);
@@ -96,6 +103,7 @@ throw new Error("unexpected Docker call: " + args[0]);
       env: { ...env, PATH: `${root}:${env.PATH}`, TMPDIR: root,
         CHARIOX_TEST_DOCKER_LOG: log, CHARIOX_TEST_PROTOCOL: protocol,
         CHARIOX_TEST_EXISTING: existing ? "1" : "0", CHARIOX_TEST_UPDATE_FAILS: updateFails ? "1" : "0",
+        CHARIOX_TEST_RUNNING: running ? "1" : "0",
         CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
         CHARIOX_SLICE_BUILD_IMAGE: "never", CHARIOX_SLICE_NAME: "chariox-process-limit-fixture",
         ...(limit === undefined ? {} : { CHARIOX_SLICE_DOCKER_PIDS_LIMIT: limit }),
