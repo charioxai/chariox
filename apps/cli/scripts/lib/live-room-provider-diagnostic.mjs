@@ -39,7 +39,7 @@ export async function captureRoomProviderDiagnostic(input) {
     agentState: "unknown", activityStatus: "unknown", promptStatus: "unknown", activeTurnPhase: "unknown",
     turns: [], entryCounts: counters([...entryKinds, "unknown"]),
     blobCounts: counters([...entryKinds, "unknown"]), actionCounts: counters([...actionStates, "unknown"]),
-    computerToolMentioned: false, observedTools: [], truncated: false, codes: [],
+    computerToolMentioned: false, observedTools: [], browserFindResults: [], truncated: false, codes: [],
   }
   const codes = new Set()
   const observedTools = new Set()
@@ -86,6 +86,18 @@ export async function captureRoomProviderDiagnostic(input) {
           ? value.tool.replace(/^(?:mcp__chariox__|chariox\.|chariox_)/, "") : ""
         if (diagnosticTools.has(tool)) observedTools.add(tool)
         if (tool === "slice_mouse") result.computerToolMentioned = true
+        if (tool === "slice_browser_find" && value.status === "completed") {
+          const output = typeof value.output === "string" ? JSON.parse(value.output) : value.output
+          const matches = output?.browser?.matches ?? output?.payload?.browser?.matches
+          if (Array.isArray(matches)) {
+            if (result.browserFindResults.length < 16) {
+              const query = [
+                ["Browser sample", "field"], ["Replace Browser field", "replacement"], ["Submit Browser form", "submit"],
+              ].find(([text]) => text === value.input?.query)?.[1] ?? "other"
+              result.browserFindResults.push({ query, matches: Math.min(matches.length, 100) })
+            } else result.truncated = true
+          }
+        }
       } catch { /* A truncated or non-JSON preview cannot prove a tool identity. */ }
     }
   }

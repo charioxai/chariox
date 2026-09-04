@@ -345,6 +345,38 @@ test("diagnostics identify only allowlisted tool names from actual tool records"
   assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
 })
 
+test("diagnostics classify Browser discovery outcomes without retaining queries or results", async () => {
+  const discovery = (query, matches) => entry("provider_tool", JSON.stringify({
+    tool: "mcp__chariox__slice_browser_find", status: "completed", input: { query },
+    output: JSON.stringify({ browser: { matches } }),
+  }))
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: [
+    discovery("Submit Browser form", []),
+    discovery("Browser sample", [{ label: secret, field_id: secret }]),
+    discovery(secret, [{ label: secret }]),
+    entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "running",
+      input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } })),
+    entry("provider_output", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+      input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } })),
+  ] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [
+    { query: "submit", matches: 0 }, { query: "field", matches: 1 }, { query: "other", matches: 1 },
+  ])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("Browser discovery diagnostics retain at most sixteen bounded counts", async () => {
+  const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+    input: { query: "Browser sample" }, output: { browser: { matches: Array(150).fill(null) } } }))
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: Array(17).fill(record) }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  const diagnostic = run.checkpoints.at(-1).diagnostic
+  assert.equal(diagnostic.browserFindResults.length, 16)
+  assert.equal(diagnostic.browserFindResults[0].matches, 100)
+  assert.equal(diagnostic.truncated, true)
+})
+
 test("prompt rejection fails immediately rather than waiting for an impossible action", async () => {
   const run = fixture({ submit: { Error: { message: secret } } })
   let waited = false
