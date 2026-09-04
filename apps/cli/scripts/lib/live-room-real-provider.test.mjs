@@ -5,17 +5,27 @@ import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
 
+test("nested Browser layouts must explicitly select the form task", () => {
+  const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4",
+    CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser", CHARIOX_ROOM_DRILL_BROWSER_TASK: "form" }
+  assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_LAYOUT: "nested-frame" }).browserLayout, "nested-frame")
+  assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_LAYOUT: "shadow-root" }).browserLayout, "shadow-root")
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_LAYOUT: "unknown" }), /layout/)
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_TASK: "click", CHARIOX_ROOM_DRILL_BROWSER_LAYOUT: "nested-frame" }), /form/)
+})
+
 test("Browser form task requires fresh fill then submit in one tab", async () => {
   const actions = [
     { actor_id: "agent:agent-2", kind: "fill", state: "completed", mode: "browser", action_id: "fill", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }] },
     { actor_id: "agent:agent-2", kind: "submit", state: "completed", mode: "browser", action_id: "submit", sequence: 3, targets: [{ kind: "browser_tab", id: "tab-1" }] },
   ]
   const run = fixture({ actions })
-  run.input.options = { ...run.input.options, mode: "browser", browserTask: "form" }
+  run.input.options = { ...run.input.options, mode: "browser", browserTask: "form", browserLayout: "nested-frame" }
   const result = await runRoomRealProviderAction(run.input)
   assert.equal(result.actionId, "submit")
   assert.equal(result.fillActionId, "fill")
   assert.equal(result.browserTask, "form")
+  assert.equal(result.browserLayout, "nested-frame")
   const prompt = run.calls.find((call) => call.name === "submitPrompt").args[3]
   assert.match(prompt, /slice_browser_fill/)
   assert.match(prompt, /slice_browser_submit/)
