@@ -5,6 +5,38 @@ import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
 
+test("Browser form task requires fresh fill then submit in one tab", async () => {
+  const actions = [
+    { actor_id: "agent:agent-2", kind: "fill", state: "completed", mode: "browser", action_id: "fill", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }] },
+    { actor_id: "agent:agent-2", kind: "submit", state: "completed", mode: "browser", action_id: "submit", sequence: 3, targets: [{ kind: "browser_tab", id: "tab-1" }] },
+  ]
+  const run = fixture({ actions })
+  run.input.options = { ...run.input.options, mode: "browser", browserTask: "form" }
+  const result = await runRoomRealProviderAction(run.input)
+  assert.equal(result.actionId, "submit")
+  assert.equal(result.fillActionId, "fill")
+  assert.equal(result.browserTask, "form")
+  const prompt = run.calls.find((call) => call.name === "submitPrompt").args[3]
+  assert.match(prompt, /slice_browser_fill/)
+  assert.match(prompt, /slice_browser_submit/)
+  assert.match(prompt, /Chariox form sample/)
+})
+
+test("standalone form drill verifies accepted navigation and both fill and submit TUI notices", async () => {
+  const fill = { actor_id: "agent:agent-2", kind: "fill", mode: "browser", state: "completed", action_id: "fill", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }] }
+  const run = fixture({ actions: [fill, { ...fill, action_id: "submit", kind: "submit", sequence: 3 }] })
+  run.input.options = { ...run.input.options, mode: "browser", browserTask: "form" }
+  const physical = []
+  const notices = []
+  run.input.waitForPhysicalEffect = async (value) => physical.push(value)
+  run.input.waitForTuis = async (pattern) => notices.push(pattern)
+  await runRoomRealProvider(run.input)
+  assert.deepEqual(physical, ["POINTER_CLICK_COUNT=1", "BROWSER_FORM_ACCEPTED"])
+  assert.equal(notices.length, 2)
+  assert.match("Room action #2: real-opencode · browser fill · completed", notices[0])
+  assert.match("Room action #3: real-opencode · browser submit · completed", notices[1])
+})
+
 test("structured Browser mode requires a fresh tab-targeted browser click", async () => {
   const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "click", state: "completed", mode: "browser",
     action_id: "browser-action", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }],
@@ -42,6 +74,24 @@ test("explicit provider mode selects Browser without silently changing the defau
   assert.equal(roomRealProviderOptions(env).mode, "computer")
   assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser" }).mode, "browser")
   assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_PROVIDER_MODE: "invalid" }))
+})
+
+test("form task must be explicitly selected in Browser mode", () => {
+  const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4" }
+  assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser", CHARIOX_ROOM_DRILL_BROWSER_TASK: "form" }).browserTask, "form")
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_BROWSER_TASK: "form" }), /Browser/)
+  assert.throws(() => roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_PROVIDER_MODE: "browser", CHARIOX_ROOM_DRILL_BROWSER_TASK: "unknown" }), /task/)
+})
+
+test("form submission cannot reuse a stale, failed, later, foreign-actor or different-tab fill", async () => {
+  const fill = { actor_id: "agent:agent-2", kind: "fill", mode: "browser", state: "completed", action_id: "fill", sequence: 2, targets: [{ kind: "browser_tab", id: "tab-1" }] }
+  const submit = { ...fill, kind: "submit", action_id: "submit", sequence: 3 }
+  for (const invalid of [null, { sequence: 1 }, { state: "failed" }, { sequence: 4 }, { actor_id: "agent:other" },
+    { targets: [{ kind: "browser_tab", id: "other-tab" }] }, { mode: "computer" }]) {
+    const run = fixture({ priorActions: [{ sequence: 1 }], actions: [submit, ...(invalid ? [{ ...fill, ...invalid }] : [])] })
+    run.input.options = { ...run.input.options, mode: "browser", browserTask: "form" }
+    await assert.rejects(runRoomRealProviderAction(run.input), /fresh completed fill/)
+  }
 })
 
 test("Web real-provider mode requires an explicit opt-in and model", () => {

@@ -6,9 +6,11 @@ import test from "node:test"
 
 import { runRoomEnvironmentCompanion } from "./live-room-environment-companion-verifier.mjs"
 
-for (const providerMode of [null, "computer", "browser"]) {
+for (const scenario of [null, "computer", "browser", "form"]) {
+const form = scenario === "form"
+const providerMode = form ? "browser" : scenario
 const includeProvider = providerMode !== null
-test(`Room companion verifier uses stable TUI baselines, provider mode=${providerMode}`, async () => {
+test(`Room companion verifier uses stable TUI baselines, provider scenario=${scenario}`, async () => {
   let prepared = false
   let preparedAtReady = false
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-verifier-"))
@@ -23,9 +25,10 @@ test(`Room companion verifier uses stable TUI baselines, provider mode=${provide
   }
   const keyboardAction = { ...action, action_id: "action-keyboard", kind: "keyboard_text", sequence: 8 }
   const providerAction = { ...action, action_id: "action-provider", actor_id: "agent:agent-real", sequence: 6,
-    mode: providerMode, kind: providerMode === "browser" ? "click" : "pointer_click",
+    mode: providerMode, kind: form ? "submit" : providerMode === "browser" ? "click" : "pointer_click",
     targets: [{ kind: "browser_tab", id: "tab-1" }],
     arguments: { x: 640, y: 400, button: "left", click_count: 1 } }
+  const fillAction = { ...providerAction, action_id: "action-fill", kind: "fill", sequence: 5 }
   const shortcutAction = { ...action, action_id: "action-shortcut", kind: "keyboard_key", sequence: 9 }
   const replacementAction = { ...keyboardAction, action_id: "action-ime", sequence: 10 }
   const dragAction = { ...action, action_id: "action-drag", kind: "pointer_drag", sequence: 11 }
@@ -52,6 +55,7 @@ test(`Room companion verifier uses stable TUI baselines, provider mode=${provide
       actorId: action.actor_id,
       ...(includeProvider ? { provider: { provider: "codex", model: "gpt-5.4", agentId: "agent-real",
         actorId: "agent:agent-real", actionId: providerAction.action_id, webObserved: true,
+        ...(form ? { browserTask: "form", fillActionId: fillAction.action_id, baselineSequence: 1 } : {}),
         screenshot: path.join(root, "provider.png") } } : {}),
       gestures: { dragActionId: dragAction.action_id, scrollActionId: scrollAction.action_id },
       keyboard: {
@@ -82,11 +86,11 @@ test(`Room companion verifier uses stable TUI baselines, provider mode=${provide
         keyboardText: "fixture typing",
         keyboardReplacementText: "fixture replacement",
         pointerGestures: true,
-        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode } } : {}),
+        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode, ...(form ? { browserTask: "form" } : {}) } } : {}),
       },
       client: {
         send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [action, keyboardAction, shortcutAction, replacementAction, dragAction, scrollAction,
-          ...(includeProvider ? [providerAction] : [])] } } }),
+          ...(includeProvider ? [providerAction] : []), ...(form ? [fillAction] : [])] } } }),
       },
       observerClient: {
         send: async () => ({ RoomEnvironmentState: { environment: { input_ownership: [] } } }),
@@ -111,9 +115,9 @@ test(`Room companion verifier uses stable TUI baselines, provider mode=${provide
 
     assert.equal(verified.actionId, action.action_id)
     assert.equal(verified.status, "passed")
-    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", ...(providerMode === "browser" ? ["BROWSER_CLICK_ACCEPTED"] : []), "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
+    assert.deepEqual(physical, ["POINTER_CLICK_COUNT=2", ...(form ? ["BROWSER_FORM_ACCEPTED"] : providerMode === "browser" ? ["BROWSER_CLICK_ACCEPTED"] : []), "WEB_KEYBOARD_TEXT_OK", "WEB_KEYBOARD_REPLACEMENT_OK",
       "WEB_DRAG_SELECTION_OK WINDOW_GEOMETRY_STABLE", "WEB_SCROLL_BOTH_AXES_OK"])
-    const expectedNotices = [...(includeProvider ? [6] : []), 7, 8, 9, 10, 11, 12]
+    const expectedNotices = [...(form ? [5] : []), ...(includeProvider ? [6] : []), 7, 8, 9, 10, 11, 12]
     assert.deepEqual(noticed, { local: expectedNotices, remote: expectedNotices })
     assert.equal(preparedAtReady, true, "physical fixture must be reset before Web receives its handoff")
     assert.equal(verified.client, "production-local-web-view")
