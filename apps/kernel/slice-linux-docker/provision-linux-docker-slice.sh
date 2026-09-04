@@ -60,6 +60,7 @@ SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
+SLICE_DOCKER_PIDS_LIMIT="${CHARIOX_SLICE_DOCKER_PIDS_LIMIT:-1024}"
 SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
@@ -214,6 +215,11 @@ Usage: $(basename "$0") [provision|recover|status|stop|destroy|import-provider-a
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
 the Lume Ubuntu prebuilt image is unavailable.
+
+CHARIOX_SLICE_DOCKER_PIDS_LIMIT caps container processes and threads (default:
+1024). Set a positive integer to tune it for the workload. Reused containers
+receive the current limit before startup. Stop and destroy remain available
+even if the configured value is invalid.
 EOF
 }
 
@@ -549,6 +555,11 @@ refresh_saved_state_runtime() {
   log "refreshed saved slice worker runtime to $SLICE_RUNTIME_SOURCE_REVISION"
 }
 
+apply_container_process_limit() {
+  run_with_timeout 30 docker update --pids-limit "$SLICE_DOCKER_PIDS_LIMIT" "$SLICE_NAME" >/dev/null \
+    || fail "failed to apply slice process limit; refusing to start services"
+}
+
 ensure_container() {
   local created_container=0
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
@@ -575,6 +586,7 @@ ensure_container() {
 
   if container_exists; then
     log "container $SLICE_NAME already exists"
+    apply_container_process_limit
   else
     log "creating container $SLICE_NAME"
     run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
@@ -583,6 +595,7 @@ ensure_container() {
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
       --ulimit core=0:0
+      --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
       --sysctl "net.ipv4.ip_local_reserved_ports=$SLICE_CODEX_PORT_RANGE,$SLICE_OPENCODE_PORT_RANGE"
       -e "CHARIOX_SLICE_VIEWER_BACKEND=${CHARIOX_SLICE_VIEWER_BACKEND:-novnc}"
       -e "CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
@@ -690,6 +703,7 @@ ensure_container() {
 
 recover_existing_container() {
   container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
+  apply_container_process_limit
   if ! container_running; then
     log "restarting existing container $SLICE_NAME after failed state save"
     if ! run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null \
@@ -729,6 +743,7 @@ ensure_auth_target_container() {
   if ! container_exists; then
     fail "container $SLICE_NAME does not exist"
   fi
+  apply_container_process_limit
   if ! container_running; then
     log "starting container $SLICE_NAME"
     run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null || fail "failed to start container $SLICE_NAME"
@@ -1237,6 +1252,14 @@ destroy_container() {
 
 main() {
   local action="${1:-provision}"
+  case "$action" in
+    -h|--help|help|status|stop|destroy) ;;
+    *)
+      if [[ ! "$SLICE_DOCKER_PIDS_LIMIT" =~ ^[1-9][0-9]{0,9}$ ]] || (( SLICE_DOCKER_PIDS_LIMIT > 2147483647 )); then
+        fail "CHARIOX_SLICE_DOCKER_PIDS_LIMIT must be an integer from 1 to 2147483647"
+      fi
+      ;;
+  esac
   case "$action" in
     -h|--help|help)
       usage

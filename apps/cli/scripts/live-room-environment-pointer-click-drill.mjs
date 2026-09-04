@@ -255,6 +255,7 @@ async function run() {
     // still runs exact-head code, but a stripped dev link uses materially less
     // memory than an optimized release link inside Docker Desktop.
     CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: "dev",
+    CHARIOX_SLICE_DOCKER_PIDS_LIMIT: "1024",
     XDG_CONFIG_HOME: path.join(tempRoot, "xdg-config"),
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
@@ -348,6 +349,7 @@ async function run() {
   assert.equal(limits.memoryBytes, 2048 * 1024 * 1024)
   assert.equal(limits.memorySwapBytes, limits.memoryBytes)
   assert.equal(limits.nanoCpus, 1_000_000_000)
+  assert.equal(limits.pidsLimit, 1024)
   await waitForBrowserReady(60_000)
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
   await waitForBrowserText("POINTER_CLICK_READY", 30_000, "click fixture did not load")
