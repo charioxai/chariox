@@ -143,18 +143,22 @@ export async function runRoomRealProviderAction(input) {
     "After that single click, stop and report whether the tool succeeded.",
     ].join(" ")
     unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, prompt, [])), "PromptSubmitted")
-    action = await input.waitFor(async () => {
-      const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
-        sessionId, null, 100,
-      )), "RoomEnvironmentActionHistoryListed").page.actions
+    const findCompletedAction = (actions) => {
       const completed = actions.find((item) => item.actor_id === actorId
         && Number.isSafeInteger(item.sequence) && item.sequence > baselineSequence
         && item.kind === actionKind && item.state === "completed")
       if (completed) {
         if (form) fillAction = assertRoomBrowserFormActions(actions, completed, baselineSequence)
         if (recovery) recoveryActions = assertRoomBrowserRecoveryActions(actions, completed, baselineSequence)
-        return completed
       }
+      return completed
+    }
+    action = await input.waitFor(async () => {
+      const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
+        sessionId, null, 100,
+      )), "RoomEnvironmentActionHistoryListed").page.actions
+      const completed = findCompletedAction(actions)
+      if (completed) return completed
       // Ignore turns predating this prompt when Web reuses an idle agent.
       // A warning/error on a still-open turn must not abort the action wait.
       if (Date.now() - lastFailureProbe >= 2_000) {
@@ -163,16 +167,26 @@ export async function runRoomRealProviderAction(input) {
           sessionId, [agent.id], 2,
         )), 2_000, "provider failure probe").catch(() => null)
         const turns = outline?.SessionHistoryOutline?.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []
-        if (turns.slice(0, 2).some((turn) => !priorTurnIds.has(turn.turn_id)
-          && (!input.agent || typeof turn.turn_id === "string") && turn.lifecycle === "completed" && (
-          turn.summary?.entry?.kind === "provider_error"
-          || (turn.entries ?? []).slice(0, 256).some((item) => item.entry?.kind === "provider_error")
-          || (turn.blobs ?? []).slice(0, 16).some((item) => item.kind === "provider_error")
-        ))) return { providerFailed: true }
+        const completedTurns = turns.slice(0, 2).filter((turn) => !priorTurnIds.has(turn.turn_id)
+          && (!input.agent || typeof turn.turn_id === "string") && turn.lifecycle === "completed")
+        if (completedTurns.length) {
+          // The action may have committed between the first history read and
+          // observing the completed turn. Re-read before declaring it missing.
+          const latest = unwrap(await input.withTimeout(client.send(requests.listRoomEnvironmentActionHistoryRequest(
+            sessionId, null, 100,
+          )), 2_000, "completed provider action lookup"), "RoomEnvironmentActionHistoryListed").page.actions
+          const finalAction = findCompletedAction(latest)
+          if (finalAction) return finalAction
+          const providerFailed = completedTurns.some((turn) => turn.summary?.entry?.kind === "provider_error"
+            || (turn.entries ?? []).slice(0, 256).some((item) => item.entry?.kind === "provider_error")
+            || (turn.blobs ?? []).slice(0, 16).some((item) => item.kind === "provider_error"))
+          return providerFailed ? { providerFailed: true } : { providerCompletedWithoutAction: true }
+        }
       }
       return false
     }, 180_000, `official provider did not complete a Room ${mode} ${actionKind}`)
     if (action.providerFailed) throw new Error("official provider turn failed before completing the Room action")
+    if (action.providerCompletedWithoutAction) throw new Error("official provider turn completed without the required Room action")
     if (recovery) await input.waitFor(() => observeRoomStaleToolError(input, agent.id, priorTurnIds),
       15_000, "provider tool history did not confirm stale_element_reference")
   } catch (error) {

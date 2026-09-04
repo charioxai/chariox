@@ -1,5 +1,10 @@
 const entryKinds = ["user_prompt", "provider_output", "provider_reasoning", "provider_tool", "provider_error", "provider_status", "notice"]
 const actionStates = ["queued", "running", "completed", "failed", "cancelled"]
+const diagnosticTools = new Set([
+  "list_mcp_resources", "list_mcp_resource_templates", "list_slices", "tool_search",
+  "slice_screen_status", "slice_screenshot", "slice_mouse", "slice_keyboard",
+  "slice_browser_find", "slice_browser_click", "slice_browser_fill", "slice_browser_submit",
+])
 const diagnosticPatterns = [
   ["endpoint_unhealthy", /(?:codex|claude|opencode)_endpoint_unhealthy/i],
   ["provider_launch", /provider launch/i],
@@ -34,9 +39,10 @@ export async function captureRoomProviderDiagnostic(input) {
     agentState: "unknown", activityStatus: "unknown", promptStatus: "unknown", activeTurnPhase: "unknown",
     turns: [], entryCounts: counters([...entryKinds, "unknown"]),
     blobCounts: counters([...entryKinds, "unknown"]), actionCounts: counters([...actionStates, "unknown"]),
-    computerToolMentioned: false, truncated: false, codes: [],
+    computerToolMentioned: false, observedTools: [], browserFindResults: [], truncated: false, codes: [],
   }
   const codes = new Set()
+  const observedTools = new Set()
   let inspectedChars = 0
   let inspectedEntries = 0
   let loadedBlobs = 0
@@ -59,8 +65,9 @@ export async function captureRoomProviderDiagnostic(input) {
     if (text.length < value.length) result.truncated = true
     for (const [code, pattern] of diagnosticPatterns) if (pattern.test(text)) codes.add(code)
     if (tool && /\bslice_mouse\b/.test(text)) result.computerToolMentioned = true
+    return text
   }
-  const inspectEntry = (item, seen) => {
+  const inspectEntry = (item, seen, discovered) => {
     if (!item?.entry) return
     if (inspectedEntries >= 256) { result.truncated = true; return }
     inspectedEntries += 1
@@ -71,7 +78,29 @@ export async function captureRoomProviderDiagnostic(input) {
     if (Number.isSafeInteger(item.entry_index)) {
       seen.add(item.entry_index)
     }
-    inspectText(item.entry.text, kind === "provider_tool")
+    const text = inspectText(item.entry.text, kind === "provider_tool")
+    if (kind === "provider_tool") {
+      try {
+        const value = JSON.parse(text)
+        const tool = typeof value?.tool === "string"
+          ? value.tool.replace(/^(?:mcp__chariox__|chariox\.|chariox_)/, "") : ""
+        if (diagnosticTools.has(tool)) observedTools.add(tool)
+        if (tool === "slice_mouse") result.computerToolMentioned = true
+        if (tool === "slice_browser_find" && value.status === "completed") {
+          const output = typeof value.output === "string" ? JSON.parse(value.output) : value.output
+          const matches = output?.browser?.matches ?? output?.payload?.browser?.matches
+          if (Array.isArray(matches) && (!Number.isSafeInteger(item.entry_index) || !discovered.has(item.entry_index))) {
+            if (Number.isSafeInteger(item.entry_index)) discovered.add(item.entry_index)
+            if (result.browserFindResults.length < 16) {
+              const query = [
+                ["Browser sample", "field"], ["Replace Browser field", "replacement"], ["Submit Browser form", "submit"],
+              ].find(([text]) => text === value.input?.query)?.[1] ?? "other"
+              result.browserFindResults.push({ query, matches: Math.min(matches.length, 100) })
+            } else result.truncated = true
+          }
+        }
+      } catch { /* A truncated or non-JSON preview cannot prove a tool identity. */ }
+    }
   }
   await section("state_unavailable", async () => {
     const state = await request(requests.getSessionStateRequest(sessionId), "SessionState")
@@ -94,11 +123,12 @@ export async function captureRoomProviderDiagnostic(input) {
     if (turns.length > 2) result.truncated = true
     for (const turn of turns.slice(0, 2)) {
       const seen = new Set()
+      const discovered = new Set()
       result.turns.push({ lifecycle: known(turn.lifecycle, ["open", "completed", "cancelled"]) })
-      inspectEntry(turn.user_prompt, seen)
-      for (const item of (turn.entries ?? []).slice(0, 256)) inspectEntry(item, seen)
+      inspectEntry(turn.user_prompt, seen, discovered)
+      for (const item of (turn.entries ?? []).slice(0, 256)) inspectEntry(item, seen, discovered)
       if ((turn.entries?.length ?? 0) > 256) result.truncated = true
-      inspectEntry(turn.summary, seen)
+      inspectEntry(turn.summary, seen, discovered)
       if ((turn.blobs?.length ?? 0) > 16) result.truncated = true
       for (const blob of (turn.blobs ?? []).slice(0, 16)) {
         result.blobCounts[known(blob.kind, entryKinds)] += 1
@@ -115,12 +145,13 @@ export async function captureRoomProviderDiagnostic(input) {
         requestedBlobChars += blob.total_chars
         await section("blob_unavailable", async () => {
           const content = await request(requests.getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id), "SessionHistoryBlobContent")
-          for (const item of (content.entries ?? []).slice(0, 256)) inspectEntry(item, seen)
+          for (const item of (content.entries ?? []).slice(0, 256)) inspectEntry(item, seen, discovered)
           if ((content.entries?.length ?? 0) > 256) result.truncated = true
         })
       }
     }
   })
   result.codes = [...codes].sort()
+  result.observedTools = [...observedTools].sort()
   return result
 }

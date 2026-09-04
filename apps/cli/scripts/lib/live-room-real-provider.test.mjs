@@ -332,6 +332,77 @@ test("tool output and failed Room actions are distinguished from absent tool out
   assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
 })
 
+test("diagnostics identify only allowlisted tool names from actual tool records", async () => {
+  const tool = name => entry("provider_tool", JSON.stringify({ tool: name, input: secret, output: secret }))
+  const run = fixture({ turns: [{ lifecycle: "open", blobs: [], entries: [
+    tool("list_mcp_resources"), tool("mcp__chariox__slice_mouse"), tool("private-tool-" + secret),
+    entry("user_prompt", JSON.stringify({ tool: "slice_browser_find" })),
+    entry("provider_output", JSON.stringify({ tool: "slice_browser_click" })),
+  ] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.observedTools, ["list_mcp_resources", "slice_mouse"])
+  assert.equal(run.checkpoints.at(-1).diagnostic.computerToolMentioned, true)
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("diagnostics classify Browser discovery outcomes without retaining queries or results", async () => {
+  const discovery = (query, matches, index) => entry("provider_tool", JSON.stringify({
+    tool: "mcp__chariox__slice_browser_find", status: "completed", input: { query },
+    output: JSON.stringify({ browser: { matches } }),
+  }), index)
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [], entries: [
+    discovery("Submit Browser form", [], 1),
+    discovery("Browser sample", [{ label: secret, field_id: secret }], 2),
+    discovery(secret, [{ label: secret }], 3),
+    entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "running",
+      input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } })),
+    entry("provider_output", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+      input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } })),
+  ] }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [
+    { query: "submit", matches: 0 }, { query: "field", matches: 1 }, { query: "other", matches: 1 },
+  ])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("Browser discovery diagnostics retain at most sixteen bounded counts", async () => {
+  const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+    input: { query: "Browser sample" }, output: { browser: { matches: Array(150).fill(null) } } }))
+  const run = fixture({ turns: [{ lifecycle: "completed", blobs: [],
+    entries: Array.from({ length: 17 }, (_, entry_index) => ({ ...record, entry_index })),
+  }] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  const diagnostic = run.checkpoints.at(-1).diagnostic
+  assert.equal(diagnostic.browserFindResults.length, 16)
+  assert.equal(diagnostic.browserFindResults[0].matches, 100)
+  assert.equal(diagnostic.truncated, true)
+})
+
+test("Browser discovery counts one entry represented by both preview and hydrated history", async () => {
+  const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+    input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } }), 7)
+  const run = fixture({ turns: [{ lifecycle: "completed", entries: [], summary: record,
+    blobs: [{ blob_id: "find", kind: "provider_tool", total_chars: 300 }],
+  }], blobs: { find: [record] } })
+  await assert.rejects(runRoomRealProvider(run.input))
+  const diagnostic = run.checkpoints.at(-1).diagnostic
+  assert.equal(diagnostic.entryCounts.provider_tool, 1)
+  assert.deepEqual(diagnostic.browserFindResults, [{ query: "submit", matches: 0 }])
+  assert.equal(diagnostic.truncated, false)
+})
+
+test("a truncated preview does not suppress its hydrated Browser discovery result", async () => {
+  const record = entry("provider_tool", JSON.stringify({ tool: "slice_browser_find", status: "completed",
+    input: { query: "Submit Browser form" }, output: { browser: { matches: [] } } }), 7)
+  const run = fixture({ turns: [{ lifecycle: "completed", entries: [],
+    summary: entry("provider_tool", '{"tool":"slice_browser_find"', 7),
+    blobs: [{ blob_id: "find", kind: "provider_tool", total_chars: 300 }],
+  }], blobs: { find: [record] } })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.browserFindResults, [{ query: "submit", matches: 0 }])
+})
+
 test("prompt rejection fails immediately rather than waiting for an impossible action", async () => {
   const run = fixture({ submit: { Error: { message: secret } } })
   let waited = false
@@ -447,6 +518,37 @@ test("completed error turn ends the action wait without exhausting its deadline"
     return terminal
   }
   await assert.rejects(runRoomRealProvider(run.input), /provider turn failed before/)
+})
+
+test("completed provider turn without the requested action fails without exhausting its deadline", async () => {
+  const run = fixture({ turns: [{ turn_id: "current", lifecycle: "completed",
+    entries: [entry("provider_output", secret)], blobs: [] }] })
+  await assert.rejects(runRoomRealProvider(run.input), /provider turn completed without the required Room action/)
+  assert.equal(run.checkpoints.at(-1).phase, "action-failed")
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
+test("action committed while reading the completed turn is rechecked before failing", async () => {
+  const actions = []
+  const run = fixture({ actions, turns: [{ turn_id: "current", lifecycle: "completed", entries: [], blobs: [] }] })
+  const send = run.input.client.send
+  run.input.client.send = async (request) => {
+    if (request.name === "getSessionHistoryOutline") actions.push({
+      actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
+      action_id: "arrived", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
+    })
+    return send(request)
+  }
+  assert.equal((await runRoomRealProviderAction(run.input)).actionId, "arrived")
+})
+
+test("older completed success cannot abort a reused agent's open turn", async () => {
+  const old = { turn_id: "old", lifecycle: "completed", entries: [], blobs: [] }
+  const run = fixture({ priorTurns: [old], turns: [
+    { turn_id: "current", lifecycle: "open", entries: [], blobs: [] }, old,
+  ] })
+  run.input.agent = { id: "agent-2" }
+  await assert.rejects(runRoomRealProviderAction(run.input), /fixture action timeout/)
 })
 
 test("full error blob is inspected even when its preview has the same entry index", async () => {
