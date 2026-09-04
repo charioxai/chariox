@@ -49,6 +49,12 @@ export async function runRoomRealProvider(input) {
   } catch (error) {
     // Retain fixed diagnostic codes before the outer fixture removes runtime
     // history. Never copy raw provider output, credentials, or MCP endpoints.
+    const codes = await input.withTimeout(captureFailureCodes(), 10_000, "provider diagnostic")
+      .catch(() => ["diagnostic_unavailable"])
+    await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, codes })
+    throw error
+  }
+  async function captureFailureCodes() {
     const outline = unwrap(await client.send(requests.getSessionHistoryOutlineRequest(
       sessionId, [agent.id], 2,
     )), "SessionHistoryOutline")
@@ -67,8 +73,7 @@ export async function runRoomRealProvider(input) {
         }
       }
     }
-    await input.checkpoint({ phase: "action-failed", provider: options.provider, agentId: agent.id, codes: [...codes] })
-    throw error
+    return [...codes]
   }
   assert.equal(action.mode, "computer")
   assert.equal(action.arguments.x, 640)

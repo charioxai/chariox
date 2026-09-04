@@ -177,6 +177,7 @@ let secretAgent = null
 let secretProviderRun = null
 let sourceIdentity = null
 let sliceRuntimeIdentity = null
+let fixtureWorkspace = repoRoot
 
 await mkdir(evidenceRoot, { recursive: true })
 
@@ -197,6 +198,10 @@ if (failure) {
 
 async function run() {
   const tempRoot = await tempRootPromise
+  if (realProviderOptions) {
+    fixtureWorkspace = path.join(tempRoot, "provider-workspace")
+    await mkdir(fixtureWorkspace, { recursive: true })
+  }
   await assertDockerReady()
   resources.push(await resourceSnapshot("before"))
   fixture = await startFixture()
@@ -276,7 +281,7 @@ async function run() {
   observerClient = new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`)
 
   const session = unwrap(
-    await client.send(requests.createSessionRequest(repoRoot, repoRoot, runId)),
+    await client.send(requests.createSessionRequest(fixtureWorkspace, fixtureWorkspace, runId)),
     "SessionCreated",
   ).session
   sessionId = session.id
@@ -302,7 +307,7 @@ async function run() {
     backend: "local_docker",
     displayMode: "headed",
     displayBackend: "selkies",
-    workspaceMount: repoRoot,
+    workspaceMount: fixtureWorkspace,
     workerKernelRef: `${runId}-worker`,
     base: "clean",
   })), 15_000, "CreateSlice response")
@@ -481,8 +486,8 @@ async function run() {
   ])
   if (realProviderOptions) {
     const provider = await runRoomRealProvider({
-      client, requests, sessionId, sliceId: slice.id, workspace: repoRoot,
-      options: realProviderOptions, waitFor, screenshot,
+      client, requests, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
+      options: realProviderOptions, waitFor, withTimeout, screenshot,
       checkpoint: (value) => writeFile(path.join(evidenceRoot, "real-provider.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }),
       waitForPhysicalEffect: (marker) => waitForBrowserText(marker, 20_000, "provider click did not reach the shared browser"),
       waitForTuis: (pattern) => Promise.all([waitForLocalNotice(pattern), waitForRemoteNotice(pattern)]),
@@ -2213,8 +2218,8 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     ...connectionArgs,
     "--automation-socket", automationSocket,
     "--session", sessionId,
-    "--workspace", repoRoot,
-    "--worktree", repoRoot,
+    "--workspace", fixtureWorkspace,
+    "--worktree", fixtureWorkspace,
     "--provider", "dev-stub",
     "--model", `room-activity-${kind}-tui-drill`,
     "--client-id", `${runId}-${kind}-tui`,
