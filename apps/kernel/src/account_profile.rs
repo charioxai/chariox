@@ -19,6 +19,9 @@ use crate::error::DaemonError;
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+#[path = "account_profile_materialization_tests.rs"]
+mod materialization_tests;
 pub(crate) const MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
@@ -2551,23 +2554,38 @@ fn materialization_files(
         ProviderAccountLocator::Opencode {
             xdg_data_home,
             xdg_config_home,
-            xdg_state_home,
             opencode_config_dir,
             ..
         } => {
-            collect_optional_tree(&xdg_data_home.join("opencode"), "data/opencode", &mut files)?;
-            collect_optional_tree(
-                &xdg_config_home.join("opencode"),
-                "config/opencode",
+            // Account transfer is not provider-session migration. In particular,
+            // never traverse databases, prompt history, locks, or node_modules.
+            collect_optional_profile_files(
+                &xdg_data_home.join("opencode"),
+                "data/opencode",
+                &["auth.json"],
                 &mut files,
             )?;
-            collect_optional_tree(
-                &xdg_state_home.join("opencode"),
-                "state/opencode",
+            let config_files = [
+                "config",
+                "config.json",
+                "opencode.json",
+                "opencode.jsonc",
+                "tui.json",
+                "tui.jsonc",
+            ];
+            collect_optional_profile_files(
+                &xdg_config_home.join("opencode"),
+                "config/opencode",
+                &config_files,
                 &mut files,
             )?;
             if opencode_config_dir != &xdg_config_home.join("opencode") {
-                collect_optional_tree(opencode_config_dir, "opencode-config", &mut files)?;
+                collect_optional_profile_files(
+                    opencode_config_dir,
+                    "opencode-config",
+                    &config_files,
+                    &mut files,
+                )?;
             }
         }
     }
@@ -2714,9 +2732,10 @@ fn require_materialization_file(
     ))
 }
 
-fn collect_optional_tree(
+fn collect_optional_profile_files(
     root: &Path,
     transfer_prefix: &str,
+    names: &[&str],
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
     let metadata = match fs::symlink_metadata(root) {
@@ -2730,41 +2749,8 @@ fn collect_optional_tree(
             "provider account materialization root must be a regular directory",
         ));
     }
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let mut entries = fs::read_dir(&directory)
-            .map_err(registry_io("export account profile"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(registry_io("export account profile"))?;
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            let path = entry.path();
-            let metadata =
-                fs::symlink_metadata(&path).map_err(registry_io("export account profile"))?;
-            if metadata.file_type().is_symlink() {
-                return Err(registry_error(
-                    "export account profile",
-                    "symlinks are not allowed in transferred provider profile data",
-                ));
-            }
-            if metadata.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            if !metadata.is_file() {
-                continue;
-            }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|error| registry_error("export account profile", error.to_string()))?;
-            let transfer_relative = Path::new(transfer_prefix).join(relative);
-            collect_optional_file(
-                root,
-                &relative.to_string_lossy(),
-                &transfer_relative.to_string_lossy(),
-                files,
-            )?;
-        }
+    for name in names {
+        collect_optional_file(root, name, &format!("{transfer_prefix}/{name}"), files)?;
     }
     Ok(())
 }
