@@ -308,6 +308,11 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
                 document_id: "worker-document".into(),
                 action: crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
             },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::History {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                action: crate::runtime::browser_controller_history::BrowserHistoryAction::Back,
+            },
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::ConfigureDownloads {
                 target_id: "worker-tab".into(),
                 document_id: "worker-document".into(),
@@ -378,13 +383,25 @@ async fn check_slice_controller(fixture: &mut LiveWorker) {
     let again_tabs = again["RoomEnvironmentUpdated"]["environment"]["tabs"]
         .as_array()
         .expect("reconciled Room tabs");
-    assert_eq!(
-        again_tabs.first(),
-        environment["tabs"].as_array().unwrap().first()
+    let again_tab = again_tabs.first().expect("reconciled Room tab");
+    let initial_tab = environment["tabs"]
+        .as_array()
+        .and_then(|tabs| tabs.first())
+        .expect("initial Room tab");
+    assert_eq!(again_tab["tab_id"], initial_tab["tab_id"]);
+    assert_eq!(again_tab["title"], initial_tab["title"]);
+    assert_eq!(again_tab["focused"], initial_tab["focused"]);
+    assert!(
+        again_tab["document_revision"].as_u64()
+            >= initial_tab["document_revision"].as_u64(),
+        "Room tab revisions must not move backwards: initial={initial_tab:?}, reconciled={again_tab:?}"
     );
-    assert!(again_tabs.iter().any(|tab| {
-        tab["url"] == "https://popup.worker.test/" && tab["title"] == "Worker popup"
-    }));
+    assert!(
+        !again_tabs.iter().any(|tab| {
+            tab["url"] == "https://popup.worker.test/" && tab["title"] == "Worker popup"
+        }),
+        "a closed popup must not be resurrected by a stale target-created event"
+    );
     super::controller_compatibility::check(fixture, &token).await;
     super::controller_worker_mcp::check(fixture, worker_mcp_placement).await;
     super::controller_integrations::check_cancellation_without_tabs(fixture, &token).await;

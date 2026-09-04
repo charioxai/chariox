@@ -256,6 +256,13 @@ pub struct SliceBrowserTabArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserHistoryArgs {
+    pub tab_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceBrowserFillArgs {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

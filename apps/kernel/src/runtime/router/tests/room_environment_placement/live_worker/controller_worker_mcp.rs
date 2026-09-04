@@ -958,6 +958,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
         for expected in [
             "slice_browser_status",
             "slice_browser_tab",
+            "slice_browser_history",
             "slice_open_url",
             "slice_browser_click",
             "slice_browser_fill",
@@ -1024,6 +1025,35 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             .is_some_and(|action_id| !action_id.is_empty()));
         assert_eq!(result.payload["browser"]["url"], url);
 
+        let status = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
+            .await
+            .expect("worker provider reads the stable Room tab after navigation");
+        let tab_id = status.payload["tab_id"]
+            .as_str()
+            .expect("worker provider stable Room tab id");
+        let history = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_browser_history",
+                json!({"tab_id":tab_id,"action":"back"}),
+            )
+            .await
+            .expect("worker provider history call forwards to the home Room");
+        assert!(history.ok, "{:?}", history.payload);
+        assert_eq!(history.payload["session_id"], room);
+        assert_eq!(history.payload["agent_id"], home_agent_id);
+        assert_eq!(
+            history.payload["actor_id"],
+            format!("agent:{home_agent_id}")
+        );
+        assert_eq!(history.payload["tab_id"], tab_id);
+        assert_ne!(history.payload["url"], url);
+
         let environment = fixture
             .home
             .runtime_state
@@ -1034,7 +1064,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             .as_deref()
             .and_then(|focused| environment.tabs.iter().find(|tab| tab.tab_id == focused))
             .expect("focused home Room tab");
-        assert_eq!(focused.url, url);
+        assert_eq!(focused.url, history.payload["url"]);
         assert!(
             fixture
                 .worker

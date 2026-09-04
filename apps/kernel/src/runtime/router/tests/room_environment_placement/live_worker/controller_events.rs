@@ -69,11 +69,13 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .runtime_state
         .room_environment_snapshot(room)
         .expect("Room environment after event reconciliation");
-    assert!(environment.tabs.iter().any(|tab| {
-        tab.tab_id == popup_tab_id
-            && tab.url == "https://popup.worker.test/"
-            && tab.title == "Worker popup"
-    }));
+    assert!(
+        environment
+            .tabs
+            .iter()
+            .all(|tab| tab.tab_id != popup_tab_id),
+        "replaying the popup creation event must not resurrect a tab that was already closed"
+    );
     let serialized = batch.payload.to_string();
     assert!(!serialized.contains("must-not-cross-relay"));
     assert!(!serialized.contains("authorization"));

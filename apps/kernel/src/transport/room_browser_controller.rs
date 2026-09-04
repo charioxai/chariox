@@ -171,6 +171,11 @@ pub(crate) enum RoomBrowserControllerCommand {
         document_id: String,
         action: crate::runtime::browser_controller_tab::BrowserTabAction,
     },
+    History {
+        target_id: String,
+        document_id: String,
+        action: crate::runtime::browser_controller_history::BrowserHistoryAction,
+    },
     Navigate {
         target_id: String,
         document_id: String,
@@ -274,6 +279,11 @@ pub(crate) enum RoomBrowserControllerResult {
     },
     Tab {
         result: Option<crate::runtime::browser_controller_tab::BrowserControllerTabResult>,
+    },
+    History {
+        result: Option<
+            crate::runtime::browser_controller_history::BrowserControllerHistoryResult,
+        >,
     },
     Navigation {
         result: Option<

@@ -194,6 +194,47 @@ pub(super) fn controller_browser_tab_tool_result(
     }
 }
 
+pub(super) fn controller_browser_history_tool_result(
+    slice_id: &str,
+    agent_id: &str,
+    tab_id: &str,
+    action: crate::runtime::browser_controller_history::BrowserHistoryAction,
+    execution: crate::runtime::state::BrowserControllerActionExecution<
+        crate::session::RoomEnvironmentSnapshot,
+    >,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let environment = execution.value;
+    let tab = environment
+        .tabs
+        .iter()
+        .find(|tab| tab.tab_id == tab_id)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_browser_history",
+            message: "browser history result omitted its stable Room tab".to_string(),
+        })?;
+    let document_revision = tab.document_revision;
+    let url = tab.url.clone();
+    Ok(crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "actor_id": execution.actor_id,
+            "action_id": execution.action_id,
+            "session_id": environment.session_id,
+            "environment_id": environment.environment_id,
+            "runtime_generation": environment.runtime_generation,
+            "action": action.as_str(),
+            "tab_id": tab_id,
+            "document_revision": document_revision,
+            "url": url,
+            "focused_tab_id": environment.focused_tab_id,
+            "tabs": environment.tabs,
+        }),
+    })
+}
+
 pub(super) fn controller_browser_action_tool_result(
     slice_id: &str,
     agent_id: &str,

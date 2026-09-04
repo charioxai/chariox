@@ -95,6 +95,14 @@ impl KernelRuntimeState {
                 self.controller_browser_tab_tool_result(session_id, slice_id, agent_id, args)
                     .await
             }
+            SLICE_BROWSER_HISTORY_TOOL => {
+                let args = parse_controller_tool_arguments::<SliceBrowserHistoryArgs>(
+                    arguments,
+                    "runtime_tool_slice_browser_history",
+                )?;
+                self.controller_browser_history_tool_result(session_id, slice_id, agent_id, args)
+                    .await
+            }
             SLICE_BROWSER_FIND_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceBrowserFindArgs>(
                     arguments,

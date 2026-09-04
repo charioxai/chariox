@@ -297,6 +297,20 @@ impl KernelRuntimeState {
                             .to_string(),
                 });
             }
+            crate::transport::runtime_tools::SLICE_BROWSER_HISTORY_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserHistoryArgs>(
+                    arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_history",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_history",
+                    message: "browser history requires the long-running Room browser controller"
+                        .to_string(),
+                });
+            }
             crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::SliceBrowserFindArgs,

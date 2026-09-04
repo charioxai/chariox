@@ -22,6 +22,7 @@ use super::browser_controller_file_transfer::{
     BrowserControllerDownloadCancellationResult, BrowserControllerDownloadsResult,
     BrowserControllerUploadResult, BrowserDownloadCancellation, BrowserUploadFiles,
 };
+use super::browser_controller_history::{BrowserControllerHistoryResult, BrowserHistoryAction};
 use super::browser_controller_permission::{
     BrowserControllerPermissionResult, BrowserPermissionName, BrowserPermissionSetting,
 };
@@ -121,6 +122,14 @@ pub(crate) trait BrowserControllerProcessBackend {
         _action: BrowserTabAction,
     ) -> Result<BrowserControllerTabResult, String> {
         Err("browser controller backend does not support tab lifecycle operations".to_string())
+    }
+    fn navigate_browser_history(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _action: BrowserHistoryAction,
+    ) -> Result<BrowserControllerHistoryResult, String> {
+        Err("browser controller backend does not support history navigation".to_string())
     }
     fn perform_browser_action(
         &mut self,
@@ -598,6 +607,25 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    fn navigate_browser_history(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserHistoryAction,
+    ) -> Result<BrowserControllerHistoryResult, String> {
+        let response = self.request(
+            "browser.history",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "action": action.as_str(),
+            }),
+        )?;
+        let result = response.into_result::<BrowserControllerHistoryResult>("browser.history")?;
+        result.validate(target_id, action)?;
+        Ok(result)
+    }
+
     fn perform_browser_action(
         &mut self,
         target_id: &str,
@@ -989,6 +1017,18 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .manage_browser_tab(target_id, document_id, action)
     }
 
+    pub(crate) fn navigate_browser_history(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserHistoryAction,
+    ) -> Result<BrowserControllerHistoryResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .navigate_browser_history(target_id, document_id, action)
+    }
+
     pub(crate) fn perform_browser_action(
         &mut self,
         session_id: &str,
@@ -1236,6 +1276,24 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .manage_browser_tab(session_id, target_id, document_id, action)
+            .map(Some)
+    }
+
+    pub(crate) fn navigate_browser_history(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserHistoryAction,
+    ) -> Result<Option<BrowserControllerHistoryResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .navigate_browser_history(session_id, target_id, document_id, action)
             .map(Some)
     }
 
@@ -1527,6 +1585,17 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .manage_browser_tab(target_id, document_id, action)
+    }
+
+    fn navigate_browser_history(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        action: BrowserHistoryAction,
+    ) -> Result<BrowserControllerHistoryResult, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend
+            .navigate_browser_history(target_id, document_id, action)
     }
 
     fn perform_browser_action(
