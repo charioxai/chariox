@@ -50,6 +50,14 @@ request budgets, not a new transport limit. An empty code set means no recognize
 error pattern, not a healthy provider. Existing partial evidence survives a
 later diagnostic failure.
 
+SIGINT and SIGTERM request cooperative interruption. The next poll, command or
+kernel request stops new work; already-started requests return before cleanup
+runs, so their returned resource identities are not discarded. Cleanup keeps
+signal handlers installed to ignore repeated interruption requests, stops owned
+resource-producing processes before final Docker removal, and still checks
+container, volume, temporary-state and listener removal. SIGKILL cannot run
+JavaScript cleanup and is not a graceful interruption path.
+
 `CHARIOX_ROOM_DRILL_IMPORT_FIRST=1` additionally runs the public slice account
 import operation before spawning. Keep this separate from the normal automatic
 transfer path so import-and-launch regressions can be reproduced.
