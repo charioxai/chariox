@@ -41,7 +41,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local, home-proxy, and skill snapshot extension state (7)")
 })
 
-test("buildCommandCenterItems exposes Room browser history controls", () => {
+test("buildCommandCenterItems exposes Room browser history and tab controls", () => {
   const items = buildCommandCenterItems("/room", {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
@@ -52,7 +52,7 @@ test("buildCommandCenterItems exposes Room browser history controls", () => {
   })
 
   const browser = items.find((item) => item.value === "/room browser ")
-  assert.equal(browser?.description, "Navigate the focused Room browser tab backward, forward, or reload it; optionally append a stable TAB_ID")
+  assert.equal(browser?.description, "Navigate, activate, or close Room browser tabs through stable TAB_IDs")
 })
 
 test("buildCommandCenterItems lists and filters session agent aliases", () => {

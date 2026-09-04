@@ -233,19 +233,24 @@
       {
         "id": "room-browser",
         "label": "browser",
-        "description": "Navigate the focused Room browser tab backward, forward, or reload it; optionally append a stable TAB_ID",
+        "description": "Navigate, activate, or close Room browser tabs through stable TAB_IDs",
         "value": "/room browser ",
         "examples": [
           "/room browser back",
           "/room browser forward tab-1",
-          "/room browser reload"
+          "/room browser reload",
+          "/room browser activate tab-2",
+          "/room browser close tab-1"
         ],
         "searchAliases": [
           "browser back",
           "browser forward",
           "reload tab",
           "refresh page",
-          "browser history"
+          "browser history",
+          "activate tab",
+          "focus tab",
+          "close tab"
         ]
       },
       {
