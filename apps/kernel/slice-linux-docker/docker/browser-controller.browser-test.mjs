@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -227,8 +227,181 @@ test("isolated references cannot address a different tab and keep colliding rend
   });
 });
 
-async function withCrossOriginFixture(run, { sameSite = false, nested = false } = {}) {
-  const fieldMarkup = '<label>Sample<input></label><button onclick="document.querySelector(\'output\').textContent=\'accepted\'">Accept</button><output role="status"></output>';
+for (const layout of ["page", "shadow-root", "same-site", "isolated", "nested-isolated"]) {
+test(`${layout} upload uses the observed input and preserves the public tab identity`, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-upload-"));
+  try {
+    const file = path.join(directory, "report.txt");
+    await writeFile(file, "shared room upload");
+    await withCrossOriginFixture(async (url) => {
+      await withController(async ({ page, request }) => {
+        const topLevel = layout === "page" || layout === "shadow-root";
+        await page.goto(topLevel ? `${url}field` : url);
+        if (layout === "shadow-root") await page.evaluate(() => {
+          const host = document.createElement("div");
+          document.body.append(host);
+          host.attachShadow({ mode: "open" }).append(document.querySelector("label"));
+        });
+        const frame = topLevel ? page : layout === "nested-isolated"
+          ? page.frameLocator("iframe").frameLocator("iframe") : page.frameLocator("iframe");
+        const input = frame.getByLabel("Upload");
+        await input.waitFor();
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const snapshot = await request("browser.snapshot", target);
+        assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
+        const node = snapshot.result.dom_nodes.find((node) => node.node_name === "INPUT");
+        assert.ok(node);
+        if (layout.includes("isolated")) assert.match(node.node_ref, /^frame:/, "fixture must use an isolated renderer reference");
+        const result = await request("browser.upload", { ...target, node_ref: node.node_ref, file_paths: [file] });
+        assert.equal(result.ok, true, JSON.stringify(result.error));
+        assert.equal(result.result.target_id, target.target_id);
+        assert.equal(result.result.document_id, target.document_id);
+        assert.equal(result.result.file_count, 1);
+        assert.equal(result.result.total_bytes, 18);
+        assert.deepEqual(await input.evaluate(async (input) => ({
+          name: input.files[0]?.name, text: await input.files[0]?.text(),
+        })), { name: "report.txt", text: "shared room upload" });
+      }, { uploadRoots: [directory] });
+    }, { fieldMarkup: '<label>Upload<input type="file"></label>', sameSite: layout === "same-site", nested: layout === "nested-isolated" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+}
+
+test("isolated uploads reject another tab, old frame documents, and escaped upload roots", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-upload-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-outside-"));
+  try {
+    const file = path.join(directory, "report.txt");
+    const link = path.join(directory, "link.txt");
+    const secret = path.join(outside, "secret.txt");
+    await writeFile(file, "shared room upload");
+    await writeFile(secret, "must not upload");
+    await symlink(secret, link);
+    await withCrossOriginFixture(async (url) => {
+      await withController(async ({ page, request, context }) => {
+        await page.goto(url);
+        const input = page.frameLocator("iframe").getByLabel("Upload");
+        await input.waitFor();
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const nodeRef = await uploadReference(request, target);
+        const other = await context.newPage();
+        await other.goto(`${url}?other=1`);
+        const otherInput = other.frameLocator("iframe").getByLabel("Upload");
+        await otherInput.waitFor();
+        const otherTarget = (await request("browser.reconcile", { viewport })).result.tabs.find((tab) => tab.target_id !== target.target_id);
+        const wrongTab = await request("browser.upload", { ...otherTarget, node_ref: nodeRef, file_paths: [file] });
+        assert.equal(wrongTab.ok, false);
+        assert.equal(wrongTab.error.code, "stale_element_reference");
+        assert.equal(await otherInput.evaluate((input) => input.files.length), 0);
+        for (const deniedPath of [secret, link]) {
+          const denied = await request("browser.upload", { ...target, node_ref: nodeRef, file_paths: [file, deniedPath] });
+          assert.equal(denied.ok, false);
+          assert.equal(denied.error.code, "browser_upload_denied");
+          assert.equal(await input.evaluate((input) => input.files.length), 0, "failed validation must not upload even the allowed file");
+        }
+        await page.frames()[1].goto(`http://localhost:${new URL(url).port}/field?revision=2`);
+        await input.waitFor();
+        const stale = await request("browser.upload", { ...target, node_ref: nodeRef, file_paths: [file] });
+        assert.equal(stale.ok, false);
+        assert.equal(stale.error.code, "stale_element_reference");
+        assert.equal(await input.evaluate((input) => input.files.length), 0);
+        const freshRef = await uploadReference(request, target);
+        assert.notEqual(freshRef, nodeRef);
+        const recovered = await request("browser.upload", { ...target, node_ref: freshRef, file_paths: [file] });
+        assert.equal(recovered.ok, true, JSON.stringify(recovered.error));
+        assert.equal(await input.evaluate((input) => input.files[0].name), "report.txt");
+      }, { uploadRoots: [directory] });
+    }, { fieldMarkup: '<label>Upload<input type="file" multiple></label>' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+for (const navigation of ["top", "same-site-child", "isolated-child", "isolated-parent"]) {
+test(`uploads reject ${navigation} navigation during asynchronous file validation`, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-upload-"));
+  try {
+    const file = path.join(directory, "report.txt");
+    await writeFile(file, "shared room upload");
+    let navigate;
+    await withCrossOriginFixture(async (url) => {
+      await withController(async ({ page, request }) => {
+        const startUrl = navigation === "top" ? `${url}field` : url;
+        await page.goto(startUrl);
+        const input = (navigation === "top" ? page : page.frameLocator("iframe")).getByLabel("Upload");
+        await input.waitFor();
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const nodeRef = await uploadReference(request, target);
+        navigate = async () => {
+          if (navigation.endsWith("-child")) await page.frames()[1].goto(`${page.frames()[1].url()}?new=1`);
+          else await page.goto(`${startUrl}?new=1`);
+          await input.waitFor();
+        };
+        const result = await request("browser.upload", { ...target, node_ref: nodeRef, file_paths: [file] });
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, navigation === "same-site-child" ? "stale_element_reference" : "stale_document_reference");
+        assert.equal(await input.evaluate((input) => input.files.length), 0);
+      }, { uploadRoots: [directory], fileSystem: {
+        realpath,
+        stat: async (candidate) => {
+          const metadata = await stat(candidate);
+          if (path.basename(candidate) === "report.txt") await navigate();
+          return metadata;
+        },
+      } });
+    }, { fieldMarkup: '<label>Upload<input type="file"></label>', sameSite: navigation === "same-site-child" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+}
+
+for (const layout of ["page", "same-site", "isolated"]) {
+test(`${layout} uploads reject replaced file inputs`, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-upload-"));
+  try {
+    const file = path.join(directory, "report.txt");
+    await writeFile(file, "shared room upload");
+    await withCrossOriginFixture(async (url) => {
+      await withController(async ({ page, request }) => {
+        await page.goto(layout === "page" ? `${url}field` : url);
+        const input = (layout === "page" ? page : page.frameLocator("iframe")).getByLabel("Upload");
+        await input.waitFor();
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const nodeRef = await uploadReference(request, target);
+        await input.evaluate((input) => { window.detachedInput = input; input.replaceWith(input.cloneNode()); });
+        const result = await request("browser.upload", { ...target, node_ref: nodeRef, file_paths: [file] });
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, "stale_element_reference");
+        assert.equal(await input.evaluate((input) => input.files.length), 0);
+        assert.equal(await input.evaluate(() => window.detachedInput.files.length), 0);
+        const freshRef = await uploadReference(request, target);
+        const recovered = await request("browser.upload", { ...target, node_ref: freshRef, file_paths: [file] });
+        assert.equal(recovered.ok, true, JSON.stringify(recovered.error));
+        assert.equal(await input.evaluate((input) => input.files[0].name), "report.txt");
+      }, { uploadRoots: [directory] });
+    }, { fieldMarkup: '<label>Upload<input type="file"></label>', sameSite: layout === "same-site" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+}
+
+async function uploadReference(request, target) {
+  const snapshot = await request("browser.snapshot", target);
+  assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error));
+  const inputs = snapshot.result.dom_nodes.filter((node) => node.node_name === "INPUT");
+  assert.equal(inputs.length, 1);
+  return inputs[0].node_ref;
+}
+
+async function withCrossOriginFixture(run, {
+  sameSite = false, nested = false,
+  fieldMarkup = '<label>Sample<input></label><button onclick="document.querySelector(\'output\').textContent=\'accepted\'">Accept</button><output role="status"></output>',
+} = {}) {
   const childServer = createServer((request, response) => {
     response.setHeader("content-type", "text/html");
     response.end(nested ? `<iframe style="width:500px;height:100px" src="http://127.0.0.1:${server.address().port}/field"></iframe>` : fieldMarkup);
@@ -256,7 +429,7 @@ function fieldReference(response) {
   return fields[0].node_ref;
 }
 
-async function withController(run) {
+async function withController(run, clientOptions = {}) {
   const profile = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-browser-"));
   let context;
   let browser;
@@ -266,7 +439,7 @@ async function withController(run) {
     });
     const port = Number((await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
     assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
-    browser = new BrowserCdpClient({ debuggerEndpoint: `http://127.0.0.1:${port}` });
+    browser = new BrowserCdpClient({ debuggerEndpoint: `http://127.0.0.1:${port}`, ...clientOptions });
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(10_000);
     let nextId = 0;

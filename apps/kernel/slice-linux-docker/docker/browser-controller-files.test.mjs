@@ -74,14 +74,39 @@ test("uploads resolve regular files inside configured roots without returning pa
     {
       method: "DOM.setFileInputFiles",
       params: {
-        backendNodeId: 103,
+        objectId: "file-object",
         files: ["/safe/uploads/report.txt"],
       },
       sessionId: "session-a",
     },
   );
   assert.equal(JSON.stringify(result).includes("/safe"), false);
+  assert.deepEqual(connection.calls.find((call) => call.method === "DOM.resolveNode"), {
+    method: "DOM.resolveNode", params: { backendNodeId: 103 }, sessionId: "session-a",
+  });
+  assert.deepEqual(connection.calls.at(-1), {
+    method: "Runtime.releaseObject", params: { objectId: "file-object" }, sessionId: "session-a",
+  });
 });
+
+for (const failure of ["detached", "invalid", "exception", "set-files-failed"]) {
+test(`upload ${failure} releases its resolved object without reporting success`, async () => {
+  const connection = new FakeFileConnection();
+  connection.failure = failure;
+  const fileSystem = new FakeFileSystem({
+    "/safe/uploads": { realpath: "/safe/uploads", type: "directory" },
+    "/safe/uploads/report.txt": { realpath: "/safe/uploads/report.txt", type: "file", size: 12 },
+  });
+  await assert.rejects(uploadBrowserFiles({
+    connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a",
+    nodeRef: "backend:103", filePaths: ["/safe/uploads/report.txt"], uploadRoots: ["/safe/uploads"], fileSystem,
+  }), (error) => error.code === (failure === "invalid" ? "browser_upload_invalid" : "stale_element_reference"));
+  assert.equal(connection.calls.filter((call) => call.method === "DOM.setFileInputFiles").length, failure === "set-files-failed" ? 1 : 0);
+  assert.deepEqual(connection.calls.at(-1), {
+    method: "Runtime.releaseObject", params: { objectId: "file-object" }, sessionId: "session-a",
+  });
+});
+}
 
 test("file transfer rejects stale documents, unsafe roots, and oversized sets", async () => {
   const connection = new FakeFileConnection();
@@ -147,6 +172,15 @@ class FakeFileConnection {
     if (method === "Page.getFrameTree") {
       return { frameTree: { frame: { loaderId: this.loaderId } } };
     }
+    if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
+    if (method === "Runtime.callFunctionOn") {
+      if (this.failure === "exception") return { exceptionDetails: {} };
+      return { result: { value: ["detached", "invalid"].includes(this.failure) ? this.failure : "file" } };
+    }
+    if (method === "DOM.setFileInputFiles" && this.failure === "set-files-failed") {
+      throw Object.assign(new Error("input was destroyed"), { code: "browser_cdp_command_failed" });
+    }
+    if (method === "Runtime.releaseObject") return {};
     if (method === "Browser.setDownloadBehavior" || method === "DOM.setFileInputFiles") {
       return {};
     }

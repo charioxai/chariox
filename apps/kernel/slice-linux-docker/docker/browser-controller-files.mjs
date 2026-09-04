@@ -65,6 +65,7 @@ export async function uploadBrowserFiles({
   filePaths,
   uploadRoots,
   fileSystem = defaultFileSystem,
+  assertContext = async () => {},
 }) {
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
   const backendNodeId = parseBackendNodeReference(nodeRef);
@@ -113,18 +114,36 @@ export async function uploadBrowserFiles({
     files.push(resolved);
   }
 
+  await assertContext();
+  await assertCurrentDocument(connection, sessionId, targetId, documentId);
+  let objectId;
   try {
+    const resolved = await connection.send("DOM.resolveNode", { backendNodeId }, sessionId);
+    objectId = resolved?.object?.objectId;
+    if (!objectId) throw staleFileInput();
+    const inspected = await connection.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: `function() {
+        if (!this.isConnected || this.ownerDocument !== this.ownerDocument.defaultView?.document) return "detached";
+        return this.localName === "input" && this.type === "file" ? "file" : "invalid";
+      }`,
+      returnByValue: true,
+      awaitPromise: false,
+    }, sessionId);
+    if (inspected?.exceptionDetails || inspected?.result?.value !== "file") {
+      if (inspected?.result?.value === "invalid") throw invalidUpload("browser upload requires a file input");
+      throw staleFileInput();
+    }
     await connection.send(
       "DOM.setFileInputFiles",
-      { backendNodeId, files },
+      { objectId, files },
       sessionId,
     );
   } catch (error) {
     if (error?.code !== "browser_cdp_command_failed") throw error;
-    throw new BrowserFileTransferError(
-      "stale_element_reference",
-      "browser file input is no longer attached to the current document",
-    );
+    throw staleFileInput();
+  } finally {
+    if (objectId) await connection.send("Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
   }
   return {
     target_id: targetId,
@@ -132,6 +151,13 @@ export async function uploadBrowserFiles({
     file_count: files.length,
     total_bytes: totalBytes,
   };
+}
+
+function staleFileInput() {
+  return new BrowserFileTransferError(
+    "stale_element_reference",
+    "browser file input is no longer attached to the current document",
+  );
 }
 
 async function resolveUploadRoots(uploadRoots, fileSystem) {
