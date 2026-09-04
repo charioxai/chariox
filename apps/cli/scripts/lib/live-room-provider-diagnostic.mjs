@@ -60,14 +60,15 @@ export async function captureRoomProviderDiagnostic(input) {
   }
   const inspectEntry = (item, seen) => {
     if (!item?.entry) return
-    if (Number.isSafeInteger(item.entry_index)) {
-      if (seen.has(item.entry_index)) return
-      seen.add(item.entry_index)
-    }
     if (inspectedEntries >= 256) { result.truncated = true; return }
     inspectedEntries += 1
     const kind = known(item.entry.kind, entryKinds)
-    result.entryCounts[kind] += 1
+    // Deduplicate the count, not inspection: the outline preview and hydrated
+    // blob can contain different fragments of the same history entry.
+    if (!Number.isSafeInteger(item.entry_index) || !seen.has(item.entry_index)) result.entryCounts[kind] += 1
+    if (Number.isSafeInteger(item.entry_index)) {
+      seen.add(item.entry_index)
+    }
     inspectText(item.entry.text, kind === "provider_tool")
   }
   await section("state_unavailable", async () => {
