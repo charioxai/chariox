@@ -32,6 +32,7 @@ export async function runRoomRealProvider(input) {
   await input.checkpoint({ phase: "prompting", provider: options.provider, agentId: agent.id })
   const actorId = `agent:${agent.id}`
   let action
+  let lastFailureProbe = 0
   try {
     unwrap(await client.send(requests.submitPromptRequest(sessionId, attachment.id, agent.id, [
     "You are validating the Chariox Room computer. Use only the Chariox runtime MCP tools.",
@@ -44,9 +45,27 @@ export async function runRoomRealProvider(input) {
       const actions = unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
         sessionId, null, 100,
       )), "RoomEnvironmentActionHistoryListed").page.actions
-      return actions.find((item) => item.actor_id === actorId
-        && item.kind === "pointer_click" && item.state === "completed") ?? false
+      const completed = actions.find((item) => item.actor_id === actorId
+        && item.kind === "pointer_click" && item.state === "completed")
+      if (completed) return completed
+      // This drill creates a fresh agent and submits exactly one prompt. Stop
+      // waiting if that turn has already ended with an error, not on a mere
+      // warning/error while the provider is still running.
+      if (Date.now() - lastFailureProbe >= 2_000) {
+        lastFailureProbe = Date.now()
+        const outline = await input.withTimeout(client.send(requests.getSessionHistoryOutlineRequest(
+          sessionId, [agent.id], 2,
+        )), 2_000, "provider failure probe").catch(() => null)
+        const turns = outline?.SessionHistoryOutline?.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []
+        if (turns.slice(0, 2).some((turn) => turn.lifecycle === "completed" && (
+          turn.summary?.entry?.kind === "provider_error"
+          || (turn.entries ?? []).slice(0, 256).some((item) => item.entry?.kind === "provider_error")
+          || (turn.blobs ?? []).slice(0, 16).some((item) => item.kind === "provider_error")
+        ))) return { providerFailed: true }
+      }
+      return false
     }, 180_000, "official provider did not complete a Room computer click")
+    if (action.providerFailed) throw new Error("official provider turn failed before completing the Room action")
   } catch (error) {
     const diagnostic = await captureRoomProviderDiagnostic({ ...input, agentId: agent.id })
       .catch(() => ({ codes: ["diagnostic_unavailable"] }))

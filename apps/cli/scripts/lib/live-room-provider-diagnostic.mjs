@@ -5,10 +5,19 @@ const diagnosticPatterns = [
   ["provider_launch", /provider launch/i],
   ["unauthorized", /unauthorized|authentication failed|invalid api key/i],
   ["rate_limit", /rate.?limit|too many requests/i],
-  ["model_unavailable", /model.{0,40}(?:not found|not available|unsupported)/i],
+  ["model_unavailable", /model.{0,40}(?:not found|not available|unsupported)|ProviderModelNotFoundError/i],
   ["tool_unavailable", /(?:unknown tool|tool not found|no such tool)/i],
   ["permission_denied", /permission denied|not permitted/i],
   ["connection_failed", /connection refused|econnrefused|connection reset/i],
+  ["missing_api_key", /api.?key.{0,40}(?:missing|required|not set)|(?:missing|required).{0,40}api.?key/i],
+  ["mcp_setup", /opencode_mcp_ready|MCP server.{0,160}(?:failed|needs_auth|needs_client_registration)|timed out waiting for OpenCode MCP/i],
+  ["unknown_provider_error", /OpenCode reported an unknown (?:session|assistant) error/i],
+  ["provider_request_failed", /OpenCode request failed/i],
+  ["invalid_tool_schema", /invalid.{0,40}schema|schema.{0,40}(?:invalid|not supported)/i],
+  ["missing_module", /Cannot find (?:module|package)|ModuleNotFound/i],
+  ["context_overflow", /ContextOverflowError|context.{0,30}(?:too long|exceed)/i],
+  ["invalid_configuration", /config.{0,40}(?:invalid|parse error)|invalid.{0,40}config/i],
+  ["resource_exhausted", /no space left|out of memory|ENOMEM|ENOSPC/i],
 ]
 const counters = (keys) => Object.fromEntries(keys.map((key) => [key, 0]))
 const known = (value, values) => values.includes(value) ? value : "unknown"

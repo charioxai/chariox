@@ -50,6 +50,10 @@ request budgets, not a new transport limit. An empty code set means no recognize
 error pattern, not a healthy provider. Existing partial evidence survives a
 later diagnostic failure.
 
+The action wait checks this fresh agent's recent turn at most once every two
+seconds. A completed turn containing a provider error ends the wait early;
+errors on open turns do not. The physical click and TUI checks are unchanged.
+
 SIGINT and SIGTERM request cooperative interruption. The next poll, command or
 kernel request stops new work; already-started requests return before cleanup
 runs, so their returned resource identities are not discarded. Cleanup keeps
