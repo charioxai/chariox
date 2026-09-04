@@ -1,7 +1,7 @@
 // Failure evidence for the owned drill slice, before lifecycle cleanup erases
 // the process record. Never copy raw streamer logs or private token records.
 const probe = `
-import json, sys
+import json, os, sys
 from pathlib import Path
 import psutil
 sys.path.insert(0, '/opt/chariox-slice')
@@ -17,7 +17,7 @@ if record is not None:
         result['recordedProcess'] = {
             'exists': True,
             'sameCreationTime': candidate.create_time() == record['created'],
-            'sameUser': candidate.uids().real == lifecycle.os.getuid(),
+            'sameUser': candidate.uids().real == os.getuid(),
             'status': candidate.status(),
         }
     except psutil.NoSuchProcess:
