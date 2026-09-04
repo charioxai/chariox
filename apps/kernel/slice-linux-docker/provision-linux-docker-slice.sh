@@ -325,6 +325,8 @@ refresh_slice_support_files() {
     || log "browser controller file-transfer module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-frames.mjs" \
     || log "browser controller frame module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-history.mjs" \
+    || log "browser controller history module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-permissions.mjs" \
     || log "browser controller permissions module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-snapshot.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-snapshot.mjs" \
@@ -351,6 +353,7 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \
+    /opt/chariox-slice/browser-controller-history.mjs \
     /opt/chariox-slice/browser-controller-permissions.mjs \
     /opt/chariox-slice/browser-controller-snapshot.mjs \
     /opt/chariox-slice/browser-controller.mjs \

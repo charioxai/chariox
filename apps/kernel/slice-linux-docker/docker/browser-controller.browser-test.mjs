@@ -269,6 +269,74 @@ test("navigation invalidates the old document while preserving the target for re
   });
 });
 
+test("history back, forward, and reload preserve the tab and return each new document", async () => {
+  await withCrossOriginFixture(async (url) => {
+    await withController(async ({ page, request }) => {
+      await page.goto(`${url}first`);
+      await page.goto(`${url}second`);
+      await page.goto(`${url}third`);
+      const third = (await request("browser.reconcile", { viewport })).result.tabs[0];
+
+      const invalid = await request("browser.history", { ...third, action: "sideways" });
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.error.code, "browser_history_action_invalid");
+
+      const back = await request("browser.history", { ...third, action: "back" });
+      assert.equal(back.ok, true, JSON.stringify(back.error));
+      assert.equal(back.result.target_id, third.target_id);
+      assert.notEqual(back.result.document_id, third.document_id);
+      assert.equal(back.result.url, `${url}second`);
+      assert.equal(page.url(), `${url}second`);
+
+      const stale = await request("browser.history", { ...third, action: "back" });
+      assert.equal(stale.ok, false);
+      assert.equal(stale.error.code, "stale_document_reference");
+
+      const forward = await request("browser.history", { ...back.result, action: "forward" });
+      assert.equal(forward.ok, true, JSON.stringify(forward.error));
+      assert.equal(forward.result.target_id, third.target_id);
+      assert.equal(forward.result.url, `${url}third`);
+      assert.equal(page.url(), `${url}third`);
+
+      const unavailable = await request("browser.history", { ...forward.result, action: "forward" });
+      assert.equal(unavailable.ok, false);
+      assert.equal(unavailable.error.code, "browser_history_unavailable");
+
+      const reloaded = await request("browser.history", { ...forward.result, action: "reload" });
+      assert.equal(reloaded.ok, true, JSON.stringify(reloaded.error));
+      assert.equal(reloaded.result.target_id, third.target_id);
+      assert.notEqual(reloaded.result.document_id, forward.result.document_id);
+      assert.equal(reloaded.result.url, `${url}third`);
+      assert.equal(page.url(), `${url}third`);
+    });
+  });
+});
+
+test("same-document history preserves the current document identity", async () => {
+  await withCrossOriginFixture(async (url) => {
+    await withController(async ({ page, request }) => {
+      await page.goto(`${url}spa`);
+      await page.evaluate(() => {
+        history.pushState({ step: 1 }, "", "/spa/one");
+        history.pushState({ step: 2 }, "", "/spa/two");
+      });
+      const second = (await request("browser.reconcile", { viewport })).result.tabs[0];
+
+      const back = await request("browser.history", { ...second, action: "back" });
+      assert.equal(back.ok, true, JSON.stringify(back.error));
+      assert.equal(back.result.target_id, second.target_id);
+      assert.equal(back.result.document_id, second.document_id);
+      assert.equal(back.result.url, `${url}spa/one`);
+
+      const forward = await request("browser.history", { ...back.result, action: "forward" });
+      assert.equal(forward.ok, true, JSON.stringify(forward.error));
+      assert.equal(forward.result.target_id, second.target_id);
+      assert.equal(forward.result.document_id, second.document_id);
+      assert.equal(forward.result.url, `${url}spa/two`);
+    });
+  });
+});
+
 test("a page-command timeout while a prompt is open does not prevent answering or later input", { timeout: 15_000 }, async () => {
   await withController(async ({ page, request }) => {
     page.on("dialog", () => {});
