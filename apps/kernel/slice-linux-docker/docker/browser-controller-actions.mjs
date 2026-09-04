@@ -49,6 +49,12 @@ export async function performBrowserAction({
     const objectId = await resolveBackendNode(connection, sessionId, backendNodeId);
     try {
       const actionability = await inspectActionability(connection, sessionId, objectId);
+      if (actionability.state === "detached") {
+        throw new BrowserActionError(
+          "stale_element_reference",
+          "browser element was detached; capture a fresh snapshot before retrying",
+        );
+      }
       const geometry = readyGeometry(actionability, normalizedAction);
       lastReason = actionability.state;
       if (geometry && sameGeometry(previousGeometry, geometry)) {
