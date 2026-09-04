@@ -1290,6 +1290,7 @@ mod tests {
 
     #[test]
     fn queued_event_prompt_derives_reply_and_context_capabilities_independently() {
+        let _environment = crate::env_lock::lock();
         let mut app = crate::test_support::bootstrap_authenticated_app(
             crate::config::DaemonConfig::for_tests(),
         )
@@ -1470,6 +1471,7 @@ mod tests {
 
     #[test]
     fn queued_workflow_scheduler_continues_after_invalid_candidate() {
+        let _environment = crate::env_lock::lock();
         let mut app = crate::test_support::bootstrap_authenticated_app(
             crate::config::DaemonConfig::for_tests(),
         )
