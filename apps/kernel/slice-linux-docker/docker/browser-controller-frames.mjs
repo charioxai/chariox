@@ -3,6 +3,62 @@ import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controll
 const MAX_FRAMES = 64;
 const MAX_NODES = 5_000;
 
+// Browser download events carry a frame ID, not a page session. Retain the
+// full page tree so child-frame downloads have the same tab identity.
+export class BrowserFrameTargets {
+  constructor() { this.frames = new Map(); }
+  clear() { this.frames.clear(); }
+  get(frameId) { return this.frames.get(frameId)?.targetId; }
+  removeTarget(targetId) {
+    for (const [id, frame] of this.frames) if (frame.targetId === targetId) this.frames.delete(id);
+  }
+  replace(targetId, trees) {
+    this.removeTarget(targetId);
+    const visit = (node) => {
+      if (!this.add(targetId, node?.frame?.id, node?.frame?.parentId)) return;
+      for (const child of node.childFrames ?? []) visit(child);
+    };
+    for (const tree of trees) visit(tree);
+  }
+  record(message, targetId) {
+    if (!targetId) return;
+    const params = message.params ?? {};
+    if (message.method === "Page.frameAttached") this.add(targetId, params.frameId, params.parentFrameId);
+    if (message.method === "Page.frameNavigated") {
+      const frame = params.frame;
+      if (!frame?.parentId) this.removeTarget(targetId);
+      else this.remove(frame.id);
+      this.add(targetId, frame?.id, frame?.parentId);
+    }
+    if (message.method === "Page.frameDetached" && params.reason !== "swap") this.remove(params.frameId);
+  }
+  add(targetId, frameId, parentId) {
+    if (typeof frameId !== "string" || !frameId) return false;
+    if (!this.frames.has(frameId) && [...this.frames.values()].filter((frame) => frame.targetId === targetId).length >= MAX_FRAMES) return false;
+    this.frames.set(frameId, { targetId, parentId });
+    return true;
+  }
+  remove(frameId) {
+    const removed = new Set([frameId]);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [id, frame] of this.frames) {
+        if (removed.has(id) || removed.has(frame.parentId)) {
+          removed.add(id);
+          this.frames.delete(id);
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+export async function registerBrowserFrameTargets(connection, sessionId, targetId, documentId, registry) {
+  return withBrowserFrames(connection, sessionId, targetId, documentId, (frames) => {
+    registry.replace(targetId, frames.map((entry) => entry.tree));
+  });
+}
+
 // A renderer's backend node IDs are not browser-wide IDs. Keep the owning
 // frame and document in references returned for isolated renderers.
 const prefix = (frame) => `frame:${frame.id}:${frame.loaderId}:`;

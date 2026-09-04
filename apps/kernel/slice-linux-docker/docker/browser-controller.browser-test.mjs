@@ -523,15 +523,67 @@ test("permissions reach Chrome and update the requested web permission only", as
   });
 });
 
+for (const layout of ["page", "same-site", "isolated", "nested-isolated"]) {
+test(`${layout} download persists real bytes with tab-attributed progress and a safe filename`, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chariox-controller-download-"));
+  try {
+    await withCrossOriginFixture(async (url) => {
+      await withController(async ({ page, request }) => {
+        await page.goto(layout === "page" ? `${url}field` : url);
+        const frame = layout === "page" ? page : layout === "nested-isolated"
+          ? page.frameLocator("iframe").frameLocator("iframe") : page.frameLocator("iframe");
+        const link = frame.getByRole("link", { name: "Download" });
+        await link.waitFor();
+        const reconciled = (await request("browser.reconcile", { viewport })).result;
+        const target = reconciled.tabs[0];
+        const configured = await request("browser.downloads.configure", target);
+        assert.equal(configured.ok, true, JSON.stringify(configured.error));
+        const snapshot = await request("browser.snapshot", target);
+        const node = snapshot.result.accessibility_nodes.find((node) => node.role === "link" && node.name === "Download");
+        assert.ok(node);
+        const clicked = await request("browser.action", { ...target, node_ref: node.node_ref, action: { kind: "click" } });
+        assert.equal(clicked.ok, true, JSON.stringify(clicked.error));
+        let cursor = reconciled.event_cursor;
+        const events = [];
+        const deadline = Date.now() + 5_000;
+        while (!events.some((event) => event.kind === "download_progress" && event.data.state === "completed")) {
+          assert.ok(Date.now() < deadline, "download must finish within the bounded fixture timeout");
+          const polled = await request("browser.events.poll", { browser_generation: reconciled.browser_generation, cursor });
+          assert.equal(polled.ok, true, JSON.stringify(polled.error));
+          assert.equal(polled.result.replay_gap, false);
+          events.push(...polled.result.events);
+          cursor = polled.result.next_cursor;
+          if (!events.some((event) => event.kind === "download_progress" && event.data.state === "completed")) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const downloads = events.filter((event) => event.kind.startsWith("download_"));
+        const start = downloads.find((event) => event.kind === "download_started");
+        assert.ok(start);
+        assert.ok(downloads.every((event) => event.target_id === target.target_id), JSON.stringify(downloads));
+        assert.equal(start.data.suggested_filename.includes("/"), false);
+        assert.equal(start.data.url.includes("fixture-secret"), false);
+        assert.match(start.data.guid, /^[0-9a-f-]+$/);
+        assert.equal(await readFile(path.join(directory, start.data.guid), "utf8"), "shared room download");
+        assert.equal(downloads.at(-1).data.received_bytes, 20);
+      }, { downloadDirectory: directory });
+    }, { sameSite: layout === "same-site", nested: layout === "nested-isolated", fieldMarkup: '<a href="/download?token=fixture-secret">Download</a>', download: true });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+}
+
 async function withCrossOriginFixture(run, {
   sameSite = false, nested = false,
+  download = false,
   fieldMarkup = '<label>Sample<input></label><button onclick="document.querySelector(\'output\').textContent=\'accepted\'">Accept</button><output role="status"></output>',
 } = {}) {
   const childServer = createServer((request, response) => {
+    if (download && sendFixtureDownload(request, response)) return;
     response.setHeader("content-type", "text/html");
     response.end(nested ? `<iframe style="width:500px;height:100px" src="http://127.0.0.1:${server.address().port}/field"></iframe>` : fieldMarkup);
   });
   const server = createServer((request, response) => {
+    if (download && sendFixtureDownload(request, response)) return;
     response.setHeader("content-type", "text/html");
     response.end(request.url.startsWith("/field") ? fieldMarkup : `<main style="padding:60px"><iframe style="width:600px;height:200px" src="http://${sameSite ? "127.0.0.1" : "localhost"}:${childServer.address().port}/field"></iframe></main>`);
   });
@@ -545,6 +597,13 @@ async function withCrossOriginFixture(run, {
       await new Promise((resolve, reject) => fixtureServer.close((error) => error ? reject(error) : resolve()));
     }
   }
+}
+
+function sendFixtureDownload(request, response) {
+  if (!request.url.startsWith("/download")) return false;
+  response.writeHead(200, { "content-type": "text/plain", "content-disposition": 'attachment; filename="../../report.txt"' });
+  response.end("shared room download");
+  return true;
 }
 
 function fieldReference(response) {
