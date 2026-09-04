@@ -10,6 +10,14 @@ Use `CARGO_TARGET_DIR` for the existing matching binaries and
 automatic image builds. The fixture enforces one 2-GiB, one-CPU headed slice and
 always cleans up its container, volume, temporary state, and listeners.
 
+The real-provider mode explicitly enables the existing
+`slices.linux.allow_unconfined_seccomp` option for this disposable local slice.
+This permits the production Bubblewrap launcher to create its inner provider
+namespace. The provider still runs with the inner seccomp filter, filesystem
+isolation and dropped capabilities. Ordinary fixture modes and user settings
+are unchanged. Do not use this local drill setting as managed-host acceptance;
+managed hosts additionally require the dedicated rootless Docker boundary.
+
 The kernel resolves the default linked provider profile and transfers it through
 the normal slice-backed agent launch. The drill does not copy credentials or call
 the provider's SDK, nor does it issue MCP calls on behalf of the agent. Local and

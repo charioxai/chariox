@@ -2045,6 +2045,9 @@ async function seedConfig(tempRoot) {
     `root = ${JSON.stringify(path.join(tempRoot, "slices"))}`,
     "",
     "[slices.linux]",
+    // This opt-in case runs real providers inside the production Bubblewrap
+    // boundary. Docker's outer default profile prevents that boundary starting.
+    ...(realProviderOptions ? ["allow_unconfined_seccomp = true"] : []),
     ...(process.env.CHARIOX_ROOM_DRILL_IMAGE?.trim()
       ? [`docker_image = ${JSON.stringify(process.env.CHARIOX_ROOM_DRILL_IMAGE.trim())}`, "build_image = \"never\""]
       : ["build_image = \"auto\""]),
