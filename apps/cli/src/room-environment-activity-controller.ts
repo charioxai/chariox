@@ -10,13 +10,14 @@ import type {
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
 } from "@chariox/kernel-client/kernel-types"
+import { roomActivityNoticeKey } from "./room-activity-notice-state.js"
 
 export type RoomEnvironmentActivityControllerDeps = {
   readonly isAttached: () => boolean
   readonly sessionId: () => string
   readonly nowMs: () => number
   readonly send: <T>(request: unknown) => Promise<T>
-  readonly appendNotice: (message: string) => void
+  readonly appendNotice: (message: string, key: string) => void
   readonly recordDaemonActivity: (kind: string) => void
 }
 
@@ -100,7 +101,8 @@ export function createRoomEnvironmentActivityController(
       environment = nextEnvironment
       replayCursor = nextEnvironment.event_cursor
       nextMissingEnvironmentProbeAtMs = 0
-      deps.appendNotice(roomEnvironmentSummary("Room screen", nextEnvironment))
+      deps.appendNotice(roomEnvironmentSummary("Room screen", nextEnvironment),
+        roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, "state", replayCursor, 0))
       deps.recordDaemonActivity("room_environment_state")
       return true
     }
@@ -118,7 +120,8 @@ export function createRoomEnvironmentActivityController(
       if (!selectionMatches(sessionId, revision)) return false
       environment = nextEnvironment
       replayCursor = nextEnvironment.event_cursor
-      deps.appendNotice(roomEnvironmentSummary("Room activity resynchronized", nextEnvironment))
+      deps.appendNotice(roomEnvironmentSummary("Room activity resynchronized", nextEnvironment),
+        roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, "resync", replayCursor, 0))
       deps.recordDaemonActivity("room_environment_events")
       return true
     }
@@ -142,7 +145,8 @@ export function createRoomEnvironmentActivityController(
     environment = nextEnvironment
     replayCursor = nextEnvironment.event_cursor
     const notices = roomEnvironmentEventNotices(events, nextEnvironment)
-    for (const notice of notices) deps.appendNotice(notice)
+    notices.forEach((notice, index) => deps.appendNotice(notice,
+      roomActivityNoticeKey(sessionId, nextEnvironment.environment_id, "events", nextCursor, index)))
     deps.recordDaemonActivity("room_environment_events")
     return notices.length > 0
   }

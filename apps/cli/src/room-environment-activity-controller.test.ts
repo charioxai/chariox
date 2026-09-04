@@ -9,6 +9,33 @@ import type {
 import {
   createRoomEnvironmentActivityController,
 } from "./room-environment-activity-controller.js"
+import { retainRoomActivityNotices } from "./room-activity-notice-state.js"
+import type { TranscriptEntry } from "./cli-types.js"
+
+test("a reset/current-state summary cannot replace a retained action at the same cursor", async () => {
+  const action = { action_id: "action-1", sequence: 1, idempotency_key: null,
+    actor_id: "agent:agent-1", runtime_generation: 2, mode: "computer" as const,
+    kind: "pointer_click" as const, targets: [{ kind: "desktop" as const }],
+    state: "completed" as const, cancellation_requested: false, submitted_at_ms: 10,
+    started_at_ms: 11, finished_at_ms: 12, outcome: { status: "completed" as const } }
+  const changed = roomEnvironment({ eventCursor: 9, actions: [action] })
+  const harness = activityHarness([
+    { RoomEnvironmentState: { environment: roomEnvironment() } },
+    { RoomEnvironmentEvents: { replay: { Events: { next_cursor: 9,
+      events: [roomEvent(9, { ActionChanged: action })] } } } },
+    { RoomEnvironmentState: { environment: changed } },
+    { RoomEnvironmentState: { environment: changed } },
+    { RoomEnvironmentEvents: { replay: { SnapshotRequired: { snapshot: changed } } } },
+  ])
+  await harness.controller.synchronize()
+  await harness.controller.synchronize()
+  harness.controller.reset()
+  await harness.controller.synchronize()
+  await harness.controller.synchronize()
+  const retained = retainRoomActivityNotices([], harness.entries, "session-1")
+  assert.ok(retained.some(entry => entry.text === "Room action #1: Mara · computer pointer_click · completed"))
+  assert.equal(new Set(harness.entries.map(e => e.mergeKey)).size, 4)
+})
 
 test("Room activity loads once and empty replay does not add transcript noise", async () => {
   const environment = roomEnvironment()
@@ -264,6 +291,7 @@ function activityHarness(responses: unknown[]) {
     nowMs: 0,
     requests: [] as unknown[],
     notices: [] as string[],
+    entries: [] as TranscriptEntry[],
     activity: [] as string[],
     controller: null as ReturnType<typeof createRoomEnvironmentActivityController> | null,
   }
@@ -278,7 +306,10 @@ function activityHarness(responses: unknown[]) {
       if (response === undefined) throw new Error("unexpected Room activity request")
       return response as T
     },
-    appendNotice: (message) => harness.notices.push(message),
+    appendNotice: (message, key) => {
+      harness.notices.push(message)
+      harness.entries.push({ id: harness.entries.length, role: "notice", text: message, mergeKey: key })
+    },
     recordDaemonActivity: (kind) => harness.activity.push(kind),
   })
   return harness as typeof harness & {
