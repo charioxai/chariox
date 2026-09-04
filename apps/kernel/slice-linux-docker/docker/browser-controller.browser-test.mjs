@@ -77,7 +77,9 @@ test("popup tabs are discovered, activated, and closed through stable controller
 
     const closed = await request("browser.tab", { ...popup, action: "close" });
     assert.equal(closed.ok, true, JSON.stringify(closed.error));
-    const afterClose = (await request("browser.reconcile", { viewport })).result;
+    const afterCloseResponse = await request("browser.reconcile", { viewport });
+    assert.equal(afterCloseResponse.ok, true, JSON.stringify(afterCloseResponse.error));
+    const afterClose = afterCloseResponse.result;
     assert.deepEqual(afterClose.tabs.map((tab) => tab.target_id), [original.target_id]);
     assert.equal(afterClose.focused_target_id, original.target_id);
   });

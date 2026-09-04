@@ -259,6 +259,7 @@ export class BrowserCdpClient {
           `browser target ${JSON.stringify(targetId)} did not close`,
         );
       }
+      await this.waitForTargetClosure(connection, targetId);
     }
     return {
       browser_generation: this.browserGeneration,
@@ -266,6 +267,25 @@ export class BrowserCdpClient {
       document_id: documentId,
       action,
     };
+  }
+
+  async waitForTargetClosure(connection, targetId) {
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (true) {
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      const targetStillOpen = targetInfos.some(
+        (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
+      );
+      if (!targetStillOpen) return;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new BrowserControllerError(
+          "browser_tab_close_failed",
+          `browser target ${JSON.stringify(targetId)} did not close within ${this.requestTimeoutMs}ms`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
+    }
   }
 
   async snapshot(rawRequest) {
