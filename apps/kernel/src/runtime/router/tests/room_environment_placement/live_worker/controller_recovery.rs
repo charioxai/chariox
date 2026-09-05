@@ -189,6 +189,19 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
             .unwrap()["state"],
         "completed"
     );
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "chariox.browser_controller_fault_probe.v1",
+            "faultTriggered": true,
+            "processLostAttributed": true,
+            "staleReferenceRejected": true,
+            "processReplaced": true,
+            "tabsPreserved": true,
+            "authorityPreserved": true,
+            "postRecoveryActionExactlyOnce": true
+        })
+    );
 
     let dialog_crash_pid =
         std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))

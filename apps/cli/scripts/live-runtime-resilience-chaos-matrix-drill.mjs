@@ -32,6 +32,7 @@ const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 
 const kernelReconnectDrill = path.join(scriptDir, "live-kernel-reconnect-drill.mjs")
 const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-drill.mjs")
+const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controller-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
 const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
@@ -92,6 +93,21 @@ const MATRIX = [
     exitCriteria: [
       "session, agent, MCP grant, skill grant, and history outline survive a kernel restart",
       "the active prompt keeps its identity while the provider run is relaunched and the workflow remains running",
+    ],
+  }),
+  scenario({
+    id: "local-browser-controller-crash",
+    description: "SIGKILL the Room Browser Controller, fence stale work, and reconcile one authoritative browser",
+    script: browserControllerFaultDrill,
+    args: [],
+    classification: "kernel-authority",
+    runtimeSignals: ["runtime-transition-audit", "session-authority", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "controller process death is attributed as process_lost and stale element references are rejected",
+      "recovery replaces the process while preserving tabs and input authority without duplication",
+      "one fresh post-recovery action completes exactly once and fixture processes are removed",
     ],
   }),
   scenario({
