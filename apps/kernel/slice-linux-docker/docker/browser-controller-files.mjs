@@ -1,11 +1,12 @@
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { mkdir, realpath, stat, statfs } from "node:fs/promises";
 import path from "node:path";
 
 const MAX_UPLOAD_FILES = 20;
 const MAX_UPLOAD_PATH_BYTES = 4_096;
 const MAX_UPLOAD_TOTAL_BYTES = 512 * 1024 * 1024;
+export const DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES = 256 * 1024 * 1024;
 
-const defaultFileSystem = { mkdir, realpath, stat };
+const defaultFileSystem = { mkdir, realpath, stat, statfs };
 
 export class BrowserFileTransferError extends Error {
   constructor(code, message) {
@@ -37,6 +38,7 @@ export async function configureBrowserDownloads({
   targetId,
   documentId,
   downloadDirectory,
+  minimumFreeBytes = DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
   fileSystem = defaultFileSystem,
 }) {
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -60,6 +62,11 @@ export async function configureBrowserDownloads({
       `browser download directory is unavailable: ${String(error?.code ?? "filesystem_error")}`,
     );
   }
+  await assertBrowserDownloadHeadroom({
+    downloadDirectory: resolvedDirectory,
+    minimumFreeBytes,
+    fileSystem,
+  });
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
   await connection.send("Browser.setDownloadBehavior", {
     behavior: "allowAndName",
@@ -71,6 +78,74 @@ export async function configureBrowserDownloads({
     document_id: documentId,
     enabled: true,
   };
+}
+
+export async function assertBrowserDownloadHeadroom({
+  downloadDirectory,
+  minimumFreeBytes = DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
+  fileSystem = defaultFileSystem,
+}) {
+  if (typeof downloadDirectory !== "string" || !path.isAbsolute(downloadDirectory)) {
+    throw new BrowserFileTransferError(
+      "browser_download_unconfigured",
+      "browser downloads require a configured absolute directory",
+    );
+  }
+  if (!Number.isSafeInteger(minimumFreeBytes) || minimumFreeBytes < 0) {
+    throw new BrowserFileTransferError(
+      "browser_download_unconfigured",
+      "browser download free-space reserve must be a non-negative integer",
+    );
+  }
+  let filesystem;
+  try {
+    filesystem = await fileSystem.statfs(downloadDirectory);
+  } catch (error) {
+    throw new BrowserFileTransferError(
+      "browser_download_unavailable",
+      `browser download storage capacity is unavailable: ${String(error?.code ?? "filesystem_error")}`,
+    );
+  }
+  const availableBytes = filesystemAvailableBytes(filesystem);
+  if (availableBytes < BigInt(minimumFreeBytes)) {
+    throw new BrowserFileTransferError(
+      "browser_download_low_disk",
+      `browser downloads need ${Math.ceil(minimumFreeBytes / (1024 * 1024))} MiB of free slice storage; free disk space and retry`,
+    );
+  }
+}
+
+function filesystemAvailableBytes(filesystem) {
+  const available = filesystem?.bavail;
+  const blockSize = filesystem?.bsize;
+  if (
+    !["bigint", "number"].includes(typeof available) ||
+    !["bigint", "number"].includes(typeof blockSize)
+  ) {
+    throw new BrowserFileTransferError(
+      "browser_download_unavailable",
+      "browser download storage capacity is invalid",
+    );
+  }
+  if (
+    (typeof available === "number" && (!Number.isSafeInteger(available) || available < 0)) ||
+    (typeof blockSize === "number" && (!Number.isSafeInteger(blockSize) || blockSize < 0)) ||
+    (typeof available === "bigint" && available < 0n) ||
+    (typeof blockSize === "bigint" && blockSize < 0n)
+  ) {
+    throw new BrowserFileTransferError(
+      "browser_download_unavailable",
+      "browser download storage capacity is invalid",
+    );
+  }
+  const availableBytes = BigInt(available) * BigInt(blockSize);
+  if (availableBytes < 0n) {
+    throw new BrowserFileTransferError(
+      "browser_download_unavailable",
+      "browser download storage capacity is invalid",
+    );
+  }
+  return availableBytes;
 }
 
 export async function uploadBrowserFiles({

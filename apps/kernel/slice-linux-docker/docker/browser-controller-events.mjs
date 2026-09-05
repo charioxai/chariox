@@ -186,6 +186,9 @@ function mapCdpEvent(message, context) {
         state: boundedString(params.state, 32),
         received_bytes: boundedNumber(params.receivedBytes),
         total_bytes: boundedNumber(params.totalBytes),
+        ...(context.downloadCancellationReason?.(params.guid)
+          ? { cancellation_reason: boundedString(context.downloadCancellationReason(params.guid), 64) }
+          : {}),
       });
     case "Chariox.browserConnected":
       return event("browser_connected", null, null, {});

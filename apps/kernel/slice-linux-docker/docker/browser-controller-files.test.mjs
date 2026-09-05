@@ -62,6 +62,55 @@ test("downloads use one configured private directory and GUID filenames", async 
   assert.deepEqual(fileSystem.created, ["/safe/downloads"]);
 });
 
+test("downloads fail closed before changing browser policy when storage headroom is low", async () => {
+  const connection = new FakeFileConnection();
+  const fileSystem = new FakeFileSystem({
+    "/safe/downloads": { realpath: "/safe/downloads", type: "directory" },
+  });
+  fileSystem.availableBytes = 128 * 1024 * 1024;
+
+  await assert.rejects(configureBrowserDownloads({
+    connection,
+    sessionId: "session-a",
+    targetId: "target-a",
+    documentId: "loader-a",
+    downloadDirectory: "/safe/downloads",
+    minimumFreeBytes: 256 * 1024 * 1024,
+    fileSystem,
+  }), (error) => error.code === "browser_download_low_disk");
+  assert.equal(
+    connection.calls.some((call) => call.method === "Browser.setDownloadBehavior"),
+    false,
+  );
+});
+
+test("downloads fail closed when storage capacity cannot be measured safely", async () => {
+  for (const statfs of [
+    async () => { throw Object.assign(new Error("unavailable"), { code: "EIO" }); },
+    async () => ({ bavail: Number.NaN, bsize: 1 }),
+    async () => ({ bavail: -1n, bsize: 1n }),
+  ]) {
+    const connection = new FakeFileConnection();
+    const fileSystem = new FakeFileSystem({
+      "/safe/downloads": { realpath: "/safe/downloads", type: "directory" },
+    });
+    fileSystem.statfs = statfs;
+
+    await assert.rejects(configureBrowserDownloads({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      downloadDirectory: "/safe/downloads",
+      fileSystem,
+    }), (error) => error.code === "browser_download_unavailable");
+    assert.equal(
+      connection.calls.some((call) => call.method === "Browser.setDownloadBehavior"),
+      false,
+    );
+  }
+});
+
 test("downloads recheck the document after directory setup before changing browser policy", async () => {
   const connection = new FakeFileConnection();
   const fileSystem = new FakeFileSystem({
@@ -251,5 +300,9 @@ class FakeFileSystem {
       isFile: () => entry.type === "file",
       isDirectory: () => entry.type === "directory",
     };
+  }
+
+  async statfs() {
+    return { bavail: this.availableBytes ?? 1024 * 1024 * 1024, bsize: 1 };
   }
 }
