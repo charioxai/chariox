@@ -15,6 +15,9 @@ use crate::slice::SliceRecord;
 
 const DOCKER_ENGINE_RESERVE_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
+const UNIX_ENGINE_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-memory-admission.lock";
+const WINDOWS_ENGINE_ADMISSION_LOCK_PATH: &str =
+    r"C:\Windows\Temp\chariox-docker-memory-admission.lock";
 static PROCESS_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) struct SliceMemoryAdmissionGuard {
@@ -223,11 +226,13 @@ fn engine_admission_lock_path() -> PathBuf {
     {
         // Do not use std::env::temp_dir(): kernels with different TMPDIR values
         // must still contend on the same Docker-engine admission lock.
-        PathBuf::from("/tmp/chariox-docker-memory-admission.lock")
+        PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
     }
     #[cfg(windows)]
     {
-        std::env::temp_dir().join("chariox-docker-memory-admission.lock")
+        // Use one machine-stable system path rather than TEMP/TMP, which can
+        // differ between kernels. Failure to access it closes admission.
+        PathBuf::from(WINDOWS_ENGINE_ADMISSION_LOCK_PATH)
     }
 }
 
@@ -408,7 +413,17 @@ mod tests {
     fn engine_lock_path_is_independent_of_process_temporary_directory() {
         assert_eq!(
             engine_admission_lock_path(),
-            PathBuf::from("/tmp/chariox-docker-memory-admission.lock")
+            PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
         );
+    }
+
+    #[test]
+    fn windows_engine_lock_path_is_machine_stable() {
+        assert_eq!(
+            WINDOWS_ENGINE_ADMISSION_LOCK_PATH,
+            r"C:\Windows\Temp\chariox-docker-memory-admission.lock"
+        );
+        assert!(!WINDOWS_ENGINE_ADMISSION_LOCK_PATH.contains("%TEMP%"));
+        assert!(!WINDOWS_ENGINE_ADMISSION_LOCK_PATH.contains("%TMP%"));
     }
 }
