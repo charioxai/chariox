@@ -17,6 +17,12 @@ test("a configured slice memory limit does not acquire extra swap", async () => 
   assert.match(source, /--memory-swap \"\$SLICE_DOCKER_MEMORY\"/)
 })
 
+test("the shared slice disk reserve reaches the browser controller container", async () => {
+  const source = await readFile(provisioner, "utf8")
+
+  assert.match(source, /-e "CHARIOX_SLICE_MIN_FREE_MB=\$SLICE_MIN_FREE_MB"/)
+})
+
 test("provider listener ranges are reserved from container ephemeral ports", async () => {
   const source = await readFile(provisioner, "utf8")
 

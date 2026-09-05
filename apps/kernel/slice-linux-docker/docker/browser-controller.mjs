@@ -233,12 +233,29 @@ async function runCli() {
   const uploadRoots = (process.env.CHARIOX_BROWSER_UPLOAD_ROOTS ?? "")
     .split(path.delimiter)
     .filter(Boolean);
+  const minimumDownloadFreeBytes = parseMinimumDownloadFreeBytes(
+    process.env.CHARIOX_SLICE_MIN_FREE_MB,
+  );
   const browser = new BrowserCdpClient({
     ...(debuggerEndpoint ? { debuggerEndpoint } : {}),
     downloadDirectory: process.env.CHARIOX_BROWSER_DOWNLOAD_DIR,
+    minimumDownloadFreeBytes,
     uploadRoots,
   });
   await new BrowserControllerStdioServer({ browser }).run();
+}
+
+export function parseMinimumDownloadFreeBytes(rawValue) {
+  const value = rawValue ?? "256";
+  if (!/^[0-9]+$/.test(value)) {
+    throw new Error("CHARIOX_SLICE_MIN_FREE_MB must be a non-negative integer");
+  }
+  const megabytes = Number(value);
+  const bytes = megabytes * 1024 * 1024;
+  if (!Number.isSafeInteger(megabytes) || !Number.isSafeInteger(bytes)) {
+    throw new Error("CHARIOX_SLICE_MIN_FREE_MB is outside the supported range");
+  }
+  return bytes;
 }
 
 const invokedPath = process.argv[1] ? realpathSync(process.argv[1]) : null;

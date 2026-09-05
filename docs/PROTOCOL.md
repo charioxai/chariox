@@ -651,6 +651,19 @@ the empty-argument download configuration remains compatible. Both home and
 worker kernels need relay peer v40 for cancellation; an older worker cannot
 decode the new command and must not be treated as having canceled the download.
 
+The slice browser controller derives its download free-space reserve from the
+same `CHARIOX_SLICE_MIN_FREE_MB` value used by slice provisioning (256 MiB by
+default). It measures the configured download filesystem before enabling
+downloads and fails closed when capacity is unavailable or below that reserve.
+It rechecks capacity when a download starts and while progress is active. If
+the reserve is crossed, the controller cancels every active download in that
+browser generation; its terminal `download_progress` event carries
+`cancellation_reason: "disk_pressure"`. Concurrent download starts request a
+follow-up check, so one in-flight measurement cannot cause a later download to
+escape admission. This extends the controller's open event payload rather than
+the local-daemon or relay envelope, so it does not change either protocol
+version.
+
 Relay peer protocol v41 adds document-bound `Tab` controller commands and
 results for `activate` and `close`. The public `slice_browser_tab` runtime tool
 accepts a stable opaque `tab_id` returned by `slice_browser_status`; the home

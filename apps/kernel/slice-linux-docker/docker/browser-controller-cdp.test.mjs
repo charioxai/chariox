@@ -470,6 +470,7 @@ test("download and upload requests stay target-bound and return no file paths", 
         isFile: () => entry.type === "file",
       };
     },
+    statfs: async () => ({ bavail: 1024 * 1024 * 1024, bsize: 1 }),
   };
   const browser = new BrowserCdpClient({
     connectionFactory: async () => connection,
@@ -615,6 +616,102 @@ test("controller event polling uses the reconciliation cursor and persistent ses
   });
   assert.deepEqual(downloads.events.map((event) => event.target_id), ["target-a", "target-a"]);
   assert.equal(JSON.stringify(downloads).includes("secret"), false);
+});
+
+test("controller cancels every active download when slice storage drops below its reserve", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+    downloadDirectory: "/safe/downloads",
+    minimumDownloadFreeBytes: 256 * 1024 * 1024,
+    fileSystem: {
+      statfs: async () => ({ bavail: 128 * 1024 * 1024, bsize: 1 }),
+    },
+  });
+  const reconciled = await browser.reconcile(viewport);
+
+  for (const [frameId, guid] of [["frame-a", "download-a"], ["frame-b", "download-b"]]) {
+    connection.emit({
+      method: "Browser.downloadWillBegin",
+      params: { frameId, guid, url: "https://example.test/file", suggestedFilename: "file.bin" },
+    });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    connection.calls
+      .filter((call) => call.method === "Browser.cancelDownload")
+      .map((call) => call.params.guid)
+      .sort(),
+    ["download-a", "download-b"],
+  );
+  connection.emit({
+    method: "Browser.downloadProgress",
+    params: { guid: "download-a", state: "canceled", receivedBytes: 1, totalBytes: 10 },
+  });
+  const events = browser.pollEvents({
+    browser_generation: reconciled.browser_generation,
+    cursor: reconciled.event_cursor,
+    limit: 10,
+  }).events;
+  const canceled = events.find((event) => event.kind === "download_progress");
+  assert.equal(canceled.data.cancellation_reason, "disk_pressure");
+});
+
+test("a download arriving during disk-pressure cancellation receives a follow-up check", async () => {
+  const connection = new FakeConnection();
+  const releaseFirstCancellation = Promise.withResolvers();
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params = {}, sessionId) => {
+    const result = await send(method, params, sessionId);
+    if (method === "Browser.cancelDownload" && params.guid === "download-a") {
+      await releaseFirstCancellation.promise;
+    }
+    return result;
+  };
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+    downloadDirectory: "/safe/downloads",
+    minimumDownloadFreeBytes: 256 * 1024 * 1024,
+    fileSystem: {
+      statfs: async () => ({ bavail: 128 * 1024 * 1024, bsize: 1 }),
+    },
+  });
+  await browser.reconcile(viewport);
+
+  connection.emit({
+    method: "Browser.downloadWillBegin",
+    params: {
+      frameId: "frame-a",
+      guid: "download-a",
+      url: "https://example.test/a",
+      suggestedFilename: "a.bin",
+    },
+  });
+  while (!connection.calls.some(
+    (call) => call.method === "Browser.cancelDownload" && call.params.guid === "download-a",
+  )) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  connection.emit({
+    method: "Browser.downloadWillBegin",
+    params: {
+      frameId: "frame-b",
+      guid: "download-b",
+      url: "https://example.test/b",
+      suggestedFilename: "b.bin",
+    },
+  });
+  releaseFirstCancellation.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    connection.calls
+      .filter((call) => call.method === "Browser.cancelDownload")
+      .map((call) => call.params.guid),
+    ["download-a", "download-b"],
+  );
 });
 
 test("debugger discovery cannot redirect the controller away from loopback", () => {

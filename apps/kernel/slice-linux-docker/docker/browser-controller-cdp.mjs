@@ -8,6 +8,8 @@ import {
 } from "./browser-controller-actions.mjs";
 import {
   BrowserFileTransferError,
+  DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
+  assertBrowserDownloadHeadroom,
   configureBrowserDownloads,
   cancelBrowserDownload,
   uploadBrowserFiles,
@@ -50,6 +52,7 @@ export class BrowserCdpClient {
     webSocketFactory = (url) => new WebSocket(url),
     connectionFactory,
     downloadDirectory,
+    minimumDownloadFreeBytes = DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
     uploadRoots = [],
     fileSystem,
     eventJournal = new BrowserEventJournal(),
@@ -60,6 +63,7 @@ export class BrowserCdpClient {
     this.webSocketFactory = webSocketFactory;
     this.connectionFactory = connectionFactory;
     this.downloadDirectory = downloadDirectory;
+    this.minimumDownloadFreeBytes = minimumDownloadFreeBytes;
     this.uploadRoots = uploadRoots;
     this.fileSystem = fileSystem;
     this.eventJournal = eventJournal;
@@ -71,6 +75,9 @@ export class BrowserCdpClient {
     this.targetsByFrame = new BrowserFrameTargets();
     this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
     this.targetsByDownload = new Map();
+    this.downloadCancellationReasons = new Map();
+    this.downloadDiskCheckPending = false;
+    this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.dialogDefaults = new BrowserDialogDefaults();
@@ -115,6 +122,9 @@ export class BrowserCdpClient {
         this.targetsByFrame.clear();
         this.frameSessions.clear();
         this.targetsByDownload.clear();
+        this.downloadCancellationReasons.clear();
+        this.downloadDiskCheckPending = false;
+        this.downloadDiskCheckRequested = false;
         this.documentIdsByTarget.clear();
         this.dialogDefaults.clear();
       }
@@ -132,6 +142,9 @@ export class BrowserCdpClient {
     this.targetsByFrame.clear();
     await this.frameSessions.close();
     this.targetsByDownload.clear();
+    this.downloadCancellationReasons.clear();
+    this.downloadDiskCheckPending = false;
+    this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -151,6 +164,9 @@ export class BrowserCdpClient {
     this.targetsByFrame.clear();
     this.frameSessions.clear();
     this.targetsByDownload.clear();
+    this.downloadCancellationReasons.clear();
+    this.downloadDiskCheckPending = false;
+    this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -516,6 +532,7 @@ export class BrowserCdpClient {
           targetId,
           documentId,
           downloadDirectory: this.downloadDirectory,
+          minimumFreeBytes: this.minimumDownloadFreeBytes,
           fileSystem: this.fileSystem,
         }),
       };
@@ -680,7 +697,14 @@ export class BrowserCdpClient {
       const guid = message.params?.guid;
       if (targetId && typeof guid === "string" && guid) {
         this.targetsByDownload.set(guid, targetId);
+        this.scheduleDownloadDiskCheck();
       }
+    }
+    if (
+      message?.method === "Browser.downloadProgress" &&
+      message.params?.state === "inProgress"
+    ) {
+      this.scheduleDownloadDiskCheck();
     }
     this.eventJournal.recordCdp(message, this.eventContext());
     if (
@@ -688,8 +712,57 @@ export class BrowserCdpClient {
       message.params?.state !== "inProgress"
     ) {
       const guid = message.params?.guid;
-      if (typeof guid === "string") this.targetsByDownload.delete(guid);
+      if (typeof guid === "string") {
+        this.targetsByDownload.delete(guid);
+        this.downloadCancellationReasons.delete(guid);
+      }
     }
+  }
+
+  scheduleDownloadDiskCheck() {
+    if (this.targetsByDownload.size === 0) return;
+    if (this.downloadDiskCheckPending) {
+      this.downloadDiskCheckRequested = true;
+      return;
+    }
+    this.downloadDiskCheckPending = true;
+    const connection = this.connection;
+    const browserGeneration = this.browserGeneration;
+    void assertBrowserDownloadHeadroom({
+      downloadDirectory: this.downloadDirectory,
+      minimumFreeBytes: this.minimumDownloadFreeBytes,
+      fileSystem: this.fileSystem,
+    }).catch(async (error) => {
+      if (
+        ![
+          "browser_download_low_disk",
+          "browser_download_unavailable",
+          "browser_download_unconfigured",
+        ].includes(error?.code) ||
+        connection !== this.connection ||
+        browserGeneration !== this.browserGeneration
+      ) return;
+      const active = [...this.targetsByDownload.keys()]
+        .filter((guid) => !this.downloadCancellationReasons.has(guid));
+      await Promise.all(active.map(async (guid) => {
+        this.downloadCancellationReasons.set(guid, "disk_pressure");
+        try {
+          await connection.send("Browser.cancelDownload", { guid });
+        } catch {
+          this.downloadCancellationReasons.delete(guid);
+        }
+      }));
+    }).finally(() => {
+      if (
+        connection !== this.connection ||
+        browserGeneration !== this.browserGeneration
+      ) return;
+      this.downloadDiskCheckPending = false;
+      if (this.downloadDiskCheckRequested) {
+        this.downloadDiskCheckRequested = false;
+        this.scheduleDownloadDiskCheck();
+      }
+    });
   }
 
   eventContext() {
@@ -698,6 +771,7 @@ export class BrowserCdpClient {
       targetIdForSession: (sessionId) => this.targetsBySession.get(sessionId) ?? null,
       targetIdForFrame: (frameId) => this.targetsByFrame.get(frameId) ?? null,
       targetIdForDownload: (guid) => this.targetsByDownload.get(guid) ?? null,
+      downloadCancellationReason: (guid) => this.downloadCancellationReasons.get(guid) ?? null,
       documentIdForTarget: (targetId) => this.documentIdsByTarget.get(targetId) ?? null,
     };
   }

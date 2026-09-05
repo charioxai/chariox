@@ -4,7 +4,20 @@ import readline from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { handleBrowserControllerRequest } from "./browser-controller.mjs";
+import {
+  handleBrowserControllerRequest,
+  parseMinimumDownloadFreeBytes,
+} from "./browser-controller.mjs";
+
+test("controller derives download headroom from the shared slice setting", () => {
+  assert.equal(parseMinimumDownloadFreeBytes(undefined), 256 * 1024 * 1024);
+  assert.equal(parseMinimumDownloadFreeBytes("0"), 0);
+  assert.equal(parseMinimumDownloadFreeBytes("2048"), 2048 * 1024 * 1024);
+  assert.equal(parseMinimumDownloadFreeBytes("100000"), 100000 * 1024 * 1024);
+  for (const value of ["-1", "1.5", "many", "8589934592"]) {
+    assert.throws(() => parseMinimumDownloadFreeBytes(value), /CHARIOX_SLICE_MIN_FREE_MB/);
+  }
+});
 
 test("controller health is request-correlated and process-owned", async () => {
   assert.deepEqual(await handleBrowserControllerRequest({ id: 7, method: "health" }, { processId: 41 }), {
