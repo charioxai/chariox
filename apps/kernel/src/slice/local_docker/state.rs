@@ -92,52 +92,54 @@ fn save_local_docker_slice_state_inner(
             state_dir.display()
         ),
     })?;
-    with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", || {
-        let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
-        docker_commit_container(record, &image_ref, "slice.state.save")?;
-        let archive_result = archive_local_docker_home_volume(
-            record,
-            options,
-            &home_archive_path,
-            "state",
-            &state_id,
-            "slice.state.save",
-        );
-        let (home_archive_path, size_bytes, _) = match archive_result {
-            Ok(captured) => captured,
-            Err(error) => {
-                remove_docker_image_best_effort(&image_ref);
-                return Err(error);
-            }
-        };
-        let now_ms = crate::session::unix_epoch_ms();
-        let state = SliceSavedStateRecord {
-            id: state_id,
-            slice_name: record.name.clone(),
-            source_slice_id: record.id.clone(),
-            backend: record.backend.clone(),
-            os: record.os.clone(),
-            image_ref: image_ref.clone(),
-            home_archive_path: home_archive_path.display().to_string(),
-            manifest_path: manifest_path.display().to_string(),
-            created_at_ms: now_ms,
-            updated_at_ms: now_ms,
-            size_bytes: Some(size_bytes),
-            last_operation: Some("state.save".to_string()),
-            last_operation_status: Some(crate::slice::model::SliceOperationStatus::Completed),
-            last_error: None,
-        };
-        publish_saved_state_generation_with(
-            &manifest_path,
-            &state,
-            (!retain_replaced_state)
-                .then_some(previous_state.as_ref())
-                .flatten(),
-            write_state_manifest,
-        )?;
-        Ok(LocalDockerSavedStateGeneration {
-            state,
-            replaced_state: previous_state,
+    disk_admission::with_slice_snapshot_disk_admission(|admission| {
+        with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", || {
+            disk_admission::validate_slice_snapshot_disk_admission(record, options, admission)?;
+            docker_commit_container(record, &image_ref, "slice.state.save")?;
+            let archive_result = archive_local_docker_home_volume(
+                record,
+                options,
+                &home_archive_path,
+                "state",
+                &state_id,
+                "slice.state.save",
+            );
+            let (home_archive_path, size_bytes, _) = match archive_result {
+                Ok(captured) => captured,
+                Err(error) => {
+                    remove_docker_image_best_effort(&image_ref);
+                    return Err(error);
+                }
+            };
+            let now_ms = crate::session::unix_epoch_ms();
+            let state = SliceSavedStateRecord {
+                id: state_id,
+                slice_name: record.name.clone(),
+                source_slice_id: record.id.clone(),
+                backend: record.backend.clone(),
+                os: record.os.clone(),
+                image_ref: image_ref.clone(),
+                home_archive_path: home_archive_path.display().to_string(),
+                manifest_path: manifest_path.display().to_string(),
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms,
+                size_bytes: Some(size_bytes),
+                last_operation: Some("state.save".to_string()),
+                last_operation_status: Some(crate::slice::model::SliceOperationStatus::Completed),
+                last_error: None,
+            };
+            publish_saved_state_generation_with(
+                &manifest_path,
+                &state,
+                (!retain_replaced_state)
+                    .then_some(previous_state.as_ref())
+                    .flatten(),
+                write_state_manifest,
+            )?;
+            Ok(LocalDockerSavedStateGeneration {
+                state,
+                replaced_state: previous_state,
+            })
         })
     })
 }
@@ -456,61 +458,67 @@ fn create_local_docker_slice_backup_inner(
             backup_dir.display()
         ),
     })?;
-    with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.backup.create", || {
-        let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
-        docker_commit_container(record, &image_ref, "slice.backup.create")?;
-        let archive_result = archive_local_docker_home_volume(
-            record,
-            options,
-            &backup_dir.join("home.tar.zst"),
-            "backup",
-            &backup_id,
-            "slice.backup.create",
-        );
-        let (home_archive_path, size_bytes, home_archive_sha256) = match archive_result {
-            Ok(captured) => captured,
-            Err(error) => {
-                remove_docker_image_best_effort(&image_ref);
-                return Err(error);
-            }
-        };
-        let image_id = match docker_image_id(&image_ref, "slice.backup.create") {
-            Ok(image_id) => image_id,
-            Err(error) => {
+    disk_admission::with_slice_snapshot_disk_admission(|admission| {
+        with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.backup.create", || {
+            disk_admission::validate_slice_snapshot_disk_admission(record, options, admission)?;
+            docker_commit_container(record, &image_ref, "slice.backup.create")?;
+            let archive_result = archive_local_docker_home_volume(
+                record,
+                options,
+                &backup_dir.join("home.tar.zst"),
+                "backup",
+                &backup_id,
+                "slice.backup.create",
+            );
+            let (home_archive_path, size_bytes, home_archive_sha256) = match archive_result {
+                Ok(captured) => captured,
+                Err(error) => {
+                    remove_docker_image_best_effort(&image_ref);
+                    return Err(error);
+                }
+            };
+            let image_id = match docker_image_id(&image_ref, "slice.backup.create") {
+                Ok(image_id) => image_id,
+                Err(error) => {
+                    remove_home_archive_generation_best_effort(
+                        "backup",
+                        &backup_id,
+                        &home_archive_path,
+                    );
+                    remove_docker_image_best_effort(&image_ref);
+                    return Err(error);
+                }
+            };
+            let now_ms = crate::session::unix_epoch_ms();
+            let backup = SliceBackupRecord {
+                id: backup_id,
+                name: name
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(&record.name)
+                    .to_string(),
+                source_slice_id: record.id.clone(),
+                source_state_id: state_id,
+                image_ref: image_ref.clone(),
+                home_archive_path: home_archive_path.display().to_string(),
+                manifest_path: manifest_path.display().to_string(),
+                created_at_ms: now_ms,
+                size_bytes: Some(size_bytes),
+                home_archive_sha256: Some(home_archive_sha256),
+                image_id: Some(image_id),
+            };
+            if let Err(error) = write_state_manifest(&manifest_path, &backup) {
                 remove_home_archive_generation_best_effort(
                     "backup",
-                    &backup_id,
+                    &backup.id,
                     &home_archive_path,
                 );
                 remove_docker_image_best_effort(&image_ref);
+                let _ = std::fs::remove_dir(&backup_dir);
                 return Err(error);
             }
-        };
-        let now_ms = crate::session::unix_epoch_ms();
-        let backup = SliceBackupRecord {
-            id: backup_id,
-            name: name
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(&record.name)
-                .to_string(),
-            source_slice_id: record.id.clone(),
-            source_state_id: state_id,
-            image_ref: image_ref.clone(),
-            home_archive_path: home_archive_path.display().to_string(),
-            manifest_path: manifest_path.display().to_string(),
-            created_at_ms: now_ms,
-            size_bytes: Some(size_bytes),
-            home_archive_sha256: Some(home_archive_sha256),
-            image_id: Some(image_id),
-        };
-        if let Err(error) = write_state_manifest(&manifest_path, &backup) {
-            remove_home_archive_generation_best_effort("backup", &backup.id, &home_archive_path);
-            remove_docker_image_best_effort(&image_ref);
-            let _ = std::fs::remove_dir(&backup_dir);
-            return Err(error);
-        }
-        Ok(backup)
+            Ok(backup)
+        })
     })
 }
 

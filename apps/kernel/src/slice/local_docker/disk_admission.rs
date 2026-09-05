@@ -156,14 +156,25 @@ fn evaluate_slice_snapshot_disk_admission(
     }
 }
 
-pub(super) fn admit_slice_snapshot(
-    record: &SliceRecord,
-    options: &LocalDockerSliceOptions,
-) -> Result<SliceDiskAdmissionGuard, DaemonError> {
+pub(super) fn with_slice_snapshot_disk_admission<T>(
+    operation: impl FnOnce(&SliceDiskAdmissionGuard) -> Result<T, DaemonError>,
+) -> Result<T, DaemonError> {
     let process = PROCESS_DISK_ADMISSION_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let engine = acquire_disk_admission_lock()?;
+    let guard = SliceDiskAdmissionGuard {
+        _process: process,
+        _engine: engine,
+    };
+    operation(&guard)
+}
+
+pub(super) fn validate_slice_snapshot_disk_admission(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    _guard: &SliceDiskAdmissionGuard,
+) -> Result<(), DaemonError> {
     let container = local_docker_container_name(record);
     let measurement = measure_slice_storage_with_helper(record, options)?;
     let demand = SliceSnapshotDiskDemand {
@@ -186,10 +197,7 @@ pub(super) fn admit_slice_snapshot(
             message: error.to_string(),
         }
     })?;
-    Ok(SliceDiskAdmissionGuard {
-        _process: process,
-        _engine: engine,
-    })
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,5 +544,60 @@ mod tests {
         let wide = windows_disk_admission_lock_name_wide();
         assert_eq!(wide.last(), Some(&0));
         assert!(!wide[..wide.len() - 1].contains(&0));
+    }
+
+    #[test]
+    fn concurrent_slice_waiter_does_not_enter_quiescence_before_admission() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            with_slice_snapshot_disk_admission(|_| {
+                first_entered_tx
+                    .send(())
+                    .expect("first slice should report admission");
+                release_first_rx
+                    .recv()
+                    .expect("first slice should be released");
+                Ok(())
+            })
+            .expect("first slice should complete");
+        });
+        first_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first slice should hold admission");
+
+        let second_entered = Arc::new(AtomicBool::new(false));
+        let second_entered_in_thread = Arc::clone(&second_entered);
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            second_started_tx
+                .send(())
+                .expect("second slice should start waiting");
+            with_slice_snapshot_disk_admission(|_| {
+                // Production starts source quiescence only after this closure is entered.
+                second_entered_in_thread.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("second slice should complete");
+        });
+        second_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second slice should attempt admission");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !second_entered.load(Ordering::SeqCst),
+            "a waiting slice must remain live until global admission is available"
+        );
+
+        release_first_tx
+            .send(())
+            .expect("first slice should release admission");
+        first.join().expect("first slice thread should join");
+        second.join().expect("second slice thread should join");
+        assert!(second_entered.load(Ordering::SeqCst));
     }
 }
