@@ -22,6 +22,7 @@ import {
 import {
   makeAvailablePorts,
   portIsAvailable,
+  resolveBuiltBinarySync,
   terminateChild,
 } from "./drill-runtime-helpers.mjs"
 import { sanitizeDrillMetadata } from "./drill-secrets.mjs"
@@ -45,10 +46,11 @@ export const RELAY_REALM = "provider-thread-transfer-drill"
 
 function resolveBinaryPath(crateName, binName) {
   const appLocalBinary = path.join(repoRoot, "apps", crateName, "target", "debug", binName)
-  if (existsSync(appLocalBinary)) return appLocalBinary
-  const workspaceBinary = path.join(repoRoot, "target", "debug", binName)
-  if (existsSync(workspaceBinary)) return workspaceBinary
-  return appLocalBinary
+  return resolveBuiltBinarySync(
+    appLocalBinary,
+    path.join(repoRoot, "apps", crateName, "Cargo.toml"),
+    binName,
+  )
 }
 
 export function parseArgs(argv) {
