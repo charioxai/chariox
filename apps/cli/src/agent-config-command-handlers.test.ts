@@ -54,9 +54,19 @@ test("agent variant command clears agent effort override", async () => {
   assert.equal(flashedMessage, "agent-1 variant: <none>")
 })
 
-test("agent provider command updates the targeted agent profile", async () => {
-  const currentAgent = agent()
-  const updatedAgent = agent({ provider: "claude-headless" })
+test("agent provider command switches account and model atomically", async () => {
+  const currentAgent = agent({
+    provider: "codex",
+    account_profile: "codex-primary",
+    model: "gpt-5.4",
+    effort: "high",
+  })
+  const updatedAgent = agent({
+    provider: "opencode",
+    account_profile: "opencode-primary",
+    model: "opencode/deepseek-v4-flash-free",
+    effort: "low",
+  })
   const updatedSession = session({ agents: [updatedAgent] })
   let updateOptions: Record<string, unknown> | null = null
   let appliedSession: RuntimeSession | null = null
@@ -64,13 +74,56 @@ test("agent provider command updates the targeted agent profile", async () => {
   await handleAgentProfileCommand({
     ...deps(currentAgent),
     applySessionState: (nextSession) => { appliedSession = nextSession },
+    listProviderAccountProfiles: async (provider) => {
+      assert.equal(provider, "opencode")
+      return [{
+        owner_user_id: "user-1",
+        provider: "opencode",
+        profile_id: "opencode-primary",
+        label: "OpenCode 1",
+        origin: "default",
+        is_default: true,
+        auth_state: "authenticated",
+        usage: {
+          profile_id: "opencode-primary",
+          provider: "opencode",
+          availability: "unavailable",
+          source: "test",
+        },
+      }]
+    },
+    getProviderCatalogForAgent: async (_agent, provider, accountProfile) => {
+      assert.equal(provider, "opencode")
+      assert.equal(accountProfile, "opencode-primary")
+      return {
+        all: [{
+          id: "opencode",
+          name: "OpenCode",
+          models: {
+            "deepseek-v4-flash-free": {
+              id: "deepseek-v4-flash-free",
+              name: "DeepSeek V4 Flash Free",
+              status: "active",
+              variants: { low: {} },
+            },
+          },
+        }],
+        default: { opencode: "deepseek-v4-flash-free" },
+        connected: ["opencode"],
+      }
+    },
     updateAgentProfile: async (_sessionId, _agentId, options) => {
       updateOptions = options
       return { agent: updatedAgent, session: updatedSession }
     },
-  }, ["provider", "agent-1", "claude-headless"], "provider")
+  }, ["provider", "agent-1", "opencode"], "provider")
 
-  assert.deepEqual(updateOptions, { provider: "claude-headless" })
+  assert.deepEqual(updateOptions, {
+    provider: "opencode",
+    accountProfile: "opencode-primary",
+    model: "opencode/deepseek-v4-flash-free",
+    effort: "low",
+  })
   assert.equal(appliedSession, updatedSession)
 })
 
