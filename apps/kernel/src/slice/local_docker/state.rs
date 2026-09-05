@@ -5,8 +5,9 @@ use std::process::Stdio;
 use crate::error::DaemonError;
 
 use super::{
-    broker, docker_command, ensure_host_docker_ready, local_docker_container_is_running,
-    local_docker_container_name, run_local_docker_slice_screen, LocalDockerSliceOptions,
+    broker, disk_admission, docker_command, ensure_host_docker_ready,
+    local_docker_container_is_running, local_docker_container_name, run_local_docker_slice_screen,
+    LocalDockerSliceOptions,
 };
 use crate::slice::model::{
     SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceDisplayMode,
@@ -70,6 +71,7 @@ fn save_local_docker_slice_state_inner(
 ) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
+    let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
     let state_id = active_state_id(record);
     let image_ref = active_state_image_ref(&state_id);
     let state_dir = options.root.join("states").join(&state_id);
@@ -442,6 +444,7 @@ fn create_local_docker_slice_backup_inner(
 ) -> Result<SliceBackupRecord, DaemonError> {
     ensure_local_docker_state_target(record, "slice.backup.create")?;
     ensure_host_docker_ready()?;
+    let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
     let backup_id = backup_id(record, name);
     let state_id = active_state_id(record);
     let image_ref = format!("chariox-slice-backup:{backup_id}");

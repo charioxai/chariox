@@ -235,6 +235,16 @@ function validateDockerExec(args) {
     exactArguments(command, ["bash", "-lc", "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst ."])
   ) return
   if (
+    args[2] === "root" &&
+    /-disk-admission-[a-f0-9]{16}$/.test(args[3]) &&
+    exactArguments(command, ["du", "-sb", "/home-src"])
+  ) return
+  if (
+    args[2] === "root" &&
+    /-disk-admission-[a-f0-9]{16}$/.test(args[3]) &&
+    exactArguments(command, ["df", "-B1", "--output=avail", "/tmp"])
+  ) return
+  if (
     args[2] === "slice" &&
     command.length === 3 &&
     command[0] === "bash" &&
@@ -273,6 +283,14 @@ function validateDocker(args) {
       fail("Docker inspect format is invalid")
     }
     validateSliceContainer(args[3], "Docker container")
+    return
+  }
+  if (
+    args[0] === "inspect" &&
+    args.length === 5 &&
+    exactArguments(args.slice(1, 4), ["--size", "--format", "{{.SizeRw}}"])
+  ) {
+    validateSliceContainer(args[4], "Docker container")
     return
   }
   if (args[0] === "logs" && args.length === 4 && args[1] === "--tail" && /^[0-9]{1,4}$/.test(args[2])) {

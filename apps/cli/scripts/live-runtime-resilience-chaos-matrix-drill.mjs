@@ -35,6 +35,7 @@ const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-d
 const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controller-fault-drill.mjs")
 const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fault-drill.mjs")
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
+const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
 const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
@@ -141,6 +142,22 @@ const MATRIX = [
       "host-wide Docker admission serializes kernel processes and retains 512 MiB for the engine",
       "existing targets reserve their actual limit and legacy unbounded slices fail closed",
       "rejection leaves active state unchanged and admission reopens after capacity recovers",
+    ],
+  }),
+  scenario({
+    id: "local-slice-disk-pressure-admission",
+    description: "reject unsafe slice snapshots before Docker or Chariox state storage reaches ENOSPC",
+    script: diskPressureAdmissionFaultDrill,
+    args: [],
+    classification: "slice-runtime",
+    runtimeSignals: ["runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "snapshot demand includes the home archive and writable container layer",
+      "host-wide admission retains 2048 MiB in Docker and Chariox state storage",
+      "rejection leaves the active slice and last known-good generation unchanged",
+      "admission reopens after disk capacity recovers and measurement helpers are removed",
     ],
   }),
   scenario({
