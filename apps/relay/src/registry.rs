@@ -207,6 +207,22 @@ impl RelayRouteIndex {
         self.subscriptions.get_str(subscription_id)
     }
 
+    fn subscription_queue_pressure(&self) -> (usize, usize) {
+        self.subscriptions.values().into_iter().fold(
+            (0, 0),
+            |(pressured_count, max_depth), route| {
+                let depth = route
+                    .client_sender
+                    .max_capacity()
+                    .saturating_sub(route.client_sender.capacity());
+                (
+                    pressured_count + usize::from(depth > 0),
+                    max_depth.max(depth),
+                )
+            },
+        )
+    }
+
     pub(crate) fn remove_subscription(&self, subscription_id: &str) {
         self.subscriptions.remove_str(subscription_id);
     }
@@ -440,6 +456,10 @@ impl RelayRegistry {
 
     pub fn subscription_count(&self) -> usize {
         self.subscriptions.len()
+    }
+
+    pub fn subscription_queue_pressure(&self) -> (usize, usize) {
+        self.routes.subscription_queue_pressure()
     }
 
     pub fn display_tunnel_count(&self) -> usize {
@@ -837,6 +857,28 @@ mod tests {
         assert!(routes.subscription("subscription-1").is_none());
         assert!(routes.client_sender(&client_addr).is_none());
         assert!(routes.daemon_sender(&daemon_key).is_none());
+    }
+
+    #[tokio::test]
+    async fn route_index_reports_live_subscription_queue_pressure() {
+        let routes = RelayRouteIndex::default();
+        let daemon_key = DaemonKey::new("realm-1", "daemon-1");
+        let (client_sender, mut client_receiver) = mpsc::channel(4);
+        routes.set_subscription(
+            "subscription-1".to_string(),
+            ActiveEventRoute {
+                daemon_key,
+                client_sender: client_sender.clone(),
+            },
+        );
+
+        assert_eq!(routes.subscription_queue_pressure(), (0, 0));
+        client_sender
+            .try_send(Message::Text("queued".into()))
+            .expect("event should queue");
+        assert_eq!(routes.subscription_queue_pressure(), (1, 1));
+        client_receiver.recv().await.expect("event should drain");
+        assert_eq!(routes.subscription_queue_pressure(), (0, 0));
     }
 
     #[test]

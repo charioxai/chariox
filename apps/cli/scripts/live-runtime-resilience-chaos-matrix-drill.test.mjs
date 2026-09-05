@@ -51,6 +51,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "local-kernel-restart-durable-state",
       "local-browser-controller-crash",
       "local-relay-queue-saturation",
+      "local-reconnect-storm-slow-viewer",
       "local-slice-memory-pressure-admission",
       "local-slice-disk-pressure-admission",
       "local-browser-download-disk-pressure",
@@ -94,6 +95,16 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-relay-queue-saturation").args[0]),
       "live-queue-saturation-fault-drill.mjs",
     )
+    const reconnectStorm = report.scenarios.find((scenario) => scenario.id === "local-reconnect-storm-slow-viewer")
+    assert.equal(path.basename(reconnectStorm.args[0]), "live-reconnect-storm-drill.mjs")
+    assert.deepEqual(reconnectStorm.args.slice(1), [
+      "--clients",
+      "8",
+      "--cycles",
+      "3",
+      "--slow-events",
+      "4096",
+    ])
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-slice-memory-pressure-admission").args[0]),
       "live-memory-pressure-admission-fault-drill.mjs",

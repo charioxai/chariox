@@ -34,6 +34,7 @@ const kernelReconnectDrill = path.join(scriptDir, "live-kernel-reconnect-drill.m
 const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-drill.mjs")
 const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controller-fault-drill.mjs")
 const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fault-drill.mjs")
+const reconnectStormDrill = path.join(scriptDir, "live-reconnect-storm-drill.mjs")
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
 const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
@@ -128,6 +129,21 @@ const MATRIX = [
       "full client and peer target queues return retryable backpressure and clear their pending request",
       "one slow subscription is removed while another subscription and the daemon reader lane remain live",
       "backpressure metrics record the bounded fault and no owned process remains",
+    ],
+  }),
+  scenario({
+    id: "local-reconnect-storm-slow-viewer",
+    description: "repeat concurrent viewer reconnects and isolate one slow display consumer",
+    script: reconnectStormDrill,
+    args: ["--clients", "8", "--cycles", "3", "--slow-events", "4096"],
+    classification: "relay-runtime",
+    runtimeSignals: ["client-projection-health", "relay-target-freshness", "session-authority"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "every viewer resumes its own monotonic event cursor through three reconnect cycles",
+      "one stalled viewer is closed without delaying healthy viewers, agents, or kernel control traffic",
+      "the kernel stays within the bounded memory and CPU envelope and every owned process is removed",
     ],
   }),
   scenario({
