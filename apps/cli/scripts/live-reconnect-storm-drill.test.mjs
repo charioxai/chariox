@@ -47,10 +47,22 @@ test("reconnect storm drill rejects repository-owned evidence paths", async () =
   )
 })
 
+test("reconnect storm drill requires separate slow and healthy viewers", async () => {
+  await assert.rejects(
+    run(process.execPath, [script, "--dry-run", "--clients", "1", "--output", "/tmp/reconnect-storm.json"]),
+    /--clients must be at least 2/,
+  )
+})
+
 test("reconnect storm drill requires isolated slow-lane closure", async () => {
   const source = await import("node:fs/promises").then(({ readFile }) => readFile(script, "utf8"))
   assert.match(source, /slow_subscription_close_count >= 1/)
   assert.match(source, /seen\.slice\(1\)\.every/)
+  assert.match(source, /submitPromptRequest/)
+  assert.match(source, /provider prompt during slow-subscriber pressure/)
+  assert.match(source, /kernel control during slow-subscriber pressure/)
+  assert.match(source, /withDeadline/)
+  assert.match(source, /slowEventsSubmittedAtHealthyProbe/)
   assert.match(source, /restartKernelEventStream/)
   assert.match(source, /resumeCounts\.every/)
   assert.match(source, /event streams to resume/)
@@ -61,4 +73,6 @@ test("reconnect storm drill requires isolated slow-lane closure", async () => {
   assert.match(source, /appendNativeProviderOutputBatchRequest/)
   assert.match(source, /CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: "32"/)
   assert.match(source, /terminateOwnedTree/)
+  assert.match(source, /requireExecutable\(kernelBinary/)
+  assert.match(source, /requireExecutable\(relayBinary/)
 })

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -21,6 +21,8 @@ const relayBinary = path.join(cargoTargetDir, buildProfile, "chariox-relay")
 const dryRun = args.includes("--dry-run")
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
+
+if (clientCount < 2) throw new Error("--clients must be at least 2 so one slow and one healthy viewer are exercised")
 
 if (args.includes("--help")) {
   console.log("Usage: live-reconnect-storm-drill.mjs [--clients 32] [--cycles 5] [--slow-events 4096] [--timeout-ms 30000] [--output PATH] [--dry-run]")
@@ -44,6 +46,10 @@ if (dryRun) {
 
 const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
 const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
+await Promise.all([
+  requireExecutable(kernelBinary, "kernel"),
+  requireExecutable(relayBinary, "relay"),
+])
 
 const basePort = await availablePortBand()
 const ports = { relay: basePort, kernel: basePort + 1, mcp: basePort + 2, opencode: basePort + 3, codex: basePort + 4 }
@@ -53,6 +59,7 @@ const children = []
 const clients = []
 const resourceSamples = []
 let control
+let pressureControl
 let report
 let resourceTimer
 let receivedSignal = null
@@ -61,6 +68,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     receivedSignal ??= signal
     for (const client of clients) client.destroy()
     control?.destroy?.()
+    pressureControl?.destroy?.()
   })
 }
 
@@ -73,6 +81,7 @@ try {
   }, 1_000)
   await waitForKernel()
   control = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
+  pressureControl = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
   await waitFor(async () => unwrap(await control.send(requests.relayStatusRequest()), "RelayStatus")?.status?.connected === true, timeoutMs, "kernel relay connection")
 
   const contexts = []
@@ -105,7 +114,7 @@ try {
     assert.ok(launchedRun, `provider run missing for ${context.sessionId}`)
     context.providerRunId = launchedRun.provider_run.id
   }
-  const appendMarker = (context, marker) => control.send(requests.appendNativeProviderOutputRequest(
+  const appendMarker = (context, marker, client = control) => client.send(requests.appendNativeProviderOutputRequest(
     context.sessionId,
     context.attachmentId,
     context.providerRunId,
@@ -167,30 +176,86 @@ try {
   assert.ok(slowClient.eventWebsocket?._socket, "slow client event socket was not connected")
   slowClient.eventWebsocket._socket.pause()
   const payload = "s".repeat(8 * 1024)
-  for (let offset = 0; offset < slowEvents; offset += 64) {
-    throwIfInterrupted()
-    const count = Math.min(64, slowEvents - offset)
-    await control.send(requests.appendNativeProviderOutputBatchRequest(
-      slowContext.sessionId,
-      slowContext.attachmentId,
-      Array.from({ length: count }, (_, index) => {
-      const eventIndex = offset + index
-        return {
-          providerRunId: slowContext.providerRunId,
-          kind: "provider_output",
-          text: payload,
-          mergeKey: `slow-subscriber-${eventIndex}`,
-        }
-      }),
-    ))
+  const pressureCheckpoint = Math.min(slowEvents, Math.max(64, Math.floor(slowEvents / 4 / 64) * 64))
+  let slowEventsSubmitted = 0
+  let signalPressureReady
+  let releasePressureCheckpoint
+  let pressureReleased = false
+  const pressureReady = new Promise((resolve) => { signalPressureReady = resolve })
+  const pressureRelease = new Promise((resolve) => { releasePressureCheckpoint = resolve })
+  const releasePressure = () => {
+    if (pressureReleased) return
+    pressureReleased = true
+    releasePressureCheckpoint()
   }
+  const slowFlood = (async () => {
+    for (let offset = 0; offset < slowEvents; offset += 64) {
+      throwIfInterrupted()
+      const count = Math.min(64, slowEvents - offset)
+      await withDeadline(control.send(requests.appendNativeProviderOutputBatchRequest(
+        slowContext.sessionId,
+        slowContext.attachmentId,
+        Array.from({ length: count }, (_, index) => {
+          const eventIndex = offset + index
+          return {
+            providerRunId: slowContext.providerRunId,
+            kind: "provider_output",
+            text: payload,
+            mergeKey: `slow-subscriber-${eventIndex}`,
+          }
+        }),
+      )), timeoutMs, `slow-subscriber batch at offset ${offset}`)
+      slowEventsSubmitted += count
+      if (slowEventsSubmitted >= pressureCheckpoint && !pressureReleased) {
+        signalPressureReady()
+        await withDeadline(pressureRelease, timeoutMs, "healthy traffic during slow-subscriber pressure")
+      }
+    }
+  })()
+  await withDeadline(Promise.race([
+    pressureReady,
+    slowFlood.then(() => { throw new Error("slow flood finished before its pressure checkpoint") }),
+  ]), timeoutMs, "slow-subscriber pressure checkpoint")
+
   const healthyMarker = `RECONNECT_STORM_HEALTHY_${Date.now()}`
-  await Promise.all(contexts.slice(1).map((context) => appendMarker(context, healthyMarker)))
-  await waitFor(
-    () => seen.slice(1).every((markers) => markers.has(healthyMarker)),
-    timeoutMs,
-    "healthy subscribers after slow-client pressure",
-  )
+  const providerPrompt = `RECONNECT_STORM_PROVIDER_${Date.now()}`
+  const healthyStartedAt = Date.now()
+  let providerSubmission
+  let pressureRelayStatus
+  let healthyTrafficLatencyMs
+  try {
+    [providerSubmission, pressureRelayStatus] = await Promise.all([
+      withDeadline(
+        pressureControl.send(requests.submitPromptRequest(
+          contexts[1].sessionId,
+          contexts[1].attachmentId,
+          contexts[1].agentId,
+          providerPrompt,
+          [],
+        )),
+        timeoutMs,
+        "provider prompt during slow-subscriber pressure",
+      ),
+      withDeadline(pressureControl.send(requests.relayStatusRequest()), timeoutMs, "kernel control during slow-subscriber pressure"),
+      ...contexts.slice(1).map((context) => withDeadline(
+        appendMarker(context, healthyMarker, pressureControl),
+        timeoutMs,
+        `healthy provider output for ${context.sessionId}`,
+      )),
+    ])
+    assert.ok(unwrap(providerSubmission, "PromptSubmitted")?.outcome, "provider prompt was not accepted during pressure")
+    assert.equal(unwrap(pressureRelayStatus, "RelayStatus")?.status?.connected, true)
+    await waitFor(
+      () => seen.slice(1).every((markers) => markers.has(healthyMarker)),
+      timeoutMs,
+      "healthy subscribers during slow-client pressure",
+    )
+    healthyTrafficLatencyMs = Date.now() - healthyStartedAt
+    assert.ok(healthyTrafficLatencyMs <= timeoutMs, `healthy traffic took ${healthyTrafficLatencyMs} ms`)
+  } finally {
+    releasePressure()
+  }
+  await slowFlood
   let relayHealth
   await waitFor(async () => {
     relayHealth = await fetch(`http://127.0.0.1:${ports.relay}/health`).then((response) => response.json())
@@ -208,6 +273,10 @@ try {
     reconnectLatenciesMs,
     reconnectP95Ms: percentile([...reconnectLatenciesMs].sort((left, right) => left - right), 0.95),
     healthySubscribers: clientCount - 1,
+    healthyTrafficLatencyMs,
+    slowEventsSubmittedAtHealthyProbe: pressureCheckpoint,
+    providerAcceptedDuringPressure: true,
+    kernelControlHealthyDuringPressure: true,
     slowSubscriptionCloseCount: relayHealth.backpressure.slow_subscription_close_count,
     targetQueueFullCount: relayHealth.backpressure.target_queue_full_count,
     relayHealth,
@@ -229,6 +298,7 @@ try {
 } finally {
   clearInterval(resourceTimer)
   for (const client of clients) client.destroy()
+  await pressureControl?.close?.().catch(() => undefined)
   await control?.close?.().catch(() => undefined)
   const cleanup = await terminateOwnedTree(children)
   await mkdir(path.dirname(output), { recursive: true })
@@ -246,6 +316,13 @@ function numberArg(flag, fallback) {
   return value
 }
 function stringArg(flag) { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : "" }
+async function requireExecutable(file, label) {
+  try {
+    await access(file)
+  } catch {
+    throw new Error(`${label} binary is missing at ${file}; build it or select an available profile`)
+  }
+}
 function reconnectStormEvidencePath(requested, now = new Date()) {
   const configuredRoot = process.env.CHARIOX_RECONNECT_STORM_EVIDENCE_ROOT
   if (configuredRoot && !path.isAbsolute(configuredRoot)) {
@@ -349,6 +426,19 @@ async function waitFor(predicate, timeout, label) {
     await sleep(25)
   }
   throw new Error(`timed out waiting for ${label}: ${lastError ?? "condition false"}`)
+}
+async function withDeadline(promise, timeout, label) {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeout)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 function throwIfInterrupted() {
   if (receivedSignal) throw new Error(`received ${receivedSignal}`)
