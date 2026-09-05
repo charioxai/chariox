@@ -34,6 +34,7 @@ const kernelReconnectDrill = path.join(scriptDir, "live-kernel-reconnect-drill.m
 const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-drill.mjs")
 const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controller-fault-drill.mjs")
 const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fault-drill.mjs")
+const relayIdentitySecurityDrill = path.join(scriptDir, "live-relay-identity-security-drill.mjs")
 const reconnectStormDrill = path.join(scriptDir, "live-reconnect-storm-drill.mjs")
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
@@ -131,6 +132,22 @@ const MATRIX = [
       "full client and peer target queues return retryable backpressure and clear their pending request",
       "one slow subscription is removed while another subscription and the daemon reader lane remain live",
       "backpressure metrics record the bounded fault and no owned process remains",
+    ],
+  }),
+  scenario({
+    id: "local-relay-token-expiry-isolation",
+    description: "expire one accepted relay token under clock skew while healthy peers and realm isolation remain intact",
+    script: relayIdentitySecurityDrill,
+    args: [],
+    classification: "relay-runtime",
+    runtimeSignals: ["client-projection-health", "relay-target-freshness"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "an accepted short-lived client is closed at expiry while a healthy client completes routed request round trips before and after the close",
+      "an already-expired token and a token issued beyond clock-skew tolerance are rejected",
+      "production JWT tokens honor clock-skew tolerance while invalid identity bindings and cross-realm routes are rejected",
+      "the exact external relay process is stopped and resource evidence is retained outside the repository",
     ],
   }),
   scenario({
