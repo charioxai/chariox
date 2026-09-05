@@ -24,6 +24,7 @@ use super::model::{
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod broker;
+mod disk_admission;
 mod memory_admission;
 mod provider_inputs;
 mod state;

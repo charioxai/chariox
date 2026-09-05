@@ -198,6 +198,10 @@ function validateSliceContainer(value, label) {
   if (!value.startsWith("chariox-slice-")) fail(`${label} is not a managed slice resource`)
 }
 
+function isDiskAdmissionHelper(value) {
+  return /-disk-admission-[a-f0-9]{16}$/.test(value)
+}
+
 const SLICE_RUNTIME_LOG_SCRIPT = `
 set -eu
 found=0
@@ -235,6 +239,21 @@ function validateDockerExec(args) {
     exactArguments(command, ["bash", "-lc", "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst ."])
   ) return
   if (
+    args[2] === "root" &&
+    isDiskAdmissionHelper(args[3]) &&
+    exactArguments(command, ["du", "-sb", "/home-src"])
+  ) return
+  if (
+    args[2] === "root" &&
+    isDiskAdmissionHelper(args[3]) &&
+    exactArguments(command, ["bash", "-lc", "set -euo pipefail; find /home-src -printf . | wc -c"])
+  ) return
+  if (
+    args[2] === "root" &&
+    isDiskAdmissionHelper(args[3]) &&
+    exactArguments(command, ["df", "-B1", "--output=avail", "/tmp"])
+  ) return
+  if (
     args[2] === "slice" &&
     command.length === 3 &&
     command[0] === "bash" &&
@@ -265,6 +284,7 @@ function validateDocker(args) {
   if (
     exactArguments(args, ["info"])
     || exactArguments(args, ["info", "--format", "{{.MemTotal}}"])
+    || exactArguments(args, ["info", "--format", "{{.DockerRootDir}}"])
     || exactArguments(args, ["ps", "--format", "{{.Names}}"])
     || exactArguments(args, ["ps", "-a", "--format", "{{.Names}}"])
   ) return
@@ -273,6 +293,14 @@ function validateDocker(args) {
       fail("Docker inspect format is invalid")
     }
     validateSliceContainer(args[3], "Docker container")
+    return
+  }
+  if (
+    args[0] === "inspect" &&
+    args.length === 5 &&
+    exactArguments(args.slice(1, 4), ["--size", "--format", "{{.SizeRw}}"])
+  ) {
+    validateSliceContainer(args[4], "Docker container")
     return
   }
   if (args[0] === "logs" && args.length === 4 && args[1] === "--tail" && /^[0-9]{1,4}$/.test(args[2])) {
@@ -1337,7 +1365,10 @@ function execute(request) {
     const recorded = recordedContainerMounts(request.args[1])
     if (recorded.length > 0) {
       requireExactContainerMounts(request.args[1], recorded, false)
-    } else if (!/-home-archive-[0-9]+$/.test(request.args[1])) {
+    } else if (
+      !/-home-archive-[0-9]+$/.test(request.args[1]) &&
+      !isDiskAdmissionHelper(request.args[1])
+    ) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
