@@ -236,6 +236,7 @@ pub(crate) async fn resize_relay_leased_provider_terminal(
 pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
     prompt: &str,
     hidden_system_context: &str,
     attachments: Vec<RelayPromptAttachment>,
@@ -248,6 +249,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     runtime_state
         .submit_relay_leased_prompt(
             leased_agent_id,
+            expected_profile,
             prompt,
             hidden_system_context,
             attachments,
