@@ -14,18 +14,20 @@ const workerCount = numberArg("--workers", 10)
 const agentsPerWorker = numberArg("--agents-per-worker", 50)
 const timeoutMs = numberArg("--timeout-ms", 300_000)
 const output = stringArg("--output") || path.join(repoRoot, ".artifacts", "distributed-scale", `run-${process.pid}.json`)
+const buildProfile = buildProfileArg()
+const cargoTargetDir = cargoTargetPath()
 const dryRun = args.includes("--dry-run")
 const totalAgents = workerCount * agentsPerWorker
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
 
 if (args.includes("--help")) {
-  console.log("Usage: live-distributed-scale-drill.mjs [--workers 10] [--agents-per-worker 50] [--timeout-ms 300000] [--output PATH] [--dry-run]")
+  console.log("Usage: live-distributed-scale-drill.mjs [--workers 10] [--agents-per-worker 50] [--timeout-ms 300000] [--build-profile release|debug] [--output PATH] [--dry-run]")
   process.exit(0)
 }
 
 if (dryRun) {
-  console.log(JSON.stringify({ workerCount, agentsPerWorker, totalAgents, output, release: true }, null, 2))
+  console.log(JSON.stringify({ workerCount, agentsPerWorker, totalAgents, buildProfile, cargoTargetDir, output, release: buildProfile === "release" }, null, 2))
   process.exit(0)
 }
 
@@ -48,8 +50,8 @@ const ports = {
 }
 const root = path.join(os.tmpdir(), `chariox-distributed-scale-${process.pid}-${Date.now()}`)
 const relayToken = `distributed-scale-${process.pid}-${Date.now()}`
-const relayBinary = path.join(repoRoot, "target", "release", "chariox-relay")
-const kernelBinary = path.join(repoRoot, "target", "release", "chariox-kernel")
+const relayBinary = path.join(cargoTargetDir, buildProfile, "chariox-relay")
+const kernelBinary = path.join(cargoTargetDir, buildProfile, "chariox-kernel")
 const children = []
 let client
 let report
@@ -175,6 +177,8 @@ try {
   const metrics = processMetrics(children)
   report = {
     ok: true,
+    buildProfile,
+    cargoTargetDir,
     workerCount,
     agentsPerWorker,
     totalAgents,
@@ -197,7 +201,7 @@ try {
     ports,
   }
 } catch (error) {
-  report = { ok: false, error: String(error?.stack ?? error), workerCount, agentsPerWorker, totalAgents, workerRelayStatuses, ports }
+  report = { ok: false, error: String(error?.stack ?? error), workerCount, agentsPerWorker, totalAgents, buildProfile, cargoTargetDir, workerRelayStatuses, ports }
   process.exitCode = 1
 } finally {
   await client?.close?.().catch(() => undefined)
@@ -220,6 +224,19 @@ function numberArg(flag, fallback) {
 function stringArg(flag) {
   const index = args.indexOf(flag)
   return index >= 0 ? path.resolve(args[index + 1]) : ""
+}
+
+function buildProfileArg() {
+  const index = args.indexOf("--build-profile")
+  const value = index >= 0 ? args[index + 1] : "release"
+  if (value !== "debug" && value !== "release") throw new Error("--build-profile must be debug or release")
+  return value
+}
+
+function cargoTargetPath() {
+  const value = process.env.CARGO_TARGET_DIR?.trim() || path.join(repoRoot, "target")
+  if (!path.isAbsolute(value)) throw new Error("CARGO_TARGET_DIR must be absolute")
+  return value
 }
 
 async function reservePortBand(workers) {
