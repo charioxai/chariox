@@ -380,6 +380,101 @@ test("/room browser does not relabel transport failures as protocol incompatibil
   )
 })
 
+test("/room reports exact protocol minimums for unsupported Room capabilities", async (t) => {
+  const scenarios = [
+    { command: "/room status", variant: "GetRoomEnvironmentState", capability: "Room environment status", minimum: 269 },
+    { command: "/room start", variant: "StartRoomEnvironment", capability: "Room environment lifecycle", minimum: 270 },
+    { command: "/room stop", variant: "StopRoomEnvironment", capability: "Room environment lifecycle", minimum: 270 },
+    { command: "/room retry", variant: "RetryRoomEnvironment", capability: "Room environment lifecycle", minimum: 270 },
+    { command: "/room view", variant: "GetRoomEnvironmentSlice", capability: "Room slice binding", minimum: 282 },
+    { command: "/room save restart", variant: "GetRoomEnvironmentSlice", capability: "Room slice binding", minimum: 282 },
+    { command: "/room actions", variant: "ListRoomEnvironmentActionHistory", capability: "Room action history", minimum: 279 },
+    { command: "/room takeover", variant: "RequestRoomEnvironmentInputTakeover", capability: "Room input takeover", minimum: 272 },
+    { command: "/room release", variant: "ReleaseRoomEnvironmentInput", capability: "Room input release", minimum: 273 },
+    { command: "/room cancel action-1", variant: "CancelRoomEnvironmentAction", capability: "Room action cancellation", minimum: 277 },
+  ] as const
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.command, async () => {
+      const command = parseSlashCommand(scenario.command)
+      assert.equal(command?.kind, "room")
+      await assert.rejects(
+        handleRoomSlashCommand({
+          isAttached: () => true,
+          sessionId: () => "session-1",
+          focusedAgentId: () => "agent-1",
+          send: async () => {
+            throw new Error(`unknown variant \`${scenario.variant}\``)
+          },
+          openViewer: async () => ({ url: "https://example.test/view", opened: true }),
+          appendNotice: () => undefined,
+          flashFooter: () => undefined,
+        }, command),
+        new RegExp(`${scenario.capability} requires kernel protocol ${scenario.minimum} or newer.*${scenario.variant}`),
+      )
+    })
+  }
+})
+
+test("/room reconnect reports the event replay protocol minimum", async () => {
+  const command = parseSlashCommand("/room reconnect")
+  assert.equal(command?.kind, "room")
+
+  await assert.rejects(
+    handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      send: async <TResponse>() => ({} as TResponse),
+      reconnectEventStream: async () => {
+        throw new Error("unknown variant `GetRoomEnvironmentEvents`")
+      },
+      appendNotice: () => undefined,
+      flashFooter: () => undefined,
+    }, command),
+    /Room event replay requires kernel protocol 275 or newer.*GetRoomEnvironmentEvents/,
+  )
+})
+
+test("/room browser reports the state minimum when the kernel predates Room environments", async () => {
+  const command = parseSlashCommand("/room browser reload")
+  assert.equal(command?.kind, "room")
+
+  await assert.rejects(
+    handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      send: async () => {
+        throw new Error("unknown variant `GetRoomEnvironmentState`")
+      },
+      appendNotice: () => undefined,
+      flashFooter: () => undefined,
+    }, command),
+    /Room environment status requires kernel protocol 269 or newer.*GetRoomEnvironmentState/,
+  )
+})
+
+test("/room capability diagnostics do not relabel a different or prefix-matching unknown variant", async (t) => {
+  const command = parseSlashCommand("/room status")
+  assert.equal(command?.kind, "room")
+
+  for (const variant of ["UnrelatedRequest", "GetRoomEnvironmentStateLegacy"]) {
+    await t.test(variant, async () => {
+      await assert.rejects(
+        handleRoomSlashCommand({
+          isAttached: () => true,
+          sessionId: () => "session-1",
+          send: async () => {
+            throw new Error(`unknown variant \`${variant}\``)
+          },
+          appendNotice: () => undefined,
+          flashFooter: () => undefined,
+        }, command),
+        new RegExp("^Error: unknown variant `" + variant + "`$"),
+      )
+    })
+  }
+})
+
 test("/room browser validates its action and stable tab before mutation", async () => {
   const requests: unknown[] = []
   const flashes: string[] = []

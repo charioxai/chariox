@@ -8,8 +8,16 @@ import {
   releaseRoomEnvironmentInputRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
+  roomEnvironmentActionCancellationMinimumProtocolVersion,
+  roomEnvironmentActionHistoryMinimumProtocolVersion,
   roomEnvironmentBrowserHistoryMinimumProtocolVersion,
   roomEnvironmentBrowserTabActionsMinimumProtocolVersion,
+  roomEnvironmentEventReplayMinimumProtocolVersion,
+  roomEnvironmentInputReleaseMinimumProtocolVersion,
+  roomEnvironmentInputTakeoverMinimumProtocolVersion,
+  roomEnvironmentLifecycleMinimumProtocolVersion,
+  roomEnvironmentSliceBindingMinimumProtocolVersion,
+  roomEnvironmentStateMinimumProtocolVersion,
   saveSliceStateRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
@@ -34,6 +42,7 @@ import type {
 } from "@chariox/kernel-client/kernel-types"
 
 import type { ParsedSlashCommand } from "./commands.js"
+import { sendWithProtocolMinimum, withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import type { DownloadedRoomEnvironmentScreenshot } from "./room-screenshot-api.js"
 import { formatSliceStateSaved } from "./slice-command-handlers.js"
 
@@ -142,7 +151,15 @@ export async function handleRoomSlashCommand(
       deps.flashFooter("Room reconnect is unavailable in this client", "error")
       return
     }
-    if (!await deps.reconnectEventStream()) {
+    const reconnected = await withProtocolMinimum(
+      () => deps.reconnectEventStream!(),
+      {
+        capability: "Room event replay",
+        requestVariant: "GetRoomEnvironmentEvents",
+        minimumProtocolVersion: roomEnvironmentEventReplayMinimumProtocolVersion,
+      },
+    )
+    if (!reconnected) {
       deps.flashFooter("Room reconnect is unavailable on this polling transport", "error")
       return
     }
@@ -169,8 +186,14 @@ export async function handleRoomSlashCommand(
       deps.flashFooter("focus an agent before opening the Room Environment", "error")
       return
     }
-    const bindingResponse = await deps.send<RoomEnvironmentSliceResponse>(
+    const bindingResponse = await sendWithProtocolMinimum<RoomEnvironmentSliceResponse>(
+      deps.send,
       getRoomEnvironmentSliceRequest(sessionId),
+      {
+        capability: "Room slice binding",
+        requestVariant: "GetRoomEnvironmentSlice",
+        minimumProtocolVersion: roomEnvironmentSliceBindingMinimumProtocolVersion,
+      },
     )
     if (!bindingResponse || typeof bindingResponse !== "object" || !("RoomEnvironmentSlice" in bindingResponse)) {
       throw new Error("Room Environment slice response is malformed")
@@ -197,8 +220,14 @@ export async function handleRoomSlashCommand(
     return
   }
   if (!subcommand || subcommand === "status" || subcommand === "show") {
-    const response = await deps.send<RoomEnvironmentStateResponse>(
+    const response = await sendWithProtocolMinimum<RoomEnvironmentStateResponse>(
+      deps.send,
       getRoomEnvironmentStateRequest(sessionId),
+      {
+        capability: "Room environment status",
+        requestVariant: "GetRoomEnvironmentState",
+        minimumProtocolVersion: roomEnvironmentStateMinimumProtocolVersion,
+      },
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentState" in response)) {
       throw new Error("Room Environment state response is malformed")
@@ -208,12 +237,18 @@ export async function handleRoomSlashCommand(
   }
   if (subcommand === "actions") {
     if (!actionHistory) throw new Error("Room Environment action history arguments are missing")
-    const response = await deps.send<RoomEnvironmentActionHistoryResponse>(
+    const response = await sendWithProtocolMinimum<RoomEnvironmentActionHistoryResponse>(
+      deps.send,
       listRoomEnvironmentActionHistoryRequest(
         sessionId,
         actionHistory.beforeSequence,
         actionHistory.limit,
       ),
+      {
+        capability: "Room action history",
+        requestVariant: "ListRoomEnvironmentActionHistory",
+        minimumProtocolVersion: roomEnvironmentActionHistoryMinimumProtocolVersion,
+      },
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentActionHistoryListed" in response)) {
       throw new Error("Room Environment action history response is malformed")
@@ -223,8 +258,14 @@ export async function handleRoomSlashCommand(
   }
   if (subcommand === "browser") {
     if (!browserCommand) throw new Error("Room browser command is missing")
-    const stateResponse = await deps.send<RoomEnvironmentStateResponse>(
+    const stateResponse = await sendWithProtocolMinimum<RoomEnvironmentStateResponse>(
+      deps.send,
       getRoomEnvironmentStateRequest(sessionId),
+      {
+        capability: "Room environment status",
+        requestVariant: "GetRoomEnvironmentState",
+        minimumProtocolVersion: roomEnvironmentStateMinimumProtocolVersion,
+      },
     )
     if (!stateResponse || typeof stateResponse !== "object" || !("RoomEnvironmentState" in stateResponse)) {
       throw new Error("Room Environment state response is malformed")
@@ -247,21 +288,25 @@ export async function handleRoomSlashCommand(
       )
       return
     }
-    const tabLifecycleAction = browserCommand.action === "activate" || browserCommand.action === "close"
+    const browserAction = browserCommand.action === "activate" || browserCommand.action === "close"
+      ? { kind: "tab" as const, tab_id: tabId, action: browserCommand.action }
+      : { kind: "history" as const, tab_id: tabId, action: browserCommand.action }
+    const tabLifecycleAction = browserAction.kind === "tab"
     const response = await sendWithProtocolMinimum<RoomEnvironmentActionSubmittedResponse>(
       deps.send,
       submitRoomEnvironmentBrowserActionRequest(
         sessionId,
         environment.runtime_generation,
         (deps.createIdempotencyKey ?? randomUUID)(),
-        tabLifecycleAction
-          ? { kind: "tab", tab_id: tabId, action: browserCommand.action }
-          : { kind: "history", tab_id: tabId, action: browserCommand.action },
+        browserAction,
       ),
-      tabLifecycleAction ? "Room browser tab lifecycle" : "Room browser history",
-      tabLifecycleAction
-        ? roomEnvironmentBrowserTabActionsMinimumProtocolVersion
-        : roomEnvironmentBrowserHistoryMinimumProtocolVersion,
+      {
+        capability: tabLifecycleAction ? "Room browser tab lifecycle" : "Room browser history",
+        requestVariant: "SubmitRoomEnvironmentBrowserAction",
+        minimumProtocolVersion: tabLifecycleAction
+          ? roomEnvironmentBrowserTabActionsMinimumProtocolVersion
+          : roomEnvironmentBrowserHistoryMinimumProtocolVersion,
+      },
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentActionSubmitted" in response)) {
       throw new Error("Room browser action response is malformed")
@@ -275,8 +320,14 @@ export async function handleRoomSlashCommand(
 
   if (subcommand === "takeover") {
     if (!inputTarget) throw new Error("Room Environment takeover target is missing")
-    const response = await deps.send<RoomEnvironmentTakeoverUpdatedResponse>(
+    const response = await sendWithProtocolMinimum<RoomEnvironmentTakeoverUpdatedResponse>(
+      deps.send,
       requestRoomEnvironmentInputTakeoverRequest(sessionId, inputTarget),
+      {
+        capability: "Room input takeover",
+        requestVariant: "RequestRoomEnvironmentInputTakeover",
+        minimumProtocolVersion: roomEnvironmentInputTakeoverMinimumProtocolVersion,
+      },
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentTakeoverUpdated" in response)) {
       throw new Error("Room Environment takeover response is malformed")
@@ -290,8 +341,14 @@ export async function handleRoomSlashCommand(
   }
   if (subcommand === "release") {
     if (!inputTarget) throw new Error("Room Environment release target is missing")
-    const response = await deps.send<RoomEnvironmentInputReleasedResponse>(
+    const response = await sendWithProtocolMinimum<RoomEnvironmentInputReleasedResponse>(
+      deps.send,
       releaseRoomEnvironmentInputRequest(sessionId, inputTarget),
+      {
+        capability: "Room input release",
+        requestVariant: "ReleaseRoomEnvironmentInput",
+        minimumProtocolVersion: roomEnvironmentInputReleaseMinimumProtocolVersion,
+      },
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentInputReleased" in response)) {
       throw new Error("Room Environment input release response is malformed")
@@ -301,8 +358,14 @@ export async function handleRoomSlashCommand(
   }
   if (subcommand === "cancel") {
     if (!actionId) throw new Error("Room Environment action ID is missing")
-    const response = await deps.send<RoomEnvironmentActionCancellationUpdatedResponse>(
+    const response = await sendWithProtocolMinimum<RoomEnvironmentActionCancellationUpdatedResponse>(
+      deps.send,
       cancelRoomEnvironmentActionRequest(sessionId, actionId),
+      {
+        capability: "Room action cancellation",
+        requestVariant: "CancelRoomEnvironmentAction",
+        minimumProtocolVersion: roomEnvironmentActionCancellationMinimumProtocolVersion,
+      },
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentActionCancellationUpdated" in response)) {
       throw new Error("Room Environment action cancellation response is malformed")
@@ -313,8 +376,14 @@ export async function handleRoomSlashCommand(
   }
   if (subcommand === "save") {
     if (!saveMode) throw new Error("Room Environment save mode is missing")
-    const bindingResponse = await deps.send<RoomEnvironmentSliceResponse>(
+    const bindingResponse = await sendWithProtocolMinimum<RoomEnvironmentSliceResponse>(
+      deps.send,
       getRoomEnvironmentSliceRequest(sessionId),
+      {
+        capability: "Room slice binding",
+        requestVariant: "GetRoomEnvironmentSlice",
+        minimumProtocolVersion: roomEnvironmentSliceBindingMinimumProtocolVersion,
+      },
     )
     if (!bindingResponse || typeof bindingResponse !== "object" || !("RoomEnvironmentSlice" in bindingResponse)) {
       throw new Error("Room Environment slice response is malformed")
@@ -343,28 +412,24 @@ export async function handleRoomSlashCommand(
   } else {
     request = retryRoomEnvironmentRequest(sessionId)
   }
-  const response = await deps.send<RoomEnvironmentUpdatedResponse>(request)
+  const requestVariant = subcommand === "start"
+    ? "StartRoomEnvironment"
+    : subcommand === "stop"
+      ? "StopRoomEnvironment"
+      : "RetryRoomEnvironment"
+  const response = await sendWithProtocolMinimum<RoomEnvironmentUpdatedResponse>(
+    deps.send,
+    request,
+    {
+      capability: "Room environment lifecycle",
+      requestVariant,
+      minimumProtocolVersion: roomEnvironmentLifecycleMinimumProtocolVersion,
+    },
+  )
   if (!response || typeof response !== "object" || !("RoomEnvironmentUpdated" in response)) {
     throw new Error("Room Environment lifecycle response is malformed")
   }
   deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentUpdated.environment))
-}
-
-async function sendWithProtocolMinimum<TResponse>(
-  send: RoomCommandHandlerDeps["send"],
-  request: unknown,
-  capability: string,
-  minimumProtocolVersion: number,
-): Promise<TResponse> {
-  try {
-    return await send<TResponse>(request)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (!/unknown variant/i.test(message)) throw error
-    throw new Error(
-      `${capability} requires kernel protocol ${minimumProtocolVersion} or newer: ${message}`,
-    )
-  }
 }
 
 function parseInputTarget(args: string[]): RoomEnvironmentInputTarget | string {

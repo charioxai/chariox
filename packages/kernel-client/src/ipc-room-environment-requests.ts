@@ -1,3 +1,12 @@
+export const roomEnvironmentStateMinimumProtocolVersion = 269
+export const roomEnvironmentLifecycleMinimumProtocolVersion = 270
+export const roomEnvironmentInputTakeoverMinimumProtocolVersion = 272
+export const roomEnvironmentInputReleaseMinimumProtocolVersion = 273
+export const roomEnvironmentEventReplayMinimumProtocolVersion = 275
+export const roomEnvironmentActionCancellationMinimumProtocolVersion = 277
+export const roomEnvironmentActionHistoryMinimumProtocolVersion = 279
+export const roomEnvironmentSliceBindingMinimumProtocolVersion = 282
+export const roomEnvironmentScreenshotMinimumProtocolVersion = 296
 export const roomEnvironmentBrowserHistoryMinimumProtocolVersion = 305
 export const roomEnvironmentBrowserTabActionsMinimumProtocolVersion = 306
 

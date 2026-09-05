@@ -6,12 +6,15 @@ import path from "node:path"
 import {
   captureRoomEnvironmentScreenshotRequest,
   readRoomEnvironmentScreenshotChunkRequest,
+  roomEnvironmentScreenshotMinimumProtocolVersion,
 } from "@chariox/kernel-client/ipc-requests"
 import type {
   RoomEnvironmentScreenshotArtifact,
   RoomEnvironmentScreenshotCapturedResponse,
   RoomEnvironmentScreenshotChunkResponse,
 } from "@chariox/kernel-client/kernel-types"
+
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 const SCREENSHOT_CHUNK_BYTES = 128 * 1024
 const MAX_SCREENSHOT_BYTES = 64 * 1024 * 1024
@@ -35,8 +38,14 @@ export function defaultRoomScreenshotOutputRoot(): string {
 export async function downloadRoomEnvironmentScreenshot(
   options: DownloadRoomEnvironmentScreenshotOptions,
 ): Promise<DownloadedRoomEnvironmentScreenshot> {
-  const captured = await options.send<RoomEnvironmentScreenshotCapturedResponse>(
+  const captured = await sendWithProtocolMinimum<RoomEnvironmentScreenshotCapturedResponse>(
+    options.send,
     captureRoomEnvironmentScreenshotRequest(options.sessionId, options.attachmentId),
+    {
+      capability: "Room screenshot capture",
+      requestVariant: "CaptureRoomEnvironmentScreenshot",
+      minimumProtocolVersion: roomEnvironmentScreenshotMinimumProtocolVersion,
+    },
   )
   if (!captured || typeof captured !== "object" || !("RoomEnvironmentScreenshotCaptured" in captured)) {
     throw new Error("Room Environment screenshot response is malformed")
@@ -51,7 +60,8 @@ export async function downloadRoomEnvironmentScreenshot(
   let offset = 0
   try {
     while (offset < artifact.size_bytes) {
-      const response = await options.send<RoomEnvironmentScreenshotChunkResponse>(
+      const response = await sendWithProtocolMinimum<RoomEnvironmentScreenshotChunkResponse>(
+        options.send,
         readRoomEnvironmentScreenshotChunkRequest(
           options.sessionId,
           options.attachmentId,
@@ -59,6 +69,11 @@ export async function downloadRoomEnvironmentScreenshot(
           offset,
           SCREENSHOT_CHUNK_BYTES,
         ),
+        {
+          capability: "Room screenshot transfer",
+          requestVariant: "ReadRoomEnvironmentScreenshotChunk",
+          minimumProtocolVersion: roomEnvironmentScreenshotMinimumProtocolVersion,
+        },
       )
       if (!response || typeof response !== "object" || !("RoomEnvironmentScreenshotChunk" in response)) {
         throw new Error("Room Environment screenshot chunk response is malformed")

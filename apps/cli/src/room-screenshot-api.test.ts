@@ -221,3 +221,55 @@ test("downloadRoomEnvironmentScreenshot rejects dot-segment display names before
     await rm(outputRoot, { recursive: true, force: true })
   }
 })
+
+test("downloadRoomEnvironmentScreenshot reports the capture protocol minimum", async () => {
+  const outputRoot = await mkdtemp(join(tmpdir(), "chariox-room-screenshot-protocol-"))
+  try {
+    await assert.rejects(
+      downloadRoomEnvironmentScreenshot({
+        sessionId: "session-1",
+        attachmentId: "attachment-1",
+        outputRoot,
+        send: async () => {
+          throw new Error("unknown variant `CaptureRoomEnvironmentScreenshot`")
+        },
+      }),
+      /Room screenshot capture requires kernel protocol 296 or newer.*CaptureRoomEnvironmentScreenshot/,
+    )
+  } finally {
+    await rm(outputRoot, { recursive: true, force: true })
+  }
+})
+
+test("downloadRoomEnvironmentScreenshot reports the chunk protocol minimum and cleans up", async () => {
+  const outputRoot = await mkdtemp(join(tmpdir(), "chariox-room-screenshot-chunk-protocol-"))
+  try {
+    await assert.rejects(
+      downloadRoomEnvironmentScreenshot({
+        sessionId: "session-1",
+        attachmentId: "attachment-1",
+        outputRoot,
+        send: async <TResponse>(request: unknown) => {
+          if (Object.prototype.hasOwnProperty.call(request, "CaptureRoomEnvironmentScreenshot")) {
+            return {
+              RoomEnvironmentScreenshotCaptured: {
+                artifact: {
+                  artifact_id: "artifact-1",
+                  sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                  size_bytes: 3,
+                  media_type: "image/png",
+                  display_name: "capture.png",
+                },
+              },
+            } as TResponse
+          }
+          throw new Error("unknown variant `ReadRoomEnvironmentScreenshotChunk`")
+        },
+      }),
+      /Room screenshot transfer requires kernel protocol 296 or newer.*ReadRoomEnvironmentScreenshotChunk/,
+    )
+    assert.deepEqual(await readdir(outputRoot), [])
+  } finally {
+    await rm(outputRoot, { recursive: true, force: true })
+  }
+})

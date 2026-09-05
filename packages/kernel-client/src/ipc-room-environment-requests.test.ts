@@ -13,8 +13,17 @@ import {
   releaseRoomEnvironmentInputRequest,
   readRoomEnvironmentClipboardRequest,
   readRoomEnvironmentScreenshotChunkRequest,
+  roomEnvironmentActionCancellationMinimumProtocolVersion,
+  roomEnvironmentActionHistoryMinimumProtocolVersion,
   roomEnvironmentBrowserHistoryMinimumProtocolVersion,
   roomEnvironmentBrowserTabActionsMinimumProtocolVersion,
+  roomEnvironmentEventReplayMinimumProtocolVersion,
+  roomEnvironmentInputReleaseMinimumProtocolVersion,
+  roomEnvironmentInputTakeoverMinimumProtocolVersion,
+  roomEnvironmentLifecycleMinimumProtocolVersion,
+  roomEnvironmentScreenshotMinimumProtocolVersion,
+  roomEnvironmentSliceBindingMinimumProtocolVersion,
+  roomEnvironmentStateMinimumProtocolVersion,
   submitRoomEnvironmentBrowserActionRequest,
   submitRoomEnvironmentActionRequest,
   startRoomEnvironmentRequest,
@@ -36,6 +45,30 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 test("Room browser human actions expose their exact client protocol minimums", () => {
   assert.equal(roomEnvironmentBrowserHistoryMinimumProtocolVersion, 305)
   assert.equal(roomEnvironmentBrowserTabActionsMinimumProtocolVersion, 306)
+})
+
+test("Room client capabilities expose their exact protocol minimums", () => {
+  assert.deepEqual({
+    state: roomEnvironmentStateMinimumProtocolVersion,
+    lifecycle: roomEnvironmentLifecycleMinimumProtocolVersion,
+    takeover: roomEnvironmentInputTakeoverMinimumProtocolVersion,
+    release: roomEnvironmentInputReleaseMinimumProtocolVersion,
+    events: roomEnvironmentEventReplayMinimumProtocolVersion,
+    cancellation: roomEnvironmentActionCancellationMinimumProtocolVersion,
+    history: roomEnvironmentActionHistoryMinimumProtocolVersion,
+    sliceBinding: roomEnvironmentSliceBindingMinimumProtocolVersion,
+    screenshot: roomEnvironmentScreenshotMinimumProtocolVersion,
+  }, {
+    state: 269,
+    lifecycle: 270,
+    takeover: 272,
+    release: 273,
+    events: 275,
+    cancellation: 277,
+    history: 279,
+    sliceBinding: 282,
+    screenshot: 296,
+  })
 })
 
 test("Room Environment placement uses shared requests", () => {
