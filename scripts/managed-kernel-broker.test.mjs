@@ -491,6 +491,42 @@ test("managed slice broker verifies archive size and digest before restore", {
   )
 })
 
+test("managed slice broker permits a disk-admission helper through its execution-time start gate", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-disk-helper-start-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const run = (container) => spawnSync(process.execPath, [broker, "--stdio"], {
+    input: `${JSON.stringify({ kind: "docker", args: ["start", container] })}\n`,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DOCKER_HOST: `unix://${join(root, "unavailable-docker.sock")}`,
+      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+    },
+  })
+
+  const helper = run("chariox-slice-dev-disk-admission-0123456789abcdef")
+  assert.equal(helper.status, 0, helper.stderr)
+  const helperResponse = JSON.parse(helper.stdout)
+  assert.notEqual(helperResponse.status, 0)
+  assert.doesNotMatch(
+    Buffer.from(helperResponse.stderrBase64, "base64").toString(),
+    /no broker-owned stable mount record/,
+  )
+
+  const unowned = run("chariox-slice-dev-unowned-helper")
+  assert.equal(unowned.status, 0, unowned.stderr)
+  const unownedResponse = JSON.parse(unowned.stdout)
+  assert.equal(unownedResponse.status, 125)
+  assert.match(
+    Buffer.from(unownedResponse.stderrBase64, "base64").toString(),
+    /no broker-owned stable mount record/,
+  )
+})
+
 test("managed slice broker rejects symlink escapes from the shared root", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-symlink-"))
   context.after(() => rm(root, { recursive: true, force: true }))

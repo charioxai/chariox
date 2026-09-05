@@ -198,6 +198,10 @@ function validateSliceContainer(value, label) {
   if (!value.startsWith("chariox-slice-")) fail(`${label} is not a managed slice resource`)
 }
 
+function isDiskAdmissionHelper(value) {
+  return /-disk-admission-[a-f0-9]{16}$/.test(value)
+}
+
 const SLICE_RUNTIME_LOG_SCRIPT = `
 set -eu
 found=0
@@ -236,17 +240,17 @@ function validateDockerExec(args) {
   ) return
   if (
     args[2] === "root" &&
-    /-disk-admission-[a-f0-9]{16}$/.test(args[3]) &&
+    isDiskAdmissionHelper(args[3]) &&
     exactArguments(command, ["du", "-sb", "/home-src"])
   ) return
   if (
     args[2] === "root" &&
-    /-disk-admission-[a-f0-9]{16}$/.test(args[3]) &&
+    isDiskAdmissionHelper(args[3]) &&
     exactArguments(command, ["bash", "-lc", "set -euo pipefail; find /home-src -printf . | wc -c"])
   ) return
   if (
     args[2] === "root" &&
-    /-disk-admission-[a-f0-9]{16}$/.test(args[3]) &&
+    isDiskAdmissionHelper(args[3]) &&
     exactArguments(command, ["df", "-B1", "--output=avail", "/tmp"])
   ) return
   if (
@@ -1361,7 +1365,10 @@ function execute(request) {
     const recorded = recordedContainerMounts(request.args[1])
     if (recorded.length > 0) {
       requireExactContainerMounts(request.args[1], recorded, false)
-    } else if (!/-home-archive-[0-9]+$/.test(request.args[1])) {
+    } else if (
+      !/-home-archive-[0-9]+$/.test(request.args[1]) &&
+      !isDiskAdmissionHelper(request.args[1])
+    ) {
       fail("managed slice start has no broker-owned stable mount record")
     }
   }
