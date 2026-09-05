@@ -21,13 +21,14 @@ test("controller fault drill runs only the exact kernel library test", () => {
   ])
   assert.deepEqual(BROWSER_CONTROLLER_FAULT_CASE_IDS, [
     "fault.controller-crash",
+    "fault.controller-crash-during-queued-mutations",
     "cleanup.resources",
   ])
 })
 
 test("controller fault drill requires every crash-recovery invariant", () => {
   const probe = {
-    schema: "chariox.browser_controller_fault_probe.v1",
+    schema: "chariox.browser_controller_fault_probe.v2",
     faultTriggered: true,
     processLostAttributed: true,
     staleReferenceRejected: true,
@@ -35,6 +36,9 @@ test("controller fault drill requires every crash-recovery invariant", () => {
     tabsPreserved: true,
     authorityPreserved: true,
     postRecoveryActionExactlyOnce: true,
+    runningMutationNotRepeated: true,
+    queuedMutationSettled: true,
+    freshMutationExactlyOnce: true,
   }
   assert.deepEqual(parseBrowserControllerFaultProbe(`noise\n${JSON.stringify(probe)}\n`), probe)
 

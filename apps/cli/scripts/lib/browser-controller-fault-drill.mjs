@@ -1,12 +1,13 @@
 export const BROWSER_CONTROLLER_FAULT_CASE_IDS = Object.freeze([
   "fault.controller-crash",
+  "fault.controller-crash-during-queued-mutations",
   "cleanup.resources",
 ])
 
 export const BROWSER_CONTROLLER_FAULT_TEST_NAME =
   "runtime::router::tests::room_environment_placement::live_worker::controller::room_environment_controller_uses_its_slice_without_worker_agents"
 
-const PROBE_SCHEMA = "chariox.browser_controller_fault_probe.v1"
+const PROBE_SCHEMA = "chariox.browser_controller_fault_probe.v2"
 const PROBE_FIELDS = Object.freeze([
   "faultTriggered",
   "processLostAttributed",
@@ -15,6 +16,9 @@ const PROBE_FIELDS = Object.freeze([
   "tabsPreserved",
   "authorityPreserved",
   "postRecoveryActionExactlyOnce",
+  "runningMutationNotRepeated",
+  "queuedMutationSettled",
+  "freshMutationExactlyOnce",
 ])
 
 export function buildBrowserControllerFaultCargoArgs() {

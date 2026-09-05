@@ -189,20 +189,6 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
             .unwrap()["state"],
         "completed"
     );
-    eprintln!(
-        "{}",
-        json!({
-            "schema": "chariox.browser_controller_fault_probe.v1",
-            "faultTriggered": true,
-            "processLostAttributed": true,
-            "staleReferenceRejected": true,
-            "processReplaced": true,
-            "tabsPreserved": true,
-            "authorityPreserved": true,
-            "postRecoveryActionExactlyOnce": true
-        })
-    );
-
     let dialog_crash_pid =
         std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
             .unwrap()
@@ -275,5 +261,213 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     assert_eq!(
         after_dialog_recovery.payload["tabs"],
         recovered.payload["tabs"]
+    );
+
+    let queued_field = after_dialog_recovery.payload["browser"]["buttons"][0]["field_id"]
+        .as_str()
+        .expect("recovered browser button reference")
+        .to_string();
+    let state_path = fixture._worker_state.root.join("chromium-state.json");
+    let clicks_before_queue_fault = controller_click_count(&state_path);
+    let actions_before_queue_fault = dispatch_json(
+        &fixture.home,
+        json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap()["RoomEnvironmentState"]["environment"]["actions"]
+        .as_array()
+        .unwrap()
+        .len();
+    let hold = fixture._worker_state.root.join("hold-click");
+    std::fs::write(&hold, b"hold controller mutation during crash").unwrap();
+    let running = controller_fault_tool_task(
+        fixture,
+        token,
+        "slice_browser_click",
+        json!({"field_id":queued_field}),
+    );
+    let running_action_id =
+        wait_for_fault_action(fixture, actions_before_queue_fault, "running").await;
+    let queued = controller_fault_tool_task(
+        fixture,
+        token,
+        "slice_browser_click",
+        json!({"field_id":queued_field}),
+    );
+    let queued_action_id =
+        wait_for_fault_action(fixture, actions_before_queue_fault + 1, "queued").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let queue_fault_pid =
+        std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+    #[cfg(unix)]
+    {
+        let killed = unsafe { libc::kill(queue_fault_pid as libc::pid_t, libc::SIGKILL) };
+        assert_eq!(
+            killed, 0,
+            "crash the controller while one mutation runs and another waits"
+        );
+    }
+    let _ = std::fs::remove_file(&hold);
+    let running_error = tokio::time::timeout(Duration::from_secs(6), running)
+        .await
+        .expect("running mutation should settle after controller loss")
+        .expect("running mutation task should join")
+        .expect_err("running mutation must not report success after controller loss");
+    let queued_error = tokio::time::timeout(Duration::from_secs(6), queued)
+        .await
+        .expect("queued mutation should settle after controller loss")
+        .expect("queued mutation task should join")
+        .expect_err("queued pre-crash mutation must not execute with a stale reference");
+    assert_controller_execution_loss(&running_error);
+    assert_controller_restart_error(&queued_error);
+
+    let after_queue_fault = dispatch_json(
+        &fixture.home,
+        json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap();
+    let queue_fault_actions = after_queue_fault["RoomEnvironmentState"]["environment"]["actions"]
+        .as_array()
+        .unwrap();
+    for action_id in [&running_action_id, &queued_action_id] {
+        let action = queue_fault_actions
+            .iter()
+            .find(|action| action["action_id"] == *action_id)
+            .expect("pre-crash action remains in the authoritative ledger");
+        assert_eq!(
+            action["state"], "failed",
+            "pre-crash mutation must settle failed: {action}"
+        );
+    }
+    assert_eq!(
+        controller_click_count(&state_path),
+        clicks_before_queue_fault,
+        "controller recovery must not repeat a running or queued mutation"
+    );
+
+    let after_queue_recovery = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+        .await
+        .expect("Room browser should recover after a queued-mutation crash");
+    let post_recovery_field = after_queue_recovery.payload["browser"]["buttons"][0]["field_id"]
+        .as_str()
+        .expect("post-recovery browser button reference");
+    fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "slice_browser_click",
+            json!({"field_id":post_recovery_field}),
+        )
+        .await
+        .expect("one newly discovered post-recovery mutation should execute");
+    assert_eq!(
+        controller_click_count(&state_path),
+        clicks_before_queue_fault + 1,
+        "only the explicit post-recovery mutation may change the page"
+    );
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "chariox.browser_controller_fault_probe.v2",
+            "faultTriggered": true,
+            "processLostAttributed": true,
+            "staleReferenceRejected": true,
+            "processReplaced": true,
+            "tabsPreserved": true,
+            "authorityPreserved": true,
+            "postRecoveryActionExactlyOnce": true,
+            "runningMutationNotRepeated": true,
+            "queuedMutationSettled": true,
+            "freshMutationExactlyOnce": true
+        })
+    );
+}
+
+fn controller_fault_tool_task(
+    fixture: &LiveWorker,
+    token: &str,
+    tool: &'static str,
+    args: Value,
+) -> JoinHandle<Result<Value, DaemonError>> {
+    let home = Arc::clone(&fixture.home);
+    let token = token.to_string();
+    tokio::spawn(async move {
+        let result = home
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&token, tool, args)
+            .await?;
+        assert!(result.ok, "{:?}", result.payload);
+        Ok(result.payload)
+    })
+}
+
+async fn wait_for_fault_action(
+    fixture: &LiveWorker,
+    minimum_prior_actions: usize,
+    state: &str,
+) -> Value {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = dispatch_json(
+                &fixture.home,
+                json!({"GetRoomEnvironmentState":{"session_id":fixture.rooms[0]}}),
+            )
+            .await
+            .unwrap();
+            let actions = snapshot["RoomEnvironmentState"]["environment"]["actions"]
+                .as_array()
+                .unwrap();
+            if actions.len() > minimum_prior_actions {
+                if let Some(action) = actions[minimum_prior_actions..]
+                    .iter()
+                    .find(|action| action["kind"] == "click" && action["state"] == state)
+                {
+                    return action["action_id"].clone();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued-mutation fault action should become visible")
+}
+
+fn controller_click_count(path: &std::path::Path) -> u64 {
+    serde_json::from_slice::<Value>(&std::fs::read(path).expect("controller state should exist"))
+        .expect("controller state should decode")["clickCount"]
+        .as_u64()
+        .expect("controller click count")
+}
+
+fn assert_controller_restart_error(error: &DaemonError) {
+    let DaemonError::LocalTransport { operation, message } = error else {
+        panic!("controller loss should return a transport error: {error}")
+    };
+    assert_eq!(*operation, "browser_controller.route");
+    assert_eq!(
+        message,
+        crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION
+    );
+}
+
+fn assert_controller_execution_loss(error: &DaemonError) {
+    let DaemonError::LocalTransport { operation, message } = error else {
+        panic!("running controller loss should return a transport error: {error}")
+    };
+    assert_eq!(*operation, "browser_controller.route");
+    assert!(
+        message.contains(
+            "browser action result remained unavailable after non-mutating receipt recovery"
+        ) && message.contains("browser controller exited during `browser.action`"),
+        "{error}"
     );
 }

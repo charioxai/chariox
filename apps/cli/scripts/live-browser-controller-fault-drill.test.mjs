@@ -33,7 +33,11 @@ test("controller fault drill dry-run records a serial exact-head command externa
 
     assert.equal(report.schema, "chariox.browser_controller_fault_drill.v1")
     assert.equal(report.status, "dry-run")
-    assert.deepEqual(report.caseIds, ["fault.controller-crash", "cleanup.resources"])
+    assert.deepEqual(report.caseIds, [
+      "fault.controller-crash",
+      "fault.controller-crash-during-queued-mutations",
+      "cleanup.resources",
+    ])
     assert.equal(report.command.name, "cargo")
     assert(report.command.args.includes("--lib"))
     assert.equal(report.command.env.CARGO_BUILD_JOBS, "1")

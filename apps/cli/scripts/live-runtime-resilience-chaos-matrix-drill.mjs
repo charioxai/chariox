@@ -114,6 +114,7 @@ const MATRIX = [
     exitCriteria: [
       "controller process death is attributed as process_lost and stale element references are rejected",
       "recovery replaces the process while preserving tabs and input authority without duplication",
+      "running and queued mutations settle without replay before one fresh action executes exactly once",
       "one fresh post-recovery action completes exactly once and fixture processes are removed",
     ],
   }),
