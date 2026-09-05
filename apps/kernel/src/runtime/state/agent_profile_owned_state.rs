@@ -78,9 +78,23 @@ impl KernelRuntimeOwnedState {
             agent.provider_account_profile()
         };
         let target_provider = provider.as_deref().unwrap_or(base_provider).to_string();
-        let target_model = model.as_deref().or(base_model).map(str::to_string);
-        let requested_account_profile = account_profile.as_deref().unwrap_or(base_account_profile);
-        let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
+        let base_provider_family = crate::provider::canonical_provider_family(base_provider);
+        let target_provider_family = crate::provider::canonical_provider_family(&target_provider);
+        let provider_family_changed =
+            target_provider_family.is_some() && target_provider_family != base_provider_family;
+        let target_model = if provider_family_changed {
+            model.as_deref().map(str::to_string)
+        } else {
+            model.as_deref().or(base_model).map(str::to_string)
+        };
+        let requested_account_profile = account_profile.as_deref().unwrap_or_else(|| {
+            if provider_family_changed {
+                "default"
+            } else {
+                base_account_profile
+            }
+        });
+        let target_account_profile = if target_provider_family
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let account_owner_user_id =
@@ -100,6 +114,7 @@ impl KernelRuntimeOwnedState {
         };
         let target_effort = match effort.as_ref() {
             Some(value) => value.as_deref(),
+            None if provider_family_changed => None,
             None => base_effort,
         };
         if editing_substituted_primary {

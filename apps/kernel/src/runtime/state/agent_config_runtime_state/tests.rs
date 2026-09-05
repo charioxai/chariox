@@ -151,6 +151,56 @@ async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
 }
 
 #[tokio::test]
+async fn provider_change_without_explicit_account_selects_destination_default() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let (codex_account, opencode_default) = {
+        let app = app.lock().await;
+        let registry = app.provider_account_profile_registry();
+        let codex_account = registry
+            .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+            .expect("Codex default account should resolve")
+            .profile_id;
+        let opencode_default = registry
+            .get(crate::session::DEFAULT_LOCAL_USER_ID, "opencode", "default")
+            .expect("OpenCode default account should resolve")
+            .profile_id;
+        (codex_account, opencode_default)
+    };
+
+    runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("codex".to_string()),
+            Some(codex_account.clone()),
+            Some("gpt-5.6-sol".to_string()),
+            Some(Some("high".to_string())),
+        )
+        .await
+        .expect("agent should bind the stable Codex account before switching providers");
+
+    let agent = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("opencode".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("provider change should resolve the destination default account");
+
+    assert_eq!(agent.provider(), "opencode");
+    assert_eq!(agent.provider_account_profile(), opencode_default);
+    assert_ne!(agent.provider_account_profile(), codex_account);
+    assert_eq!(agent.model(), None);
+    assert_eq!(agent.effort(), None);
+}
+
+#[tokio::test]
 async fn agent_config_update_still_blocks_active_prompt_owner() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
