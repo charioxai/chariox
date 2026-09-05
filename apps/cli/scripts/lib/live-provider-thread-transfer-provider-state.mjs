@@ -98,12 +98,14 @@ async function runOpenCodeStateCommand(
   providerEnv,
   stdoutFd = "ignore",
   timeoutMs = 60_000,
+  cwd,
 ) {
   const child = spawn(command, args, {
     env: {
       ...process.env,
       ...providerEnv,
     },
+    cwd,
     stdio: ["ignore", stdoutFd, "pipe"],
   })
   let stderrBytes = 0
@@ -141,6 +143,7 @@ async function transferOpenCodeThreadState({
   destinationProviderEnv,
   openCodeCommand,
   openCodeCommandTimeoutMs,
+  workingDirectory,
 }) {
   safePathComponent(providerSessionId, "provider session id")
   if (!sourceProviderEnv.XDG_DATA_HOME || !destinationProviderEnv.XDG_DATA_HOME) {
@@ -171,6 +174,7 @@ async function transferOpenCodeThreadState({
       destinationProviderEnv,
       "ignore",
       openCodeCommandTimeoutMs,
+      workingDirectory,
     )
     return {
       provider: "opencode",
@@ -192,6 +196,7 @@ export async function transferProviderThreadStateToWorker({
   destinationProviderEnv,
   openCodeCommand = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode",
   openCodeCommandTimeoutMs = 60_000,
+  workingDirectory,
 }) {
   if (provider === "opencode") {
     return transferOpenCodeThreadState({
@@ -200,6 +205,7 @@ export async function transferProviderThreadStateToWorker({
       destinationProviderEnv,
       openCodeCommand,
       openCodeCommandTimeoutMs,
+      workingDirectory,
     })
   }
   if (provider !== "codex") {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -355,13 +355,13 @@ test("materialized provider paths reject profile traversal", () => {
   )
 })
 
-test("OpenCode thread transfer uses the provider export and import commands", async () => {
+test("OpenCode thread transfer imports from the resumed workspace", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-thread-state-test-"))
   try {
     const command = path.join(root, "fake-opencode.mjs")
     await writeFile(command, [
       "#!/usr/bin/env node",
-      "import { copyFileSync, mkdirSync } from 'node:fs'",
+      "import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'",
       "import path from 'node:path'",
       "const [operation, value] = process.argv.slice(2)",
       "if (operation === 'export') process.stdout.write(JSON.stringify({ id: value }))",
@@ -369,6 +369,7 @@ test("OpenCode thread transfer uses the provider export and import commands", as
       "  const destination = path.join(process.env.XDG_DATA_HOME, 'opencode', 'imported.json')",
       "  mkdirSync(path.dirname(destination), { recursive: true })",
       "  copyFileSync(value, destination)",
+      "  writeFileSync(path.join(process.env.XDG_DATA_HOME, 'opencode', 'import-cwd.txt'), process.cwd())",
       "} else process.exitCode = 2",
       "",
     ].join("\n"))
@@ -376,12 +377,15 @@ test("OpenCode thread transfer uses the provider export and import commands", as
     const threadId = "ses_13d274232ffec5B9kAwaIWSNhG"
     const sourceDataHome = path.join(root, "source-data")
     const destinationDataHome = path.join(root, "destination-data")
+    const workingDirectory = path.join(root, "resumed-workspace")
+    await mkdir(workingDirectory, { recursive: true })
     const evidence = await transferProviderThreadStateToWorker({
       provider: "opencode",
       providerSessionId: threadId,
       sourceProviderEnv: { XDG_DATA_HOME: sourceDataHome },
       destinationProviderEnv: { XDG_DATA_HOME: destinationDataHome },
       openCodeCommand: command,
+      workingDirectory,
     })
 
     assert.deepEqual(evidence.copied, [{
@@ -391,6 +395,10 @@ test("OpenCode thread transfer uses the provider export and import commands", as
     assert.deepEqual(
       JSON.parse(await readFile(path.join(destinationDataHome, "opencode", "imported.json"), "utf8")),
       { id: threadId },
+    )
+    assert.equal(
+      await readFile(path.join(destinationDataHome, "opencode", "import-cwd.txt"), "utf8"),
+      await realpath(workingDirectory),
     )
   } finally {
     await rm(root, { recursive: true, force: true })
