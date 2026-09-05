@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { LocalIpcClient } from '../dist/ipc.js'
-import * as requests from '../dist/ipc-requests.js'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
 import { historyOutlineText } from './lib/drill-history-outline.mjs'
@@ -15,28 +13,6 @@ import { resolveLocalRestartDrillPaths } from './lib/local-restart-drill-paths.m
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
-const {
-  addWorkflowNodeRequest,
-  attachToSessionRequest,
-  completePromptRequest,
-  createSessionRequest,
-  createWorkflowEndpointRequest,
-  createWorkflowRequest,
-  endSessionRequest,
-  getProviderRunRequest,
-  getSessionHistoryOutlineRequest,
-  getSessionStateRequest,
-  grantAgentExtensionRequest,
-  installMcpServerRequest,
-  installSkillRequest,
-  invokeWorkflowEndpointRequest,
-  launchProviderRunRequest,
-  listAgentsRequest,
-  searchRecallRequest,
-  spawnAgentRequest,
-  submitPromptRequest,
-  updateWorkflowNodeInstructionsRequest,
-} = requests
 
 function parseArgs(argv) {
   const options = { keepArtifactsOnFailure: false }
@@ -89,10 +65,56 @@ async function run(command, args, options = {}) {
   })
 }
 
+async function sourceFiles(rootDir, currentDir = rootDir) {
+  const files = []
+  for (const entry of await readdir(currentDir, { withFileTypes: true })) {
+    const entryPath = path.join(currentDir, entry.name)
+    if (entry.isDirectory()) files.push(...await sourceFiles(rootDir, entryPath))
+    else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
+      files.push({
+        sourcePath: entryPath,
+        relativePath: path.relative(rootDir, entryPath),
+      })
+    }
+  }
+  return files
+}
+
+async function loadCurrentKernelClient(runtimeRoot) {
+  const sourceRoot = path.join(repoRoot, 'packages', 'kernel-client', 'src')
+  const packageRoot = path.join(runtimeRoot, 'kernel-client')
+  const outputRoot = path.join(packageRoot, 'dist')
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import('@babel/core'),
+    import('@babel/preset-typescript'),
+  ])
+
+  for (const { sourcePath, relativePath } of await sourceFiles(sourceRoot)) {
+    const outputPath = path.join(outputRoot, relativePath.replace(/\.ts$/, '.js'))
+    const transformed = await transformAsync(await readFile(sourcePath, 'utf8'), {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await mkdir(path.dirname(outputPath), { recursive: true })
+    await writeFile(outputPath, transformed?.code ?? '', 'utf8')
+  }
+  await writeFile(path.join(packageRoot, 'package.json'), '{"type":"module"}\n', 'utf8')
+  await symlink(
+    path.join(repoRoot, 'packages', 'kernel-client', 'node_modules'),
+    path.join(packageRoot, 'node_modules'),
+    'dir',
+  )
+
+  const [ipc, requests] = await Promise.all([
+    import(pathToFileURL(path.join(outputRoot, 'ipc.js')).href),
+    import(pathToFileURL(path.join(outputRoot, 'ipc-requests.js')).href),
+  ])
+  return { LocalIpcClient: ipc.LocalIpcClient, requests }
+}
+
 async function buildKernel(cargoTargetDir) {
-  const existingBinary = path.join(cargoTargetDir, 'debug', 'chariox-kernel')
-  const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
-  if (existing) return existingBinary
+  const binary = path.join(cargoTargetDir, 'debug', 'chariox-kernel')
   const result = await run(
     'cargo',
     ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'],
@@ -107,7 +129,7 @@ async function buildKernel(cargoTargetDir) {
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return existingBinary
+  return binary
 }
 
 function unwrap(resp, key) {
@@ -218,7 +240,7 @@ async function main() {
     XDG_STATE_HOME: stateRoot,
     CHARIOX_KERNEL_PORT: String(ports.kernelPort),
     CHARIOX_MCP_PORT: String(ports.mcpPort),
-    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
     CHARIOX_CODEX_PORT: String(ports.codexPort),
     CHARIOX_CAPABILITY_ISOLATION_ROOT: path.join(rootDir, 'capabilities'),
     CHARIOX_DAEMON_ID: daemonId,
@@ -235,6 +257,29 @@ async function main() {
 
   try {
     await prepareDrillArtifacts(rootDir)
+    const { LocalIpcClient, requests } = await loadCurrentKernelClient(rootDir)
+    const {
+      addWorkflowNodeRequest,
+      attachToSessionRequest,
+      completePromptRequest,
+      createSessionRequest,
+      createWorkflowEndpointRequest,
+      createWorkflowRequest,
+      endSessionRequest,
+      getProviderRunRequest,
+      getSessionHistoryOutlineRequest,
+      getSessionStateRequest,
+      grantAgentExtensionRequest,
+      installMcpServerRequest,
+      installSkillRequest,
+      invokeWorkflowEndpointRequest,
+      launchProviderRunRequest,
+      listAgentsRequest,
+      searchRecallRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+      updateWorkflowNodeInstructionsRequest,
+    } = requests
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configRoot, 'chariox'), { recursive: true })
     await mkdir(stateRoot, { recursive: true })
