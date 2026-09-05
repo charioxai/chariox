@@ -1,5 +1,7 @@
 use std::fmt;
+#[cfg(unix)]
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -15,14 +17,33 @@ use crate::slice::SliceRecord;
 
 const DOCKER_ENGINE_RESERVE_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
+#[cfg(unix)]
 const UNIX_ENGINE_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-memory-admission.lock";
-const WINDOWS_ENGINE_ADMISSION_LOCK_PATH: &str =
-    r"C:\Windows\Temp\chariox-docker-memory-admission.lock";
+const WINDOWS_ENGINE_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerMemoryAdmission";
 static PROCESS_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) struct SliceMemoryAdmissionGuard {
     _process: MutexGuard<'static, ()>,
-    _engine: File,
+    _engine: EngineAdmissionLock,
+}
+
+#[cfg(unix)]
+type EngineAdmissionLock = File;
+
+#[cfg(windows)]
+struct EngineAdmissionLock(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for EngineAdmissionLock {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::ReleaseMutex;
+
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +228,8 @@ fn require_bounded_container_limit(container: &str, limit: u64) -> Result<u64, D
     })
 }
 
-fn acquire_engine_admission_lock() -> Result<File, DaemonError> {
+#[cfg(unix)]
+fn acquire_engine_admission_lock() -> Result<EngineAdmissionLock, DaemonError> {
     let path = engine_admission_lock_path();
     let file = open_engine_admission_lock(&path)?;
     FileExt::lock_exclusive(&file).map_err(|error| {
@@ -219,36 +241,21 @@ fn acquire_engine_admission_lock() -> Result<File, DaemonError> {
     Ok(file)
 }
 
+#[cfg(unix)]
 fn engine_admission_lock_path() -> PathBuf {
     // A host-wide lock deliberately over-serializes distinct Docker contexts.
     // It also prevents equivalent endpoint spellings from bypassing admission.
-    #[cfg(unix)]
-    {
-        // Do not use std::env::temp_dir(): kernels with different TMPDIR values
-        // must still contend on the same Docker-engine admission lock.
-        PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
-    }
-    #[cfg(windows)]
-    {
-        // Use one machine-stable system path rather than TEMP/TMP, which can
-        // differ between kernels. Failure to access it closes admission.
-        PathBuf::from(WINDOWS_ENGINE_ADMISSION_LOCK_PATH)
-    }
+    // Do not use std::env::temp_dir(): kernels with different TMPDIR values
+    // must still contend on the same Docker-engine admission lock.
+    PathBuf::from(UNIX_ENGINE_ADMISSION_LOCK_PATH)
 }
 
+#[cfg(unix)]
 fn open_engine_admission_lock(path: &Path) -> Result<File, DaemonError> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000);
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     let file = options.open(path).map_err(|error| {
         memory_measurement_error(&format!(
             "failed to open Docker engine admission lock {}: {error}",
@@ -267,6 +274,45 @@ fn open_engine_admission_lock(path: &Path) -> Result<File, DaemonError> {
         ));
     }
     Ok(file)
+}
+
+#[cfg(windows)]
+fn acquire_engine_admission_lock() -> Result<EngineAdmissionLock, DaemonError> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject, INFINITE};
+
+    let name = windows_engine_admission_lock_name_wide();
+    let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(memory_measurement_error(&format!(
+            "failed to create the global Docker engine admission mutex: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+    if matches!(wait, WAIT_OBJECT_0 | WAIT_ABANDONED) {
+        Ok(EngineAdmissionLock(handle))
+    } else {
+        unsafe {
+            CloseHandle(handle);
+        }
+        Err(memory_measurement_error(&format!(
+            "failed to acquire the global Docker engine admission mutex: {} (wait status {wait:#x})",
+            std::io::Error::last_os_error()
+        )))
+    }
+}
+
+fn windows_engine_admission_lock_name() -> &'static str {
+    WINDOWS_ENGINE_ADMISSION_LOCK_NAME
+}
+
+fn windows_engine_admission_lock_name_wide() -> Vec<u16> {
+    windows_engine_admission_lock_name()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn docker_numeric_output(args: &[&str], operation: &'static str) -> Result<u64, DaemonError> {
@@ -418,12 +464,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_engine_lock_path_is_machine_stable() {
+    fn windows_engine_lock_name_is_machine_wide() {
         assert_eq!(
-            WINDOWS_ENGINE_ADMISSION_LOCK_PATH,
-            r"C:\Windows\Temp\chariox-docker-memory-admission.lock"
+            windows_engine_admission_lock_name(),
+            r"Global\CharioxDockerMemoryAdmission"
         );
-        assert!(!WINDOWS_ENGINE_ADMISSION_LOCK_PATH.contains("%TEMP%"));
-        assert!(!WINDOWS_ENGINE_ADMISSION_LOCK_PATH.contains("%TMP%"));
+        assert!(!windows_engine_admission_lock_name().contains(':'));
+        assert!(!windows_engine_admission_lock_name().contains('%'));
+        let wide = windows_engine_admission_lock_name_wide();
+        assert_eq!(wide.last(), Some(&0));
+        assert!(!wide[..wide.len() - 1].contains(&0));
     }
 }
