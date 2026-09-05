@@ -7,9 +7,6 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "../../../packages/kernel-client/dist/ipc.js"
-import * as requests from "../../../packages/kernel-client/dist/ipc-requests.js"
-
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const args = process.argv.slice(2)
 const durationSeconds = argNumber("--duration-seconds", 1_800)
@@ -31,6 +28,9 @@ if (dryRun) {
   console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, maxRssMb, maxCpuPercent, output, release: true }, null, 2))
   process.exit(0)
 }
+
+const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
+const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
 
 const port = await availablePort()
 const root = path.join(os.tmpdir(), `chariox-stream-soak-${process.pid}-${Date.now()}`)

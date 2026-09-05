@@ -7,9 +7,6 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "../../../packages/kernel-client/dist/ipc.js"
-import * as requests from "../../../packages/kernel-client/dist/ipc-requests.js"
-
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const args = process.argv.slice(2)
@@ -31,6 +28,9 @@ if (dryRun) {
   console.log(JSON.stringify({ workerCount, agentsPerWorker, totalAgents, output, release: true }, null, 2))
   process.exit(0)
 }
+
+const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
+const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
 
 const basePort = await reservePortBand(workerCount)
 const ports = {
