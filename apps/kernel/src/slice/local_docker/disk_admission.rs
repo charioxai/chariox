@@ -1,4 +1,5 @@
 use std::fmt;
+#[cfg(unix)]
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,14 +16,33 @@ const SNAPSHOT_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
+#[cfg(unix)]
 const UNIX_DISK_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-disk-admission.lock";
-const WINDOWS_DISK_ADMISSION_LOCK_PATH: &str =
-    r"C:\Windows\Temp\chariox-docker-disk-admission.lock";
+const WINDOWS_DISK_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerDiskAdmission";
 static PROCESS_DISK_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) struct SliceDiskAdmissionGuard {
     _process: MutexGuard<'static, ()>,
-    _engine: File,
+    _engine: DiskAdmissionLock,
+}
+
+#[cfg(unix)]
+type DiskAdmissionLock = File;
+
+#[cfg(windows)]
+struct DiskAdmissionLock(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for DiskAdmissionLock {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::ReleaseMutex;
+
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,20 +348,13 @@ fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
     path.ancestors().find(|candidate| candidate.exists())
 }
 
-fn acquire_disk_admission_lock() -> Result<File, DaemonError> {
+#[cfg(unix)]
+fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
     let path = disk_admission_lock_path();
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000);
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     let file = options.open(&path).map_err(|error| {
         disk_measurement_error(&format!(
             "failed to open Docker disk admission lock {}: {error}",
@@ -371,15 +384,48 @@ fn acquire_disk_admission_lock() -> Result<File, DaemonError> {
     Ok(file)
 }
 
+#[cfg(unix)]
 fn disk_admission_lock_path() -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from(UNIX_DISK_ADMISSION_LOCK_PATH)
+    PathBuf::from(UNIX_DISK_ADMISSION_LOCK_PATH)
+}
+
+#[cfg(windows)]
+fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject, INFINITE};
+
+    let name = windows_disk_admission_lock_name_wide();
+    let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(disk_measurement_error(&format!(
+            "failed to create the global Docker disk admission mutex: {}",
+            std::io::Error::last_os_error()
+        )));
     }
-    #[cfg(windows)]
-    {
-        PathBuf::from(WINDOWS_DISK_ADMISSION_LOCK_PATH)
+    let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+    if matches!(wait, WAIT_OBJECT_0 | WAIT_ABANDONED) {
+        Ok(DiskAdmissionLock(handle))
+    } else {
+        unsafe {
+            CloseHandle(handle);
+        }
+        Err(disk_measurement_error(&format!(
+            "failed to acquire the global Docker disk admission mutex: {} (wait status {wait:#x})",
+            std::io::Error::last_os_error()
+        )))
     }
+}
+
+fn windows_disk_admission_lock_name() -> &'static str {
+    WINDOWS_DISK_ADMISSION_LOCK_NAME
+}
+
+fn windows_disk_admission_lock_name_wide() -> Vec<u16> {
+    windows_disk_admission_lock_name()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn docker_numeric_output(args: &[&str], operation: &'static str) -> Result<u64, DaemonError> {
@@ -521,12 +567,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_disk_lock_path_is_machine_stable() {
+    fn windows_disk_lock_name_is_machine_wide() {
         assert_eq!(
-            WINDOWS_DISK_ADMISSION_LOCK_PATH,
-            r"C:\Windows\Temp\chariox-docker-disk-admission.lock"
+            windows_disk_admission_lock_name(),
+            r"Global\CharioxDockerDiskAdmission"
         );
-        assert!(!WINDOWS_DISK_ADMISSION_LOCK_PATH.contains("%TEMP%"));
-        assert!(!WINDOWS_DISK_ADMISSION_LOCK_PATH.contains("%TMP%"));
+        assert!(!windows_disk_admission_lock_name().contains(':'));
+        assert!(!windows_disk_admission_lock_name().contains('%'));
+        let wide = windows_disk_admission_lock_name_wide();
+        assert_eq!(wide.last(), Some(&0));
+        assert!(!wide[..wide.len() - 1].contains(&0));
     }
 }
