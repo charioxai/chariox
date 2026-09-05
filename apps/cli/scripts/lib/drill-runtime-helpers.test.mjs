@@ -158,8 +158,12 @@ test("built binary resolution honors an explicit shared Cargo target", async () 
     cwd: root,
   }
   try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
     await mkdir(path.dirname(sharedBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
     await writeFile(sharedBinary, "shared")
+    await utimes(sharedBinary, new Date(1_000), new Date(1_000))
+    await utimes(crateBinary, new Date(2_000), new Date(2_000))
 
     assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
     assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)

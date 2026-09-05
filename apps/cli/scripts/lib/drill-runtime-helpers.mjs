@@ -109,8 +109,14 @@ function newestBuiltBinary(binaryPath, manifestPath, binName, options = {}) {
         binName,
       )
     : null
+  if (configuredBinaryPath) {
+    try {
+      statSync(configuredBinaryPath)
+      return configuredBinaryPath
+    } catch {}
+  }
   let newest = null
-  for (const candidate of new Set([binaryPath, workspaceBinaryPath, configuredBinaryPath].filter(Boolean))) {
+  for (const candidate of new Set([binaryPath, workspaceBinaryPath])) {
     try {
       const modifiedAtMs = statSync(candidate).mtimeMs
       if (!newest || modifiedAtMs > newest.modifiedAtMs) {
