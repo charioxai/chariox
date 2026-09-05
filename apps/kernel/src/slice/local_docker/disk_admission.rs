@@ -473,47 +473,6 @@ mod tests {
     const GIB: u64 = 1024 * 1024 * 1024;
 
     #[test]
-    fn disk_pressure_admission_fault_probe() {
-        let demand = SliceSnapshotDiskDemand {
-            home_bytes: GIB,
-            entry_count: 1,
-            writable_layer_bytes: 512 * 1024 * 1024,
-        };
-        let pressured = SliceSnapshotDiskCapacity {
-            host_available_bytes: 2 * GIB,
-            docker_available_bytes: 3 * GIB,
-            reserve_bytes: 2 * GIB,
-            shared_storage_pool: false,
-        };
-        let rejection = evaluate_slice_snapshot_disk_admission(pressured, demand)
-            .expect_err("snapshot must be rejected before either filesystem exhausts its reserve");
-        let prior_generation = "known-good";
-        let mut published_generation = prior_generation;
-        if evaluate_slice_snapshot_disk_admission(pressured, demand).is_ok() {
-            published_generation = "replacement";
-        }
-        let recovered = SliceSnapshotDiskCapacity {
-            host_available_bytes: 5 * GIB,
-            docker_available_bytes: 5 * GIB,
-            ..pressured
-        };
-        evaluate_slice_snapshot_disk_admission(recovered, demand)
-            .expect("snapshot admission should reopen after disk recovery");
-
-        println!(
-            "CHARIOX_DISK_PRESSURE_PROBE:{}",
-            serde_json::json!({
-                "schema": "chariox.disk_pressure_admission_probe.v1",
-                "admissionClosesBeforeEnospc": rejection.host_shortfall_bytes() > 0,
-                "activeStateRemainsConsistent": pressured == SliceSnapshotDiskCapacity { host_available_bytes: 2 * GIB, docker_available_bytes: 3 * GIB, reserve_bytes: 2 * GIB, shared_storage_pool: false },
-                "lastKnownGoodPreserved": published_generation == prior_generation,
-                "resourceRecoveryRecorded": recovered.host_available_bytes > pressured.host_available_bytes,
-                "reserveBytes": pressured.reserve_bytes,
-            })
-        );
-    }
-
-    #[test]
     fn snapshot_budget_accounts_for_archive_overhead_and_writable_layer() {
         let demand = SliceSnapshotDiskDemand {
             home_bytes: GIB,

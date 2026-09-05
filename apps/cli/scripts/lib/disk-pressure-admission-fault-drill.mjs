@@ -4,7 +4,7 @@ export const DISK_PRESSURE_ADMISSION_CASE_IDS = Object.freeze([
 ])
 
 export const DISK_PRESSURE_ADMISSION_TEST_NAME =
-  "slice::local_docker::disk_admission::tests::disk_pressure_admission_fault_probe"
+  "slice::local_docker::tests::disk_pressure_admission_fault_probe"
 
 const PROBE_PREFIX = "CHARIOX_DISK_PRESSURE_PROBE:"
 const PROBE_SCHEMA = "chariox.disk_pressure_admission_probe.v1"

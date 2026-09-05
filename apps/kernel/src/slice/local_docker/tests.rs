@@ -196,6 +196,130 @@ fn test_root(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("chariox-{label}-{unique}"))
 }
 
+#[cfg(unix)]
+#[test]
+fn disk_pressure_admission_fault_probe() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let root = test_root("disk-pressure-admission");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    let capacity = root.join("docker-capacity");
+    let state_dir = root.join("states/dev");
+    let manifest = state_dir.join("manifest.json");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::create_dir_all(&state_dir).expect("prior state directory should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$*" in
+  "ps --format {{.Names}}") printf 'chariox-slice-dev\n' ;;
+  "info --format {{.DockerRootDir}}") printf '/tmp\n' ;;
+  "inspect --size --format {{.SizeRw}} chariox-slice-dev") printf '1048576\n' ;;
+  *" du -sb /home-src") printf '1048576 /home-src\n' ;;
+  *" find /home-src -printf . | wc -c") printf '1\n' ;;
+  *" df -B1 --output=avail /tmp") cat "$DOCKER_CAPACITY" ;;
+  cp\ *)
+    destination=
+    for argument in "$@"; do destination=$argument; done
+    printf 'known-good-home' > "$destination"
+    ;;
+esac
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    let prior_state = saved_state(manifest.display().to_string());
+    let prior_manifest =
+        serde_json::to_vec_pretty(&prior_state).expect("prior state should encode");
+    std::fs::write(&manifest, &prior_manifest).expect("prior manifest should write");
+    std::fs::write(&capacity, b"1048576\n").expect("low capacity should write");
+
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![bin.clone()];
+    if let Some(path) = &previous_path {
+        paths.extend(std::env::split_paths(path));
+    }
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("fake Docker PATH should join"),
+    );
+    std::env::set_var("DOCKER_LOG", &log);
+    std::env::set_var("DOCKER_CAPACITY", &capacity);
+
+    let mut options = test_options();
+    options.root = root.clone();
+    let record = test_record();
+    let rejection = state::save_local_docker_slice_state_live(&record, &options)
+        .expect_err("low Docker capacity must reject the real live-save path");
+    let pressured_calls = std::fs::read_to_string(&log).expect("Docker log should read");
+    let pause = pressured_calls
+        .find("pause chariox-slice-dev")
+        .expect("source container must pause");
+    let measurement = pressured_calls
+        .find("du -sb /home-src")
+        .expect("real admission must measure the home volume");
+    let unpause = pressured_calls
+        .rfind("unpause chariox-slice-dev")
+        .expect("rejected snapshot must resume the source container");
+    assert!(pause < measurement && measurement < unpause);
+    assert!(rejection
+        .to_string()
+        .contains("slice snapshot needs more disk headroom"));
+    assert!(!pressured_calls
+        .lines()
+        .any(|call| call.starts_with("commit ")));
+    assert!(
+        pressured_calls
+            .lines()
+            .any(|call| call.starts_with("rm -f chariox-slice-dev-disk-admission-")),
+        "measurement helper must be removed after rejection: {pressured_calls}"
+    );
+    assert_eq!(
+        std::fs::read(&manifest).expect("prior manifest should remain"),
+        prior_manifest
+    );
+
+    std::fs::write(&capacity, b"107374182400\n").expect("recovered capacity should write");
+    let recovered = state::save_local_docker_slice_state_live(&record, &options)
+        .expect("the real save path should reopen after capacity recovers");
+    let recovered_calls = std::fs::read_to_string(&log).expect("Docker log should read");
+    assert!(recovered_calls
+        .lines()
+        .any(|call| call.starts_with("commit ")));
+    assert_ne!(
+        std::fs::read(&manifest).expect("replacement manifest should exist"),
+        prior_manifest
+    );
+    assert_eq!(recovered.id, "dev");
+
+    match previous_path {
+        Some(path) => std::env::set_var("PATH", path),
+        None => std::env::remove_var("PATH"),
+    }
+    std::env::remove_var("DOCKER_LOG");
+    std::env::remove_var("DOCKER_CAPACITY");
+
+    println!(
+        "CHARIOX_DISK_PRESSURE_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.disk_pressure_admission_probe.v1",
+            "admissionClosesBeforeEnospc": !pressured_calls.lines().any(|call| call.starts_with("commit ")),
+            "activeStateRemainsConsistent": pause < measurement && measurement < unpause,
+            "lastKnownGoodPreserved": true,
+            "resourceRecoveryRecorded": recovered_calls.lines().any(|call| call.starts_with("commit ")),
+            "reserveBytes": 2_u64 * 1024 * 1024 * 1024,
+        })
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
     SliceSavedStateRecord {
         id: "gmail-ready".to_string(),

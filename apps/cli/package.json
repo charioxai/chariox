@@ -35,6 +35,7 @@
     "browser-controller:fault-drill": "node scripts/live-browser-controller-fault-drill.mjs",
     "relay:queue-saturation-fault-drill": "node scripts/live-queue-saturation-fault-drill.mjs",
     "slice:memory-pressure-admission-fault-drill": "node scripts/live-memory-pressure-admission-fault-drill.mjs",
+    "slice:disk-pressure-admission-fault-drill": "node scripts/live-disk-pressure-admission-fault-drill.mjs",
     "browser-computer:fixture": "node scripts/live-browser-computer-fixture.mjs",
     "browser-computer:persistence-drill": "node scripts/live-docker-slice-browser-state-drill.mjs",
     "computer-secret-input:drill": "node scripts/computer-secret-input-protocol-drill.mjs",

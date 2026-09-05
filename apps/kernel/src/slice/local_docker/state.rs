@@ -71,7 +71,6 @@ fn save_local_docker_slice_state_inner(
 ) -> Result<LocalDockerSavedStateGeneration, DaemonError> {
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
-    let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
     let state_id = active_state_id(record);
     let image_ref = active_state_image_ref(&state_id);
     let state_dir = options.root.join("states").join(&state_id);
@@ -94,6 +93,7 @@ fn save_local_docker_slice_state_inner(
         ),
     })?;
     with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", || {
+        let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
         docker_commit_container(record, &image_ref, "slice.state.save")?;
         let archive_result = archive_local_docker_home_volume(
             record,
@@ -444,7 +444,6 @@ fn create_local_docker_slice_backup_inner(
 ) -> Result<SliceBackupRecord, DaemonError> {
     ensure_local_docker_state_target(record, "slice.backup.create")?;
     ensure_host_docker_ready()?;
-    let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
     let backup_id = backup_id(record, name);
     let state_id = active_state_id(record);
     let image_ref = format!("chariox-slice-backup:{backup_id}");
@@ -458,6 +457,7 @@ fn create_local_docker_slice_backup_inner(
         ),
     })?;
     with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.backup.create", || {
+        let _disk_admission = disk_admission::admit_slice_snapshot(record, options)?;
         docker_commit_container(record, &image_ref, "slice.backup.create")?;
         let archive_result = archive_local_docker_home_volume(
             record,
@@ -746,18 +746,41 @@ fn with_local_docker_slice_snapshot_quiesced<T>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SliceSnapshotResume {
     None,
-    Desktop,
+    PausedContainer { restart_desktop: bool },
 }
 
 fn stop_local_docker_slice_desktop_for_snapshot(
     record: &SliceRecord,
 ) -> Result<SliceSnapshotResume, DaemonError> {
-    if record.display_mode != SliceDisplayMode::Headed || !local_docker_container_is_running(record)
-    {
+    if !local_docker_container_is_running(record) {
         return Ok(SliceSnapshotResume::None);
     }
-    run_local_docker_slice_screen(record, "stop", "slice.screen.stop_for_snapshot")?;
-    Ok(SliceSnapshotResume::Desktop)
+    let restart_desktop = record.display_mode == SliceDisplayMode::Headed;
+    if restart_desktop {
+        run_local_docker_slice_screen(record, "stop", "slice.screen.stop_for_snapshot")?;
+    }
+    let container = local_docker_container_name(record);
+    let status = docker_command()
+        .args(["pause", &container])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.state.pause_for_snapshot",
+            message: format!("failed to pause slice container `{container}`: {error}"),
+        })?;
+    if !status.success() {
+        if restart_desktop {
+            let _ = run_local_docker_slice_screen(
+                record,
+                "start",
+                "slice.screen.resume_after_failed_pause",
+            );
+        }
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.state.pause_for_snapshot",
+            message: format!("docker pause `{container}` failed with status {status}"),
+        });
+    }
+    Ok(SliceSnapshotResume::PausedContainer { restart_desktop })
 }
 
 fn resume_after_local_docker_slice_snapshot(
@@ -767,8 +790,24 @@ fn resume_after_local_docker_slice_snapshot(
 ) -> Result<(), DaemonError> {
     match resume {
         SliceSnapshotResume::None => Ok(()),
-        SliceSnapshotResume::Desktop => {
-            run_local_docker_slice_screen(record, "start", operation)?;
+        SliceSnapshotResume::PausedContainer { restart_desktop } => {
+            let container = local_docker_container_name(record);
+            let status = docker_command()
+                .args(["unpause", &container])
+                .status()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation,
+                    message: format!("failed to unpause slice container `{container}`: {error}"),
+                })?;
+            if !status.success() {
+                return Err(DaemonError::LocalTransport {
+                    operation,
+                    message: format!("docker unpause `{container}` failed with status {status}"),
+                });
+            }
+            if restart_desktop {
+                run_local_docker_slice_screen(record, "start", operation)?;
+            }
             Ok(())
         }
     }
