@@ -75,6 +75,7 @@ pub(crate) struct PtyInputWriter {
 }
 
 struct PtyInputRequest {
+    provider_run_id: String,
     bytes: Vec<u8>,
     completion_tx: Option<SyncSender<Result<(), String>>>,
 }
@@ -264,10 +265,14 @@ impl PtyManager {
             })?;
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let writer_provider_run_id = request.provider_run_id.clone();
+        let writer_process_key = request.process_key.clone();
+        let writer_output_signal = self.output_signal.clone();
         let writer_thread = thread::Builder::new()
             .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
-            .spawn(move || run_pty_writer(writer, input_rx));
+            .spawn(move || {
+                run_pty_writer(writer, input_rx, writer_process_key, writer_output_signal)
+            });
         if let Err(error) = writer_thread {
             let _ = child.kill();
             let _ = child.wait();
@@ -346,8 +351,6 @@ impl PtyManager {
                 .ok_or_else(|| DaemonError::PtyProcessNotFound {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
-        self.output_signal
-            .prefer_alias(&process_key, provider_run_id);
         let mut writer = process.input_writer.clone();
         writer.provider_run_id = provider_run_id.to_string();
         Ok(writer)
@@ -366,6 +369,7 @@ impl PtyInputWriter {
     pub(crate) fn write_input(&self, input: &[u8]) -> Result<(), DaemonError> {
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
         self.send_request(PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
             completion_tx: Some(completion_tx),
         })?;
@@ -383,6 +387,7 @@ impl PtyInputWriter {
 
     pub(crate) fn enqueue_input(&self, input: &[u8]) -> Result<(), DaemonError> {
         self.send_request(PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
             completion_tx: None,
         })
@@ -404,12 +409,18 @@ impl PtyInputWriter {
     }
 }
 
-fn run_pty_writer(mut writer: Box<dyn Write + Send>, input_rx: Receiver<PtyInputRequest>) {
+fn run_pty_writer(
+    mut writer: Box<dyn Write + Send>,
+    input_rx: Receiver<PtyInputRequest>,
+    process_key: String,
+    output_signal: PtyOutputSignal,
+) {
     while let Ok(request) = input_rx.recv() {
-        let result = writer
-            .write_all(&request.bytes)
-            .and_then(|_| writer.flush())
-            .map_err(|error| error.to_string());
+        let result = writer.write_all(&request.bytes).and_then(|_| {
+            output_signal.prefer_alias(&process_key, &request.provider_run_id);
+            writer.flush()
+        });
+        let result = result.map_err(|error| error.to_string());
         let failed = result.is_err();
         if let Some(completion_tx) = request.completion_tx {
             let _ = completion_tx.send(result);
@@ -1048,6 +1059,49 @@ mod tests {
         manager
             .remove_process(provider_run_id)
             .expect("provider process cleanup should succeed");
+    }
+
+    #[test]
+    fn retained_shared_pty_writer_attributes_output_when_input_is_dispatched() {
+        let first_run = shared_target_run("provider-run-1");
+        let second_run = shared_target_run("provider-run-2");
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&first_run)
+            .expect("first shared PTY run should spawn");
+        manager
+            .spawn_for_run(&second_run)
+            .expect("second shared PTY run should reuse the existing process");
+        let first_writer = manager
+            .input_writer_for_test(first_run.id())
+            .expect("first retained writer should clone");
+        let _second_writer = manager
+            .input_writer_for_test(second_run.id())
+            .expect("second retained writer should clone");
+
+        first_writer
+            .write_input(b"first retained writer\n")
+            .expect("first retained writer should dispatch after the second is acquired");
+        let output = wait_for_output(&mut manager, first_run.id());
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("first retained writer"));
+        assert_eq!(
+            manager.output_signal().take_ready_provider_run_ids(),
+            [first_run.id().to_string()].into_iter().collect()
+        );
+
+        manager
+            .remove_process(first_run.id())
+            .expect("first alias cleanup should succeed");
+        manager
+            .remove_process(second_run.id())
+            .expect("second alias cleanup should succeed");
     }
 
     #[test]
