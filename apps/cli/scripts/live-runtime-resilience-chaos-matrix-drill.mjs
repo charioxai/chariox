@@ -37,6 +37,7 @@ const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fa
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
 const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
+const resourceExhaustionFaultDrill = path.join(scriptDir, "live-resource-exhaustion-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
 const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
@@ -175,6 +176,22 @@ const MATRIX = [
       "active downloads are canceled with a terminal disk-pressure reason",
       "a download arriving during cancellation receives a follow-up capacity check",
       "the focused drill records resources externally and leaves no owned process",
+    ],
+  }),
+  scenario({
+    id: "local-process-file-descriptor-exhaustion",
+    description: "exhaust isolated process and file-descriptor budgets while an established terminal lane remains live",
+    script: resourceExhaustionFaultDrill,
+    args: [],
+    classification: "slice-runtime",
+    runtimeSignals: ["client-projection-health", "runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "file-descriptor exhaustion returns EMFILE or ENFILE without starving an established terminal lane",
+      "process exhaustion returns EAGAIN without starving an established terminal lane",
+      "new and reused slices enforce finite process and file-descriptor ceilings before startup",
+      "every probe removes its owned descriptors, sockets, and child processes",
     ],
   }),
   scenario({

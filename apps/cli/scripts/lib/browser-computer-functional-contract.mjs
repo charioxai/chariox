@@ -7,7 +7,7 @@ import {
 } from "./drill-secrets.mjs"
 import { validateDrillTimestampOrder } from "./drill-time.mjs"
 
-export const BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA = "chariox.browser_computer.functional_evidence.v3"
+export const BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA = "chariox.browser_computer.functional_evidence.v4"
 
 const CASES = deepFreeze([
   functionalCase("browser.discovery", "browser", [
@@ -127,6 +127,12 @@ const CASES = deepFreeze([
     "admission-closes-before-enospc",
     "last-known-good-save-remains-valid",
     "resource-recovery-recorded",
+  ]),
+  functionalCase("fault.resource-exhaustion", "fault", [
+    "process-limit-enforced",
+    "file-descriptor-failure-bounded",
+    "terminal-lane-remains-live",
+    "actionable-diagnostic-emitted",
   ]),
   functionalCase("resource.safety", "resource", [
     "idle-and-active-process-residency-recorded",

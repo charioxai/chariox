@@ -54,6 +54,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "local-slice-memory-pressure-admission",
       "local-slice-disk-pressure-admission",
       "local-browser-download-disk-pressure",
+      "local-process-file-descriptor-exhaustion",
       "local-relay-restart-reconnect",
       "local-tui-web-terminal-parity",
       "same-host-remote-worker-restart",
@@ -104,6 +105,10 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-browser-download-disk-pressure").args[0]),
       "live-browser-download-disk-fault-drill.mjs",
+    )
+    assert.equal(
+      path.basename(report.scenarios.find((scenario) => scenario.id === "local-process-file-descriptor-exhaustion").args[0]),
+      "live-resource-exhaustion-fault-drill.mjs",
     )
     assert(report.scenarios.find((scenario) => scenario.id === "worker-provider-resume-codex").args.includes("--cleanup-on-success"))
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "deterministic-runtime-convergence").args.slice(-4), [

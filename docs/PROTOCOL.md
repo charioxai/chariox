@@ -593,6 +593,13 @@ process cap before starting an existing container and verifies its immutable
 differently configured container fails closed with recreate guidance; stop and
 destroy remain available even when the configured limits are invalid.
 
+The local resource-exhaustion fault drill lowers limits only inside disposable
+child probes. It exhausts open files and process creation separately, requires
+the operating system to return an actionable `EMFILE`/`ENFILE` or `EAGAIN`
+diagnostic, and proves an established terminal socket still completes a round
+trip at the boundary. Probe descriptors, sockets, and child processes must be
+gone before its external evidence report can pass.
+
 - `slice.create.from_saved_state` may reference an existing saved-state id/name. Local Docker restore uses the saved image tag instead of the configured base image and extracts the saved home archive into the fresh slice home volume before normal provisioning continues. Restore still allocates fresh ports, relay identity, and worker identity through the normal slice start path.
 
 Current session-lifecycle note:
