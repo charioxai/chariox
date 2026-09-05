@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { access, mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, symlink } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
+import {
+  childTerminationStatus,
+  makeAvailablePorts,
+  resolveBuiltBinary,
+} from './lib/drill-runtime-helpers.mjs'
 import { sanitizeDrillMetadata } from './lib/drill-secrets.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -27,6 +32,7 @@ async function loadCliModules(runtimeDir) {
     })
     await (await import('node:fs/promises')).writeFile(outPath, transformed?.code ?? '', 'utf8')
   }
+  await symlink(path.join(cliRoot, 'node_modules'), path.join(runtimeDir, 'node_modules'), 'dir')
   const ipcUrl = pathToFileURL(path.join(runtimeDir, 'ipc.js')).href
   const requestsUrl = pathToFileURL(path.join(runtimeDir, 'ipc-requests.js')).href
   const { LocalIpcClient } = await import(ipcUrl)
@@ -59,9 +65,44 @@ function base64url(input) {
 }
 
 function signRelayToken(claims) {
-  const claimsPayload = base64url(JSON.stringify(claims))
-  const signature = createHmac('sha256', RELAY_SECRET).update(claimsPayload).digest('base64url')
-  return `chariox-scoped-v1.${claimsPayload}.${signature}`
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+  const payload = base64url(JSON.stringify({
+    iss: claims.issuer,
+    sub: claims.subject,
+    subject_kind: claims.subject_kind,
+    realm_id: claims.realm_id,
+    allowed_actions: claims.allowed_actions.map(relayActionName),
+    allowed_targets: claims.allowed_targets,
+    iat: Math.floor(claims.issued_at_ms / 1_000),
+    exp: Math.ceil(claims.expires_at_ms / 1_000),
+    jti: claims.token_id,
+    account_id: claims.account_id,
+    organization_id: claims.organization_id,
+    user_id: claims.user_id,
+    device_id: claims.device_id,
+    machine_id: claims.machine_id,
+    client_id: claims.client_id,
+    public_key_thumbprint: claims.public_key_thumbprint,
+    entitlements_version: claims.entitlements_version,
+  }))
+  const signingInput = `${header}.${payload}`
+  const signature = createHmac('sha256', RELAY_SECRET).update(signingInput).digest('base64url')
+  return `${signingInput}.${signature}`
+}
+
+function relayActionName(action) {
+  const names = {
+    daemon_register: 'daemon.register',
+    daemon_heartbeat: 'daemon.heartbeat',
+    client_metadata_read: 'client.metadata.read',
+    client_connect: 'client.connect',
+    packet_route: 'packet.route',
+    peer_request: 'peer.request',
+    peer_event: 'peer.event',
+  }
+  const name = names[action]
+  if (!name) throw new Error(`unsupported relay action ${action}`)
+  return name
 }
 
 function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
@@ -81,7 +122,10 @@ function relayClaims({ subject, subjectKind, actions, userId = null, targets = n
     device_id: subject,
     machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null,
     client_id: subjectKind === 'client' ? subject : null,
-    public_key_thumbprint: `${subject}-thumbprint`,
+    // Local drill tokens are intentionally unbound. Production-issued tokens
+    // bind this claim to the kernel's real relay key thumbprint; a fabricated
+    // value makes the relay correctly reject the daemon registration.
+    public_key_thumbprint: null,
     entitlements_version: 'drill',
   }
 }
@@ -132,7 +176,7 @@ function makeChildrenEnv(ports, rootDir) {
   const daemonRelayToken = signRelayToken(relayClaims({
     subject: daemonId,
     subjectKind: 'kernel',
-    actions: ['daemon_register', 'daemon_heartbeat', 'peer_request', 'peer_event'],
+    actions: ['daemon_register', 'daemon_heartbeat', 'packet_route', 'peer_request', 'peer_event'],
     userId: 'local',
   }))
   const clientRelayToken = signRelayToken(relayClaims({
@@ -154,6 +198,8 @@ function makeChildrenEnv(ports, rootDir) {
     },
     daemonEnv: {
       ...process.env,
+      CHARIOX_HOME: path.join(rootDir, 'home'),
+      CHARIOX_LOG_DIR: path.join(rootDir, 'logs'),
       CHARIOX_KERNEL_PORT: String(ports.kernelPort),
       CHARIOX_MCP_PORT: String(ports.mcpPort),
       CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
@@ -187,7 +233,7 @@ function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
-async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
+async function waitForLocalDaemon(kernelUrl, workspace, worktree, daemonChild) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
     try {
@@ -197,6 +243,11 @@ async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
       return
     } catch {
       await probe.close().catch(() => {})
+      const termination = childTerminationStatus(daemonChild)
+      if (termination) {
+        const stderr = sanitizeDrillMetadata({ stderr: daemonChild.logs?.stderr?.slice(-2000) ?? '' }).stderr
+        throw new Error(`local daemon exited before readiness with ${termination}: ${stderr}`)
+      }
       await sleep(250)
     }
   }
@@ -249,25 +300,46 @@ async function waitForCompletion(remoteClient, sessionId, attachmentId, eventBuc
   throw new Error('timed out waiting for assistant message completion')
 }
 
+function terminalText(eventBucket) {
+  return eventBucket
+    .filter((event) => event.event === 'terminal_output')
+    .flatMap((event) => event.records ?? [])
+    .filter((record) => record.kind !== 'PromptEcho')
+    .map((record) => Array.isArray(record.bytes)
+      ? Buffer.from(record.bytes).toString('utf8')
+      : String(record.text ?? record.data ?? record.output ?? ''))
+    .join('')
+}
+
+async function waitForPromptEvidence(remoteClient, sessionId, attachmentId, eventBucket, options) {
+  if (options.provider !== 'dev-stub') {
+    return await waitForCompletion(
+      remoteClient,
+      sessionId,
+      attachmentId,
+      eventBucket,
+      options.timeoutMs,
+      options.pollMs,
+      options.completionBaseline,
+    )
+  }
+  const started = Date.now()
+  while (Date.now() - started < options.timeoutMs) {
+    if (terminalText(eventBucket).includes(options.expectedText)) {
+      return { completed_at_ms: Date.now(), evidence: 'terminal_output' }
+    }
+    await remoteClient.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    await sleep(options.pollMs)
+  }
+  throw new Error(`timed out waiting for dev-stub terminal output ${options.expectedText}`)
+}
+
 function spawnProcess(command, args, options) {
   const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
   child.logs = { stdout: '', stderr: '' }
   child.stdout.on('data', (chunk) => { child.logs.stdout += chunk.toString() })
   child.stderr.on('data', (chunk) => { child.logs.stderr += chunk.toString() })
   return child
-}
-
-async function resolveBinary(binaryPath, manifestPath, binName) {
-  const workspaceBinaryPath = path.join(repoRoot, 'target', 'debug', binName)
-  for (const candidate of [binaryPath, workspaceBinaryPath]) {
-    try {
-      await access(candidate)
-      return candidate
-    } catch {}
-  }
-  throw new Error(
-    `missing built binary ${binaryPath} or ${workspaceBinaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`,
-  )
 }
 
 async function terminateChild(child, signal = 'SIGTERM') {
@@ -298,7 +370,14 @@ async function main() {
   }
 
   const ports = await makeAvailablePorts()
-  const rootDir = path.join(cliRoot, '.artifacts', 'relay-runtime', nowStamp())
+  const rootDir = path.join(
+    os.homedir(),
+    '.chariox',
+    'dev',
+    'browser-computer-use',
+    'relay-runtime',
+    nowStamp(),
+  )
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(rootDir, { recursive: true })
   const cliRuntimeDir = path.join(rootDir, 'cli-runtime')
@@ -329,12 +408,12 @@ async function main() {
       endSessionRequest,
     } } = await loadCliModules(cliRuntimeDir))
     envs = makeChildrenEnv(ports, rootDir)
-    const relayBinary = await resolveBinary(
+    const relayBinary = await resolveBuiltBinary(
       path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
       'chariox-relay',
     )
-    const daemonBinary = await resolveBinary(
+    const daemonBinary = await resolveBuiltBinary(
       path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'chariox-kernel',
@@ -352,7 +431,7 @@ async function main() {
       { cwd: repoRoot, env: envs.daemonEnv },
     )
 
-    await waitForLocalDaemon(kernelUrl, options.workspace, options.worktree)
+    await waitForLocalDaemon(kernelUrl, options.workspace, options.worktree, daemonChild)
     await waitForRelayTarget(relayUrl, envs.relayToken, envs.daemonAlias)
 
     localClient = new LocalIpcClient(kernelUrl)
@@ -395,6 +474,7 @@ async function main() {
 
     const launchResponse = unwrapVariant(
       await remoteClient.send(launchProviderRunRequest(sessionId, options.provider, 'default', options.model, 'medium', defaultAgentId)),
+      'ProviderRunLaunchAccepted',
       'ProviderRunLaunched',
     )
     const providerRunId = launchResponse.provider_run?.id ?? launchResponse.provider_run_id ?? null
@@ -404,14 +484,16 @@ async function main() {
     await remoteClient.send(submitPromptRequest(sessionId, attachment.id, defaultAgentId, firstPrompt, []))
     logStep('relay_submit_prompt_ok', { prompt: firstPrompt })
 
-    const firstCompletion = await waitForCompletion(
+    const firstCompletion = await waitForPromptEvidence(
       remoteClient,
       sessionId,
       attachment.id,
       eventLog,
-      options.timeoutMs,
-      options.pollMs,
-      0,
+      {
+        ...options,
+        completionBaseline: 0,
+        expectedText: 'RELAY_OK',
+      },
     )
     const firstTerminalOutputs = eventLog.filter((event) => event.event === 'terminal_output').length
     logStep('relay_prompt_completed', {
@@ -447,14 +529,16 @@ async function main() {
     await remoteClient.send(submitPromptRequest(sessionId, attachment.id, defaultAgentId, secondPrompt, []))
     logStep('relay_submit_prompt_after_reconnect_ok', { prompt: secondPrompt })
 
-    const secondCompletion = await waitForCompletion(
+    const secondCompletion = await waitForPromptEvidence(
       remoteClient,
       sessionId,
       attachment.id,
       eventLog,
-      options.timeoutMs,
-      options.pollMs,
-      completionBaseline,
+      {
+        ...options,
+        completionBaseline,
+        expectedText: 'RELAY_RECONNECT_OK',
+      },
     )
     logStep('relay_prompt_after_reconnect_completed', {
       completedAtMs: secondCompletion.completed_at_ms,
