@@ -31,6 +31,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 
 const kernelReconnectDrill = path.join(scriptDir, "live-kernel-reconnect-drill.mjs")
+const roomTakeoverReconnectFaultDrill = path.join(scriptDir, "live-room-takeover-reconnect-fault-drill.mjs")
 const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-drill.mjs")
 const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controller-fault-drill.mjs")
 const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fault-drill.mjs")
@@ -88,6 +89,22 @@ const MATRIX = [
     exitCriteria: [
       "client observes transport_closed and transport_resumed without losing the control request",
       "second subscription resumes from the last retained event id instead of resetting transcript state",
+    ],
+  }),
+  scenario({
+    id: "local-room-takeover-reconnect",
+    description: "lose a committed human-takeover response, reconnect, and retain one authoritative input owner",
+    script: roomTakeoverReconnectFaultDrill,
+    args: [],
+    classification: "kernel-authority",
+    runtimeSignals: ["client-projection-health", "runtime-transition-audit", "session-authority"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "a dropped takeover response does not roll back the committed human desktop owner",
+      "retrying the same command id from a fresh connection replays the exact response without a second takeover event",
+      "agent mutation remains rejected until the human explicitly releases input",
+      "the focused drill records resources externally and removes its private fixture",
     ],
   }),
   scenario({
