@@ -188,10 +188,20 @@ try {
   let healthyProbeSettled = false
   let stopSlowFlood = false
   let slowFloodSettled = false
+  let releaseHealthyProbe
+  let signalSlowFloodProgress
   const pressureReady = new Promise((resolve) => { signalPressureReady = resolve })
+  const healthyProbeStarted = new Promise((resolve) => { releaseHealthyProbe = resolve })
+  const slowFloodProgress = new Promise((resolve) => { signalSlowFloodProgress = resolve })
+  let healthyProbeStartedObserved = false
+  let slowFloodProgressSignalled = false
   const slowFlood = (async () => {
     for (let offset = 0; offset < slowEvents && !stopSlowFlood;) {
       throwIfInterrupted()
+      if (pressureSignalled && !healthyProbeStartedObserved) {
+        await healthyProbeStarted
+        healthyProbeStartedObserved = true
+      }
       const count = Math.min(healthyProbeSettled ? 64 : 4, slowEvents - offset)
       await withDeadline(control.send(requests.appendNativeProviderOutputBatchRequest(
         slowContext.sessionId,
@@ -208,6 +218,10 @@ try {
       )), timeoutMs, `slow-subscriber batch at offset ${offset}`)
       slowEventsSubmitted += count
       offset += count
+      if (healthyProbeStartedObserved && !slowFloodProgressSignalled) {
+        slowFloodProgressSignalled = true
+        signalSlowFloodProgress()
+      }
       if (!pressureSignalled) {
         const health = await relayHealthSnapshot()
         if (health.backpressure.subscription_queue_max_depth >= pressureQueueDepth) {
@@ -215,7 +229,7 @@ try {
           signalPressureReady()
         }
       }
-      if (!healthyProbeSettled) await sleep(10)
+      if (!healthyProbeSettled && !pressureSignalled) await sleep(10)
     }
   })().finally(() => { slowFloodSettled = true })
   await withDeadline(Promise.race([
@@ -246,26 +260,34 @@ try {
   let healthAtHealthyCompletion
   let submittedAtHealthyCompletion
   let healthyProbeError
-  try {
-    [providerSubmission, pressureRelayStatus] = await Promise.all([
-      withDeadline(
-        pressureControl.send(requests.submitPromptRequest(
-          contexts[1].sessionId,
-          contexts[1].attachmentId,
-          contexts[1].agentId,
-          providerPrompt,
-          [],
-        )),
-        timeoutMs,
-        "provider prompt during slow-subscriber pressure",
-      ),
-      withDeadline(pressureControl.send(requests.relayStatusRequest()), timeoutMs, "kernel control during slow-subscriber pressure"),
-      ...contexts.slice(1).map((context) => withDeadline(
-        appendMarker(context, healthyMarker, pressureControl),
-        timeoutMs,
-        `healthy provider output for ${context.sessionId}`,
+  let providerTurnAlreadySettled = false
+  releaseHealthyProbe()
+  const healthyWork = Promise.all([
+    withDeadline(
+      pressureControl.send(requests.submitPromptRequest(
+        contexts[1].sessionId,
+        contexts[1].attachmentId,
+        contexts[1].agentId,
+        providerPrompt,
+        [],
       )),
+      timeoutMs,
+      "provider prompt during slow-subscriber pressure",
+    ),
+    withDeadline(pressureControl.send(requests.relayStatusRequest()), timeoutMs, "kernel control during slow-subscriber pressure"),
+    ...contexts.slice(1).map((context) => withDeadline(
+      appendMarker(context, healthyMarker, pressureControl),
+      timeoutMs,
+      `healthy provider output for ${context.sessionId}`,
+    )),
+  ])
+  try {
+    const [, healthyResults] = await Promise.all([
+      withDeadline(slowFloodProgress, timeoutMs, "slow flood progress during the healthy probe"),
+      healthyWork,
     ])
+    providerSubmission = healthyResults[0]
+    pressureRelayStatus = healthyResults[1]
     assert.ok(unwrap(providerSubmission, "PromptSubmitted")?.outcome, "provider prompt was not accepted during pressure")
     assert.equal(unwrap(pressureRelayStatus, "RelayStatus")?.status?.connected, true)
     await waitFor(
@@ -280,12 +302,22 @@ try {
       timeoutMs,
       "provider output from dev-stub during slow-client pressure",
     )
-    const providerCompletion = unwrap(await withDeadline(
-      pressureControl.send(requests.completePromptRequest(contexts[1].sessionId)),
-      timeoutMs,
-      "provider turn completion during slow-subscriber pressure",
-    ), "PromptCompleted")
-    assert.ok(providerCompletion?.completion, "dev-stub turn did not complete during slow-client pressure")
+    let providerCompletion = null
+    try {
+      providerCompletion = unwrap(await withDeadline(
+        pressureControl.send(requests.completePromptRequest(contexts[1].sessionId)),
+        timeoutMs,
+        "provider turn completion during slow-subscriber pressure",
+      ), "PromptCompleted")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes("has no active prompt")) throw error
+      providerTurnAlreadySettled = true
+    }
+    assert.ok(
+      providerCompletion?.completion || providerTurnAlreadySettled,
+      "dev-stub turn did not complete during slow-client pressure",
+    )
     await waitFor(
       () => seen.slice(1).every((markers) => markers.has(healthyMarker)),
       timeoutMs,
@@ -352,6 +384,7 @@ try {
     slowSubscriptionActiveThroughoutHealthyProbe: true,
     providerAcceptedDuringPressure: true,
     providerOutputCompletedDuringPressure: true,
+    providerTurnAlreadySettled,
     kernelControlHealthyDuringPressure: true,
     slowSubscriptionCloseCount: relayHealth.backpressure.slow_subscription_close_count,
     targetQueueFullCount: relayHealth.backpressure.target_queue_full_count,
