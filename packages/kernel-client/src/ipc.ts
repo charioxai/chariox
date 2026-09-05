@@ -797,10 +797,17 @@ export class LocalIpcClient {
     }
 
     if ("type" in frame && frame.type === "event") {
+      let event: KernelEvent
+      try {
+        event = kernelEventFromValue(frame.event)
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane)
+        return
+      }
       this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
-        handler(frame.event)
+        handler(event)
       }
       return
     }
@@ -817,7 +824,7 @@ export class LocalIpcClient {
       }
       try {
         const decrypted = decryptRelayPayload(subscription.relayPrivateKey, frame.encrypted_event)
-        const event = JSON.parse(decrypted) as KernelEvent
+        const event = kernelEventFromValue(JSON.parse(decrypted))
         this.lastReceivedEventId = frame.event_id
         this.markKernelEventReceived()
         this.emitSyntheticEvent(event)
@@ -1158,6 +1165,16 @@ export class LocalIpcClient {
       socket.terminate()
     }
   }
+}
+
+function kernelEventFromValue(value: unknown): KernelEvent {
+  const eventName = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).event
+    : null
+  if (typeof eventName !== "string" || !eventName.trim()) {
+    throw new Error("kernel event envelope must contain a non-empty event name")
+  }
+  return value as KernelEvent
 }
 
 function clampRandom(value: number): number {

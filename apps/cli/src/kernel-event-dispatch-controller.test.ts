@@ -377,6 +377,21 @@ test("kernel event dispatch routes terminal output records and heartbeats", asyn
   ])
 })
 
+test("kernel event dispatch ignores an unknown future event and keeps handling known events", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "future_kernel_event",
+    session_id: "session-1",
+  } as never)
+  await harness.controller.handleKernelEvent({
+    event: "heartbeat",
+    session_id: "session-1",
+  })
+
+  assert.deepEqual(harness.calls, ["activity:kernel_heartbeat"])
+})
+
 test("kernel event dispatch treats successful transport resume as local liveness state", async () => {
   const harness = createHarness()
 

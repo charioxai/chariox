@@ -20,6 +20,41 @@ type TestEncryptedRelayPayload = {
   ciphertext: string
 }
 
+test("LocalIpcClient rejects malformed event envelopes without poisoning later events", () => {
+  const client = new LocalIpcClient("ws://127.0.0.1:1")
+  const events: KernelEvent[] = []
+  const dispose = client.onKernelEvent((event) => events.push(event))
+  const internals = client as unknown as {
+    handleWebSocketMessage: (data: Buffer, lane: "event") => void
+    lastReceivedEventId: number | null
+  }
+
+  internals.handleWebSocketMessage(Buffer.from(JSON.stringify({
+    type: "event",
+    event_id: 5,
+    event: { session_id: "session-1" },
+  })), "event")
+
+  assert.equal(internals.lastReceivedEventId, null)
+  assert.equal(events.length, 0)
+
+  internals.handleWebSocketMessage(Buffer.from(JSON.stringify({
+    type: "event",
+    event_id: 6,
+    event: { event: "future_kernel_event", session_id: "session-1" },
+  })), "event")
+  internals.handleWebSocketMessage(Buffer.from(JSON.stringify({
+    type: "event",
+    event_id: 7,
+    event: { event: "heartbeat", session_id: "session-1" },
+  })), "event")
+
+  assert.equal(internals.lastReceivedEventId, 7)
+  assert.deepEqual(events.map((event) => event.event), ["future_kernel_event", "heartbeat"])
+  dispose()
+  client.destroy()
+})
+
 test("LocalIpcClient uses websocket request and subscription frames", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")
@@ -736,6 +771,18 @@ test("LocalIpcClient subscribes to relay kernel events with encrypted payloads",
       if (frame.kind === "client_subscribe") {
         const daemon = (socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon
         const clientPublicKey = String(frame.client_public_key)
+        const sendEvent = (eventId: number, event: Record<string, unknown>) => {
+          socket.send(JSON.stringify({
+            kind: "client_event",
+            subscription_id: frame.subscription_id,
+            event_id: eventId,
+            encrypted_event: encryptRelayPayload(
+              daemon,
+              clientPublicKey,
+              Buffer.from(JSON.stringify(event), "utf8"),
+            ),
+          }))
+        }
         socket.send(JSON.stringify({
           kind: "client_response",
           request_id: frame.request_id,
@@ -746,20 +793,13 @@ test("LocalIpcClient subscribes to relay kernel events with encrypted payloads",
           ),
           error: null,
         }))
-        socket.send(JSON.stringify({
-          kind: "client_event",
-          subscription_id: frame.subscription_id,
-          event_id: 1,
-          encrypted_event: encryptRelayPayload(
-            daemon,
-            clientPublicKey,
-            Buffer.from(JSON.stringify({
-              event: "session_snapshot",
-              session: { id: frame.session_id, attachment_ids: [frame.attachment_id] },
-              provider_run: null,
-            }), "utf8"),
-          ),
-        }))
+        sendEvent(1, { session_id: frame.session_id })
+        sendEvent(2, { event: "future_kernel_event", session_id: frame.session_id })
+        sendEvent(3, {
+          event: "session_snapshot",
+          session: { id: frame.session_id, attachment_ids: [frame.attachment_id] },
+          provider_run: null,
+        })
         return
       }
 
@@ -803,11 +843,14 @@ test("LocalIpcClient subscribes to relay kernel events with encrypted payloads",
   assert.equal(receivedFrames[1]?.kind, "client_subscribe")
   assert.equal(receivedFrames[2]?.kind, "client_unsubscribe")
   assert.equal(typeof receivedFrames[1]?.client_public_key, "string")
-  assert.deepEqual(events, [{
-    event: "session_snapshot",
-    session: { id: "session-1", attachment_ids: ["attachment-1"] },
-    provider_run: null,
-  }])
+  assert.deepEqual(events, [
+    { event: "future_kernel_event", session_id: "session-1" },
+    {
+      event: "session_snapshot",
+      session: { id: "session-1", attachment_ids: ["attachment-1"] },
+      provider_run: null,
+    },
+  ])
 })
 
 test("LocalIpcClient reconnects and resubscribes to relay events with the last received event id", async (t) => {
