@@ -9,8 +9,8 @@ use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
 
 use super::provider_launch_policy::{
     apply_metaagent_launch_policy, default_provider_env_remove, generate_runtime_mcp_auth_token,
-    granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
-    sanitize_resume_state_for_launch,
+    granted_mcp_servers_for_agent_launch, registered_workflow_runtime_worktree_root,
+    resolve_mcp_credentials_for_launch, sanitize_resume_state_for_launch,
 };
 
 const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
@@ -181,6 +181,15 @@ impl DaemonApp {
                 .filter(|workspace| !workspace.trim().is_empty())
                 .map(PathBuf::from)
                 .collect::<Vec<_>>();
+            if let Some(root) = registered_workflow_runtime_worktree_root(
+                &session,
+                request.agent_id.as_deref(),
+                request.working_directory.as_deref(),
+            ) {
+                if !roots.iter().any(|existing| existing == &root) {
+                    roots.push(root);
+                }
+            }
             for root in std::mem::take(&mut request.workspace_live_sync_roots) {
                 if !roots.iter().any(|existing| existing == &root) {
                     roots.push(root);
@@ -562,6 +571,7 @@ mod tests {
 
     #[test]
     fn app_launch_preparation_scopes_workspace_live_sync_roots_to_selected_repo_and_local_links() {
+        let _env = crate::env_lock::lock();
         let base = std::env::temp_dir().join(format!(
             "chariox-app-live-sync-root-scope-{}-{}",
             std::process::id(),
