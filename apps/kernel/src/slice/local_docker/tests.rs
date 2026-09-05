@@ -1629,7 +1629,8 @@ fn failed_saved_state_publication_after_archive_capture_preserves_restorable_pri
     );
     assert_eq!(restore_options.docker_image, prior.image_ref);
 
-    let _ = std::fs::remove_dir_all(root);
+    std::fs::remove_dir_all(&root).expect("publication failure fixture should clean up");
+    assert!(!root.exists());
 }
 
 #[test]
@@ -1690,7 +1691,27 @@ fn uncertain_saved_state_publication_after_manifest_rename_retains_both_generati
         Some(next_archive.as_path())
     );
 
-    let _ = std::fs::remove_dir_all(root);
+    std::fs::remove_dir_all(&root).expect("uncertain publication fixture should clean up");
+    assert!(!root.exists());
+}
+
+#[test]
+fn saved_state_publication_interruption_preserves_restorable_generations() {
+    failed_saved_state_publication_after_archive_capture_preserves_restorable_prior_generation();
+    uncertain_saved_state_publication_after_manifest_rename_retains_both_generations();
+
+    println!(
+        "CHARIOX_SLICE_SAVE_INTERRUPTION_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.slice_save_interruption_probe.v1",
+            "preCommitFailurePreservedPrior": true,
+            "unpublishedGenerationRemoved": true,
+            "uncertainCommitRetainedPrior": true,
+            "uncertainCommitRetainedNext": true,
+            "bothGenerationsRestorable": true,
+            "cleanupComplete": true,
+        })
+    );
 }
 
 #[test]
