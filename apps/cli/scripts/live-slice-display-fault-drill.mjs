@@ -128,6 +128,10 @@ function bounded(value, limit = 2_000) {
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
+function checkInterrupted() {
+  if (interrupted) throw new Error(`display fault drill interrupted by ${interrupted}`)
+}
+
 async function resourceSnapshot(label, containerName = null) {
   const [memory, disk, stats] = await Promise.all([
     run("memory_pressure", ["-Q"], { timeoutMs: 10_000, allowFailure: true }).catch(() => null),
@@ -205,8 +209,9 @@ async function main() {
 
   let failure = null
   try {
-    if (interrupted) throw new Error(`display fault drill interrupted by ${interrupted}`)
+    checkInterrupted()
     report.resources.push(await resourceSnapshot("before"))
+    checkInterrupted()
     const image = await run("docker", ["image", "inspect", "--format", "{{.Id}}", options.image], {
       timeoutMs: 30_000,
     })
