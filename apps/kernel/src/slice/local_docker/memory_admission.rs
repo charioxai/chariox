@@ -219,7 +219,16 @@ fn acquire_engine_admission_lock() -> Result<File, DaemonError> {
 fn engine_admission_lock_path() -> PathBuf {
     // A host-wide lock deliberately over-serializes distinct Docker contexts.
     // It also prevents equivalent endpoint spellings from bypassing admission.
-    std::env::temp_dir().join("chariox-docker-memory-admission.lock")
+    #[cfg(unix)]
+    {
+        // Do not use std::env::temp_dir(): kernels with different TMPDIR values
+        // must still contend on the same Docker-engine admission lock.
+        PathBuf::from("/tmp/chariox-docker-memory-admission.lock")
+    }
+    #[cfg(windows)]
+    {
+        std::env::temp_dir().join("chariox-docker-memory-admission.lock")
+    }
 }
 
 fn open_engine_admission_lock(path: &Path) -> Result<File, DaemonError> {
@@ -392,5 +401,14 @@ mod tests {
             2 * GIB,
         )
         .expect("the exact capacity boundary should be admitted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_lock_path_is_independent_of_process_temporary_directory() {
+        assert_eq!(
+            engine_admission_lock_path(),
+            PathBuf::from("/tmp/chariox-docker-memory-admission.lock")
+        );
     }
 }
