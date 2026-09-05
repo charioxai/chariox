@@ -10,6 +10,11 @@ const EXPECTED_CODES = Object.freeze({
   process: new Set(["EAGAIN"]),
 })
 
+export function boundedEvidenceText(value, limit = 4_000) {
+  const text = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+  return text.length <= limit ? text : text.slice(-limit)
+}
+
 export function parseResourceExhaustionProbes(outputs) {
   if (!Array.isArray(outputs) || outputs.length !== EXPECTED_MODES.length) {
     throw new Error("resource exhaustion drill must return one file-descriptor and one process probe")

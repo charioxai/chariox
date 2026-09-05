@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   RESOURCE_EXHAUSTION_CASE_IDS,
+  boundedEvidenceText,
   parseResourceExhaustionProbes,
 } from "./resource-exhaustion-fault-drill.mjs"
 
@@ -11,6 +12,14 @@ test("resource exhaustion drill declares the bounded failure and cleanup cases",
     "fault.resource-exhaustion",
     "cleanup.resources",
   ])
+})
+
+test("resource evidence removes controls without corrupting diagnostics", () => {
+  assert.equal(
+    boundedEvidenceText("resource exhaustion failed: spawn EAGAIN\u0000\u0007\nfree memory 68%"),
+    "resource exhaustion failed: spawn EAGAIN\nfree memory 68%",
+  )
+  assert.equal(boundedEvidenceText("prefix-useful-tail", 11), "useful-tail")
 })
 
 test("resource exhaustion probes require both bounded failures and a live terminal lane", () => {

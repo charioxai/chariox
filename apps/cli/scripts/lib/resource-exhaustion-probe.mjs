@@ -4,6 +4,7 @@ import { spawn } from "node:child_process"
 import { closeSync, openSync } from "node:fs"
 import { createServer, createConnection } from "node:net"
 
+const MAX_PROCESS_PROBE_CHILDREN = 128
 const mode = readMode(process.argv.slice(2))
 const marker = readMarker(process.argv.slice(2))
 const openedFiles = []
@@ -31,7 +32,7 @@ try {
       }
     }
   } else {
-    for (let index = 0; index < 32; index += 1) {
+    for (let index = 0; index < MAX_PROCESS_PROBE_CHILDREN; index += 1) {
       const result = await spawnProbeChild(index, marker)
       if (result.error) {
         errorCode = result.error.code ?? "UNKNOWN"
@@ -112,7 +113,8 @@ function roundTrip(socket) {
 
 function spawnProbeChild(index, processMarker) {
   return new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)", `${processMarker}-${index}`], {
+    const child = spawn("/bin/sleep", ["5"], {
+      argv0: `${processMarker}-${index}`,
       stdio: "ignore",
     })
     child.once("spawn", () => resolvePromise({ child }))

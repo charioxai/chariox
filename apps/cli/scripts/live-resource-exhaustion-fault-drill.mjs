@@ -10,6 +10,7 @@ import { promisify } from "node:util"
 
 import {
   RESOURCE_EXHAUSTION_CASE_IDS,
+  boundedEvidenceText,
   parseResourceExhaustionProbes,
 } from "./lib/resource-exhaustion-fault-drill.mjs"
 
@@ -75,7 +76,7 @@ async function run({ dryRun, reportPath: requestedReport }) {
   } catch (error) {
     failure = error
     report.status = "failed"
-    report.failure = bounded(error instanceof Error ? error.message : error)
+    report.failure = boundedEvidenceText(error instanceof Error ? error.message : error)
   } finally {
     const remaining = dryRun ? [] : await matchingProcesses(marker)
     report.cleanup = { ownedProcessesAbsent: remaining.length === 0, remaining }
@@ -159,8 +160,8 @@ async function resourceSnapshot(label) {
     at: new Date().toISOString(),
     freeMemoryBytes: os.freemem(),
     loadAverage: os.loadavg(),
-    memoryPressure: memory ? bounded(memory.stdout, 1_000).trim() : null,
-    swap: swap ? bounded(swap.stdout, 1_000).trim() : null,
+    memoryPressure: memory ? boundedEvidenceText(memory.stdout, 1_000).trim() : null,
+    swap: swap ? boundedEvidenceText(swap.stdout, 1_000).trim() : null,
     disk: disk ? disk.stdout.trim().split("\n").at(-1) : null,
   }
 }
@@ -169,9 +170,4 @@ async function writeReport(reportPath, report) {
   await mkdir(path.dirname(reportPath), { recursive: true, mode: 0o700 })
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
   await chmod(reportPath, 0o600)
-}
-
-function bounded(value, limit = 4_000) {
-  const text = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
-  return text.length <= limit ? text : text.slice(-limit)
 }
