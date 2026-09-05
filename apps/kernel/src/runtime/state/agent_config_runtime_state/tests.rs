@@ -174,8 +174,8 @@ async fn provider_change_without_explicit_account_selects_destination_default() 
             crate::session::DEFAULT_LOCAL_USER_ID,
             Some("codex".to_string()),
             Some(codex_account.clone()),
-            None,
-            None,
+            Some("gpt-5.6-sol".to_string()),
+            Some(Some("high".to_string())),
         )
         .await
         .expect("agent should bind the stable Codex account before switching providers");
@@ -196,6 +196,8 @@ async fn provider_change_without_explicit_account_selects_destination_default() 
     assert_eq!(agent.provider(), "opencode");
     assert_eq!(agent.provider_account_profile(), opencode_default);
     assert_ne!(agent.provider_account_profile(), codex_account);
+    assert_eq!(agent.model(), None);
+    assert_eq!(agent.effort(), None);
 }
 
 #[tokio::test]
