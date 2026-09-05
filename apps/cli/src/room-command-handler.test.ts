@@ -324,6 +324,62 @@ test("/room browser activates and closes stable tabs through authenticated Room 
   assert.match(notices[1] ?? "", /^Room browser close submitted as action-4/)
 })
 
+test("/room browser reports exact protocol minimums for unsupported history and tab actions", async (t) => {
+  const environment = roomEnvironment()
+  for (const scenario of [{
+    name: "history",
+    command: "/room browser back",
+    minimum: 305,
+  }, {
+    name: "tab lifecycle",
+    command: "/room browser close tab-1",
+    minimum: 306,
+  }]) {
+    await t.test(scenario.name, async () => {
+      const command = parseSlashCommand(scenario.command)
+      assert.equal(command?.kind, "room")
+      let requestIndex = 0
+      await assert.rejects(
+        handleRoomSlashCommand({
+          isAttached: () => true,
+          sessionId: () => "session-1",
+          send: async <TResponse>() => {
+            requestIndex += 1
+            if (requestIndex === 1) {
+              return { RoomEnvironmentState: { environment } } as TResponse
+            }
+            throw new Error("unknown variant `SubmitRoomEnvironmentBrowserAction`")
+          },
+          appendNotice: () => undefined,
+          flashFooter: () => undefined,
+        }, command),
+        new RegExp(`Room browser ${scenario.name} requires kernel protocol ${scenario.minimum} or newer.*unknown variant`),
+      )
+    })
+  }
+})
+
+test("/room browser does not relabel transport failures as protocol incompatibility", async () => {
+  const command = parseSlashCommand("/room browser reload")
+  assert.equal(command?.kind, "room")
+
+  await assert.rejects(
+    handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      send: async <TResponse>(request: unknown) => {
+        if (Object.prototype.hasOwnProperty.call(request, "GetRoomEnvironmentState")) {
+          return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+        }
+        throw new Error("relay disconnected before response")
+      },
+      appendNotice: () => undefined,
+      flashFooter: () => undefined,
+    }, command),
+    /relay disconnected before response/,
+  )
+})
+
 test("/room browser validates its action and stable tab before mutation", async () => {
   const requests: unknown[] = []
   const flashes: string[] = []
