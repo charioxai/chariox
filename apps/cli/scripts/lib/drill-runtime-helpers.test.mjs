@@ -147,6 +147,31 @@ test("built binary resolution chooses the newest Cargo target candidate", async 
   }
 })
 
+test("built binary resolution honors an explicit shared Cargo target", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-shared-target-"))
+  const manifestPath = path.join(root, "repo", "apps", "kernel", "Cargo.toml")
+  const crateBinary = path.join(root, "repo", "apps", "kernel", "target", "debug", "chariox-kernel")
+  const sharedTarget = path.join(root, "shared-target")
+  const sharedBinary = path.join(sharedTarget, "debug", "chariox-kernel")
+  const options = {
+    env: { CARGO_TARGET_DIR: sharedTarget },
+    cwd: root,
+  }
+  try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
+    await mkdir(path.dirname(sharedBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
+    await writeFile(sharedBinary, "shared")
+    await utimes(sharedBinary, new Date(1_000), new Date(1_000))
+    await utimes(crateBinary, new Date(2_000), new Date(2_000))
+
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("detects ANSI-rendered provider authentication failures", () => {
   assert.equal(
     providerAuthFailureFromTerminalText("\x1b[8BLogin\x1b[9Gexpired\x1b[17G \u00b7 Please run /login"),
