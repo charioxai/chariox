@@ -28,7 +28,7 @@ const CASE_IDS = Object.freeze([
   "auth.jwt-format",
   "auth.identity-binding-rejected",
   "isolation.cross-realm",
-  "continuity.healthy-peer",
+  "continuity.healthy-routed-round-trip",
   "cleanup.resources",
 ])
 
@@ -331,7 +331,7 @@ async function waitForRejection(socket, label, timeoutMs = 3_000) {
 }
 
 async function waitForTokenExpiry(socket, acceptedAt) {
-  const reason = await waitForRejection(socket, "accepted expiring token", 4_000)
+  const reason = await waitForRejection(socket, "accepted expiring token", 6_000)
   if (reason !== "relay token expired") {
     throw new Error(`accepted expiring token closed without the expiry reason: ${reason}`)
   }
@@ -347,6 +347,41 @@ async function requestMetadata(socket, authToken, requestId) {
     query: { kind: "list_live_machines" },
   })
   return await response
+}
+
+function encryptedPayload(marker) {
+  return {
+    sender_public_key: "relay-token-expiry-drill",
+    nonce: `nonce-${marker}`,
+    ciphertext: marker,
+  }
+}
+
+async function routedRoundTrip(client, daemon, requestId) {
+  const requestMarker = `${requestId}-request`
+  const responseMarker = `${requestId}-response`
+  const daemonRequest = nextJson(daemon, `${requestId} daemon request`)
+  const clientResponse = nextJson(client, `${requestId} client response`)
+  await sendJson(client, {
+    kind: "client_request",
+    request_id: requestId,
+    target: { daemon_id: "daemon-a", daemon_alias: null },
+    encrypted_request: encryptedPayload(requestMarker),
+  })
+  const routedRequest = await daemonRequest
+  requireCondition(routedRequest.kind === "daemon_request", "healthy daemon did not receive routed client request", routedRequest)
+  requireCondition(routedRequest.encrypted_request?.ciphertext === requestMarker, "healthy routed request payload changed", routedRequest)
+  await sendJson(daemon, {
+    kind: "daemon_response",
+    relay_request_id: routedRequest.relay_request_id,
+    encrypted_response: encryptedPayload(responseMarker),
+    error: null,
+  })
+  const routedResponse = await clientResponse
+  requireCondition(routedResponse.kind === "client_response", "healthy client did not receive routed daemon response", routedResponse)
+  requireCondition(routedResponse.request_id === requestId, "healthy routed response used the wrong request ID", routedResponse)
+  requireCondition(routedResponse.error == null, "healthy routed response returned an error", routedResponse)
+  requireCondition(routedResponse.encrypted_response?.ciphertext === responseMarker, "healthy routed response payload changed", routedResponse)
 }
 
 function requireCondition(condition, message, detail = null) {
@@ -488,7 +523,6 @@ async function main() {
     report.resources.push(await resourceSnapshot("during", relay.pid))
     if (interrupted) throw new Error(`relay identity security drill interrupted by ${interrupted}`)
 
-    const now = Date.now()
     const daemonAToken = signToken(claims({
       subject: "daemon-a",
       subjectKind: "kernel",
@@ -507,7 +541,7 @@ async function main() {
       subject: "client-a",
       subjectKind: "client",
       realm: "realm-a",
-      actions: ["client_connect", "client_metadata_read"],
+      actions: ["client_connect", "client_metadata_read", "packet_route"],
     }))
     const clientBToken = signToken(claims({
       subject: "client-b",
@@ -538,14 +572,15 @@ async function main() {
     requireCondition(initialMetadataA.machines?.length === 1, "realm A metadata leaked or missed machines", initialMetadataA)
     requireCondition(initialMetadataA.machines[0].machine_id === "machine-a", "realm A metadata returned the wrong machine", initialMetadataA)
 
+    const expiringIssuedAt = Date.now()
     const expiringToken = signToken(claims({
       subject: "client-expiring",
       subjectKind: "client",
       realm: "realm-a",
       actions: ["client_connect"],
       targets: ["daemon-a"],
-      issuedAt: now,
-      expiresAt: now + 1_200,
+      issuedAt: expiringIssuedAt,
+      expiresAt: expiringIssuedAt + 3_000,
     }))
     const expiringClient = await connect(url, sockets)
     const expiringConnected = nextJson(expiringClient, "expiring client connect")
@@ -558,11 +593,12 @@ async function main() {
     const acceptedAt = Date.now()
     const expiry = waitForTokenExpiry(expiringClient, acceptedAt)
     const healthyDuringExpiry = requestMetadata(metadataA, clientAToken, "metadata-during-expiry")
-    const [expiryLatencyMs, metadataDuringExpiry] = await Promise.all([expiry, healthyDuringExpiry])
+    const routedDuringExpiry = routedRoundTrip(clientA, daemonA, "route-during-expiry")
+    const [expiryLatencyMs, metadataDuringExpiry] = await Promise.all([expiry, healthyDuringExpiry, routedDuringExpiry])
     requireCondition(metadataDuringExpiry.machines?.[0]?.machine_id === "machine-a", "healthy metadata peer stalled during another token expiry", metadataDuringExpiry)
-    requireCondition(clientA.readyState === WebSocketImpl.OPEN, "healthy routed client closed with the expiring peer")
+    await routedRoundTrip(clientA, daemonA, "route-after-expiry")
     report.timings = { acceptedTokenExpiryLatencyMs: expiryLatencyMs }
-    passedChecks.push("accepted short-lived token expired while healthy peers remained live")
+    passedChecks.push("accepted short-lived token expired while healthy metadata and routed request peers remained live")
 
     const expiredToken = signToken(claims({
       subject: "client-expired",
@@ -657,7 +693,7 @@ async function main() {
       jwtFormatAccepted: true,
       identityBindingRejected: true,
       crossRealmRejected: true,
-      healthyPeerStayedLive: true,
+      healthyRoutedRoundTrip: true,
     }
     report.status = "passed"
   } catch (error) {

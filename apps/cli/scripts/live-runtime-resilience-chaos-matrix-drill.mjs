@@ -144,7 +144,7 @@ const MATRIX = [
     deployment: "local",
     provider: "dev-stub",
     exitCriteria: [
-      "an accepted short-lived client is closed at expiry without closing or stalling healthy peers",
+      "an accepted short-lived client is closed at expiry while a healthy client completes routed request round trips before and after the close",
       "an already-expired token and a token issued beyond clock-skew tolerance are rejected",
       "production JWT tokens honor clock-skew tolerance while invalid identity bindings and cross-realm routes are rejected",
       "the exact external relay process is stopped and resource evidence is retained outside the repository",

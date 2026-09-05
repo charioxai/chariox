@@ -34,7 +34,7 @@ test("relay identity dry-run records the external binary and complete time/isola
       "auth.jwt-format",
       "auth.identity-binding-rejected",
       "isolation.cross-realm",
-      "continuity.healthy-peer",
+      "continuity.healthy-routed-round-trip",
       "cleanup.resources",
     ])
     assert.deepEqual(report.command, {
