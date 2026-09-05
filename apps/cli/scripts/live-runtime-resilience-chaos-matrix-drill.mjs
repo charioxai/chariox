@@ -37,6 +37,7 @@ const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fa
 const reconnectStormDrill = path.join(scriptDir, "live-reconnect-storm-drill.mjs")
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
+const sliceSaveAckLossFaultDrill = path.join(scriptDir, "live-slice-save-ack-loss-fault-drill.mjs")
 const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
 const resourceExhaustionFaultDrill = path.join(scriptDir, "live-resource-exhaustion-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
@@ -176,6 +177,22 @@ const MATRIX = [
       "host-wide admission retains 2048 MiB in Docker and Chariox state storage",
       "rejection leaves the active slice and last known-good generation unchanged",
       "admission reopens after disk capacity recovers and measurement helpers are removed",
+    ],
+  }),
+  scenario({
+    id: "local-slice-save-acknowledgement-loss",
+    description: "lose a completed slice-save response and replay its original generation without a second dispatch",
+    script: sliceSaveAckLossFaultDrill,
+    args: [],
+    classification: "kernel-authority",
+    runtimeSignals: ["runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "same-process retry returns the first slice-save result without another dispatch",
+      "kernel-cache reload returns the same saved-state generation without another dispatch",
+      "reusing the command id for a different save request fails closed",
+      "the focused drill records resources externally and removes its temporary cache",
     ],
   }),
   scenario({

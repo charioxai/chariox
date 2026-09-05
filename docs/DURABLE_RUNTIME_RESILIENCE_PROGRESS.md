@@ -65,6 +65,8 @@ Recovery operation generation and phase are private durable prompt metadata. Pro
 
 Kernel clients now detect a missing control response, reconnect, and replay the same request and command ids within the existing retry window. Socket-generation guards prevent stale close, error, or heartbeat callbacks from tearing down a replacement connection. The kernel command-result cache therefore turns response loss into exactly-once command execution plus replayed acknowledgement.
 
+The default local resilience matrix now applies that contract specifically to slice saves: it loses the first acknowledgement, proves the original saved-state generation replays without a second dispatch before and after kernel-cache reload, and rejects a command id reused for another save request.
+
 Provider PTY input uses a bounded per-process writer pump. App-lock paths enqueue without blocking, while delivery-critical prompt dispatch waits for write confirmation outside the global authority lock with a bounded deadline. This prevents provider backpressure from freezing unrelated history, projection, and control reads.
 
 Focused tests cover transcript matching, durable continuation generations, launch-failure preservation, response-loss replay, stale socket callbacks, bounded PTY queues, and lock-free confirmed writes. Full validation passed with 2,053 kernel tests and 813 kernel-client tests. Both local `SIGKILL` drills preserve the same active prompt, provider run identity, running workflow/node/scheduler state, grants, transcript, and recall history across restart.
