@@ -44,6 +44,9 @@ zeroize = "1.8.1"
 ed25519-dalek = "2.1.1"
 chariox-event-protocol = { path = "../../packages/event-protocol" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
 [lib]
 name = "chariox_kernel"
 path = "src/lib.rs"

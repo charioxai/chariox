@@ -262,9 +262,16 @@ function validateDocker(args) {
   for (const arg of args) {
     if (typeof arg !== "string" || arg.length > 16 * 1024 || arg.includes("\0")) fail("Docker argument is invalid")
   }
-  if (exactArguments(args, ["info"]) || exactArguments(args, ["ps", "--format", "{{.Names}}"])) return
+  if (
+    exactArguments(args, ["info"])
+    || exactArguments(args, ["info", "--format", "{{.MemTotal}}"])
+    || exactArguments(args, ["ps", "--format", "{{.Names}}"])
+    || exactArguments(args, ["ps", "-a", "--format", "{{.Names}}"])
+  ) return
   if (args[0] === "inspect" && args.length === 4 && args[1] === "--format") {
-    if (args[2] !== "{{.State.Running}} {{.State.Status}}") fail("Docker inspect format is invalid")
+    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}"].includes(args[2])) {
+      fail("Docker inspect format is invalid")
+    }
     validateSliceContainer(args[3], "Docker container")
     return
   }
