@@ -195,6 +195,7 @@ async function main() {
   try {
     if (interrupted) throw new Error(`controller fault drill interrupted by ${interrupted}`)
     report.resources.push(await resourceSnapshot("before"))
+    if (interrupted) throw new Error(`controller fault drill interrupted by ${interrupted}`)
     const execution = run("cargo", cargoArgs, {
       env: { ...process.env, CARGO_BUILD_JOBS: "1", CARGO_TARGET_DIR: cargoTarget },
       onSpawn: (child) => { cargoPid = child.pid },
