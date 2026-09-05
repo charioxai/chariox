@@ -1,6 +1,6 @@
 use std::future::pending;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -14,7 +14,7 @@ use crate::auth::{RelayAction, RelayAuthVerifier};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
-    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry, RelaySender,
+    PendingRequestKind, RelayRegistry, RelaySender,
 };
 
 mod support;
@@ -544,64 +544,18 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             }
-                            let relay_request_id = format!(
-                                "relay-peer-request-{}",
-                                relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
-                            );
-                            routes.insert_pending_daemon(
-                                relay_request_id.clone(),
-                                PendingDaemonPeerRequest {
-                                    requester_daemon_key: requester_daemon_key.clone(),
-                                    requester_request_id: request_id.clone(),
-                                    target_daemon_key: target_daemon_key.clone(),
-                                },
-                            );
-                            let daemon_sender = routes.daemon_sender(&target_daemon_key);
-                            let Some(daemon_sender) = daemon_sender else {
-                                routes.remove_pending_daemon(&relay_request_id);
-                                log_daemon_sender_missing(
-                                    "daemon_peer_request",
-                                    &registry,
-                                    peer_addr,
-                                    &target_daemon_key,
-                                    &relay_request_id,
-                                )
-                                .await;
-                                send_envelope(
-                                    &outgoing_tx,
-                                    &RelayEnvelope::DaemonPeerResponse {
-                                        request_id,
-                                        from_daemon_id: target_daemon_key.daemon_id,
-                                        encrypted_response: None,
-                                        error: Some(relay_error(
-                                            "target_not_connected",
-                                            "target daemon is not connected to relay",
-                                            true,
-                                        )),
-                                    },
-                                )?;
-                                continue;
-                            };
-                            if send_envelope(
-                                &daemon_sender,
-                                &RelayEnvelope::DaemonIncomingPeerRequest {
-                                    relay_request_id: relay_request_id.clone(),
-                                    from_daemon_id: requester_daemon_key.daemon_id,
-                                    caller_identity: peer_identity(&registry, peer_addr).await,
-                                    encrypted_request,
-                                },
+                            route_daemon_peer_request(
+                                &registry,
+                                &routes,
+                                peer_addr,
+                                &outgoing_tx,
+                                &relay_request_counter,
+                                &requester_daemon_key,
+                                target_daemon_key,
+                                request_id,
+                                encrypted_request,
                             )
-                            .is_err()
-                            {
-                                reject_peer_pending_on_target_backpressure(
-                                    &registry,
-                                    &outgoing_tx,
-                                    &relay_request_id,
-                                    request_id,
-                                    target_daemon_key.daemon_id,
-                                )
-                                .await?;
-                            }
+                            .await?;
                         }
                         RelayEnvelope::DaemonPeerEvent {
                             target,
@@ -646,25 +600,15 @@ pub(crate) async fn handle_connection(
                             {
                                 continue;
                             }
-                            let daemon_sender = routes.daemon_sender(&target_daemon_key);
-                            if let Some(daemon_sender) = daemon_sender {
-                                if send_envelope(
-                                    &daemon_sender,
-                                    &RelayEnvelope::DaemonIncomingPeerEvent {
-                                        from_daemon_id: requester_daemon_key.daemon_id,
-                                        caller_identity: peer_identity(&registry, peer_addr).await,
-                                        encrypted_event,
-                                    },
-                                )
-                                .is_err()
-                                {
-                                    log_daemon_sender_backpressure(
-                                        "daemon_peer_event",
-                                        peer_addr,
-                                        &target_daemon_key,
-                                    );
-                                }
-                            }
+                            route_daemon_peer_event(
+                                &registry,
+                                &routes,
+                                peer_addr,
+                                &requester_daemon_key,
+                                &target_daemon_key,
+                                encrypted_event,
+                            )
+                            .await;
                         }
                         envelope @ RelayEnvelope::ClientRequest { .. }
                         | envelope @ RelayEnvelope::ClientSubscribe { .. }
@@ -940,31 +884,16 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let client_sender = routes
-                                .subscription(&subscription_id)
-                                .filter(|route| route.daemon_key == current_daemon_key)
-                                .map(|route| route.client_sender);
-                            if let Some(client_sender) = client_sender {
-                                if send_envelope(
-                                    &client_sender,
-                                    &RelayEnvelope::ClientEvent {
-                                        subscription_id: subscription_id.clone(),
-                                        event_id,
-                                        encrypted_event,
-                                    },
-                                )
-                                .is_err()
-                                {
-                                    close_slow_subscription(
-                                        &registry,
-                                        &routes,
-                                        &subscription_id,
-                                        &current_daemon_key,
-                                        &relay_request_counter,
-                                    )
-                                    .await;
-                                }
-                            }
+                            route_daemon_event(
+                                &registry,
+                                &routes,
+                                &current_daemon_key,
+                                &relay_request_counter,
+                                subscription_id,
+                                event_id,
+                                encrypted_event,
+                            )
+                            .await;
                         }
                         RelayEnvelope::Close { .. } => {
                             let _ = outgoing_tx.try_send(Message::Close(None));
