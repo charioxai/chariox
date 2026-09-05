@@ -3,6 +3,8 @@ import path from "node:path"
 
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
+  materializedProviderEnvironment,
+  transferProviderThreadStateToWorker,
   transferProviderStateToWorker,
 } from "./live-provider-thread-transfer-provider-state.mjs"
 import {
@@ -278,6 +280,7 @@ export async function runWorkerResumeScenario({
   workerMachineId,
   workerKernelId,
   workerKernelUrl,
+  workerStorageRoot,
   sourceProviderEnv,
   destinationProviderEnv,
   options,
@@ -299,9 +302,7 @@ export async function runWorkerResumeScenario({
       worker_machine_id: workerMachineId,
       worker_kernel_id: workerKernelId,
       worker_state: options.workerState,
-      scope: options.workerState === "isolated"
-        ? "same-host worker with isolated provider home/data/cache and temporary copied auth; not a standard slice"
-        : "same-host worker with shared provider credential/state directories; not a standard slice",
+      scope: "same-host worker with a kernel-materialized credential profile and explicit provider-thread state transfer; not a standard slice",
       same_chariox_agent_record: false,
     },
     checks: {},
@@ -422,7 +423,7 @@ export async function runWorkerResumeScenario({
       throw new Error(`local provider run ${localRun.id} was not ended before remote launch: ${JSON.stringify(result.evidence.local_after_teardown)}`)
     }
 
-    if (options.workerState === "isolated") {
+    if (options.workerState === "isolated" && !["codex", "opencode"].includes(provider)) {
       logStep(result, provider, "transfer-provider-state-to-worker")
       result.evidence.provider_state_transfer = await transferProviderStateToWorker({
         provider,
@@ -454,6 +455,25 @@ export async function runWorkerResumeScenario({
       id: remoteAgent.id,
       alias: remoteAgent.alias,
       remote_execution: remoteAgent.remote_execution ?? null,
+    }
+
+    if (["codex", "opencode"].includes(provider)) {
+      logStep(result, provider, "transfer-provider-thread-state-to-worker", {
+        providerSessionId: beforeThreadId,
+      })
+      const destinationMaterializedEnv = materializedProviderEnvironment({
+        provider,
+        storageRoot: workerStorageRoot,
+        ownerUserId: "local",
+        profileId: localRun.account_profile ?? "default",
+      })
+      result.evidence.provider_state_transfer = await transferProviderThreadStateToWorker({
+        provider,
+        providerSessionId: beforeThreadId,
+        sourceProviderEnv,
+        destinationProviderEnv: destinationMaterializedEnv,
+      })
+      result.checks.provider_state_transferred = result.evidence.provider_state_transfer.copied.length > 0
     }
 
     logStep(result, provider, "launch-remote-provider-run", { providerSessionId: beforeThreadId })

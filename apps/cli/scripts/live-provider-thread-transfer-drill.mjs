@@ -82,6 +82,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
   }
   const homeProvider = isolatedHome?.providerEnv ?? realProvider
   const workerProvider = isolatedWorker?.providerEnv ?? realProvider
+  const workerStorageRoot = path.join(runtimeRoot, "worker-kernel-storage")
   const relayEnv = {
     ...process.env,
     CHARIOX_RELAY_HOST: "127.0.0.1",
@@ -147,7 +148,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
     }),
     writeIsolatedKernelConfig({
       xdgConfigHome: workerEnv.XDG_CONFIG_HOME,
-      storageRoot: path.join(runtimeRoot, "worker-kernel-storage"),
+      storageRoot: workerStorageRoot,
     }),
   ])
 
@@ -163,11 +164,16 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
     worker_kernel_url: workerKernelUrl,
     worker_machine_id: workerMachineId,
     worker_state: options.workerState,
-    worker_provider_environment: isolatedWorker?.evidence ?? {
-      mode: "shared",
-      provider_data_shared: true,
-      provider_cache_shared: true,
-      provider_home_shared: true,
+    worker_provider_environment: {
+      ...(isolatedWorker?.evidence ?? {
+        mode: "shared_ambient",
+        ambient_provider_directories_shared: true,
+        provider_data_shared: false,
+        provider_cache_shared: false,
+        provider_home_shared: false,
+      }),
+      execution_profile: "kernel_materialized",
+      provider_thread_state_transfer: "exact",
     },
     home_provider_environment: isolatedHome?.evidence ?? {
       mode: "shared",
@@ -226,6 +232,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
           workerMachineId,
           workerKernelId: workerKernel.kernel_id,
           workerKernelUrl,
+          workerStorageRoot,
           sourceProviderEnv: homeProvider,
           destinationProviderEnv: workerProvider,
           options,
