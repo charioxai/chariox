@@ -36,6 +36,7 @@ const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controlle
 const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fault-drill.mjs")
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
+const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
 const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
@@ -158,6 +159,22 @@ const MATRIX = [
       "host-wide admission retains 2048 MiB in Docker and Chariox state storage",
       "rejection leaves the active slice and last known-good generation unchanged",
       "admission reopens after disk capacity recovers and measurement helpers are removed",
+    ],
+  }),
+  scenario({
+    id: "local-browser-download-disk-pressure",
+    description: "fail closed and cancel active browser downloads when slice storage crosses its reserve",
+    script: browserDownloadDiskFaultDrill,
+    args: [],
+    classification: "slice-runtime",
+    runtimeSignals: ["runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "download policy is not enabled when capacity is low or unavailable",
+      "active downloads are canceled with a terminal disk-pressure reason",
+      "a download arriving during cancellation receives a follow-up capacity check",
+      "the focused drill records resources externally and leaves no owned process",
     ],
   }),
   scenario({
