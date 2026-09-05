@@ -248,7 +248,7 @@ export function relayClaims({ subject, subjectKind, actions, userId = "local", t
     device_id: subject,
     machine_id: subjectKind === "kernel" || subjectKind === "machine" ? subject : null,
     client_id: subjectKind === "client" ? subject : null,
-    public_key_thumbprint: `${subject}-thumbprint`,
+    public_key_thumbprint: null,
     entitlements_version: "drill",
   }
 }
