@@ -39,6 +39,7 @@ const reconnectStormDrill = path.join(scriptDir, "live-reconnect-storm-drill.mjs
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
 const sliceSaveAckLossFaultDrill = path.join(scriptDir, "live-slice-save-ack-loss-fault-drill.mjs")
+const sliceRestoreInterruptionFaultDrill = path.join(scriptDir, "live-slice-restore-interruption-fault-drill.mjs")
 const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
 const resourceExhaustionFaultDrill = path.join(scriptDir, "live-resource-exhaustion-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
@@ -211,6 +212,22 @@ const MATRIX = [
       "kernel-cache reload returns the same saved-state generation without another dispatch",
       "reusing the command id for a different save request fails closed",
       "the focused drill records resources externally and removes its temporary cache",
+    ],
+  }),
+  scenario({
+    id: "local-slice-restore-interruption",
+    description: "interrupt backup restore after replacement creation and recover the rollback generation on kernel restart",
+    script: sliceRestoreInterruptionFaultDrill,
+    args: [],
+    classification: "kernel-authority",
+    runtimeSignals: ["runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "restore intent is durable before the target replacement starts",
+      "SIGKILL after replacement creation leaves no committed restore resolution",
+      "kernel startup restores the rollback generation and removes the partial runtime",
+      "the focused drill records resources externally and removes every private fixture",
     ],
   }),
   scenario({
