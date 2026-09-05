@@ -7,16 +7,17 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "../../../packages/kernel-client/dist/ipc.js"
-import * as requests from "../../../packages/kernel-client/dist/ipc-requests.js"
-
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const args = process.argv.slice(2)
 const clientCount = numberArg("--clients", 32)
 const cycles = numberArg("--cycles", 5)
 const slowEvents = numberArg("--slow-events", 4_096)
 const timeoutMs = numberArg("--timeout-ms", 30_000)
-const output = path.resolve(stringArg("--output") || path.join(repoRoot, ".artifacts", "reconnect-storm", `run-${process.pid}.json`))
+const output = reconnectStormEvidencePath(stringArg("--output"))
+const cargoTargetDir = reconnectStormCargoTargetDir()
+const buildProfile = reconnectStormBuildProfile()
+const kernelBinary = path.join(cargoTargetDir, buildProfile, "chariox-kernel")
+const relayBinary = path.join(cargoTargetDir, buildProfile, "chariox-relay")
 const dryRun = args.includes("--dry-run")
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
@@ -26,9 +27,23 @@ if (args.includes("--help")) {
   process.exit(0)
 }
 if (dryRun) {
-  console.log(JSON.stringify({ clientCount, cycles, slowEvents, timeoutMs, output, release: true }, null, 2))
+  console.log(JSON.stringify({
+    clientCount,
+    cycles,
+    slowEvents,
+    timeoutMs,
+    output,
+    cargoTargetDir,
+    buildProfile,
+    kernelBinary,
+    relayBinary,
+    release: buildProfile === "release",
+  }, null, 2))
   process.exit(0)
 }
+
+const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
+const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
 
 const basePort = await availablePortBand()
 const ports = { relay: basePort, kernel: basePort + 1, mcp: basePort + 2, opencode: basePort + 3, codex: basePort + 4 }
@@ -51,8 +66,8 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 try {
   await mkdir(root, { recursive: true })
-  children.push(spawnOwned(path.join(repoRoot, "target", "release", "chariox-relay"), relayEnv()))
-  children.push(spawnOwned(path.join(repoRoot, "target", "release", "chariox-kernel"), kernelEnv()))
+  children.push(spawnOwned(relayBinary, relayEnv()))
+  children.push(spawnOwned(kernelBinary, kernelEnv()))
   resourceTimer = setInterval(() => {
     try { resourceSamples.push({ at: Date.now(), processes: processMetrics(children) }) } catch {}
   }, 1_000)
@@ -231,6 +246,44 @@ function numberArg(flag, fallback) {
   return value
 }
 function stringArg(flag) { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : "" }
+function reconnectStormEvidencePath(requested, now = new Date()) {
+  const configuredRoot = process.env.CHARIOX_RECONNECT_STORM_EVIDENCE_ROOT
+  if (configuredRoot && !path.isAbsolute(configuredRoot)) {
+    throw new Error("CHARIOX_RECONNECT_STORM_EVIDENCE_ROOT must be absolute")
+  }
+  const stamp = now.toISOString().replace(/[:.]/g, "-")
+  const value = requested || path.join(
+    configuredRoot ?? path.join(os.homedir(), ".codex", "evidence", "browser-computer-use", "reconnect-storm"),
+    stamp,
+    "report.json",
+  )
+  if (!path.isAbsolute(value)) throw new Error("evidence report must be absolute")
+  const normalized = path.normalize(value)
+  const relative = path.relative(repoRoot, normalized)
+  const withinRepo = relative === "" || (
+    relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+  )
+  if (withinRepo) throw new Error("evidence must stay outside repositories")
+  return normalized
+}
+function reconnectStormCargoTargetDir() {
+  const value = process.env.CARGO_TARGET_DIR || path.join(
+    os.homedir(),
+    ".chariox",
+    "dev",
+    "browser-computer-use",
+    "cargo-target",
+  )
+  if (!path.isAbsolute(value)) throw new Error("CARGO_TARGET_DIR must be absolute")
+  return path.normalize(value)
+}
+function reconnectStormBuildProfile() {
+  const value = process.env.CHARIOX_RECONNECT_STORM_BUILD_PROFILE?.trim() || "release"
+  if (value !== "debug" && value !== "release") {
+    throw new Error("CHARIOX_RECONNECT_STORM_BUILD_PROFILE must be debug or release")
+  }
+  return value
+}
 function relayClient() {
   return new LocalIpcClient(`ws://127.0.0.1:${ports.relay}`, {
     relayAuthToken: relayToken,

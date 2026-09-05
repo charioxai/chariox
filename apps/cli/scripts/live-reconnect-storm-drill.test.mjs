@@ -3,6 +3,9 @@ import { execFile } from "node:child_process"
 import test from "node:test"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
+import { mkdtemp, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 
 const run = promisify(execFile)
 const script = fileURLToPath(new URL("./live-reconnect-storm-drill.mjs", import.meta.url))
@@ -14,6 +17,34 @@ test("reconnect storm drill plans concurrent recovery and slow-subscriber pressu
   assert.equal(plan.cycles, 5)
   assert.equal(plan.slowEvents, 4_096)
   assert.equal(plan.release, true)
+  assert.equal(path.isAbsolute(plan.cargoTargetDir), true)
+  assert.equal(plan.buildProfile, "release")
+  assert.equal(plan.kernelBinary, path.join(plan.cargoTargetDir, "release", "chariox-kernel"))
+  assert.equal(plan.relayBinary, path.join(plan.cargoTargetDir, "release", "chariox-relay"))
+})
+
+test("reconnect storm drill defaults evidence outside the repository", async () => {
+  const evidenceRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-reconnect-storm-evidence-"))
+  try {
+    const { stdout } = await run(process.execPath, [script, "--dry-run"], {
+      env: {
+        ...process.env,
+        CHARIOX_RECONNECT_STORM_EVIDENCE_ROOT: evidenceRoot,
+      },
+    })
+    const plan = JSON.parse(stdout)
+    assert.equal(path.dirname(path.dirname(plan.output)), evidenceRoot)
+    assert.equal(path.basename(plan.output), "report.json")
+  } finally {
+    await rm(evidenceRoot, { recursive: true, force: true })
+  }
+})
+
+test("reconnect storm drill rejects repository-owned evidence paths", async () => {
+  await assert.rejects(
+    run(process.execPath, [script, "--dry-run", "--output", path.join(path.dirname(script), "report.json")]),
+    /evidence must stay outside repositories/,
+  )
 })
 
 test("reconnect storm drill requires isolated slow-lane closure", async () => {
