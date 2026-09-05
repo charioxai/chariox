@@ -58,6 +58,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "local-slice-disk-pressure-admission",
       "local-slice-save-acknowledgement-loss",
       "local-slice-save-interruption",
+      "local-saved-state-corruption",
       "local-slice-restore-interruption",
       "local-browser-download-disk-pressure",
       "local-process-file-descriptor-exhaustion",
@@ -133,6 +134,10 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-slice-save-interruption").args[0]),
       "live-slice-save-interruption-fault-drill.mjs",
+    )
+    assert.equal(
+      path.basename(report.scenarios.find((scenario) => scenario.id === "local-saved-state-corruption").args[0]),
+      "live-saved-state-corruption-fault-drill.mjs",
     )
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-slice-restore-interruption").args[0]),
