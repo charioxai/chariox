@@ -423,7 +423,7 @@ export async function runWorkerResumeScenario({
       throw new Error(`local provider run ${localRun.id} was not ended before remote launch: ${JSON.stringify(result.evidence.local_after_teardown)}`)
     }
 
-    if (options.workerState === "isolated" && provider !== "codex") {
+    if (options.workerState === "isolated" && !["codex", "opencode"].includes(provider)) {
       logStep(result, provider, "transfer-provider-state-to-worker")
       result.evidence.provider_state_transfer = await transferProviderStateToWorker({
         provider,
@@ -457,7 +457,7 @@ export async function runWorkerResumeScenario({
       remote_execution: remoteAgent.remote_execution ?? null,
     }
 
-    if (provider === "codex") {
+    if (["codex", "opencode"].includes(provider)) {
       logStep(result, provider, "transfer-provider-thread-state-to-worker", {
         providerSessionId: beforeThreadId,
       })

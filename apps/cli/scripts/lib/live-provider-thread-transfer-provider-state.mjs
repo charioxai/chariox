@@ -1,4 +1,5 @@
-import { chmod, copyFile, cp, mkdir, opendir, stat } from "node:fs/promises"
+import { spawn } from "node:child_process"
+import { chmod, copyFile, cp, mkdir, mkdtemp, open, opendir, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -91,12 +92,116 @@ async function findCodexRollout(codexHome, providerSessionId) {
   return null
 }
 
+async function runOpenCodeStateCommand(
+  command,
+  args,
+  providerEnv,
+  stdoutFd = "ignore",
+  timeoutMs = 60_000,
+) {
+  const child = spawn(command, args, {
+    env: {
+      ...process.env,
+      ...providerEnv,
+    },
+    stdio: ["ignore", stdoutFd, "pipe"],
+  })
+  let stderrBytes = 0
+  child.stderr?.on("data", (chunk) => {
+    stderrBytes += chunk.length
+  })
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    child.kill("SIGKILL")
+  }, timeoutMs)
+  timeout.unref()
+  let status
+  try {
+    status = await new Promise((resolve, reject) => {
+      child.once("error", reject)
+      child.once("close", (code, signal) => resolve({ code, signal }))
+    })
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (timedOut) {
+    throw new Error(`OpenCode ${args[0]} timed out after ${timeoutMs} ms`)
+  }
+  if (status.code !== 0) {
+    throw new Error(
+      `OpenCode ${args[0]} failed with ${status.signal ?? `exit ${status.code}`}; stderr bytes: ${stderrBytes}`,
+    )
+  }
+}
+
+async function transferOpenCodeThreadState({
+  providerSessionId,
+  sourceProviderEnv,
+  destinationProviderEnv,
+  openCodeCommand,
+  openCodeCommandTimeoutMs,
+}) {
+  safePathComponent(providerSessionId, "provider session id")
+  if (!sourceProviderEnv.XDG_DATA_HOME || !destinationProviderEnv.XDG_DATA_HOME) {
+    throw new Error("OpenCode thread transfer requires source and destination XDG_DATA_HOME")
+  }
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-thread-transfer-"))
+  const exportPath = path.join(temporaryRoot, "session.json")
+  try {
+    const exportFile = await open(exportPath, "w", 0o600)
+    try {
+      await runOpenCodeStateCommand(
+        openCodeCommand,
+        ["export", providerSessionId],
+        sourceProviderEnv,
+        exportFile.fd,
+        openCodeCommandTimeoutMs,
+      )
+    } finally {
+      await exportFile.close()
+    }
+    const exportBytes = (await stat(exportPath)).size
+    if (exportBytes === 0 || exportBytes > 64 * 1024 * 1024) {
+      throw new Error(`OpenCode session export has invalid size: ${exportBytes} bytes`)
+    }
+    await runOpenCodeStateCommand(
+      openCodeCommand,
+      ["import", exportPath],
+      destinationProviderEnv,
+      "ignore",
+      openCodeCommandTimeoutMs,
+    )
+    return {
+      provider: "opencode",
+      provider_session_id: providerSessionId,
+      copied: [{
+        kind: "opencode_session_export",
+        byte_length: exportBytes,
+      }],
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+}
+
 export async function transferProviderThreadStateToWorker({
   provider,
   providerSessionId,
   sourceProviderEnv,
   destinationProviderEnv,
+  openCodeCommand = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode",
+  openCodeCommandTimeoutMs = 60_000,
 }) {
+  if (provider === "opencode") {
+    return transferOpenCodeThreadState({
+      providerSessionId,
+      sourceProviderEnv,
+      destinationProviderEnv,
+      openCodeCommand,
+      openCodeCommandTimeoutMs,
+    })
+  }
   if (provider !== "codex") {
     throw new Error(`provider thread state transfer is not implemented for ${provider}`)
   }

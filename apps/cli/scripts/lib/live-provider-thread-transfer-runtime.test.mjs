@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -353,6 +353,75 @@ test("materialized provider paths reject profile traversal", () => {
     }),
     /profile id is not a safe path component/,
   )
+})
+
+test("OpenCode thread transfer uses the provider export and import commands", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-thread-state-test-"))
+  try {
+    const command = path.join(root, "fake-opencode.mjs")
+    await writeFile(command, [
+      "#!/usr/bin/env node",
+      "import { copyFileSync, mkdirSync } from 'node:fs'",
+      "import path from 'node:path'",
+      "const [operation, value] = process.argv.slice(2)",
+      "if (operation === 'export') process.stdout.write(JSON.stringify({ id: value }))",
+      "else if (operation === 'import') {",
+      "  const destination = path.join(process.env.XDG_DATA_HOME, 'opencode', 'imported.json')",
+      "  mkdirSync(path.dirname(destination), { recursive: true })",
+      "  copyFileSync(value, destination)",
+      "} else process.exitCode = 2",
+      "",
+    ].join("\n"))
+    await chmod(command, 0o700)
+    const threadId = "ses_13d274232ffec5B9kAwaIWSNhG"
+    const sourceDataHome = path.join(root, "source-data")
+    const destinationDataHome = path.join(root, "destination-data")
+    const evidence = await transferProviderThreadStateToWorker({
+      provider: "opencode",
+      providerSessionId: threadId,
+      sourceProviderEnv: { XDG_DATA_HOME: sourceDataHome },
+      destinationProviderEnv: { XDG_DATA_HOME: destinationDataHome },
+      openCodeCommand: command,
+    })
+
+    assert.deepEqual(evidence.copied, [{
+      kind: "opencode_session_export",
+      byte_length: 39,
+    }])
+    assert.deepEqual(
+      JSON.parse(await readFile(path.join(destinationDataHome, "opencode", "imported.json"), "utf8")),
+      { id: threadId },
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("OpenCode thread transfer bounds provider command execution", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-thread-timeout-test-"))
+  try {
+    const command = path.join(root, "slow-opencode.mjs")
+    await writeFile(command, [
+      "#!/usr/bin/env node",
+      "process.stdout.write('{}')",
+      "setTimeout(() => {}, 200)",
+      "",
+    ].join("\n"))
+    await chmod(command, 0o700)
+    await assert.rejects(
+      transferProviderThreadStateToWorker({
+        provider: "opencode",
+        providerSessionId: "ses_timeout",
+        sourceProviderEnv: { XDG_DATA_HOME: path.join(root, "source") },
+        destinationProviderEnv: { XDG_DATA_HOME: path.join(root, "destination") },
+        openCodeCommand: command,
+        openCodeCommandTimeoutMs: 25,
+      }),
+      /OpenCode export timed out/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("Claude credential payloads are validated and written mode 600", async () => {
