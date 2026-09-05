@@ -70,6 +70,10 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "--provider-model",
       "codex=gpt-test-codex",
     ])
+    assert.equal(
+      path.basename(report.scenarios.find((scenario) => scenario.id === "local-kernel-restart-durable-state").args[0]),
+      "live-local-restart-persistence-drill.mjs",
+    )
     assert(report.scenarios.find((scenario) => scenario.id === "worker-provider-resume-codex").args.includes("--cleanup-on-success"))
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "deterministic-runtime-convergence").args.slice(-4), [
       "--seed",
@@ -98,6 +102,37 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("runtime resilience matrix defaults reports to the external evidence root", async () => {
+  const evidenceRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-resilience-evidence-"))
+  try {
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--dry-run",
+      "--only",
+      "local-kernel-restart-durable-state",
+    ], {
+      env: {
+        ...process.env,
+        CHARIOX_RUNTIME_RESILIENCE_EVIDENCE_ROOT: evidenceRoot,
+      },
+    })
+    const reportPath = stdout.match(/\[runtime-resilience-chaos-matrix\] report (.+)/)?.[1]?.trim()
+    assert.ok(reportPath, "matrix should print its report path")
+    assert.equal(path.dirname(reportPath), evidenceRoot)
+    assert.equal(path.extname(reportPath), ".json")
+
+    const report = JSON.parse(await readFile(reportPath, "utf8"))
+    assert.equal(report.status, "dry-run")
+    await verifyDrillArtifactIndex(path.join(
+      evidenceRoot,
+      `${path.basename(reportPath, ".json")}-artifacts`,
+      "chariox-drill-artifacts.json",
+    ))
+  } finally {
+    await rm(evidenceRoot, { recursive: true, force: true })
   }
 })
 

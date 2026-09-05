@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import {
   defaultDrillMatrixArtifactIndexPath,
-  defaultDrillMatrixReportPath,
   parseDrillScenarioIds,
   runDrillMatrix,
   selectDrillMatrixScenarios,
@@ -31,7 +31,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 
 const kernelReconnectDrill = path.join(scriptDir, "live-kernel-reconnect-drill.mjs")
-const localRestartDrill = path.join(scriptDir, "live-local-restart-drill.mjs")
+const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
 const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
@@ -280,7 +280,7 @@ function printHelp() {
     "  --only IDS               Comma-separated scenario ids",
     "  --dry-run                Print selected commands without running drills",
     "  --continue-on-failure    Run every selected scenario before exiting non-zero",
-    "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
+    "  --report PATH            Write a machine-readable matrix report; defaults under ~/.codex/evidence/browser-computer-use",
     "  --artifact-index PATH     Write a verifiable artifact index for the matrix report",
     "  --chaos-seed VALUE        Replay seed for deterministic fault injection",
     "  --chaos-replay PATH       Deterministic replay artifact path",
@@ -441,6 +441,23 @@ function metadataFor(selected, options) {
   }
 }
 
+function defaultRuntimeResilienceReportPath(now = new Date()) {
+  const configuredRoot = process.env.CHARIOX_RUNTIME_RESILIENCE_EVIDENCE_ROOT
+  if (configuredRoot && !path.isAbsolute(configuredRoot)) {
+    throw new Error("CHARIOX_RUNTIME_RESILIENCE_EVIDENCE_ROOT must be an absolute path")
+  }
+  const evidenceRoot = configuredRoot
+    ?? path.join(
+      os.homedir(),
+      ".codex",
+      "evidence",
+      "browser-computer-use",
+      "runtime-resilience-chaos-matrix",
+    )
+  const stamp = now.toISOString().replace(/[:.]/g, "-")
+  return path.join(evidenceRoot, `${stamp}.json`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -448,7 +465,7 @@ async function main() {
     return
   }
   const selected = selectScenarios(options)
-  const reportPath = options.reportPath ?? defaultDrillMatrixReportPath("runtime-resilience-chaos-matrix", { rootDir: repoRoot })
+  const reportPath = options.reportPath ?? defaultRuntimeResilienceReportPath()
   const artifactIndexPath = options.artifactIndexPath ?? defaultDrillMatrixArtifactIndexPath(reportPath)
   const results = await runDrillMatrix({
     matrixName: "runtime-resilience-chaos-matrix",
