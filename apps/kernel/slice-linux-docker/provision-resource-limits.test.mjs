@@ -40,7 +40,11 @@ fs.appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\
 if (args[0] === "info") process.exit(0);
 if (args[0] === "container" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
 if (args[0] === "image" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
-if (args[0] === "inspect") { console.log("true"); process.exit(0); }
+if (args[0] === "inspect") {
+  const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
+  console.log(format.includes("HostConfig.Ulimits") ? "8192:8192" : "true");
+  process.exit(0);
+}
 if (args[0] === "ps") { console.log("chariox-download-reserve-fixture"); process.exit(0); }
 if (args[0] === "exec" && args.includes("df")) {
   console.log("Filesystem 1024-blocks Used Available Capacity Mounted on");
