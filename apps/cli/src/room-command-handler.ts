@@ -303,6 +303,7 @@ export async function handleRoomSlashCommand(
       {
         capability: tabLifecycleAction ? "Room browser tab lifecycle" : "Room browser history",
         requestVariant: "SubmitRoomEnvironmentBrowserAction",
+        ...(tabLifecycleAction ? { nestedVariant: "tab" } : {}),
         minimumProtocolVersion: tabLifecycleAction
           ? roomEnvironmentBrowserTabActionsMinimumProtocolVersion
           : roomEnvironmentBrowserHistoryMinimumProtocolVersion,

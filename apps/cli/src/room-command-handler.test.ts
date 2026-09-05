@@ -330,10 +330,12 @@ test("/room browser reports exact protocol minimums for unsupported history and 
     name: "history",
     command: "/room browser back",
     minimum: 305,
+    errorVariant: "SubmitRoomEnvironmentBrowserAction",
   }, {
     name: "tab lifecycle",
     command: "/room browser close tab-1",
     minimum: 306,
+    errorVariant: "tab",
   }]) {
     await t.test(scenario.name, async () => {
       const command = parseSlashCommand(scenario.command)
@@ -348,7 +350,7 @@ test("/room browser reports exact protocol minimums for unsupported history and 
             if (requestIndex === 1) {
               return { RoomEnvironmentState: { environment } } as TResponse
             }
-            throw new Error("unknown variant `SubmitRoomEnvironmentBrowserAction`")
+            throw new Error(`unknown variant \`${scenario.errorVariant}\``)
           },
           appendNotice: () => undefined,
           flashFooter: () => undefined,
@@ -377,6 +379,27 @@ test("/room browser does not relabel transport failures as protocol incompatibil
       flashFooter: () => undefined,
     }, command),
     /relay disconnected before response/,
+  )
+})
+
+test("/room browser does not relabel a prefix of the nested tab action variant", async () => {
+  const command = parseSlashCommand("/room browser close tab-1")
+  assert.equal(command?.kind, "room")
+
+  await assert.rejects(
+    handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      send: async <TResponse>(request: unknown) => {
+        if (Object.prototype.hasOwnProperty.call(request, "GetRoomEnvironmentState")) {
+          return { RoomEnvironmentState: { environment: roomEnvironment() } } as TResponse
+        }
+        throw new Error("unknown variant `tabLegacy`")
+      },
+      appendNotice: () => undefined,
+      flashFooter: () => undefined,
+    }, command),
+    /^Error: unknown variant `tabLegacy`$/,
   )
 })
 

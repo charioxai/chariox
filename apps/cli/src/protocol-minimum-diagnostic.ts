@@ -1,6 +1,7 @@
 export type ProtocolMinimumDiagnostic = {
   capability: string
   requestVariant: string
+  nestedVariant?: string
   minimumProtocolVersion: number
 }
 
@@ -12,7 +13,10 @@ export async function withProtocolMinimum<T>(
     return await operation()
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (!isUnknownRequestVariant(message, diagnostic.requestVariant)) throw error
+    const variants = diagnostic.nestedVariant
+      ? [diagnostic.requestVariant, diagnostic.nestedVariant]
+      : [diagnostic.requestVariant]
+    if (!variants.some((variant) => isUnknownRequestVariant(message, variant))) throw error
     throw new Error(
       `${diagnostic.capability} requires kernel protocol ${diagnostic.minimumProtocolVersion} or newer: ${message}`,
     )
