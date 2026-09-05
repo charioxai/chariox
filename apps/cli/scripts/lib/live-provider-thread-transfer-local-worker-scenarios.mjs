@@ -472,6 +472,7 @@ export async function runWorkerResumeScenario({
         providerSessionId: beforeThreadId,
         sourceProviderEnv,
         destinationProviderEnv: destinationMaterializedEnv,
+        workingDirectory: workspace,
       })
       result.checks.provider_state_transferred = result.evidence.provider_state_transfer.copied.length > 0
     }
