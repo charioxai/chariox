@@ -54,12 +54,18 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "same-host-remote-worker-restart",
       "worker-provider-resume-codex",
       "worker-provider-resume-opencode",
+      "local-slice-display-process-faults",
       "slice-restart-codex",
       "slice-restart-opencode",
       "hetzner-collaborator-reconnect-authority",
       "hosted-cloud-relay-second-kernel-reconnect",
     ])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "slice-restart-codex").requires, ["slice"])
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "local-slice-display-process-faults").requires, ["slice"])
+    assert.equal(
+      path.basename(report.scenarios.find((scenario) => scenario.id === "local-slice-display-process-faults").args[0]),
+      "live-slice-display-fault-drill.mjs",
+    )
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "slice-restart-codex").args.slice(-5, -3), [
       "--slice-build-image",
       "always",

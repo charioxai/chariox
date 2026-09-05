@@ -181,11 +181,17 @@ require a healthy viewer process.
 The `slice-runtime-deps` image target contains the real browser and desktop
 dependencies without building provider CLIs or the Rust kernel. Run
 `validate-slice-viewer.py` inside it to exercise the actual desktop launcher,
-streamer crash with continuing Browser tools/screenshots, failed startup,
-explicit noVNC rollback, and final listener cleanup. Use one CPU and 1 GiB
-memory for this drill. The full kernel image, released clients, and complete
-local and managed-machine product paths still need their separate end-to-end
-validation.
+streamer crash with continuing Browser tools/screenshots, viewer-retry recovery,
+Chromium crash with a live streamer, restoration of a known-good browser-profile
+checkpoint, failed startup, explicit noVNC rollback, and final listener cleanup.
+`pnpm --filter @chariox/cli run slice:display-fault-drill` runs the current
+checkout's display sources over an existing slice image in a read-only,
+network-disabled container capped at one CPU, 1 GiB memory and 256 processes.
+It records before/during/after resource samples and cleanup evidence outside the
+repository. The runtime resilience matrix includes the same drill only with
+`--include-slices`; no image or kernel build is implicit. The full kernel image,
+released clients, and complete local and managed-machine product paths still
+need their separate end-to-end validation.
 
 The slice owns Selkies as a display process. The kernel retains Room, actor,
 input-ownership, and action authority. The relay forwards scoped display

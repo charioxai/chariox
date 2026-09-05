@@ -39,6 +39,7 @@ const hostedCloudRelayDrill = path.join(scriptDir, "live-hosted-cloud-relay-dril
 const tuiWebParityDrill = path.join(scriptDir, "tui-web-terminal-parity-drill.mjs")
 const providerThreadTransferDrill = path.join(scriptDir, "live-provider-thread-transfer-drill.mjs")
 const deterministicRuntimeChaosDrill = path.join(scriptDir, "deterministic-runtime-chaos-drill.mjs")
+const sliceDisplayFaultDrill = path.join(scriptDir, "live-slice-display-fault-drill.mjs")
 
 const DEFAULT_CODEX_MODEL = process.env.CHARIOX_RUNTIME_RESILIENCE_CODEX_MODEL
   ?? process.env.CHARIOX_CODEX_MODEL
@@ -164,6 +165,22 @@ const MATRIX = [
       "worker-side provider run resumes without duplicating the prompt",
     ],
   }),
+  scenario({
+    id: "local-slice-display-process-faults",
+    description: "bounded local slice injects Selkies and Chromium process death and proves recovery plus cleanup",
+    script: sliceDisplayFaultDrill,
+    args: [],
+    classification: "slice-runtime",
+    runtimeSignals: ["client-projection-health", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    requires: ["slice"],
+    exitCriteria: [
+      "Selkies process death degrades display while Browser remains usable and one retry restores the streamer",
+      "Chromium process death leaves Selkies live and desktop lifecycle recovery preserves browser profile state",
+      "the capped network-disabled container, display socket, and listeners are removed",
+    ],
+  }),
   providerThreadScenario({
     id: "slice-restart-codex",
     provider: "codex",
@@ -270,7 +287,7 @@ function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.mjs [options]",
     "",
-    "Runs runtime resilience chaos coverage by composing existing reconnect, restart, relay, remote, TUI/web, provider-resume, slice, Hetzner, and hosted Cloud drills.",
+    "Runs runtime resilience chaos coverage by composing existing reconnect, restart, relay, remote, TUI/web, provider-resume, display-fault, slice, Hetzner, and hosted Cloud drills.",
     "Local and same-host scenarios are selected by default. Slice, Hetzner, and hosted Cloud scenarios are opt-in.",
     "",
     "Options:",
