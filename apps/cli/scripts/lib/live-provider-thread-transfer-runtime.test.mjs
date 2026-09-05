@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -10,7 +10,9 @@ import {
   failResultOnSliceCleanupErrors,
 } from "./live-provider-thread-transfer-slice-scenarios.mjs"
 import {
+  materializedProviderEnvironment,
   providerStateCopySpecs,
+  transferProviderThreadStateToWorker,
   transferProviderStateToWorker,
 } from "./live-provider-thread-transfer-provider-state.mjs"
 import {
@@ -291,6 +293,66 @@ test("provider state transfer copies into an isolated worker home", async () => 
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("Codex thread transfer copies only the requested rollout into the materialized worker profile", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-codex-thread-state-test-"))
+  try {
+    const sourceCodexHome = path.join(root, "source-codex")
+    const workerStorageRoot = path.join(root, "worker-storage")
+    const threadId = "019ec2de-c98f-7440-b3e4-3edbdb3aa1ab"
+    const relativeRollout = path.join(
+      "sessions",
+      "2026",
+      "06",
+      "13",
+      `rollout-2026-06-13T12-00-00-${threadId}.jsonl`,
+    )
+    await mkdir(path.join(sourceCodexHome, path.dirname(relativeRollout)), { recursive: true })
+    await writeFile(path.join(sourceCodexHome, relativeRollout), '{"thread":"requested"}\n')
+    await writeFile(path.join(sourceCodexHome, "unrelated.json"), '{"thread":"other"}\n')
+
+    const destinationProviderEnv = materializedProviderEnvironment({
+      provider: "codex",
+      storageRoot: workerStorageRoot,
+      ownerUserId: "local",
+      profileId: "codex-1",
+    })
+    const evidence = await transferProviderThreadStateToWorker({
+      provider: "codex",
+      providerSessionId: threadId,
+      sourceProviderEnv: { CODEX_HOME: sourceCodexHome },
+      destinationProviderEnv,
+    })
+
+    assert.deepEqual(evidence.copied, [{
+      kind: "codex_rollout",
+      relative_path: relativeRollout,
+      byte_length: 23,
+    }])
+    assert.equal(
+      await readFile(path.join(destinationProviderEnv.CODEX_HOME, relativeRollout), "utf8"),
+      '{"thread":"requested"}\n',
+    )
+    await assert.rejects(
+      readFile(path.join(destinationProviderEnv.CODEX_HOME, "unrelated.json")),
+      { code: "ENOENT" },
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("materialized provider paths reject profile traversal", () => {
+  assert.throws(
+    () => materializedProviderEnvironment({
+      provider: "codex",
+      storageRoot: "/worker-storage",
+      ownerUserId: "local",
+      profileId: "..",
+    }),
+    /profile id is not a safe path component/,
+  )
 })
 
 test("Claude credential payloads are validated and written mode 600", async () => {

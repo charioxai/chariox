@@ -1,4 +1,4 @@
-import { chmod, copyFile, cp, mkdir, stat } from "node:fs/promises"
+import { chmod, copyFile, cp, mkdir, opendir, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -10,6 +10,122 @@ import {
 
 export function safeLabel(value) {
   return value.replace(/[^a-zA-Z0-9_.-]+/g, "-")
+}
+
+function safePathComponent(value, label) {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > 120
+    || value === "."
+    || value === ".."
+    || !/^[a-zA-Z0-9_.-]+$/.test(value)
+  ) {
+    throw new Error(`${label} is not a safe path component`)
+  }
+  return value
+}
+
+export function materializedProviderEnvironment({
+  provider,
+  storageRoot,
+  ownerUserId,
+  profileId,
+}) {
+  if (!path.isAbsolute(storageRoot)) {
+    throw new Error("worker storage root must be absolute")
+  }
+  const normalizedProvider = safePathComponent(provider, "provider")
+  const profileRoot = path.join(
+    storageRoot,
+    "provider-accounts",
+    safePathComponent(ownerUserId, "owner user id"),
+    normalizedProvider,
+    safePathComponent(profileId, "profile id"),
+  )
+  if (normalizedProvider === "codex") {
+    return { CODEX_HOME: path.join(profileRoot, "codex") }
+  }
+  if (normalizedProvider === "opencode") {
+    const configRoot = path.join(profileRoot, "config")
+    return {
+      XDG_DATA_HOME: path.join(profileRoot, "data"),
+      XDG_CONFIG_HOME: configRoot,
+      XDG_STATE_HOME: path.join(profileRoot, "state"),
+      XDG_CACHE_HOME: path.join(profileRoot, "cache"),
+      OPENCODE_CONFIG_DIR: path.join(configRoot, "opencode"),
+    }
+  }
+  if (normalizedProvider === "claude") {
+    return { CLAUDE_CONFIG_DIR: path.join(profileRoot, "claude") }
+  }
+  throw new Error(`unsupported materialized provider environment: ${provider}`)
+}
+
+async function findCodexRollout(codexHome, providerSessionId) {
+  const expectedSuffix = `-${safePathComponent(providerSessionId, "provider session id")}.jsonl`
+  const pending = [
+    path.join(codexHome, "sessions"),
+    path.join(codexHome, "archived_sessions"),
+  ]
+  let visitedEntries = 0
+  while (pending.length > 0) {
+    const directory = pending.pop()
+    let handle
+    try {
+      handle = await opendir(directory)
+    } catch (error) {
+      if (error?.code === "ENOENT") continue
+      throw error
+    }
+    for await (const entry of handle) {
+      visitedEntries += 1
+      if (visitedEntries > 250_000) {
+        throw new Error("Codex rollout search exceeded its entry limit")
+      }
+      const pathname = path.join(directory, entry.name)
+      if (entry.isDirectory()) pending.push(pathname)
+      else if (entry.isFile() && entry.name.endsWith(expectedSuffix)) return pathname
+    }
+  }
+  return null
+}
+
+export async function transferProviderThreadStateToWorker({
+  provider,
+  providerSessionId,
+  sourceProviderEnv,
+  destinationProviderEnv,
+}) {
+  if (provider !== "codex") {
+    throw new Error(`provider thread state transfer is not implemented for ${provider}`)
+  }
+  const sourceCodexHome = sourceProviderEnv.CODEX_HOME
+  const destinationCodexHome = destinationProviderEnv.CODEX_HOME
+  if (!sourceCodexHome || !destinationCodexHome) {
+    throw new Error("Codex thread transfer requires source and destination CODEX_HOME")
+  }
+  const source = await findCodexRollout(sourceCodexHome, providerSessionId)
+  if (!source) {
+    throw new Error(`Codex rollout not found for provider session ${providerSessionId}`)
+  }
+  const relativePath = path.relative(sourceCodexHome, source)
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new Error("Codex rollout escaped the source provider home")
+  }
+  const destination = path.join(destinationCodexHome, relativePath)
+  await mkdir(path.dirname(destination), { recursive: true })
+  await copyFile(source, destination)
+  await chmod(destination, 0o600)
+  return {
+    provider,
+    provider_session_id: providerSessionId,
+    copied: [{
+      kind: "codex_rollout",
+      relative_path: relativePath,
+      byte_length: (await stat(destination)).size,
+    }],
+  }
 }
 
 export async function pathStat(pathname) {

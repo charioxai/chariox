@@ -82,6 +82,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
   }
   const homeProvider = isolatedHome?.providerEnv ?? realProvider
   const workerProvider = isolatedWorker?.providerEnv ?? realProvider
+  const workerStorageRoot = path.join(runtimeRoot, "worker-kernel-storage")
   const relayEnv = {
     ...process.env,
     CHARIOX_RELAY_HOST: "127.0.0.1",
@@ -147,7 +148,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
     }),
     writeIsolatedKernelConfig({
       xdgConfigHome: workerEnv.XDG_CONFIG_HOME,
-      storageRoot: path.join(runtimeRoot, "worker-kernel-storage"),
+      storageRoot: workerStorageRoot,
     }),
   ])
 
@@ -226,6 +227,7 @@ async function runWorkerResumeMatrix({ options, runtimeRoot, evidenceRoot, ports
           workerMachineId,
           workerKernelId: workerKernel.kernel_id,
           workerKernelUrl,
+          workerStorageRoot,
           sourceProviderEnv: homeProvider,
           destinationProviderEnv: workerProvider,
           options,
