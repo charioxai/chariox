@@ -527,6 +527,44 @@ fn backup_restore_never_quarantines_a_file_outside_the_owned_archive_shape() {
 }
 
 #[test]
+fn backup_restore_never_locally_quarantines_a_broker_managed_archive() {
+    let root = test_root("backup-corrupt-broker-managed");
+    std::fs::create_dir_all(&root).expect("broker backup directory should create");
+    let manifest = root.join("manifest.json");
+    let archive = root.join("home.tar.zst");
+    std::fs::write(&manifest, b"broker manifest").expect("broker manifest should write");
+    std::fs::write(&archive, b"broker-owned corrupt bytes")
+        .expect("broker archive fixture should write");
+
+    let error = state::reject_corrupt_home_archive(
+        &manifest,
+        &archive,
+        "slice.backup.restore",
+        "broker-backup",
+        true,
+    )
+    .expect_err("broker-managed corruption must fail without local mutation");
+
+    assert!(error
+        .to_string()
+        .contains("managed archive integrity check failed"));
+    assert_eq!(
+        std::fs::read(&archive).expect("broker-owned archive must remain in place"),
+        b"broker-owned corrupt bytes"
+    );
+    assert_eq!(
+        std::fs::read_dir(&root)
+            .expect("broker backup directory should remain readable")
+            .count(),
+        2,
+        "kernel must not create a local quarantine generation for broker storage"
+    );
+
+    std::fs::remove_dir_all(&root).expect("broker fixture should clean up");
+    assert!(!root.exists());
+}
+
+#[test]
 fn backup_restore_rolls_back_failures_and_retains_recovery_artifacts_if_rollback_fails() {
     use std::cell::Cell;
 

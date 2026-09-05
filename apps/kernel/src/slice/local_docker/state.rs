@@ -220,7 +220,7 @@ pub fn validate_local_docker_slice_backup(
         });
     }
     let archive_path = Path::new(&backup.home_archive_path);
-    let (actual_size, actual_digest) =
+    let (actual_size, actual_digest, broker_managed) =
         match broker::verify_home_archive("backup", &backup.id, archive_path).map_err(|error| {
             DaemonError::LocalTransport {
                 operation: OPERATION,
@@ -230,7 +230,7 @@ pub fn validate_local_docker_slice_backup(
                 ),
             }
         })? {
-            Some(verified) => verified,
+            Some((size, digest)) => (size, digest, true),
             None => {
                 let metadata = std::fs::symlink_metadata(archive_path).map_err(|error| {
                     DaemonError::LocalTransport {
@@ -248,24 +248,17 @@ pub fn validate_local_docker_slice_backup(
                         message: format!("backup `{}` archive is not a regular file", backup.id),
                     });
                 }
-                (metadata.len(), file_sha256(archive_path, OPERATION)?)
+                (metadata.len(), file_sha256(archive_path, OPERATION)?, false)
             }
         };
     if actual_size != expected_size || actual_digest != expected_digest {
-        let quarantined = quarantine_corrupt_local_home_archive(
+        return reject_corrupt_home_archive(
             manifest_path,
             archive_path,
             OPERATION,
             &backup.id,
-        )?;
-        return Err(DaemonError::LocalTransport {
-            operation: OPERATION,
-            message: format!(
-                "backup `{}` archive integrity check failed; corrupt archive quarantined at {}",
-                backup.id,
-                quarantined.display()
-            ),
-        });
+            broker_managed,
+        );
     }
     let actual_image_id = docker_image_id(&backup.image_ref, OPERATION)?;
     if actual_image_id != expected_image_id {
@@ -275,6 +268,32 @@ pub fn validate_local_docker_slice_backup(
         });
     }
     Ok(())
+}
+
+pub(super) fn reject_corrupt_home_archive(
+    manifest_path: &Path,
+    archive_path: &Path,
+    operation: &'static str,
+    backup_id: &str,
+    broker_managed: bool,
+) -> Result<(), DaemonError> {
+    if broker_managed {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "backup `{backup_id}` managed archive integrity check failed; broker-owned archive was left unchanged"
+            ),
+        });
+    }
+    let quarantined =
+        quarantine_corrupt_local_home_archive(manifest_path, archive_path, operation, backup_id)?;
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "backup `{backup_id}` archive integrity check failed; corrupt archive quarantined at {}",
+            quarantined.display()
+        ),
+    })
 }
 
 fn quarantine_corrupt_local_home_archive(
