@@ -41,6 +41,7 @@ const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pres
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
 const sliceSaveAckLossFaultDrill = path.join(scriptDir, "live-slice-save-ack-loss-fault-drill.mjs")
 const sliceSaveInterruptionFaultDrill = path.join(scriptDir, "live-slice-save-interruption-fault-drill.mjs")
+const savedStateCorruptionFaultDrill = path.join(scriptDir, "live-saved-state-corruption-fault-drill.mjs")
 const sliceRestoreInterruptionFaultDrill = path.join(scriptDir, "live-slice-restore-interruption-fault-drill.mjs")
 const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
 const resourceExhaustionFaultDrill = path.join(scriptDir, "live-resource-exhaustion-fault-drill.mjs")
@@ -245,6 +246,22 @@ const MATRIX = [
       "a pre-commit publication failure preserves the prior manifest and archive while removing the unpublished generation",
       "uncertain durability after manifest rename retains both the prior and next archives",
       "the manifest-selected generation and retained prior generation both remain restorable",
+      "the focused drill records resources externally and removes every fixture",
+    ],
+  }),
+  scenario({
+    id: "local-saved-state-corruption",
+    description: "quarantine a corrupt saved-state archive without disturbing the prior known-good backup",
+    script: savedStateCorruptionFaultDrill,
+    args: [],
+    classification: "kernel-authority",
+    runtimeSignals: ["runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "a corrupt archive is rejected before image inspection or runtime replacement",
+      "the corrupt archive leaves its restore path and remains quarantined for inspection",
+      "an independent known-good backup remains byte-identical and passes full integrity validation",
       "the focused drill records resources externally and removes every fixture",
     ],
   }),

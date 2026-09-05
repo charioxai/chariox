@@ -382,12 +382,37 @@ fn backup_restore_rejects_cross_slice_records_before_reading_artifacts() {
     assert!(!error.to_string().contains("missing-manifest"));
 }
 
+#[cfg(unix)]
 #[test]
-fn backup_restore_rejects_a_corrupt_archive_before_inspecting_the_image() {
+fn backup_restore_quarantines_a_corrupt_archive_without_touching_known_good_state() {
     use sha2::Digest as _;
+    use std::os::unix::fs::PermissionsExt;
 
+    let _environment = crate::env_lock::lock();
     let root = test_root("backup-corrupt-archive");
-    std::fs::create_dir_all(&root).expect("backup directory should create");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    let docker = bin.join("docker");
+    std::fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = image ] && [ \"$2\" = inspect ]; then printf 'sha256:{}\\n'; exit 0; fi\nexit 1\n",
+            "a".repeat(64)
+        ),
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![bin];
+    if let Some(path) = &previous_path {
+        paths.extend(std::env::split_paths(path));
+    }
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("fake Docker PATH should join"),
+    );
+
     let manifest = root.join("manifest.json");
     let archive = root.join("home.tar.zst");
     std::fs::write(&archive, b"corrupt").expect("corrupt archive should write");
@@ -406,7 +431,99 @@ fn backup_restore_rejects_a_corrupt_archive_before_inspecting_the_image() {
         .expect_err("a corrupt archive must be rejected before destructive restore");
 
     assert!(error.to_string().contains("archive integrity check failed"));
-    let _ = std::fs::remove_dir_all(root);
+    assert!(error.to_string().contains("quarantined"));
+    assert!(
+        !archive.exists(),
+        "the corrupt archive must leave the restore path"
+    );
+    let quarantined = std::fs::read_dir(&root)
+        .expect("backup directory should remain readable")
+        .map(|entry| entry.expect("backup entry should remain readable").path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("home.tar.zst.corrupt-"))
+        })
+        .expect("the corrupt archive should remain quarantined for inspection");
+    assert_eq!(
+        std::fs::read(quarantined).expect("quarantined archive should remain readable"),
+        b"corrupt"
+    );
+
+    let known_good_dir = root.join("known-good");
+    std::fs::create_dir_all(&known_good_dir).expect("known-good directory should create");
+    let known_good_manifest = known_good_dir.join("manifest.json");
+    let known_good_archive = known_good_dir.join("home.tar.zst");
+    std::fs::write(&known_good_archive, b"known-good").expect("known-good archive should write");
+    let mut known_good = backup_record(known_good_manifest.display().to_string());
+    known_good.id = "known-good".to_string();
+    known_good.name = "known-good".to_string();
+    known_good.home_archive_path = known_good_archive.display().to_string();
+    known_good.size_bytes = Some(10);
+    known_good.home_archive_sha256 = Some(format!("{:x}", sha2::Sha256::digest(b"known-good")));
+    known_good.image_id = Some(format!("sha256:{}", "a".repeat(64)));
+    std::fs::write(
+        &known_good_manifest,
+        serde_json::to_vec_pretty(&known_good).expect("known-good backup should encode"),
+    )
+    .expect("known-good manifest should write");
+    validate_local_docker_slice_backup(&test_record(), &known_good)
+        .expect("the independent known-good backup should remain restorable");
+    assert_eq!(
+        std::fs::read(&known_good_archive).expect("known-good archive should remain readable"),
+        b"known-good"
+    );
+
+    match previous_path {
+        Some(path) => std::env::set_var("PATH", path),
+        None => std::env::remove_var("PATH"),
+    }
+    std::fs::remove_dir_all(&root).expect("corrupt archive fixture should clean up");
+    assert!(!root.exists());
+
+    println!(
+        "CHARIOX_SAVED_STATE_CORRUPTION_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.saved_state_corruption_probe.v1",
+            "corruptArchiveRejected": true,
+            "corruptArchiveQuarantined": true,
+            "restorePathCleared": true,
+            "knownGoodBackupRestorable": true,
+            "cleanupComplete": true,
+        })
+    );
+}
+
+#[test]
+fn backup_restore_never_quarantines_a_file_outside_the_owned_archive_shape() {
+    use sha2::Digest as _;
+
+    let root = test_root("backup-corrupt-unowned-file");
+    std::fs::create_dir_all(&root).expect("backup directory should create");
+    let manifest = root.join("manifest.json");
+    let unowned = root.join("unowned.txt");
+    std::fs::write(&unowned, b"must-remain").expect("unowned file should write");
+    let mut backup = backup_record(manifest.display().to_string());
+    backup.home_archive_path = unowned.display().to_string();
+    backup.size_bytes = Some(11);
+    backup.home_archive_sha256 = Some(format!("{:x}", sha2::Sha256::digest(b"different")));
+    backup.image_id = Some(format!("sha256:{}", "0".repeat(64)));
+    std::fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&backup).expect("backup should encode"),
+    )
+    .expect("backup manifest should write");
+
+    let error = validate_local_docker_slice_backup(&test_record(), &backup)
+        .expect_err("an invalid archive path must fail without renaming it");
+
+    assert!(error.to_string().contains("cannot be quarantined safely"));
+    assert_eq!(
+        std::fs::read(&unowned).expect("unowned file must remain readable"),
+        b"must-remain"
+    );
+    std::fs::remove_dir_all(&root).expect("unowned-file fixture should clean up");
+    assert!(!root.exists());
 }
 
 #[test]

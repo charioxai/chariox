@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import { access, mkdir, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -308,13 +308,25 @@ async function run() {
   await writeFile(corruptBackup.home_archive_path, "deliberately corrupted backup archive")
   await assert.rejects(
     client.send(requests.restoreSliceBackupRequest(slice.id, corruptBackup.id)),
-    /archive integrity check failed/,
+    /archive integrity check failed.*quarantined/,
   )
   slice = await waitForSliceStatus(slice.id, "stopped")
   assert.equal(
     await inspectContainerId(),
     containerBeforeRejectedRestore,
     "corrupt backup rejection must happen before container replacement",
+  )
+  assert.equal(
+    await access(corruptBackup.home_archive_path).then(() => true, () => false),
+    false,
+    "the corrupt archive must leave its restore path",
+  )
+  assert.equal(
+    (await readdir(path.dirname(corruptBackup.home_archive_path)))
+      .filter((entry) => entry.startsWith(`${path.basename(corruptBackup.home_archive_path)}.corrupt-`))
+      .length,
+    1,
+    "the corrupt archive must remain in one owned quarantine file",
   )
 
   log("restoring the named backup by its human-readable name")
@@ -937,7 +949,7 @@ async function writeManifest(ok, error = null) {
       "message before save and message after restore were each submitted exactly once",
       "external service invalidation showed the exact login prompt while persisted browser state remained intact",
       "reauthentication restored service use and submitted its message exactly once",
-      "named backup integrity metadata was recorded and a corrupt archive was rejected before container replacement",
+      "named backup integrity metadata was recorded, a corrupt archive was quarantined before container replacement, and the named backup remained restorable",
       "the same immutable named backup restored browser and application state twice, once by name and once by id",
     ],
     cleanup: cleanupResult,
