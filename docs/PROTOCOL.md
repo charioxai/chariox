@@ -585,6 +585,14 @@ share a filesystem—or Chariox cannot prove they are separate—the peak budget
 includes the committed layer plus both the helper and destination archive
 copies in that one pool.
 
+Local Docker slices also start with finite process and file-descriptor limits.
+The defaults are 1024 processes/threads for the container and a soft/hard
+`nofile` limit of 8192 for each inherited process. Chariox reapplies the mutable
+process cap before starting an existing container and verifies its immutable
+`nofile` setting before any service or authentication command runs. A legacy or
+differently configured container fails closed with recreate guidance; stop and
+destroy remain available even when the configured limits are invalid.
+
 - `slice.create.from_saved_state` may reference an existing saved-state id/name. Local Docker restore uses the saved image tag instead of the configured base image and extracts the saved home archive into the fresh slice home volume before normal provisioning continues. Restore still allocates fresh ports, relay identity, and worker identity through the normal slice start path.
 
 Current session-lifecycle note:

@@ -13,6 +13,7 @@ test("new slices have a finite process limit by default", async () => {
   const create = calls.find((args) => args[0] === "create")
   assert.ok(create, "fixture must reach container creation")
   assert.equal(create[create.indexOf("--pids-limit") + 1], "1024")
+  assert.equal(create[create.indexOf("--ulimit", create.indexOf("--ulimit") + 1) + 1], "nofile=8192:8192")
 })
 
 test("invalid process limits fail before any Docker operation", async () => {
@@ -24,6 +25,15 @@ test("invalid process limits fail before any Docker operation", async () => {
   }
 })
 
+test("invalid file-descriptor limits fail before any Docker operation", async () => {
+  for (const nofileLimit of ["0", "1023", "-1", "1.5", "abc", "1048577", "9999999999999999999999999"]) {
+    const { result, calls } = await invoke({ nofileLimit })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /CHARIOX_SLICE_DOCKER_NOFILE_LIMIT/)
+    assert.deepEqual(calls, [], `Docker was called for invalid nofile limit ${nofileLimit}`)
+  }
+})
+
 test("reusing a slice applies the configured process cap before starting it", async () => {
   const { calls } = await invoke({ existing: true, limit: "768" })
   const update = calls.findIndex((args) => args[0] === "update")
@@ -31,6 +41,22 @@ test("reusing a slice applies the configured process cap before starting it", as
   assert.deepEqual(calls[update], ["update", "--pids-limit", "768", "chariox-process-limit-fixture"])
   assert.ok(calls.findIndex((args) => args[0] === "start") > update)
   assert.equal(calls.some((args) => args[0] === "create"), false)
+})
+
+test("reusing a slice verifies its immutable file-descriptor cap before startup", async () => {
+  const { calls } = await invoke({ existing: true, nofileLimit: "4096", existingNofile: "4096:4096" })
+  const inspect = calls.findIndex((args) => args[0] === "inspect" && args.join(" ").includes("HostConfig.Ulimits"))
+  assert.ok(inspect >= 0, "existing slice must have its nofile cap inspected")
+  assert.ok(calls.findIndex((args) => args[0] === "start") > inspect)
+})
+
+test("a missing or divergent file-descriptor cap cannot start or execute inside the slice", async () => {
+  for (const [action, existingNofile] of [["provision", ""], ["recover", "16384:16384"], ["import-provider-auth", "4096:8192"]]) {
+    const { result, calls } = await invoke({ existing: true, action, existingNofile })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /file-descriptor limit.*recreate/i)
+    assert.equal(calls.some((args) => ["start", "exec"].includes(args[0])), false)
+  }
 })
 
 test("failed-save recovery cannot restart a slice without its process cap", async () => {
@@ -59,7 +85,7 @@ test("failure to apply a cap cannot start or execute inside the slice", async ()
 
 test("invalid caps never prevent stopping or destroying a running slice", async () => {
   for (const action of ["stop", "destroy"]) {
-    const { result, calls } = await invoke({ limit: "0", existing: true, running: true, action })
+    const { result, calls } = await invoke({ limit: "0", nofileLimit: "0", existing: true, running: true, action })
     assert.equal(result.status, 0)
     assert.ok(calls.some((args) => args[0] === "stop" && args[1] === "chariox-process-limit-fixture"))
     if (action === "destroy") assert.ok(calls.some((args) => args[0] === "rm" && args[1] === "chariox-process-limit-fixture"))
@@ -67,7 +93,15 @@ test("invalid caps never prevent stopping or destroying a running slice", async 
   }
 })
 
-async function invoke({ limit, existing = false, running = false, action = "provision", updateFails = false } = {}) {
+async function invoke({
+  limit,
+  nofileLimit,
+  existingNofile = "8192:8192",
+  existing = false,
+  running = false,
+  action = "provision",
+  updateFails = false,
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-process-limit-"))
   try {
     const log = join(root, "docker.jsonl")
@@ -85,7 +119,12 @@ if (args[0] === "container" && args[1] === "inspect") {
   if (process.env.CHARIOX_TEST_EXISTING !== "1") process.exit(1);
   console.log("fixture-image"); process.exit(0);
 }
-if (args[0] === "inspect") { console.log(process.env.CHARIOX_TEST_RUNNING === "1" ? "true" : "false"); process.exit(0); }
+if (args[0] === "inspect") {
+  const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
+  if (format.includes("HostConfig.Ulimits")) console.log(process.env.CHARIOX_TEST_NOFILE);
+  else console.log(process.env.CHARIOX_TEST_RUNNING === "1" ? "true" : "false");
+  process.exit(0);
+}
 if (args[0] === "ps") {
   if (process.env.CHARIOX_TEST_EXISTING === "1" && (args.includes("-a") || process.env.CHARIOX_TEST_RUNNING === "1")) console.log("chariox-process-limit-fixture");
   process.exit(0);
@@ -103,10 +142,11 @@ throw new Error("unexpected Docker call: " + args[0]);
       env: { ...env, PATH: `${root}:${env.PATH}`, TMPDIR: root,
         CHARIOX_TEST_DOCKER_LOG: log, CHARIOX_TEST_PROTOCOL: protocol,
         CHARIOX_TEST_EXISTING: existing ? "1" : "0", CHARIOX_TEST_UPDATE_FAILS: updateFails ? "1" : "0",
-        CHARIOX_TEST_RUNNING: running ? "1" : "0",
+        CHARIOX_TEST_RUNNING: running ? "1" : "0", CHARIOX_TEST_NOFILE: existingNofile,
         CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
         CHARIOX_SLICE_BUILD_IMAGE: "never", CHARIOX_SLICE_NAME: "chariox-process-limit-fixture",
         ...(limit === undefined ? {} : { CHARIOX_SLICE_DOCKER_PIDS_LIMIT: limit }),
+        ...(nofileLimit === undefined ? {} : { CHARIOX_SLICE_DOCKER_NOFILE_LIMIT: nofileLimit }),
       },
     })
     assert.equal(result.error, undefined)
