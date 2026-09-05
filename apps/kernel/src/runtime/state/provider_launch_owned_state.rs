@@ -448,12 +448,46 @@ mod tests {
             .with_agent_id(unregistered_agent.id()),
             "http://127.0.0.1:43120/mcp".to_string(),
         );
+        let traversal = runtime.owned.prepare_provider_launch_request(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "model",
+            )
+            .with_agent_id(runtime_agent.id())
+            .with_working_directory(instance_worktree.join("..").join("unregistered")),
+            "http://127.0.0.1:43120/mcp".to_string(),
+        );
+        #[cfg(unix)]
+        let symlink_escape = {
+            let link = instance_worktree.join("outside-link");
+            std::os::unix::fs::symlink(&unregistered_worktree, &link)
+                .expect("escape symlink fixture");
+            runtime.owned.prepare_provider_launch_request(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model",
+                )
+                .with_agent_id(runtime_agent.id())
+                .with_working_directory(link),
+                "http://127.0.0.1:43120/mcp".to_string(),
+            )
+        };
         restore_env(
             crate::provider::MANAGED_PROVIDER_ISOLATION_ENV,
             previous_isolation,
         );
         let prepared = prepared.expect("managed pool clone launch should prepare");
         let unregistered = unregistered.expect("unregistered hidden launch should prepare");
+        let traversal = traversal.expect("traversal launch should prepare without expanding roots");
+        #[cfg(unix)]
+        let symlink_escape =
+            symlink_escape.expect("symlink escape should prepare without expanding roots");
 
         assert_eq!(
             prepared.workspace_live_sync_roots,
@@ -464,6 +498,17 @@ mod tests {
             unregistered.workspace_live_sync_roots,
             vec![root.join("primary"), root.join("supporting")],
             "an unregistered hidden agent must not expand the managed allowlist"
+        );
+        assert_eq!(
+            traversal.workspace_live_sync_roots,
+            vec![root.join("primary"), root.join("supporting")],
+            "a lexical traversal outside the registered worktree must not expand the managed allowlist"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            symlink_escape.workspace_live_sync_roots,
+            vec![root.join("primary"), root.join("supporting")],
+            "a symlink escape outside the registered worktree must not expand the managed allowlist"
         );
         let _ = std::fs::remove_dir_all(root);
     }

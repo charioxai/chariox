@@ -195,18 +195,25 @@ pub(crate) fn registered_workflow_runtime_worktree_root(
 ) -> Option<PathBuf> {
     let agent_id = agent_id?;
     let working_directory = working_directory?;
+    let canonical_working_directory = working_directory.canonicalize().ok()?;
     session
         .workflow_runtime_instances()
         .iter()
         .filter(|instance| !instance.primary())
-        .find(|instance| {
-            instance
+        .find_map(|instance| {
+            let owns_agent = instance
                 .node_agent_ids()
                 .values()
-                .any(|runtime_agent_id| runtime_agent_id == agent_id)
-                && working_directory.starts_with(instance.worktree_id())
+                .any(|runtime_agent_id| runtime_agent_id == agent_id);
+            if !owns_agent {
+                return None;
+            }
+            let root = PathBuf::from(instance.worktree_id());
+            let canonical_root = root.canonicalize().ok()?;
+            canonical_working_directory
+                .starts_with(canonical_root)
+                .then_some(root)
         })
-        .map(|instance| PathBuf::from(instance.worktree_id()))
 }
 
 fn resolve_git_root(path: &Path) -> Option<PathBuf> {
