@@ -346,6 +346,8 @@ impl PtyManager {
                 .ok_or_else(|| DaemonError::PtyProcessNotFound {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
+        self.output_signal
+            .prefer_alias(&process_key, provider_run_id);
         let mut writer = process.input_writer.clone();
         writer.provider_run_id = provider_run_id.to_string();
         Ok(writer)
@@ -1065,9 +1067,9 @@ mod tests {
         assert_eq!(manager.process_aliases.len(), 2);
 
         manager
-            .write_input(second_run.id(), b"shared pty\n")
-            .expect("shared PTY should accept input from the second run alias");
-        let output = wait_for_output(&mut manager, second_run.id());
+            .write_input(first_run.id(), b"shared pty\n")
+            .expect("shared PTY should accept input from the first run alias");
+        let output = wait_for_output(&mut manager, first_run.id());
         let combined = output
             .into_iter()
             .flat_map(|chunk| chunk.bytes)
@@ -1075,7 +1077,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&combined).contains("shared pty"));
         assert_eq!(
             manager.output_signal().take_ready_provider_run_ids(),
-            [second_run.id().to_string()].into_iter().collect()
+            [first_run.id().to_string()].into_iter().collect()
         );
 
         manager
