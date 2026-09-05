@@ -521,22 +521,25 @@ async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() 
 
 #[tokio::test]
 async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
+    assert!(slow_event_consumer_cleanup_case().await);
+}
+
+async fn slow_event_consumer_cleanup_case() -> bool {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
-    let other_daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-2");
     let client_addr = peer_addr(10_004);
     let other_client_addr = peer_addr(10_005);
     let (sender, mut receiver) = mpsc::channel::<Message>(1);
     sender
         .try_send(Message::Text("occupied".to_string().into()))
         .expect("test queue should accept first message");
-    let (other_sender, _other_receiver) = mpsc::channel::<Message>(1);
+    let (other_sender, mut other_receiver) = mpsc::channel::<Message>(1);
     let mut registry = RelayRegistry::default();
     registry
         .peers
         .insert(client_addr, client_peer(sender.clone()));
     registry
         .peers
-        .insert(other_client_addr, client_peer(other_sender));
+        .insert(other_client_addr, client_peer(other_sender.clone()));
     registry.subscriptions.insert(
         "slow-subscription".to_string(),
         ActiveSubscription {
@@ -549,7 +552,7 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
         "other-subscription".to_string(),
         ActiveSubscription {
             client_addr: other_client_addr,
-            daemon_key: other_daemon_key.clone(),
+            daemon_key: daemon_key.clone(),
             client_public_key: "other-public-key".to_string(),
         },
     );
@@ -564,31 +567,27 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
             client_sender: sender.clone(),
         },
     );
+    routes.set_subscription(
+        "other-subscription".to_string(),
+        ActiveEventRoute {
+            daemon_key: daemon_key.clone(),
+            client_sender: other_sender,
+        },
+    );
     let registry = Arc::new(RwLock::new(registry));
     let relay_request_counter = AtomicU64::new(0);
 
-    let result = send_envelope(
-        &sender,
-        &RelayEnvelope::ClientEvent {
-            subscription_id: "slow-subscription".to_string(),
-            event_id: 1,
-            encrypted_event: EncryptedRelayPayload {
-                sender_public_key: "daemon-public".to_string(),
-                nonce: "nonce".to_string(),
-                ciphertext: "ciphertext".to_string(),
-            },
-        },
-    );
-    assert!(result.is_err(), "full client queue should reject event");
-
-    close_slow_subscription(
+    let slow_delivered = route_daemon_event(
         &registry,
         &routes,
-        "slow-subscription",
         &daemon_key,
         &relay_request_counter,
+        "slow-subscription".to_string(),
+        1,
+        encrypted_payload(),
     )
     .await;
+    assert!(!slow_delivered, "full client queue should reject event");
 
     let guard = registry.read().await;
     assert!(!guard.subscriptions.contains_key("slow-subscription"));
@@ -618,35 +617,92 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
         } if relay_subscription_id == "slow-subscription"
             && client_public_key == "slow-public-key"
     ));
+
+    let healthy_delivered = route_daemon_event(
+        &registry,
+        &routes,
+        &daemon_key,
+        &relay_request_counter,
+        "other-subscription".to_string(),
+        2,
+        encrypted_payload(),
+    )
+    .await;
+    assert!(
+        healthy_delivered,
+        "healthy subscription should remain writable"
+    );
+    let Message::Text(payload) = other_receiver
+        .try_recv()
+        .expect("healthy subscription should receive the next event")
+    else {
+        panic!("expected healthy subscription text")
+    };
+    let healthy_event = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("healthy event should decode"),
+        RelayEnvelope::ClientEvent {
+            subscription_id,
+            event_id: 2,
+            ..
+        } if subscription_id == "other-subscription"
+    );
+    assert!(healthy_event);
+    healthy_delivered && healthy_event
 }
 
 #[tokio::test]
 async fn target_backpressure_rejects_client_pending_request_without_client_close() {
+    assert!(target_backpressure_client_case().await);
+}
+
+async fn target_backpressure_client_case() -> bool {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_006);
     let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
-    let registry = RelayRegistry::default();
-    registry.route_index().insert_pending_client(
-        "relay-request-1".to_string(),
-        PendingClientRequest {
-            client_addr,
-            client_request_id: "client-request-1".to_string(),
-            daemon_key,
-            kind: PendingRequestKind::Request,
-        },
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(1);
+    daemon_sender
+        .try_send(Message::Text("occupied".to_string().into()))
+        .expect("test queue should accept first message");
+    let mut registry = RelayRegistry::default();
+    let daemon_addr = peer_addr(10_009);
+    let registration = daemon_registration("daemon-1");
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry.peers.insert(
+        daemon_addr,
+        daemon_peer(daemon_sender.clone(), registration),
     );
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+    let mut client = client_peer(client_sender.clone());
+    client.client_daemon_key = Some(daemon_key.clone());
+    registry.peers.insert(client_addr, client);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
     let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
 
-    reject_client_pending_on_target_backpressure(
+    handle_client_packet_route_envelope(
+        RelayEnvelope::ClientRequest {
+            request_id: "client-request-1".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: encrypted_payload(),
+        },
         &registry,
+        &routes,
+        client_addr,
         &client_sender,
-        "relay-request-1",
-        "client-request-1".to_string(),
+        &relay_request_counter,
     )
     .await
-    .expect("client rejection should enqueue");
+    .expect("saturated client route should reject without breaking");
 
-    {
+    let metrics_recorded = {
         let guard = registry.read().await;
         assert_eq!(guard.pending_request_count(), 0);
         assert_eq!(guard.backpressure_metrics().target_queue_full_count, 1);
@@ -654,12 +710,15 @@ async fn target_backpressure_rejects_client_pending_request_without_client_close
             guard.backpressure_metrics().slow_subscription_close_count,
             0
         );
-    }
+        guard.backpressure_metrics().target_queue_full_count == 1
+    };
     let payload = match client_receiver.try_recv() {
         Ok(Message::Text(text)) => text,
         other => panic!("unexpected client rejection frame: {other:?}"),
     };
-    match serde_json::from_str::<RelayEnvelope>(&payload).expect("client rejection should decode") {
+    let rejected_retryably = match serde_json::from_str::<RelayEnvelope>(&payload)
+        .expect("client rejection should decode")
+    {
         RelayEnvelope::ClientResponse {
             request_id,
             encrypted_response: None,
@@ -668,38 +727,85 @@ async fn target_backpressure_rejects_client_pending_request_without_client_close
             assert_eq!(request_id, "client-request-1");
             assert_eq!(error.code, "target_backpressure");
             assert!(error.retryable);
+            error.retryable
         }
         other => panic!("unexpected client rejection envelope: {other:?}"),
-    }
+    };
+
+    assert!(matches!(daemon_receiver.try_recv(), Ok(Message::Text(text)) if text == "occupied"));
+    handle_client_packet_route_envelope(
+        RelayEnvelope::ClientRequest {
+            request_id: "client-request-2".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: encrypted_payload(),
+        },
+        &registry,
+        &routes,
+        client_addr,
+        &client_sender,
+        &relay_request_counter,
+    )
+    .await
+    .expect("client route should remain writable after backpressure");
+    let Message::Text(payload) = daemon_receiver
+        .try_recv()
+        .expect("target should receive the next client request")
+    else {
+        panic!("expected target request text")
+    };
+    let route_recovered = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("target request should decode"),
+        RelayEnvelope::DaemonRequest { relay_request_id, .. }
+            if relay_request_id == "relay-request-2"
+    );
+    assert!(route_recovered);
+    assert_eq!(registry.read().await.pending_request_count(), 1);
+    routes.remove_pending_client("relay-request-2");
+    rejected_retryably && route_recovered && metrics_recorded
 }
 
 #[tokio::test]
 async fn target_backpressure_rejects_peer_pending_request_without_requester_close() {
+    assert!(target_backpressure_peer_case().await);
+}
+
+async fn target_backpressure_peer_case() -> bool {
     let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
+    let requester_addr = peer_addr(10_008);
     let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
-    let registry = RelayRegistry::default();
-    registry.route_index().insert_pending_daemon(
-        "relay-peer-request-1".to_string(),
-        PendingDaemonPeerRequest {
-            requester_daemon_key: requester_key,
-            requester_request_id: "peer-request-1".to_string(),
-            target_daemon_key: target_key.clone(),
-        },
+    let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
+    target_sender
+        .try_send(Message::Text("occupied".to_string().into()))
+        .expect("test queue should accept first message");
+    let mut registry = RelayRegistry::default();
+    registry.peers.insert(
+        requester_addr,
+        daemon_peer(requester_sender.clone(), daemon_registration("daemon-a")),
     );
+    let routes = registry.route_index();
+    routes.set_daemon_sender(target_key.clone(), target_sender);
     let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
 
-    reject_peer_pending_on_target_backpressure(
+    route_daemon_peer_request(
         &registry,
+        &routes,
+        requester_addr,
         &requester_sender,
-        "relay-peer-request-1",
+        &relay_request_counter,
+        &requester_key,
+        target_key.clone(),
         "peer-request-1".to_string(),
-        target_key.daemon_id,
+        encrypted_payload(),
     )
     .await
-    .expect("peer rejection should enqueue");
+    .expect("saturated peer route should reject without breaking");
 
-    {
+    let metrics_recorded = {
         let guard = registry.read().await;
         assert_eq!(guard.pending_request_count(), 0);
         assert_eq!(guard.backpressure_metrics().target_queue_full_count, 1);
@@ -707,12 +813,15 @@ async fn target_backpressure_rejects_peer_pending_request_without_requester_clos
             guard.backpressure_metrics().slow_subscription_close_count,
             0
         );
-    }
+        guard.backpressure_metrics().target_queue_full_count == 1
+    };
     let payload = match requester_receiver.try_recv() {
         Ok(Message::Text(text)) => text,
         other => panic!("unexpected peer rejection frame: {other:?}"),
     };
-    match serde_json::from_str::<RelayEnvelope>(&payload).expect("peer rejection should decode") {
+    let rejected_retryably = match serde_json::from_str::<RelayEnvelope>(&payload)
+        .expect("peer rejection should decode")
+    {
         RelayEnvelope::DaemonPeerResponse {
             request_id,
             from_daemon_id,
@@ -723,16 +832,53 @@ async fn target_backpressure_rejects_peer_pending_request_without_requester_clos
             assert_eq!(from_daemon_id, "daemon-b");
             assert_eq!(error.code, "target_backpressure");
             assert!(error.retryable);
+            error.retryable
         }
         other => panic!("unexpected peer rejection envelope: {other:?}"),
-    }
+    };
+
+    assert!(matches!(target_receiver.try_recv(), Ok(Message::Text(text)) if text == "occupied"));
+    route_daemon_peer_request(
+        &registry,
+        &routes,
+        requester_addr,
+        &requester_sender,
+        &relay_request_counter,
+        &requester_key,
+        target_key,
+        "peer-request-2".to_string(),
+        encrypted_payload(),
+    )
+    .await
+    .expect("peer route should remain writable after backpressure");
+    let Message::Text(payload) = target_receiver
+        .try_recv()
+        .expect("target should receive the next peer request")
+    else {
+        panic!("expected peer request text")
+    };
+    let route_recovered = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("peer request should decode"),
+        RelayEnvelope::DaemonIncomingPeerRequest { relay_request_id, .. }
+            if relay_request_id == "relay-peer-request-2"
+    );
+    assert!(route_recovered);
+    assert_eq!(registry.read().await.pending_request_count(), 1);
+    routes.remove_pending_daemon("relay-peer-request-2");
+    rejected_retryably && route_recovered && metrics_recorded
 }
 
-#[test]
-fn peer_event_target_backpressure_is_nonfatal() {
+#[tokio::test]
+async fn peer_event_target_backpressure_is_nonfatal() {
+    assert!(peer_event_target_backpressure_case().await);
+}
+
+async fn peer_event_target_backpressure_case() -> bool {
+    let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
     let target_registration = daemon_registration("daemon-b");
     let target_addr = peer_addr(10_007);
+    let requester_addr = peer_addr(10_008);
     let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
     target_sender
         .try_send(Message::Text("occupied".to_string().into()))
@@ -748,30 +894,80 @@ fn peer_event_target_backpressure_is_nonfatal() {
     registry
         .daemon_peers
         .insert(target_key.clone(), target_addr);
-    let target_sender = resolve_daemon_sender_locked(&registry, &target_key)
-        .expect("target daemon sender should resolve");
-
-    let result = send_envelope(
-        &target_sender,
-        &RelayEnvelope::DaemonIncomingPeerEvent {
-            from_daemon_id: "daemon-a".to_string(),
-            caller_identity: None,
-            encrypted_event: EncryptedRelayPayload {
-                sender_public_key: "daemon-a-public".to_string(),
-                nonce: "nonce".to_string(),
-                ciphertext: "ciphertext".to_string(),
-            },
-        },
-    );
+    let routes = registry.route_index();
+    routes.set_daemon_sender(target_key.clone(), target_sender);
+    let registry = Arc::new(RwLock::new(registry));
 
     assert!(
-        result.is_err(),
-        "full target daemon queue should reject event"
+        !route_daemon_peer_event(
+            &registry,
+            &routes,
+            requester_addr,
+            &requester_key,
+            &target_key,
+            encrypted_payload(),
+        )
+        .await
     );
-    log_daemon_sender_backpressure("daemon_peer_event", peer_addr(10_008), &target_key);
-    assert_eq!(registry.pending_request_count(), 0);
+    assert_eq!(registry.read().await.pending_request_count(), 0);
     assert!(matches!(
         target_receiver.try_recv(),
         Ok(Message::Text(text)) if text == "occupied"
     ));
+    let route_recovered = route_daemon_peer_event(
+        &registry,
+        &routes,
+        requester_addr,
+        &requester_key,
+        &target_key,
+        encrypted_payload(),
+    )
+    .await;
+    assert!(route_recovered);
+    let Message::Text(payload) = target_receiver
+        .try_recv()
+        .expect("target should receive the next peer event")
+    else {
+        panic!("expected peer event text")
+    };
+    let event_forwarded = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("peer event should decode"),
+        RelayEnvelope::DaemonIncomingPeerEvent { from_daemon_id, .. }
+            if from_daemon_id == "daemon-a"
+    );
+    assert!(event_forwarded);
+    route_recovered && event_forwarded
+}
+
+#[tokio::test]
+async fn queue_saturation_fault_probe() {
+    let healthy_reader_preserved = slow_event_consumer_cleanup_case().await;
+    let client_route_recovered = target_backpressure_client_case().await;
+    let peer_route_recovered = target_backpressure_peer_case().await;
+    let peer_event_route_recovered = peer_event_target_backpressure_case().await;
+    assert!(healthy_reader_preserved);
+    assert!(client_route_recovered);
+    assert!(peer_route_recovered);
+    assert!(peer_event_route_recovered);
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "chariox.queue_saturation_fault_probe.v1",
+            "queueLimitReachedDeterministically": client_route_recovered && peer_route_recovered && peer_event_route_recovered,
+            "clientRequestRejectedRetryably": client_route_recovered,
+            "peerRequestRejectedRetryably": peer_route_recovered,
+            "slowSubscriberIsolated": healthy_reader_preserved,
+            "healthyReaderPreserved": healthy_reader_preserved,
+            "readerLaneRemainedLive": client_route_recovered && peer_route_recovered && peer_event_route_recovered && healthy_reader_preserved,
+            "backpressureMetricsRecorded": client_route_recovered && peer_route_recovered
+        })
+    );
+}
+
+fn encrypted_payload() -> EncryptedRelayPayload {
+    EncryptedRelayPayload {
+        sender_public_key: "daemon-public".to_string(),
+        nonce: "nonce".to_string(),
+        ciphertext: "ciphertext".to_string(),
+    }
 }

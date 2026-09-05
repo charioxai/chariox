@@ -33,6 +33,7 @@ const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const kernelReconnectDrill = path.join(scriptDir, "live-kernel-reconnect-drill.mjs")
 const localRestartDrill = path.join(scriptDir, "live-local-restart-persistence-drill.mjs")
 const browserControllerFaultDrill = path.join(scriptDir, "live-browser-controller-fault-drill.mjs")
+const queueSaturationFaultDrill = path.join(scriptDir, "live-queue-saturation-fault-drill.mjs")
 const relayRuntimeDrill = path.join(scriptDir, "live-relay-runtime-drill.mjs")
 const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
@@ -108,6 +109,21 @@ const MATRIX = [
       "controller process death is attributed as process_lost and stale element references are rejected",
       "recovery replaces the process while preserving tabs and input authority without duplication",
       "one fresh post-recovery action completes exactly once and fixture processes are removed",
+    ],
+  }),
+  scenario({
+    id: "local-relay-queue-saturation",
+    description: "fill relay target and subscriber queues and prove bounded isolation without closing healthy readers",
+    script: queueSaturationFaultDrill,
+    args: [],
+    classification: "relay-runtime",
+    runtimeSignals: ["client-projection-health", "relay-target-freshness"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "full client and peer target queues return retryable backpressure and clear their pending request",
+      "one slow subscription is removed while another subscription and the daemon reader lane remain live",
+      "backpressure metrics record the bounded fault and no owned process remains",
     ],
   }),
   scenario({
