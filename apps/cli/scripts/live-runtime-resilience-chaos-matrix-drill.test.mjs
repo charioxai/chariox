@@ -54,6 +54,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "local-reconnect-storm-slow-viewer",
       "local-slice-memory-pressure-admission",
       "local-slice-disk-pressure-admission",
+      "local-slice-save-acknowledgement-loss",
       "local-browser-download-disk-pressure",
       "local-process-file-descriptor-exhaustion",
       "local-relay-restart-reconnect",
@@ -112,6 +113,10 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-slice-disk-pressure-admission").args[0]),
       "live-disk-pressure-admission-fault-drill.mjs",
+    )
+    assert.equal(
+      path.basename(report.scenarios.find((scenario) => scenario.id === "local-slice-save-acknowledgement-loss").args[0]),
+      "live-slice-save-ack-loss-fault-drill.mjs",
     )
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-browser-download-disk-pressure").args[0]),
