@@ -521,6 +521,10 @@ async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() 
 
 #[tokio::test]
 async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
+    slow_event_consumer_cleanup_case().await;
+}
+
+async fn slow_event_consumer_cleanup_case() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let other_daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-2");
     let client_addr = peer_addr(10_004);
@@ -622,6 +626,10 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
 
 #[tokio::test]
 async fn target_backpressure_rejects_client_pending_request_without_client_close() {
+    target_backpressure_client_case().await;
+}
+
+async fn target_backpressure_client_case() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_006);
     let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
@@ -675,6 +683,10 @@ async fn target_backpressure_rejects_client_pending_request_without_client_close
 
 #[tokio::test]
 async fn target_backpressure_rejects_peer_pending_request_without_requester_close() {
+    target_backpressure_peer_case().await;
+}
+
+async fn target_backpressure_peer_case() {
     let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
     let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
@@ -730,6 +742,10 @@ async fn target_backpressure_rejects_peer_pending_request_without_requester_clos
 
 #[test]
 fn peer_event_target_backpressure_is_nonfatal() {
+    peer_event_target_backpressure_case();
+}
+
+fn peer_event_target_backpressure_case() {
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
     let target_registration = daemon_registration("daemon-b");
     let target_addr = peer_addr(10_007);
@@ -774,4 +790,25 @@ fn peer_event_target_backpressure_is_nonfatal() {
         target_receiver.try_recv(),
         Ok(Message::Text(text)) if text == "occupied"
     ));
+}
+
+#[tokio::test]
+async fn queue_saturation_fault_probe() {
+    slow_event_consumer_cleanup_case().await;
+    target_backpressure_client_case().await;
+    target_backpressure_peer_case().await;
+    peer_event_target_backpressure_case();
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "chariox.queue_saturation_fault_probe.v1",
+            "queueLimitReachedDeterministically": true,
+            "clientRequestRejectedRetryably": true,
+            "peerRequestRejectedRetryably": true,
+            "slowSubscriberIsolated": true,
+            "healthyReaderPreserved": true,
+            "readerLaneRemainedLive": true,
+            "backpressureMetricsRecorded": true
+        })
+    );
 }
