@@ -13,6 +13,8 @@ import {
   releaseRoomEnvironmentInputRequest,
   readRoomEnvironmentClipboardRequest,
   readRoomEnvironmentScreenshotChunkRequest,
+  roomEnvironmentBrowserHistoryMinimumProtocolVersion,
+  roomEnvironmentBrowserTabActionsMinimumProtocolVersion,
   submitRoomEnvironmentBrowserActionRequest,
   submitRoomEnvironmentActionRequest,
   startRoomEnvironmentRequest,
@@ -30,6 +32,11 @@ import type {
   RoomEnvironmentUpdatedResponse,
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
+
+test("Room browser human actions expose their exact client protocol minimums", () => {
+  assert.equal(roomEnvironmentBrowserHistoryMinimumProtocolVersion, 305)
+  assert.equal(roomEnvironmentBrowserTabActionsMinimumProtocolVersion, 306)
+})
 
 test("Room Environment placement uses shared requests", () => {
   assert.deepEqual(bindRoomEnvironmentSliceRequest("session-1", "desktop"), {

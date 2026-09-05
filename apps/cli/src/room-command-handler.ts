@@ -8,6 +8,8 @@ import {
   releaseRoomEnvironmentInputRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
+  roomEnvironmentBrowserHistoryMinimumProtocolVersion,
+  roomEnvironmentBrowserTabActionsMinimumProtocolVersion,
   saveSliceStateRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
@@ -245,15 +247,21 @@ export async function handleRoomSlashCommand(
       )
       return
     }
-    const response = await deps.send<RoomEnvironmentActionSubmittedResponse>(
+    const tabLifecycleAction = browserCommand.action === "activate" || browserCommand.action === "close"
+    const response = await sendWithProtocolMinimum<RoomEnvironmentActionSubmittedResponse>(
+      deps.send,
       submitRoomEnvironmentBrowserActionRequest(
         sessionId,
         environment.runtime_generation,
         (deps.createIdempotencyKey ?? randomUUID)(),
-        browserCommand.action === "activate" || browserCommand.action === "close"
+        tabLifecycleAction
           ? { kind: "tab", tab_id: tabId, action: browserCommand.action }
           : { kind: "history", tab_id: tabId, action: browserCommand.action },
       ),
+      tabLifecycleAction ? "Room browser tab lifecycle" : "Room browser history",
+      tabLifecycleAction
+        ? roomEnvironmentBrowserTabActionsMinimumProtocolVersion
+        : roomEnvironmentBrowserHistoryMinimumProtocolVersion,
     )
     if (!response || typeof response !== "object" || !("RoomEnvironmentActionSubmitted" in response)) {
       throw new Error("Room browser action response is malformed")
@@ -340,6 +348,23 @@ export async function handleRoomSlashCommand(
     throw new Error("Room Environment lifecycle response is malformed")
   }
   deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentUpdated.environment))
+}
+
+async function sendWithProtocolMinimum<TResponse>(
+  send: RoomCommandHandlerDeps["send"],
+  request: unknown,
+  capability: string,
+  minimumProtocolVersion: number,
+): Promise<TResponse> {
+  try {
+    return await send<TResponse>(request)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/unknown variant/i.test(message)) throw error
+    throw new Error(
+      `${capability} requires kernel protocol ${minimumProtocolVersion} or newer: ${message}`,
+    )
+  }
 }
 
 function parseInputTarget(args: string[]): RoomEnvironmentInputTarget | string {

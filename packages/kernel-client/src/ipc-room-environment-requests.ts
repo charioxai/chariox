@@ -1,3 +1,6 @@
+export const roomEnvironmentBrowserHistoryMinimumProtocolVersion = 305
+export const roomEnvironmentBrowserTabActionsMinimumProtocolVersion = 306
+
 export function getRoomEnvironmentStateRequest(sessionId: string) {
   return {
     GetRoomEnvironmentState: {
