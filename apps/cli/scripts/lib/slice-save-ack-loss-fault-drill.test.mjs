@@ -14,6 +14,9 @@ const probe = {
   restartReplay: true,
   savedStateRefPreserved: true,
   conflictingReuseRejected: true,
+  backendSaveCount: 1,
+  savedStateRef: "save-replay",
+  homeArchiveGeneration: "/tmp/states/save-replay/home-generation.tar.zst",
   cleanupComplete: true,
 }
 
@@ -30,6 +33,7 @@ test("slice save acknowledgement-loss drill runs only the exact kernel library p
   ])
   assert.deepEqual(SLICE_SAVE_ACK_LOSS_CASE_IDS, [
     "fault.response-loss",
+    "effect.backend-exactly-once",
     "replay.same-process",
     "replay.kernel-restart",
     "guard.command-conflict",
@@ -45,6 +49,10 @@ test("slice save acknowledgement-loss drill requires exact replay and cleanup", 
   assert.throws(
     () => parseSliceSaveAckLossProbe(`CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:${JSON.stringify({ ...probe, restartReplay: false })}`),
     /restartReplay must be true/,
+  )
+  assert.throws(
+    () => parseSliceSaveAckLossProbe(`CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:${JSON.stringify({ ...probe, backendSaveCount: 2 })}`),
+    /backendSaveCount must be 1/,
   )
   assert.throws(
     () => parseSliceSaveAckLossProbe("test result: ok"),

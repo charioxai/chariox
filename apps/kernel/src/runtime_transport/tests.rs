@@ -2,6 +2,10 @@ use super::*;
 
 use std::path::{Path, PathBuf};
 
+use crate::local::{
+    LocalDaemonRequest, SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
+};
+use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode};
 use crate::DaemonConfig;
 
 use tokio::sync::oneshot;
@@ -338,6 +342,282 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
         .expect("server should exit cleanly");
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn slice_state_save_acknowledgement_replays_without_a_second_dispatch() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let root = RuntimeTransportTempDir::new("slice-save-ack-replay");
+    let bin = root.path().join("bin");
+    let docker = bin.join("docker");
+    let docker_log = root.path().join("docker.log");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(
+        &docker,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+case "$*" in
+  "info --format {{{{.DockerRootDir}}}}") printf '/tmp\n' ;;
+  "inspect --size --format {{{{.SizeRw}}}} chariox-slice-save-replay") printf '1024\n' ;;
+  *" du -sb /home-src") printf '1024 /home-src\n' ;;
+  *" find /home-src -printf . | wc -c") printf '1\n' ;;
+  *" df -B1 --output=avail /tmp") printf '107374182400\n' ;;
+  "inspect -f {{{{.State.Running}}}} chariox-slice-save-replay") printf 'false\n' ;;
+  cp\ *)
+    destination=
+    for argument in "$@"; do destination=$argument; done
+    printf 'saved-home-generation' > "$destination"
+    ;;
+esac
+exit 0
+"#,
+            docker_log.display()
+        ),
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+    let _path = RuntimeTransportPathGuard::prepend(bin);
+
+    let mut config = DaemonConfig::for_tests();
+    config.publication_control_state_root = Some(root.path().join("control"));
+    config.user_config_path = root.path().join("config/chariox.toml");
+    config.user_config.slices.root = Some(root.path().join("slices").display().to_string());
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should boot"),
+    ));
+    let slice = app
+        .lock()
+        .await
+        .slices()
+        .create(
+            &config.daemon_id,
+            &config.host_machine_id,
+            CreateSliceInput {
+                name: "save-replay".to_string(),
+                backend: SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: SliceDisplayMode::Headless,
+                display_backend: Default::default(),
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: Some("/workspace".to_string()),
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 1,
+            },
+        )
+        .expect("slice should create");
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let event_counter_path = root.path().join("transport/event-counter.json");
+    let command_cache_path = event_counter_path.with_file_name("command-results.jsonl");
+    let runtime = Arc::new(
+        KernelTransportRuntime::new_with_persistent_event_ids(
+            router.transport_health_store(),
+            event_counter_path.clone(),
+        )
+        .expect("transport runtime should initialize"),
+    );
+    let command_id = "slice-save-command";
+    let save_request = LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
+        slice_ref: slice.id.clone(),
+        mode: Some(SliceStateSaveMode::Shutdown),
+        scope: Some(SliceStateSaveScope::ThisSlice),
+    });
+
+    dispatch_transport_test_request(
+        Arc::clone(&runtime),
+        Arc::clone(&router),
+        "first-transport-attempt",
+        command_id,
+        save_request.clone(),
+        false,
+    )
+    .await;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let cache = std::fs::read_to_string(&command_cache_path).unwrap_or_default();
+            if cache.contains(command_id) && docker_commit_count(&docker_log) == 1 {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first save should complete after its response is lost");
+
+    let same_process = dispatch_transport_test_request(
+        Arc::clone(&runtime),
+        Arc::clone(&router),
+        "same-process-retry",
+        command_id,
+        save_request.clone(),
+        true,
+    )
+    .await
+    .expect("same-process retry should reply");
+    let same_process_generation = slice_saved_generation(&same_process);
+    assert_eq!(docker_commit_count(&docker_log), 1);
+
+    drop(runtime);
+    let restarted_runtime = Arc::new(
+        KernelTransportRuntime::new_with_persistent_event_ids(
+            router.transport_health_store(),
+            event_counter_path,
+        )
+        .expect("transport command cache should reload"),
+    );
+    let after_restart = dispatch_transport_test_request(
+        Arc::clone(&restarted_runtime),
+        Arc::clone(&router),
+        "restart-retry",
+        command_id,
+        save_request,
+        true,
+    )
+    .await
+    .expect("restart retry should reply");
+    let restart_generation = slice_saved_generation(&after_restart);
+    assert_eq!(restart_generation, same_process_generation);
+    assert_eq!(docker_commit_count(&docker_log), 1);
+
+    let conflicting = dispatch_transport_test_request(
+        Arc::clone(&restarted_runtime),
+        Arc::clone(&router),
+        "conflicting-retry",
+        command_id,
+        LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
+            slice_ref: slice.id,
+            mode: Some(SliceStateSaveMode::RestartAgents),
+            scope: Some(SliceStateSaveScope::FutureSlices),
+        }),
+        true,
+    )
+    .await
+    .expect("conflicting retry should reply");
+    let KernelOutgoingFrame::Response { error, .. } = conflicting else {
+        panic!("conflicting retry should return a response")
+    };
+    assert_eq!(
+        error.expect("conflicting retry should fail").code,
+        "duplicate_command_conflict"
+    );
+    assert_eq!(docker_commit_count(&docker_log), 1);
+
+    drop(restarted_runtime);
+    drop(router);
+    drop(app);
+    std::fs::remove_dir_all(root.path()).expect("drill artifacts should be removed");
+    assert!(!root.path().exists(), "drill artifacts should stay removed");
+    println!(
+        "CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.slice_save_ack_loss_probe.v1",
+            "sameProcessReplay": true,
+            "restartReplay": true,
+            "savedStateRefPreserved": true,
+            "conflictingReuseRejected": true,
+            "backendSaveCount": 1,
+            "savedStateRef": same_process_generation.0,
+            "homeArchiveGeneration": same_process_generation.1,
+            "cleanupComplete": true
+        })
+    );
+}
+
+#[cfg(unix)]
+async fn dispatch_transport_test_request(
+    runtime: Arc<KernelTransportRuntime>,
+    router: Arc<CommandRouter>,
+    request_id: &str,
+    command_id: &str,
+    request: LocalDaemonRequest,
+    receive_response: bool,
+) -> Option<KernelOutgoingFrame> {
+    let (priority_tx, mut priority_rx) = mpsc::channel(8);
+    let (event_tx, _event_rx) = mpsc::channel(8);
+    let outgoing = KernelOutgoingSender::new(priority_tx, event_tx);
+    if !receive_response {
+        priority_rx.close();
+    }
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let payload = serde_json::to_vec(&KernelIncomingFrame::Request {
+        request_id: request_id.to_string(),
+        command_id: Some(command_id.to_string()),
+        causation_id: None,
+        correlation_id: Some("slice-save-ack-loss-drill".to_string()),
+        request,
+    })
+    .expect("transport request should encode");
+    handle_incoming_payload(
+        &runtime,
+        &router,
+        &Arc::new(Mutex::new(ConnectionState {
+            subscription: None,
+            watch_task: None,
+        })),
+        &InboundRequestAdmission::new(process_inbound_request_limit()),
+        &Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT)),
+        &outgoing,
+        &close_tx,
+        &Arc::new(AtomicBool::new(false)),
+        &payload,
+    )
+    .await;
+    if !receive_response {
+        return None;
+    }
+    timeout(Duration::from_secs(5), priority_rx.recv())
+        .await
+        .expect("transport response should arrive")
+}
+
+#[cfg(unix)]
+fn slice_saved_generation(frame: &KernelOutgoingFrame) -> (String, String) {
+    let KernelOutgoingFrame::Response {
+        response, error, ..
+    } = frame
+    else {
+        panic!("slice save should return a response")
+    };
+    assert!(error.is_none(), "slice save should succeed: {error:?}");
+    let payload = response
+        .as_ref()
+        .as_ref()
+        .and_then(|value| value.get("SliceStateSaved"))
+        .expect("slice save payload should be present");
+    let state = payload
+        .get("state")
+        .expect("slice save state should be present");
+    (
+        state["id"]
+            .as_str()
+            .expect("saved-state ref should be present")
+            .to_string(),
+        state["home_archive_path"]
+            .as_str()
+            .expect("saved-state archive generation should be present")
+            .to_string(),
+    )
+}
+
+#[cfg(unix)]
+fn docker_commit_count(log: &Path) -> usize {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.starts_with("commit "))
+        .count()
+}
+
 fn assert_unauthorized(error: WebSocketError) {
     match error {
         WebSocketError::Http(response) => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
@@ -375,6 +655,35 @@ impl RuntimeTransportTempDir {
 impl Drop for RuntimeTransportTempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(unix)]
+struct RuntimeTransportPathGuard(Option<std::ffi::OsString>);
+
+#[cfg(unix)]
+impl RuntimeTransportPathGuard {
+    fn prepend(directory: PathBuf) -> Self {
+        let previous = std::env::var_os("PATH");
+        let mut search_path = vec![directory];
+        if let Some(existing) = &previous {
+            search_path.extend(std::env::split_paths(existing));
+        }
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(search_path).expect("test PATH should join"),
+        );
+        Self(previous)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RuntimeTransportPathGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
     }
 }
 

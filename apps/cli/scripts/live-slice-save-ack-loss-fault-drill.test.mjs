@@ -20,6 +20,7 @@ test("slice save acknowledgement-loss dry-run records an exact serial kernel com
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.caseIds, [
       "fault.response-loss",
+      "effect.backend-exactly-once",
       "replay.same-process",
       "replay.kernel-restart",
       "guard.command-conflict",

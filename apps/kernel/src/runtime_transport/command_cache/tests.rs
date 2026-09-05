@@ -1,8 +1,7 @@
 use super::*;
 use crate::local::{
     ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest,
-    RequestNativeProviderInteractionRequest, RespondToInteractionRequest, SliceStateSaveMode,
-    SliceStateSaveRequest, SliceStateSaveScope,
+    RequestNativeProviderInteractionRequest, RespondToInteractionRequest,
 };
 
 #[test]
@@ -145,85 +144,6 @@ async fn persistent_command_cache_recovers_completed_results() {
     assert_eq!(*result.response, Some(serde_json::json!({"ok": true})));
 
     let _ = fs::remove_file(path);
-}
-
-#[tokio::test]
-async fn slice_state_save_acknowledgement_replays_without_a_second_dispatch() {
-    let path = temp_cache_path("slice-save-ack-replay");
-    let command_id = "slice-save-command";
-    let request = LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
-        slice_ref: "slice-1".to_string(),
-        mode: Some(SliceStateSaveMode::Shutdown),
-        scope: Some(SliceStateSaveScope::ThisSlice),
-    });
-    let fingerprint = CommandResultCache::fingerprint_for_test(&request);
-    let response = serde_json::json!({
-        "SliceStateSaved": {
-            "slice": { "id": "slice-1", "saved_state_ref": "state-generation-a" },
-            "state": { "id": "state-generation-a", "status": "ready" }
-        }
-    });
-    let cache = CommandResultCache::new_with_persistent_path(path.clone())
-        .expect("persistent cache should initialize");
-
-    assert!(matches!(
-        cache.reserve(command_id, &fingerprint).await,
-        CommandReservation::Dispatch
-    ));
-    cache
-        .complete(
-            command_id.to_string(),
-            fingerprint.clone(),
-            &KernelOutgoingFrame::Response {
-                request_id: "first-transport-attempt".to_string(),
-                response: Box::new(Some(response.clone())),
-                error: None,
-            },
-        )
-        .await;
-
-    let replayed = match cache.reserve(command_id, &fingerprint).await {
-        CommandReservation::Wait(wait) => wait.await.expect("completed save should replay"),
-        _ => panic!("lost acknowledgement must not dispatch a second save"),
-    };
-    assert_eq!(*replayed.response, Some(response.clone()));
-    drop(cache);
-
-    let restored = CommandResultCache::new_with_persistent_path(path.clone())
-        .expect("completed save result should survive kernel restart");
-    let replayed_after_restart = match restored.reserve(command_id, &fingerprint).await {
-        CommandReservation::Wait(wait) => wait.await.expect("restored save should replay"),
-        _ => panic!("restart after acknowledgement loss must not create another generation"),
-    };
-    assert_eq!(*replayed_after_restart.response, Some(response));
-
-    let conflicting_request = LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
-        slice_ref: "slice-1".to_string(),
-        mode: Some(SliceStateSaveMode::RestartAgents),
-        scope: Some(SliceStateSaveScope::FutureSlices),
-    });
-    assert!(matches!(
-        restored
-            .reserve(
-                command_id,
-                &CommandResultCache::fingerprint_for_test(&conflicting_request),
-            )
-            .await,
-        CommandReservation::Conflict
-    ));
-
-    let _ = fs::remove_file(path);
-    println!(
-        "CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:{}",
-        serde_json::json!({
-            "schema": "chariox.slice_save_ack_loss_probe.v1",
-            "sameProcessReplay": true,
-            "restartReplay": true,
-            "savedStateRefPreserved": true,
-            "conflictingReuseRejected": true,
-            "cleanupComplete": true
-        })
-    );
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 export const SLICE_SAVE_ACK_LOSS_CASE_IDS = Object.freeze([
   "fault.response-loss",
+  "effect.backend-exactly-once",
   "replay.same-process",
   "replay.kernel-restart",
   "guard.command-conflict",
@@ -7,7 +8,7 @@ export const SLICE_SAVE_ACK_LOSS_CASE_IDS = Object.freeze([
 ])
 
 export const SLICE_SAVE_ACK_LOSS_TEST_NAME =
-  "runtime_transport::command_cache::tests::slice_state_save_acknowledgement_replays_without_a_second_dispatch"
+  "runtime_transport::tests::slice_state_save_acknowledgement_replays_without_a_second_dispatch"
 
 const PROBE_PREFIX = "CHARIOX_SLICE_SAVE_ACK_LOSS_PROBE:"
 const PROBE_SCHEMA = "chariox.slice_save_ack_loss_probe.v1"
@@ -45,7 +46,7 @@ export function parseSliceSaveAckLossProbe(output) {
   } catch {
     throw new Error("slice save acknowledgement-loss probe is not valid JSON")
   }
-  const expectedKeys = ["schema", ...BOOLEAN_FIELDS].sort()
+  const expectedKeys = ["schema", "backendSaveCount", "savedStateRef", "homeArchiveGeneration", ...BOOLEAN_FIELDS].sort()
   if (probe?.schema !== PROBE_SCHEMA) {
     throw new Error(`slice save acknowledgement-loss probe schema must be ${PROBE_SCHEMA}`)
   }
@@ -55,6 +56,14 @@ export function parseSliceSaveAckLossProbe(output) {
   for (const field of BOOLEAN_FIELDS) {
     if (probe[field] !== true) {
       throw new Error(`slice save acknowledgement-loss probe ${field} must be true`)
+    }
+  }
+  if (probe.backendSaveCount !== 1) {
+    throw new Error("slice save acknowledgement-loss probe backendSaveCount must be 1")
+  }
+  for (const field of ["savedStateRef", "homeArchiveGeneration"]) {
+    if (typeof probe[field] !== "string" || probe[field].length === 0) {
+      throw new Error(`slice save acknowledgement-loss probe ${field} must be non-empty`)
     }
   }
   return probe
