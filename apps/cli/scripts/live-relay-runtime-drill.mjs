@@ -61,9 +61,44 @@ function base64url(input) {
 }
 
 function signRelayToken(claims) {
-  const claimsPayload = base64url(JSON.stringify(claims))
-  const signature = createHmac('sha256', RELAY_SECRET).update(claimsPayload).digest('base64url')
-  return `chariox-scoped-v1.${claimsPayload}.${signature}`
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+  const payload = base64url(JSON.stringify({
+    iss: claims.issuer,
+    sub: claims.subject,
+    subject_kind: claims.subject_kind,
+    realm_id: claims.realm_id,
+    allowed_actions: claims.allowed_actions.map(relayActionName),
+    allowed_targets: claims.allowed_targets,
+    iat: Math.floor(claims.issued_at_ms / 1_000),
+    exp: Math.ceil(claims.expires_at_ms / 1_000),
+    jti: claims.token_id,
+    account_id: claims.account_id,
+    organization_id: claims.organization_id,
+    user_id: claims.user_id,
+    device_id: claims.device_id,
+    machine_id: claims.machine_id,
+    client_id: claims.client_id,
+    public_key_thumbprint: claims.public_key_thumbprint,
+    entitlements_version: claims.entitlements_version,
+  }))
+  const signingInput = `${header}.${payload}`
+  const signature = createHmac('sha256', RELAY_SECRET).update(signingInput).digest('base64url')
+  return `${signingInput}.${signature}`
+}
+
+function relayActionName(action) {
+  const names = {
+    daemon_register: 'daemon.register',
+    daemon_heartbeat: 'daemon.heartbeat',
+    client_metadata_read: 'client.metadata.read',
+    client_connect: 'client.connect',
+    packet_route: 'packet.route',
+    peer_request: 'peer.request',
+    peer_event: 'peer.event',
+  }
+  const name = names[action]
+  if (!name) throw new Error(`unsupported relay action ${action}`)
+  return name
 }
 
 function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
