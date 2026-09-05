@@ -3,7 +3,8 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use crate::local::{
-    LocalDaemonRequest, SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
+    CreateSliceRequest, LocalDaemonRequest, RestoreSliceBackupRequest, SliceCreateBase,
+    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
 };
 use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode};
 use crate::DaemonConfig;
@@ -534,6 +535,310 @@ exit 0
 }
 
 #[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart() {
+    use sha2::{Digest as _, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+
+    const TEST_NAME: &str = "runtime_transport::tests::slice_backup_restore_interruption_after_container_creation_rolls_back_on_restart";
+    const CHILD_ROOT_ENV: &str = "CHARIOX_RESTORE_INTERRUPTION_CHILD_ROOT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT_ENV) {
+        let root = PathBuf::from(root);
+        let config = restore_interruption_config(&root);
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("child kernel should restore its seeded state"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let request = LocalDaemonRequest::RestoreSliceBackup(RestoreSliceBackupRequest {
+            slice_ref: "restore-interruption".to_string(),
+            backup_ref: "restore-target".to_string(),
+        });
+        let command = KernelCommand::from_local_request(
+            "restore-interruption-command",
+            None,
+            Some("restore-interruption-drill".to_string()),
+            &request,
+        );
+        let result = router.dispatch(command, request).await;
+        panic!("restore-interruption child survived its injected SIGKILL: {result:?}");
+    }
+
+    let _environment = crate::env_lock::lock();
+    let root = RuntimeTransportTempDir::new("slice-restore-interruption");
+    let bin = root.path().join("bin");
+    let docker = bin.join("docker");
+    let provisioner = root.path().join("restore-provisioner");
+    let docker_log = root.path().join("docker.log");
+    let provisioner_log = root.path().join("provisioner.log");
+    let interruption_marker = root.path().join("interruption-triggered");
+    let partial_runtime = root.path().join("partial-target-runtime");
+    let recovered_runtime = root.path().join("recovered-rollback-runtime");
+    std::fs::create_dir_all(&bin).expect("fixture bin should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+set -eu
+root=$CHARIOX_RESTORE_INTERRUPTION_ROOT
+printf '%s\n' "$*" >> "$root/docker.log"
+case "$*" in
+  "info") ;;
+  "info --format {{.MemTotal}}") printf '17179869184\n' ;;
+  "info --format {{.DockerRootDir}}") printf '/tmp\n' ;;
+  "ps -a --format {{.Names}}") printf 'chariox-slice-restore-interruption\n' ;;
+  "ps --format {{.Names}}") ;;
+  "inspect --size --format {{.SizeRw}} chariox-slice-restore-interruption") printf '1024\n' ;;
+  *" du -sb /home-src") printf '1024 /home-src\n' ;;
+  *" find /home-src -printf . | wc -c") printf '1\n' ;;
+  *" df -B1 --output=avail /tmp") printf '107374182400\n' ;;
+  "inspect -f {{.State.Running}} chariox-slice-restore-interruption") printf 'false\n' ;;
+  "image inspect --format {{.Id}} chariox-slice-backup:restore-target") printf 'sha256:1111111111111111111111111111111111111111111111111111111111111111\n' ;;
+  "image inspect --format {{.Id}} "*) printf 'sha256:2222222222222222222222222222222222222222222222222222222222222222\n' ;;
+  cp\ *)
+    destination=
+    for argument in "$@"; do destination=$argument; done
+    printf 'prior-home-generation' > "$destination"
+    ;;
+esac
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+    std::fs::write(
+        &provisioner,
+        r#"#!/bin/sh
+set -eu
+root=$CHARIOX_RESTORE_INTERRUPTION_ROOT
+printf '%s %s\n' "$1" "$CHARIOX_SLICE_DOCKER_IMAGE" >> "$root/provisioner.log"
+if [ "$1" = restore-state ] && [ ! -f "$root/interruption-triggered" ]; then
+  : > "$root/partial-target-runtime"
+  : > "$root/interruption-triggered"
+  kill -9 "$PPID"
+  exit 137
+fi
+if [ "$1" = restore-state ]; then
+  rm -f "$root/partial-target-runtime"
+  printf '%s\n' "$CHARIOX_SLICE_DOCKER_IMAGE" > "$root/recovered-rollback-runtime"
+fi
+exit 0
+"#,
+    )
+    .expect("fake provisioner should write");
+    std::fs::set_permissions(&provisioner, std::fs::Permissions::from_mode(0o700))
+        .expect("fake provisioner should become executable");
+
+    let config = restore_interruption_config(root.path());
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("seed kernel should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    );
+    let runtime = router.runtime_state();
+    let slice = runtime
+        .create_slice(CreateSliceRequest {
+            name: "restore-interruption".to_string(),
+            backend: SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: SliceDisplayMode::Headless,
+            display_backend: Default::default(),
+            workspace_id: None,
+            worktree_id: None,
+            workspace_mount: Some("/workspace".to_string()),
+            development: None,
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: Vec::new(),
+            from_saved_state: None,
+            base: Some(SliceCreateBase::Clean),
+        })
+        .await
+        .expect("slice seed should persist");
+    let target_dir = root.path().join("target-backup");
+    let target_archive = target_dir.join("home.tar.zst");
+    let target_manifest = target_dir.join("manifest.json");
+    std::fs::create_dir_all(&target_dir).expect("target backup directory should create");
+    let target_home = b"target-home-generation";
+    std::fs::write(&target_archive, target_home).expect("target archive should write");
+    let target_backup = crate::slice::SliceBackupRecord {
+        id: "restore-target".to_string(),
+        name: "restore-target".to_string(),
+        source_slice_id: slice.id.clone(),
+        source_state_id: "restore-interruption".to_string(),
+        image_ref: "chariox-slice-backup:restore-target".to_string(),
+        home_archive_path: target_archive.display().to_string(),
+        manifest_path: target_manifest.display().to_string(),
+        created_at_ms: 2,
+        size_bytes: Some(target_home.len() as u64),
+        home_archive_sha256: Some(format!("{:x}", Sha256::digest(target_home))),
+        image_id: Some(format!("sha256:{}", "1".repeat(64))),
+    };
+    std::fs::write(
+        &target_manifest,
+        serde_json::to_vec_pretty(&target_backup).expect("target manifest should encode"),
+    )
+    .expect("target manifest should write");
+    runtime
+        .save_slice_backup_record(target_backup)
+        .expect("target backup should persist");
+    drop(runtime);
+    drop(router);
+    drop(app);
+
+    let mut child_path = vec![bin.clone()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        child_path.extend(std::env::split_paths(&existing));
+    }
+    let child = std::process::Command::new(
+        std::env::current_exe().expect("test executable should resolve"),
+    )
+    .args(["--exact", TEST_NAME, "--nocapture"])
+    .env(CHILD_ROOT_ENV, root.path())
+    .env("CHARIOX_RESTORE_INTERRUPTION_ROOT", root.path())
+    .env("CHARIOX_SLICE_DOCKER_PROVISIONER", &provisioner)
+    .env(
+        "PATH",
+        std::env::join_paths(child_path).expect("child PATH should join"),
+    )
+    .output()
+    .expect("interrupted child kernel should run");
+    assert_eq!(
+        child.status.signal(),
+        Some(libc::SIGKILL),
+        "child must die at the injected post-create boundary: stdout={} stderr={}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+    assert!(interruption_marker.exists(), "fault boundary must trigger");
+    assert!(
+        partial_runtime.exists(),
+        "target replacement must exist at interruption"
+    );
+
+    let interrupted_store =
+        crate::durable_state::DurableKernelStateStore::open(config.durable_state_path())
+            .expect("interrupted durable state should remain readable");
+    let started = interrupted_store
+        .load_events_by_kind("slice.backup.restore.started")
+        .expect("restore-start events should read");
+    assert_eq!(started.len(), 1, "one durable restore intent must survive");
+    assert!(interrupted_store
+        .load_events_by_kind("slice.backup.restore.committed")
+        .expect("restore-commit events should read")
+        .is_empty());
+    assert!(interrupted_store
+        .load_events_by_kind("slice.backup.restore.rolled_back")
+        .expect("rollback events should read")
+        .is_empty());
+    let transaction: crate::slice::SliceBackupRestoreTransactionRecord =
+        serde_json::from_value(started[0].payload["transaction"].clone())
+            .expect("restore transaction should decode");
+    drop(interrupted_store);
+
+    let path_guard = RuntimeTransportPathGuard::prepend(bin);
+    let root_guard =
+        RuntimeTransportEnvGuard::set("CHARIOX_RESTORE_INTERRUPTION_ROOT", root.path().as_os_str());
+    let provisioner_guard =
+        RuntimeTransportEnvGuard::set("CHARIOX_SLICE_DOCKER_PROVISIONER", provisioner.as_os_str());
+    let recovered = DaemonApp::bootstrap(config.clone())
+        .expect("kernel startup should roll back the interrupted restore");
+    assert!(recovered.slices().list_pending_backup_restores().is_empty());
+    let recovered_slice = recovered
+        .slices()
+        .resolve(&slice.id)
+        .expect("recovered slice should remain addressable");
+    assert_eq!(recovered_slice.status, crate::slice::SliceStatus::Stopped);
+    assert_eq!(
+        recovered_slice.last_operation_status,
+        Some(crate::slice::SliceOperationStatus::Failed),
+    );
+    assert!(recovered_slice
+        .last_error
+        .as_deref()
+        .is_some_and(|message| message.contains("interrupted backup restore rolled back")));
+    let recovered_state = recovered
+        .slices()
+        .active_saved_state_for_slice(&slice.id)
+        .expect("active state lookup should work")
+        .expect("rollback must publish a recoverable state");
+    assert_eq!(
+        std::fs::read(&recovered_state.home_archive_path)
+            .expect("recovered home generation should exist"),
+        b"prior-home-generation",
+    );
+    let durable = recovered.durable_state_store();
+    assert_eq!(
+        durable
+            .load_events_by_kind("slice.backup.restore.rolled_back")
+            .expect("rollback events should read")
+            .len(),
+        1,
+    );
+    assert!(durable
+        .load_events_by_kind("slice.backup.restore.committed")
+        .expect("commit events should read")
+        .is_empty());
+    assert!(
+        !partial_runtime.exists(),
+        "partial target runtime must be removed"
+    );
+    let recovered_image = std::fs::read_to_string(&recovered_runtime)
+        .expect("rollback provisioner should identify its image");
+    assert_eq!(
+        recovered_image.trim(),
+        transaction.rollback_backup.image_ref
+    );
+    assert!(
+        !Path::new(&transaction.rollback_backup.manifest_path).exists(),
+        "resolved rollback manifest must be reclaimed",
+    );
+    let provisioner_calls =
+        std::fs::read_to_string(&provisioner_log).expect("provisioner calls should read");
+    assert_eq!(
+        provisioner_calls
+            .lines()
+            .filter(|line| line.starts_with("restore-state "))
+            .count(),
+        2,
+        "only the interrupted target and startup rollback should restore: {provisioner_calls}",
+    );
+    let docker_calls = std::fs::read_to_string(&docker_log).expect("Docker calls should read");
+    assert!(docker_calls
+        .lines()
+        .any(|line| { line == format!("image rm -f {}", transaction.rollback_backup.image_ref) }));
+
+    let recovered_state_ref = recovered_state.id.clone();
+    drop(durable);
+    drop(recovered);
+    drop(provisioner_guard);
+    drop(root_guard);
+    drop(path_guard);
+    std::fs::remove_dir_all(root.path()).expect("private restore fixture should be removed");
+    assert!(!root.path().exists(), "restore fixture must stay removed");
+    println!(
+        "CHARIOX_SLICE_RESTORE_INTERRUPTION_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.slice_restore_interruption_probe.v1",
+            "childInterruptedAfterReplacement": true,
+            "durableIntentSurvived": true,
+            "rollbackRestoredOnRestart": true,
+            "partialRuntimeRemoved": true,
+            "priorGenerationRecoverable": true,
+            "noCommittedRestore": true,
+            "cleanupComplete": true,
+            "backendRestoreCount": 2,
+            "recoveredStateRef": recovered_state_ref,
+        })
+    );
+}
+
+#[cfg(unix)]
 async fn dispatch_transport_test_request(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
@@ -618,6 +923,16 @@ fn docker_commit_count(log: &Path) -> usize {
         .count()
 }
 
+#[cfg(unix)]
+fn restore_interruption_config(root: &Path) -> DaemonConfig {
+    let mut config = DaemonConfig::for_tests();
+    config.publication_control_state_root = Some(root.join("control"));
+    config.user_config_path = root.join("config/chariox.toml");
+    config.user_config.slices.root = Some(root.join("slices").display().to_string());
+    config.local_socket_path = root.join("kernel.sock");
+    config
+}
+
 fn assert_unauthorized(error: WebSocketError) {
     match error {
         WebSocketError::Http(response) => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
@@ -683,6 +998,31 @@ impl Drop for RuntimeTransportPathGuard {
         match self.0.take() {
             Some(value) => std::env::set_var("PATH", value),
             None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
+#[cfg(unix)]
+struct RuntimeTransportEnvGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(unix)]
+impl RuntimeTransportEnvGuard {
+    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RuntimeTransportEnvGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
         }
     }
 }
