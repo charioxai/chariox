@@ -138,7 +138,8 @@ const MATRIX = [
     provider: "dev-stub",
     exitCriteria: [
       "new Linux slices receive a 2048 MiB memory limit when no override is configured",
-      "serialized admission retains 512 MiB for the Docker engine and rejects starts beyond safe capacity",
+      "host-wide Docker admission serializes kernel processes and retains 512 MiB for the engine",
+      "existing targets reserve their actual limit and legacy unbounded slices fail closed",
       "rejection leaves active state unchanged and admission reopens after capacity recovers",
     ],
   }),

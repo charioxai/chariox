@@ -13,7 +13,10 @@ const EXPECTED_RESERVE_BYTES = 512 * 1024 * 1024
 const BOOLEAN_FIELDS = Object.freeze([
   "admissionClosesBeforeOom",
   "activeStateRemainsConsistent",
+  "engineLockExclusive",
+  "existingTargetLimitReserved",
   "resourceRecoveryRecorded",
+  "unboundedSliceRejected",
 ])
 
 export function buildMemoryPressureAdmissionCargoArgs() {

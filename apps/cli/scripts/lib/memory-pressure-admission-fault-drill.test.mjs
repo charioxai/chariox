@@ -12,7 +12,10 @@ const probe = {
   schema: "chariox.memory_pressure_admission_probe.v1",
   admissionClosesBeforeOom: true,
   activeStateRemainsConsistent: true,
+  engineLockExclusive: true,
+  existingTargetLimitReserved: true,
   resourceRecoveryRecorded: true,
+  unboundedSliceRejected: true,
   defaultSliceLimitBytes: 2 * 1024 * 1024 * 1024,
   reserveBytes: 512 * 1024 * 1024,
 }

@@ -266,6 +266,7 @@ function validateDocker(args) {
     exactArguments(args, ["info"])
     || exactArguments(args, ["info", "--format", "{{.MemTotal}}"])
     || exactArguments(args, ["ps", "--format", "{{.Names}}"])
+    || exactArguments(args, ["ps", "-a", "--format", "{{.Names}}"])
   ) return
   if (args[0] === "inspect" && args.length === 4 && args[1] === "--format") {
     if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}"].includes(args[2])) {

@@ -64,6 +64,10 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   }, share).status, 0)
   assert.equal(validate({
     kind: "docker",
+    args: ["ps", "-a", "--format", "{{.Names}}"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
     args: ["inspect", "--format", "{{.HostConfig.Memory}}", "chariox-slice-dev"],
   }, share).status, 0)
   assert.equal(validate({

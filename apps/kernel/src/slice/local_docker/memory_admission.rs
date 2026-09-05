@@ -1,15 +1,26 @@
 use std::fmt;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::config::DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB;
 use crate::error::DaemonError;
+use fs2::FileExt;
 
-use super::{broker::docker_command, local_docker_container_name, LocalDockerSliceOptions};
+use super::{
+    broker::docker_command, local_docker_container_name, LocalDockerSliceAction,
+    LocalDockerSliceOptions,
+};
 use crate::slice::SliceRecord;
 
 const DOCKER_ENGINE_RESERVE_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
-static ADMISSION_LOCK: Mutex<()> = Mutex::new(());
+static PROCESS_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) struct SliceMemoryAdmissionGuard {
+    _process: MutexGuard<'static, ()>,
+    _engine: File,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SliceMemoryCapacity {
@@ -72,24 +83,64 @@ fn evaluate_slice_memory_admission(
 
 pub(super) fn admit_slice_start(
     record: &SliceRecord,
+    action: LocalDockerSliceAction,
     options: &LocalDockerSliceOptions,
-) -> Result<MutexGuard<'static, ()>, DaemonError> {
-    let guard = ADMISSION_LOCK
+) -> Result<SliceMemoryAdmissionGuard, DaemonError> {
+    let process = PROCESS_ADMISSION_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let requested_bytes = u64::from(
+    let engine = acquire_engine_admission_lock()?;
+    let configured_bytes = u64::from(
         options
             .memory_mb
             .unwrap_or(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
     ) * MIB;
-    let capacity = docker_memory_capacity(&local_docker_container_name(record))?;
+    let target_container = local_docker_container_name(record);
+    let all_slice_containers = docker_slice_container_names(
+        &["ps", "-a", "--format", "{{.Names}}"],
+        "list all slice containers",
+    )?;
+    let existing_target_limit = if action != LocalDockerSliceAction::RestoreState
+        && all_slice_containers
+            .iter()
+            .any(|name| name == &target_container)
+    {
+        Some(docker_container_memory_limit(&target_container)?)
+    } else {
+        None
+    };
+    let requested_bytes = effective_start_reservation(
+        action,
+        configured_bytes,
+        existing_target_limit,
+        &target_container,
+    )?;
+    let capacity = docker_memory_capacity(&target_container)?;
     evaluate_slice_memory_admission(capacity, requested_bytes).map_err(|error| {
         DaemonError::LocalTransport {
             operation: "slice.memory.admission",
             message: error.to_string(),
         }
     })?;
-    Ok(guard)
+    Ok(SliceMemoryAdmissionGuard {
+        _process: process,
+        _engine: engine,
+    })
+}
+
+fn effective_start_reservation(
+    action: LocalDockerSliceAction,
+    configured_bytes: u64,
+    existing_target_limit: Option<u64>,
+    target_container: &str,
+) -> Result<u64, DaemonError> {
+    if action == LocalDockerSliceAction::RestoreState {
+        return Ok(configured_bytes);
+    }
+    match existing_target_limit {
+        Some(limit) => require_bounded_container_limit(target_container, limit),
+        None => Ok(configured_bytes),
+    }
 }
 
 fn docker_memory_capacity(excluded_container: &str) -> Result<SliceMemoryCapacity, DaemonError> {
@@ -102,31 +153,106 @@ fn docker_memory_capacity(excluded_container: &str) -> Result<SliceMemoryCapacit
             "Docker reported zero bytes of memory capacity",
         ));
     }
-    let containers = docker_output(
+    let containers = docker_slice_container_names(
         &["ps", "--format", "{{.Names}}"],
         "list active slice containers",
     )?;
     let mut committed_bytes = 0_u64;
     for container in containers
-        .lines()
-        .map(str::trim)
-        .filter(|name| name.starts_with("chariox-slice-") && *name != excluded_container)
+        .iter()
+        .filter(|name| name.as_str() != excluded_container)
     {
-        let configured = docker_numeric_output(
-            &["inspect", "--format", "{{.HostConfig.Memory}}", container],
-            "inspect active slice memory limit",
-        )?;
-        committed_bytes = committed_bytes.saturating_add(if configured == 0 {
-            default_slice_memory_bytes()
-        } else {
-            configured
-        });
+        let configured = docker_container_memory_limit(container)?;
+        committed_bytes =
+            committed_bytes.saturating_add(require_bounded_container_limit(container, configured)?);
     }
     Ok(SliceMemoryCapacity {
         total_bytes,
         committed_bytes,
         reserve_bytes: DOCKER_ENGINE_RESERVE_MB * MIB,
     })
+}
+
+fn docker_slice_container_names(
+    args: &[&str],
+    operation: &'static str,
+) -> Result<Vec<String>, DaemonError> {
+    Ok(docker_output(args, operation)?
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with("chariox-slice-"))
+        .map(str::to_string)
+        .collect())
+}
+
+fn docker_container_memory_limit(container: &str) -> Result<u64, DaemonError> {
+    docker_numeric_output(
+        &["inspect", "--format", "{{.HostConfig.Memory}}", container],
+        "inspect slice memory limit",
+    )
+}
+
+fn require_bounded_container_limit(container: &str, limit: u64) -> Result<u64, DaemonError> {
+    if limit > 0 {
+        return Ok(limit);
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "slice.memory.admission",
+        message: format!(
+            "cannot safely start a slice while container `{container}` has no memory limit; destroy and recreate that slice to apply slices.linux.memory_mb"
+        ),
+    })
+}
+
+fn acquire_engine_admission_lock() -> Result<File, DaemonError> {
+    let path = engine_admission_lock_path();
+    let file = open_engine_admission_lock(&path)?;
+    FileExt::lock_exclusive(&file).map_err(|error| {
+        memory_measurement_error(&format!(
+            "failed to lock Docker engine admission at {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(file)
+}
+
+fn engine_admission_lock_path() -> PathBuf {
+    // A host-wide lock deliberately over-serializes distinct Docker contexts.
+    // It also prevents equivalent endpoint spellings from bypassing admission.
+    std::env::temp_dir().join("chariox-docker-memory-admission.lock")
+}
+
+fn open_engine_admission_lock(path: &Path) -> Result<File, DaemonError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000);
+    }
+    let file = options.open(path).map_err(|error| {
+        memory_measurement_error(&format!(
+            "failed to open Docker engine admission lock {}: {error}",
+            path.display()
+        ))
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        memory_measurement_error(&format!(
+            "failed to inspect Docker engine admission lock {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(memory_measurement_error(
+            "Docker engine admission lock is not a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 fn docker_numeric_output(args: &[&str], operation: &'static str) -> Result<u64, DaemonError> {
@@ -181,6 +307,16 @@ mod tests {
         };
         evaluate_slice_memory_admission(recovered, 2 * GIB)
             .expect("admission should reopen after resources recover");
+        let unbounded_slice_rejected =
+            require_bounded_container_limit("chariox-slice-legacy", 0).is_err();
+        let existing_target_limit_reserved = effective_start_reservation(
+            LocalDockerSliceAction::Recover,
+            2 * GIB,
+            Some(3 * GIB),
+            "chariox-slice-existing",
+        )
+        .is_ok_and(|reservation| reservation == 3 * GIB);
+        let engine_lock_exclusive = engine_lock_exclusivity_probe();
 
         println!(
             "CHARIOX_MEMORY_PRESSURE_PROBE:{}",
@@ -189,10 +325,60 @@ mod tests {
                 "admissionClosesBeforeOom": rejection.available_bytes() < 2 * GIB,
                 "activeStateRemainsConsistent": pressured == active_before,
                 "resourceRecoveryRecorded": recovered.available_bytes() > pressured.available_bytes(),
+                "unboundedSliceRejected": unbounded_slice_rejected,
+                "existingTargetLimitReserved": existing_target_limit_reserved,
+                "engineLockExclusive": engine_lock_exclusive,
                 "defaultSliceLimitBytes": default_slice_memory_bytes(),
                 "reserveBytes": pressured.reserve_bytes,
             })
         );
+    }
+
+    fn engine_lock_exclusivity_probe() -> bool {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-memory-admission-test-{:032x}.lock",
+            rand::random::<u128>()
+        ));
+        let first = open_engine_admission_lock(&path).expect("first lock file should open");
+        FileExt::lock_exclusive(&first).expect("first engine lock should acquire");
+        let second = open_engine_admission_lock(&path).expect("second lock file should open");
+        let contended = FileExt::try_lock_exclusive(&second).is_err();
+        drop(first);
+        let recovered = FileExt::try_lock_exclusive(&second).is_ok();
+        drop(second);
+        let _ = std::fs::remove_file(path);
+        contended && recovered
+    }
+
+    #[test]
+    fn existing_target_uses_its_actual_limit_unless_restore_recreates_it() {
+        assert_eq!(
+            effective_start_reservation(
+                LocalDockerSliceAction::Provision,
+                2 * GIB,
+                Some(3 * GIB),
+                "chariox-slice-existing",
+            )
+            .unwrap(),
+            3 * GIB
+        );
+        assert_eq!(
+            effective_start_reservation(
+                LocalDockerSliceAction::RestoreState,
+                2 * GIB,
+                Some(3 * GIB),
+                "chariox-slice-existing",
+            )
+            .unwrap(),
+            2 * GIB
+        );
+        assert!(effective_start_reservation(
+            LocalDockerSliceAction::Recover,
+            2 * GIB,
+            Some(0),
+            "chariox-slice-legacy",
+        )
+        .is_err());
     }
 
     #[test]

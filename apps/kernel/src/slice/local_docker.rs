@@ -186,7 +186,7 @@ pub fn run_local_docker_slice_action(
             | LocalDockerSliceAction::Recover
     ) {
         ensure_host_docker_ready()?;
-        let memory_admission = memory_admission::admit_slice_start(record, options)?;
+        let memory_admission = memory_admission::admit_slice_start(record, action, options)?;
         if action == LocalDockerSliceAction::Provision {
             ensure_local_docker_slice_ports_available(record)?;
         }
