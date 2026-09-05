@@ -14,6 +14,10 @@ use super::{broker::docker_command, local_docker_container_name, LocalDockerSlic
 const SNAPSHOT_DISK_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
+const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
+const UNIX_DISK_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-disk-admission.lock";
+const WINDOWS_DISK_ADMISSION_LOCK_PATH: &str =
+    r"C:\Windows\Temp\chariox-docker-disk-admission.lock";
 static PROCESS_DISK_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) struct SliceDiskAdmissionGuard {
@@ -26,11 +30,13 @@ struct SliceSnapshotDiskCapacity {
     host_available_bytes: u64,
     docker_available_bytes: u64,
     reserve_bytes: u64,
+    shared_storage_pool: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SliceSnapshotDiskDemand {
     home_bytes: u64,
+    entry_count: u64,
     writable_layer_bytes: u64,
 }
 
@@ -38,6 +44,10 @@ impl SliceSnapshotDiskDemand {
     fn archive_budget_bytes(self) -> u64 {
         self.home_bytes
             .saturating_add(self.home_bytes.saturating_mul(ARCHIVE_OVERHEAD_PERCENT) / 100)
+            .saturating_add(
+                self.entry_count
+                    .saturating_mul(ARCHIVE_ENTRY_OVERHEAD_BYTES),
+            )
             .saturating_add(ARCHIVE_OVERHEAD_BYTES)
     }
 
@@ -47,6 +57,12 @@ impl SliceSnapshotDiskDemand {
 
     fn docker_required_bytes(self) -> u64 {
         self.archive_budget_bytes()
+            .saturating_add(self.writable_layer_bytes)
+    }
+
+    fn shared_pool_required_bytes(self) -> u64 {
+        self.archive_budget_bytes()
+            .saturating_mul(2)
             .saturating_add(self.writable_layer_bytes)
     }
 }
@@ -59,17 +75,31 @@ struct SliceSnapshotDiskRejection {
 
 impl SliceSnapshotDiskRejection {
     fn host_shortfall_bytes(self) -> u64 {
-        self.demand
-            .host_required_bytes()
+        self.host_required_bytes()
             .saturating_add(self.capacity.reserve_bytes)
             .saturating_sub(self.capacity.host_available_bytes)
     }
 
     fn docker_shortfall_bytes(self) -> u64 {
-        self.demand
-            .docker_required_bytes()
+        self.docker_required_bytes()
             .saturating_add(self.capacity.reserve_bytes)
             .saturating_sub(self.capacity.docker_available_bytes)
+    }
+
+    fn host_required_bytes(self) -> u64 {
+        if self.capacity.shared_storage_pool {
+            self.demand.shared_pool_required_bytes()
+        } else {
+            self.demand.host_required_bytes()
+        }
+    }
+
+    fn docker_required_bytes(self) -> u64 {
+        if self.capacity.shared_storage_pool {
+            self.demand.shared_pool_required_bytes()
+        } else {
+            self.demand.docker_required_bytes()
+        }
     }
 }
 
@@ -77,10 +107,11 @@ impl fmt::Display for SliceSnapshotDiskRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "slice snapshot needs more disk headroom (host shortfall {} MiB, Docker shortfall {} MiB, {} MiB reserved); free Docker and Chariox state storage, then retry",
+            "slice snapshot needs more disk headroom (host shortfall {} MiB, Docker shortfall {} MiB, {} MiB reserved, shared storage pool: {}); free Docker and Chariox state storage, then retry",
             self.host_shortfall_bytes() / (1024 * 1024),
             self.docker_shortfall_bytes() / (1024 * 1024),
             self.capacity.reserve_bytes / (1024 * 1024),
+            self.capacity.shared_storage_pool,
         )
     }
 }
@@ -89,18 +120,19 @@ fn evaluate_slice_snapshot_disk_admission(
     capacity: SliceSnapshotDiskCapacity,
     demand: SliceSnapshotDiskDemand,
 ) -> Result<(), SliceSnapshotDiskRejection> {
+    let rejection = SliceSnapshotDiskRejection { capacity, demand };
     let admitted = capacity.host_available_bytes
-        >= demand
+        >= rejection
             .host_required_bytes()
             .saturating_add(capacity.reserve_bytes)
         && capacity.docker_available_bytes
-            >= demand
+            >= rejection
                 .docker_required_bytes()
                 .saturating_add(capacity.reserve_bytes);
     if admitted {
         Ok(())
     } else {
-        Err(SliceSnapshotDiskRejection { capacity, demand })
+        Err(rejection)
     }
 }
 
@@ -113,9 +145,10 @@ pub(super) fn admit_slice_snapshot(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let engine = acquire_disk_admission_lock()?;
     let container = local_docker_container_name(record);
-    let (home_bytes, docker_available_bytes) = measure_slice_storage_with_helper(record, options)?;
+    let measurement = measure_slice_storage_with_helper(record, options)?;
     let demand = SliceSnapshotDiskDemand {
-        home_bytes,
+        home_bytes: measurement.home_bytes,
+        entry_count: measurement.entry_count,
         writable_layer_bytes: docker_numeric_output(
             &["inspect", "--size", "--format", "{{.SizeRw}}", &container],
             "measure slice writable layer",
@@ -123,8 +156,9 @@ pub(super) fn admit_slice_snapshot(
     };
     let capacity = SliceSnapshotDiskCapacity {
         host_available_bytes: host_available_space(&options.root)?,
-        docker_available_bytes,
+        docker_available_bytes: measurement.docker_available_bytes,
         reserve_bytes: SNAPSHOT_DISK_RESERVE_BYTES,
+        shared_storage_pool: docker_and_state_share_filesystem(&options.root),
     };
     evaluate_slice_snapshot_disk_admission(capacity, demand).map_err(|error| {
         DaemonError::LocalTransport {
@@ -138,10 +172,17 @@ pub(super) fn admit_slice_snapshot(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SliceStorageMeasurement {
+    home_bytes: u64,
+    entry_count: u64,
+    docker_available_bytes: u64,
+}
+
 fn measure_slice_storage_with_helper(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
-) -> Result<(u64, u64), DaemonError> {
+) -> Result<SliceStorageMeasurement, DaemonError> {
     let container = local_docker_container_name(record);
     let volume = format!("{container}-home");
     let helper = format!("{container}-disk-admission-{:016x}", rand::random::<u64>());
@@ -169,6 +210,18 @@ fn measure_slice_storage_with_helper(
             &["exec", "-u", "root", &helper, "du", "-sb", "/home-src"],
             "measure slice home storage",
         )?;
+        let entry_count = docker_numeric_field(
+            &[
+                "exec",
+                "-u",
+                "root",
+                &helper,
+                "bash",
+                "-lc",
+                "set -euo pipefail; find /home-src -printf . | wc -c",
+            ],
+            "count slice home entries",
+        )?;
         let docker_available_bytes = docker_numeric_field(
             &[
                 "exec",
@@ -182,7 +235,11 @@ fn measure_slice_storage_with_helper(
             ],
             "measure Docker snapshot storage",
         )?;
-        Ok((home_bytes, docker_available_bytes))
+        Ok(SliceStorageMeasurement {
+            home_bytes,
+            entry_count,
+            docker_available_bytes,
+        })
     })();
     let cleanup = if created {
         docker_success(
@@ -240,6 +297,33 @@ fn host_available_space(path: &Path) -> Result<u64, DaemonError> {
     })
 }
 
+fn docker_and_state_share_filesystem(state_root: &Path) -> bool {
+    let docker_root = match docker_output(
+        &["info", "--format", "{{.DockerRootDir}}"],
+        "locate Docker storage",
+    ) {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => return true,
+    };
+    paths_share_filesystem(state_root, &docker_root).unwrap_or(true)
+}
+
+#[cfg(unix)]
+fn paths_share_filesystem(left: &Path, right: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let left = nearest_existing_ancestor(left)?;
+    let right = nearest_existing_ancestor(right)?;
+    let left_device = left.metadata().ok()?.dev();
+    let right_device = right.metadata().ok()?.dev();
+    Some(left_device == right_device)
+}
+
+#[cfg(not(unix))]
+fn paths_share_filesystem(_left: &Path, _right: &Path) -> Option<bool> {
+    None
+}
+
 fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
     path.ancestors().find(|candidate| candidate.exists())
 }
@@ -290,11 +374,11 @@ fn acquire_disk_admission_lock() -> Result<File, DaemonError> {
 fn disk_admission_lock_path() -> PathBuf {
     #[cfg(unix)]
     {
-        PathBuf::from("/tmp/chariox-docker-disk-admission.lock")
+        PathBuf::from(UNIX_DISK_ADMISSION_LOCK_PATH)
     }
     #[cfg(windows)]
     {
-        std::env::temp_dir().join("chariox-docker-disk-admission.lock")
+        PathBuf::from(WINDOWS_DISK_ADMISSION_LOCK_PATH)
     }
 }
 
@@ -346,12 +430,14 @@ mod tests {
     fn disk_pressure_admission_fault_probe() {
         let demand = SliceSnapshotDiskDemand {
             home_bytes: GIB,
+            entry_count: 1,
             writable_layer_bytes: 512 * 1024 * 1024,
         };
         let pressured = SliceSnapshotDiskCapacity {
             host_available_bytes: 2 * GIB,
             docker_available_bytes: 3 * GIB,
             reserve_bytes: 2 * GIB,
+            shared_storage_pool: false,
         };
         let rejection = evaluate_slice_snapshot_disk_admission(pressured, demand)
             .expect_err("snapshot must be rejected before either filesystem exhausts its reserve");
@@ -373,7 +459,7 @@ mod tests {
             serde_json::json!({
                 "schema": "chariox.disk_pressure_admission_probe.v1",
                 "admissionClosesBeforeEnospc": rejection.host_shortfall_bytes() > 0,
-                "activeStateRemainsConsistent": pressured == SliceSnapshotDiskCapacity { host_available_bytes: 2 * GIB, docker_available_bytes: 3 * GIB, reserve_bytes: 2 * GIB },
+                "activeStateRemainsConsistent": pressured == SliceSnapshotDiskCapacity { host_available_bytes: 2 * GIB, docker_available_bytes: 3 * GIB, reserve_bytes: 2 * GIB, shared_storage_pool: false },
                 "lastKnownGoodPreserved": published_generation == prior_generation,
                 "resourceRecoveryRecorded": recovered.host_available_bytes > pressured.host_available_bytes,
                 "reserveBytes": pressured.reserve_bytes,
@@ -385,9 +471,62 @@ mod tests {
     fn snapshot_budget_accounts_for_archive_overhead_and_writable_layer() {
         let demand = SliceSnapshotDiskDemand {
             home_bytes: GIB,
+            entry_count: 1,
             writable_layer_bytes: 512 * 1024 * 1024,
         };
         assert!(demand.host_required_bytes() > GIB);
         assert!(demand.docker_required_bytes() > demand.host_required_bytes());
+    }
+
+    #[test]
+    fn shared_pool_reserves_both_archive_copies_and_the_committed_layer() {
+        let demand = SliceSnapshotDiskDemand {
+            home_bytes: GIB,
+            entry_count: 1,
+            writable_layer_bytes: 512 * 1024 * 1024,
+        };
+        let separate = SliceSnapshotDiskCapacity {
+            host_available_bytes: 3 * GIB,
+            docker_available_bytes: 3 * GIB,
+            reserve_bytes: GIB,
+            shared_storage_pool: false,
+        };
+        evaluate_slice_snapshot_disk_admission(separate, demand)
+            .expect("independent storage pools have enough capacity");
+        assert!(evaluate_slice_snapshot_disk_admission(
+            SliceSnapshotDiskCapacity {
+                shared_storage_pool: true,
+                ..separate
+            },
+            demand,
+        )
+        .is_err());
+        assert_eq!(
+            demand.shared_pool_required_bytes(),
+            demand
+                .archive_budget_bytes()
+                .saturating_mul(2)
+                .saturating_add(demand.writable_layer_bytes)
+        );
+    }
+
+    #[test]
+    fn archive_budget_scales_with_many_small_files() {
+        let demand = SliceSnapshotDiskDemand {
+            home_bytes: 0,
+            entry_count: 1_000_000,
+            writable_layer_bytes: 0,
+        };
+        assert!(demand.archive_budget_bytes() >= 8_000_000_000);
+    }
+
+    #[test]
+    fn windows_disk_lock_path_is_machine_stable() {
+        assert_eq!(
+            WINDOWS_DISK_ADMISSION_LOCK_PATH,
+            r"C:\Windows\Temp\chariox-docker-disk-admission.lock"
+        );
+        assert!(!WINDOWS_DISK_ADMISSION_LOCK_PATH.contains("%TEMP%"));
+        assert!(!WINDOWS_DISK_ADMISSION_LOCK_PATH.contains("%TMP%"));
     }
 }

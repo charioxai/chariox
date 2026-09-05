@@ -76,6 +76,10 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   }, share).status, 0)
   assert.equal(validate({
     kind: "docker",
+    args: ["info", "--format", "{{.DockerRootDir}}"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
     args: ["inspect", "--format", "{{json .Config}}", "chariox-slice-dev"],
   }, share).status, 1)
   assert.equal(validate({
@@ -125,6 +129,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   const diskHelper = "chariox-slice-dev-disk-admission-0123456789abcdef"
   for (const args of [
     ["exec", "-u", "root", diskHelper, "du", "-sb", "/home-src"],
+    ["exec", "-u", "root", diskHelper, "bash", "-lc", "set -euo pipefail; find /home-src -printf . | wc -c"],
     ["exec", "-u", "root", diskHelper, "df", "-B1", "--output=avail", "/tmp"],
   ]) {
     assert.equal(validate({ kind: "docker", args }, share).status, 0)
