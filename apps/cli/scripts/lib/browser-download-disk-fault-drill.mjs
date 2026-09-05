@@ -7,6 +7,7 @@ export const BROWSER_DOWNLOAD_DISK_TEST_NAMES = Object.freeze([
   "downloads fail closed before changing browser policy when storage headroom is low",
   "downloads fail closed when storage capacity cannot be measured safely",
   "controller cancels every active download when slice storage drops below its reserve",
+  "controller guards downloads before their frame is mapped to a tab",
   "a download arriving during disk-pressure cancellation receives a follow-up check",
 ])
 
@@ -33,6 +34,7 @@ export function parseBrowserDownloadDiskProbe(output) {
     configurationClosesBeforeWrite: true,
     unavailableCapacityClosesBeforeWrite: true,
     activeDownloadsCanceled: true,
+    unmappedDownloadsCanceled: true,
     concurrentDownloadRechecked: true,
   }
 }

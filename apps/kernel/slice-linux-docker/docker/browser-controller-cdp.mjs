@@ -695,8 +695,8 @@ export class BrowserCdpClient {
     if (message?.method === "Browser.downloadWillBegin") {
       const targetId = this.targetsByFrame.get(message.params?.frameId);
       const guid = message.params?.guid;
-      if (targetId && typeof guid === "string" && guid) {
-        this.targetsByDownload.set(guid, targetId);
+      if (typeof guid === "string" && guid) {
+        this.targetsByDownload.set(guid, targetId ?? null);
         this.scheduleDownloadDiskCheck();
       }
     }

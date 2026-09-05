@@ -661,11 +661,13 @@ downloads and fails closed when capacity is unavailable or below that reserve.
 It rechecks capacity when a download starts and while progress is active. If
 the reserve is crossed, the controller cancels every active download in that
 browser generation; its terminal `download_progress` event carries
-`cancellation_reason: "disk_pressure"`. Concurrent download starts request a
-follow-up check, so one in-flight measurement cannot cause a later download to
-escape admission. This extends the controller's open event payload rather than
-the local-daemon or relay envelope, so it does not change either protocol
-version.
+`cancellation_reason: "disk_pressure"`. Download safety is keyed by the CDP
+download GUID and does not wait for optional frame-to-tab attribution, so an
+immediate download from a newly created frame is still checked and canceled.
+Concurrent download starts request a follow-up check, so one in-flight
+measurement cannot cause a later download to escape admission. This extends the
+controller's open event payload rather than the local-daemon or relay envelope,
+so it does not change either protocol version.
 
 Relay peer protocol v41 adds document-bound `Tab` controller commands and
 results for `activate` and `close`. The public `slice_browser_tab` runtime tool

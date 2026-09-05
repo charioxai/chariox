@@ -658,6 +658,43 @@ test("controller cancels every active download when slice storage drops below it
   assert.equal(canceled.data.cancellation_reason, "disk_pressure");
 });
 
+test("controller guards downloads before their frame is mapped to a tab", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+    downloadDirectory: "/safe/downloads",
+    minimumDownloadFreeBytes: 256 * 1024 * 1024,
+    fileSystem: {
+      statfs: async () => ({ bavail: 128 * 1024 * 1024, bsize: 1 }),
+    },
+  });
+  const reconciled = await browser.reconcile(viewport);
+
+  connection.emit({
+    method: "Browser.downloadWillBegin",
+    params: {
+      frameId: "frame-not-yet-observed",
+      guid: "download-before-frame-map",
+      url: "https://example.test/immediate-download",
+      suggestedFilename: "immediate.bin",
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    connection.calls
+      .filter((call) => call.method === "Browser.cancelDownload")
+      .map((call) => call.params.guid),
+    ["download-before-frame-map"],
+  );
+  const started = browser.pollEvents({
+    browser_generation: reconciled.browser_generation,
+    cursor: reconciled.event_cursor,
+    limit: 10,
+  }).events.find((event) => event.kind === "download_started");
+  assert.equal(started.target_id, null, "optional attribution must not gate disk safety");
+});
+
 test("a download arriving during disk-pressure cancellation receives a follow-up check", async () => {
   const connection = new FakeConnection();
   const releaseFirstCancellation = Promise.withResolvers();
