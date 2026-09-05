@@ -48,6 +48,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [
       "deterministic-runtime-convergence",
       "local-kernel-websocket-drop",
+      "local-room-takeover-reconnect",
       "local-kernel-restart-durable-state",
       "local-browser-controller-crash",
       "local-relay-queue-saturation",
@@ -89,6 +90,10 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-kernel-restart-durable-state").args[0]),
       "live-local-restart-persistence-drill.mjs",
+    )
+    assert.equal(
+      path.basename(report.scenarios.find((scenario) => scenario.id === "local-room-takeover-reconnect").args[0]),
+      "live-room-takeover-reconnect-fault-drill.mjs",
     )
     assert.equal(
       path.basename(report.scenarios.find((scenario) => scenario.id === "local-browser-controller-crash").args[0]),

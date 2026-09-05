@@ -3,8 +3,15 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use crate::local::{
-    CreateSliceRequest, LocalDaemonRequest, RestoreSliceBackupRequest, SliceCreateBase,
+    CreateSliceRequest, LocalDaemonRequest, ReleaseRoomEnvironmentInputRequest,
+    RequestRoomEnvironmentInputTakeoverRequest, RestoreSliceBackupRequest, SliceCreateBase,
     SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
+};
+use crate::session::{
+    agent_environment_actor_id, human_environment_actor_id, ActionAdmission, CanonicalViewport,
+    CreateSessionRequest, EnvironmentActionRequest, EnvironmentActionTerminal, EnvironmentActor,
+    EnvironmentActorKind, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentReplay,
+    InputTarget, TakeoverOutcome, DEFAULT_LOCAL_USER_ID,
 };
 use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode};
 use crate::DaemonConfig;
@@ -836,6 +843,273 @@ exit 0
             "recoveredStateRef": recovered_state_ref,
         })
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn room_takeover_response_loss_and_reconnect_retain_human_input_authority() {
+    let test_thread = std::thread::Builder::new()
+        .name("room-takeover-reconnect".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("takeover reconnect runtime should start")
+                .block_on(async {
+                    let root = RuntimeTransportTempDir::new("takeover-reconnect");
+                    let root_path = root.path().to_path_buf();
+                    let mut config = DaemonConfig::for_tests();
+                    config.publication_control_state_root = Some(root.path().join("control"));
+                    config.user_config_path = root.path().join("config/chariox.toml");
+                    config.user_config.slices.root =
+                        Some(root.path().join("slices").display().to_string());
+
+                    let mut daemon = DaemonApp::bootstrap(config).expect("daemon should boot");
+                    let (session, agent) = daemon
+                        .create_session(CreateSessionRequest::new(
+                            "workspace-takeover-reconnect",
+                            "worktree-takeover-reconnect",
+                        ))
+                        .expect("Room should be created");
+                    let session_id = session.id().to_string();
+                    let agent_actor_id = agent_environment_actor_id(agent.id());
+                    let human_actor_id = human_environment_actor_id(DEFAULT_LOCAL_USER_ID);
+                    let session_store = daemon.session_state_store();
+                    let viewport = CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                        .expect("canonical viewport should be valid");
+                    session_store
+                        .create_room_environment(
+                            &session_id,
+                            "environment-takeover-reconnect",
+                            viewport.clone(),
+                        )
+                        .expect("Room Environment should be created");
+                    session_store
+                        .start_room_environment(&session_id, viewport)
+                        .expect("Room Environment should start");
+                    session_store
+                        .transition_room_environment(&session_id, EnvironmentLifecycle::Ready)
+                        .expect("Room Environment should become ready");
+                    let baseline = session_store
+                        .reconcile_room_environment_actors(
+                            &session_id,
+                            vec![EnvironmentActor::new(
+                                &agent_actor_id,
+                                EnvironmentActorKind::Agent,
+                                agent.agent_ref(),
+                            )],
+                        )
+                        .expect("default agent should be present in the Room Environment");
+
+                    let app = Arc::new(Mutex::new(daemon));
+                    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+                        Arc::clone(&app),
+                        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+                    ));
+                    let event_counter_path = root.path().join("transport/event-counter.json");
+                    let command_cache_path =
+                        event_counter_path.with_file_name("command-results.jsonl");
+                    let runtime = Arc::new(
+                        KernelTransportRuntime::new_with_persistent_event_ids(
+                            router.transport_health_store(),
+                            event_counter_path,
+                        )
+                        .expect("transport runtime should initialize"),
+                    );
+                    let command_id = "human-desktop-takeover";
+                    let takeover_request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+                        RequestRoomEnvironmentInputTakeoverRequest {
+                            session_id: session_id.clone(),
+                            target: InputTarget::Desktop,
+                        },
+                    );
+
+                    dispatch_transport_test_request(
+                        Arc::clone(&runtime),
+                        Arc::clone(&router),
+                        "takeover-response-lost",
+                        command_id,
+                        takeover_request.clone(),
+                        false,
+                    )
+                    .await;
+                    timeout(Duration::from_secs(5), async {
+                        loop {
+                            let environment = session_store
+                                .room_environment_snapshot(&session_id)
+                                .expect("Room Environment should remain readable");
+                            let cache =
+                                std::fs::read_to_string(&command_cache_path).unwrap_or_default();
+                            if environment.input_ownership.iter().any(|ownership| {
+                                ownership.target == InputTarget::Desktop
+                                    && ownership.actor_id == human_actor_id
+                            }) && cache.contains(command_id)
+                            {
+                                break environment;
+                            }
+                            sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("takeover should commit after its response is lost");
+                    let committed = session_store
+                        .room_environment_snapshot(&session_id)
+                        .expect("committed takeover should remain readable");
+
+                    let replayed = dispatch_transport_test_request(
+                        Arc::clone(&runtime),
+                        Arc::clone(&router),
+                        "takeover-reconnect-retry",
+                        command_id,
+                        takeover_request,
+                        true,
+                    )
+                    .await
+                    .expect("reconnected client should receive the cached takeover response");
+                    let KernelOutgoingFrame::Response {
+                        response, error, ..
+                    } = replayed
+                    else {
+                        panic!("takeover retry should return a response")
+                    };
+                    assert!(error.is_none(), "takeover retry should succeed: {error:?}");
+                    let replayed_response =
+                        serde_json::from_value::<crate::local::LocalDaemonResponse>(
+                            response
+                                .as_ref()
+                                .clone()
+                                .expect("takeover retry should retain its response payload"),
+                        )
+                        .expect("takeover retry response should decode");
+                    let crate::local::LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+                        outcome,
+                        environment: replayed_environment,
+                    } = replayed_response
+                    else {
+                        panic!("takeover retry should retain the takeover result")
+                    };
+                    assert_eq!(outcome, TakeoverOutcome::Granted);
+                    assert_eq!(replayed_environment, committed);
+                    let after_replay = session_store
+                        .room_environment_snapshot(&session_id)
+                        .expect("Room Environment should remain readable after replay");
+                    assert_eq!(after_replay.event_cursor, committed.event_cursor);
+                    assert!(after_replay.input_ownership.iter().any(|ownership| {
+                        ownership.target == InputTarget::Desktop
+                            && ownership.actor_id == human_actor_id
+                    }));
+
+                    let takeover_event_count = match session_store
+                        .room_environment_events_after(&session_id, baseline.event_cursor)
+                        .expect("takeover events should replay")
+                    {
+                        EnvironmentReplay::Events { events, .. } => events
+                            .into_iter()
+                            .filter(|event| {
+                                event.kind == EnvironmentEventKind::InputOwnershipChanged
+                            })
+                            .count(),
+                        EnvironmentReplay::SnapshotRequired { .. } => {
+                            panic!("bounded takeover replay should not require a snapshot")
+                        }
+                    };
+                    assert_eq!(takeover_event_count, 1);
+
+                    let blocked = session_store.submit_room_environment_action(
+                        &session_id,
+                        EnvironmentActionRequest::computer_mutation(
+                            &agent_actor_id,
+                            committed.runtime_generation,
+                            "pointer_click",
+                            None,
+                        ),
+                    );
+                    let (blocked_admission, blocked_environment) =
+                        blocked.expect("agent mutation should return a takeover rejection");
+                    assert_eq!(
+                        blocked_admission,
+                        ActionAdmission::RejectedTakeover {
+                            target: InputTarget::Desktop,
+                            human_actor_id: human_actor_id.clone(),
+                        }
+                    );
+                    assert!(blocked_environment.input_ownership.iter().any(|ownership| {
+                        ownership.target == InputTarget::Desktop
+                            && ownership.actor_id == human_actor_id
+                    }));
+
+                    let released = dispatch_transport_test_request(
+                        Arc::clone(&runtime),
+                        Arc::clone(&router),
+                        "explicit-human-release",
+                        "explicit-human-release",
+                        LocalDaemonRequest::ReleaseRoomEnvironmentInput(
+                            ReleaseRoomEnvironmentInputRequest {
+                                session_id: session_id.clone(),
+                                target: InputTarget::Desktop,
+                            },
+                        ),
+                        true,
+                    )
+                    .await
+                    .expect("human should explicitly release desktop input");
+                    let KernelOutgoingFrame::Response { error, .. } = released else {
+                        panic!("input release should return a response")
+                    };
+                    assert!(error.is_none(), "input release should succeed: {error:?}");
+                    let (admission, _) = session_store
+                        .submit_room_environment_action(
+                            &session_id,
+                            EnvironmentActionRequest::computer_mutation(
+                                &agent_actor_id,
+                                committed.runtime_generation,
+                                "pointer_click",
+                                None,
+                            ),
+                        )
+                        .expect("agent mutation should be admitted only after explicit release");
+                    let ActionAdmission::Accepted { action_id } = admission else {
+                        panic!("agent mutation should start after release: {admission:?}")
+                    };
+                    session_store
+                        .finish_room_environment_action(
+                            &session_id,
+                            &action_id,
+                            EnvironmentActionTerminal::Completed,
+                        )
+                        .expect("admitted agent mutation should settle");
+
+                    drop(runtime);
+                    drop(router);
+                    drop(app);
+                    drop(session_store);
+                    drop(root);
+                    assert!(
+                        !root_path.exists(),
+                        "takeover reconnect fixture should be removed"
+                    );
+                    println!(
+                        "CHARIOX_ROOM_TAKEOVER_RECONNECT_PROBE:{}",
+                        serde_json::json!({
+                            "schema": "chariox.room_takeover_reconnect_probe.v1",
+                            "responseLostAfterCommit": true,
+                            "replayedResponseMatched": true,
+                            "humanOwnershipRetained": true,
+                            "agentMutationBlocked": true,
+                            "takeoverAppliedExactlyOnce": true,
+                            "explicitReleaseRequired": true,
+                            "agentMutationAdmittedAfterRelease": true,
+                            "cleanupComplete": true,
+                            "takeoverEventCount": takeover_event_count,
+                        })
+                    );
+                });
+        })
+        .expect("takeover reconnect test thread should start");
+    test_thread
+        .join()
+        .expect("takeover reconnect test thread should finish");
 }
 
 #[cfg(unix)]
