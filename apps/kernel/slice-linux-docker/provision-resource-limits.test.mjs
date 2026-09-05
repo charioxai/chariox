@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { spawnSync } from "node:child_process"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
@@ -21,6 +24,61 @@ test("the shared slice disk reserve reaches the browser controller container", a
   const source = await readFile(provisioner, "utf8")
 
   assert.match(source, /-e "CHARIOX_SLICE_MIN_FREE_MB=\$SLICE_MIN_FREE_MB"/)
+  assert.match(source, /-e CHARIOX_SLICE_MIN_FREE_MB="\$SLICE_MIN_FREE_MB"/)
+})
+
+test("a reused slice starts its runtime with the current disk reserve", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-download-reserve-"))
+  try {
+    const log = join(root, "docker.jsonl")
+    await writeFile(
+      join(root, "docker"),
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "info") process.exit(0);
+if (args[0] === "container" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
+if (args[0] === "image" && args[1] === "inspect") { console.log("fixture-image"); process.exit(0); }
+if (args[0] === "inspect") { console.log("true"); process.exit(0); }
+if (args[0] === "ps") { console.log("chariox-download-reserve-fixture"); process.exit(0); }
+if (args[0] === "exec" && args.includes("df")) {
+  console.log("Filesystem 1024-blocks Used Available Capacity Mounted on");
+  console.log("fixture 10000000 1 9999999 1% /");
+}
+if (["cp", "exec", "update"].includes(args[0])) process.exit(0);
+throw new Error("unexpected Docker call: " + args[0]);
+`,
+      { mode: 0o700 },
+    )
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("CHARIOX_SLICE_")))
+    const result = spawnSync("bash", [provisioner, "start-runtime"], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: {
+        ...env,
+        PATH: `${root}:${env.PATH}`,
+        TMPDIR: root,
+        CHARIOX_TEST_DOCKER_LOG: log,
+        CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
+        CHARIOX_SLICE_BUILD_IMAGE: "never",
+        CHARIOX_SLICE_NAME: "chariox-download-reserve-fixture",
+        CHARIOX_SLICE_MIN_FREE_MB: "777",
+      },
+    })
+    assert.equal(result.error, undefined)
+    assert.equal(result.status, 0, result.stderr)
+    const calls = (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map(JSON.parse)
+    const runtime = calls.find((args) => args[0] === "exec" && args.at(-1) === "/opt/chariox-slice/start-runtime.sh")
+    assert.ok(runtime, "fixture must start the reused container runtime")
+    assert.ok(runtime.includes("CHARIOX_SLICE_MIN_FREE_MB=777"), `runtime reserve missing from ${runtime.join(" ")}`)
+    assert.equal(calls.some((args) => args[0] === "create"), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("provider listener ranges are reserved from container ephemeral ports", async () => {

@@ -821,6 +821,7 @@ exec_slice_with_timeout() {
     relay_env_args+=(-e CHARIOX_SLICE_RELAY_URL="$SLICE_RELAY_URL")
   fi
   run_with_timeout "$seconds" docker exec \
+    -e CHARIOX_SLICE_MIN_FREE_MB="$SLICE_MIN_FREE_MB" \
     -e CHARIOX_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
     -e CHARIOX_SLICE_OPENCODE_PORT="$SLICE_OPENCODE_PORT" \
     -e CHARIOX_SLICE_CODEX_PORT_RANGE="$SLICE_CODEX_PORT_RANGE" \

@@ -653,7 +653,10 @@ decode the new command and must not be treated as having canceled the download.
 
 The slice browser controller derives its download free-space reserve from the
 same `CHARIOX_SLICE_MIN_FREE_MB` value used by slice provisioning (256 MiB by
-default). It measures the configured download filesystem before enabling
+default). Every runtime launch forwards the current value explicitly, including
+when provisioning reuses an existing container, so an old container environment
+cannot weaken an updated reserve. It measures the configured download filesystem
+before enabling
 downloads and fails closed when capacity is unavailable or below that reserve.
 It rechecks capacity when a download starts and while progress is active. If
 the reserve is crossed, the controller cancels every active download in that
