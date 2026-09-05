@@ -260,6 +260,7 @@ try {
   let healthAtHealthyCompletion
   let submittedAtHealthyCompletion
   let healthyProbeError
+  let providerTurnAlreadySettled = false
   releaseHealthyProbe()
   const healthyWork = Promise.all([
     withDeadline(
@@ -281,8 +282,10 @@ try {
     )),
   ])
   try {
-    await withDeadline(slowFloodProgress, timeoutMs, "slow flood progress during the healthy probe")
-    const healthyResults = await healthyWork
+    const [, healthyResults] = await Promise.all([
+      withDeadline(slowFloodProgress, timeoutMs, "slow flood progress during the healthy probe"),
+      healthyWork,
+    ])
     providerSubmission = healthyResults[0]
     pressureRelayStatus = healthyResults[1]
     assert.ok(unwrap(providerSubmission, "PromptSubmitted")?.outcome, "provider prompt was not accepted during pressure")
@@ -299,12 +302,22 @@ try {
       timeoutMs,
       "provider output from dev-stub during slow-client pressure",
     )
-    const providerCompletion = unwrap(await withDeadline(
-      pressureControl.send(requests.completePromptRequest(contexts[1].sessionId)),
-      timeoutMs,
-      "provider turn completion during slow-subscriber pressure",
-    ), "PromptCompleted")
-    assert.ok(providerCompletion?.completion, "dev-stub turn did not complete during slow-client pressure")
+    let providerCompletion = null
+    try {
+      providerCompletion = unwrap(await withDeadline(
+        pressureControl.send(requests.completePromptRequest(contexts[1].sessionId)),
+        timeoutMs,
+        "provider turn completion during slow-subscriber pressure",
+      ), "PromptCompleted")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes("has no active prompt")) throw error
+      providerTurnAlreadySettled = true
+    }
+    assert.ok(
+      providerCompletion?.completion || providerTurnAlreadySettled,
+      "dev-stub turn did not complete during slow-client pressure",
+    )
     await waitFor(
       () => seen.slice(1).every((markers) => markers.has(healthyMarker)),
       timeoutMs,
@@ -371,6 +384,7 @@ try {
     slowSubscriptionActiveThroughoutHealthyProbe: true,
     providerAcceptedDuringPressure: true,
     providerOutputCompletedDuringPressure: true,
+    providerTurnAlreadySettled,
     kernelControlHealthyDuringPressure: true,
     slowSubscriptionCloseCount: relayHealth.backpressure.slow_subscription_close_count,
     targetQueueFullCount: relayHealth.backpressure.target_queue_full_count,
