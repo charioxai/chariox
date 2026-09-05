@@ -40,6 +40,7 @@ const reconnectStormDrill = path.join(scriptDir, "live-reconnect-storm-drill.mjs
 const memoryPressureAdmissionFaultDrill = path.join(scriptDir, "live-memory-pressure-admission-fault-drill.mjs")
 const diskPressureAdmissionFaultDrill = path.join(scriptDir, "live-disk-pressure-admission-fault-drill.mjs")
 const sliceSaveAckLossFaultDrill = path.join(scriptDir, "live-slice-save-ack-loss-fault-drill.mjs")
+const sliceSaveInterruptionFaultDrill = path.join(scriptDir, "live-slice-save-interruption-fault-drill.mjs")
 const sliceRestoreInterruptionFaultDrill = path.join(scriptDir, "live-slice-restore-interruption-fault-drill.mjs")
 const browserDownloadDiskFaultDrill = path.join(scriptDir, "live-browser-download-disk-fault-drill.mjs")
 const resourceExhaustionFaultDrill = path.join(scriptDir, "live-resource-exhaustion-fault-drill.mjs")
@@ -229,6 +230,22 @@ const MATRIX = [
       "kernel-cache reload returns the same saved-state generation without another dispatch",
       "reusing the command id for a different save request fails closed",
       "the focused drill records resources externally and removes its temporary cache",
+    ],
+  }),
+  scenario({
+    id: "local-slice-save-interruption",
+    description: "interrupt saved-state publication before commit and after manifest rename without losing a restorable generation",
+    script: sliceSaveInterruptionFaultDrill,
+    args: [],
+    classification: "kernel-authority",
+    runtimeSignals: ["runtime-transition-audit", "slice-runtime-state"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "a pre-commit publication failure preserves the prior manifest and archive while removing the unpublished generation",
+      "uncertain durability after manifest rename retains both the prior and next archives",
+      "the manifest-selected generation and retained prior generation both remain restorable",
+      "the focused drill records resources externally and removes every fixture",
     ],
   }),
   scenario({
