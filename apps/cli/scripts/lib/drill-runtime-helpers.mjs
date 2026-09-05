@@ -35,6 +35,12 @@ export function withDevStubProviderInventory(env) {
   }
 }
 
+export function childTerminationStatus(child) {
+  if (child?.exitCode != null) return `exit code ${child.exitCode}`
+  if (child?.signalCode != null) return `signal ${child.signalCode}`
+  return null
+}
+
 export async function makeAvailablePorts({
   candidateFactory = makePorts,
   localAvailability = portsAreAvailable,

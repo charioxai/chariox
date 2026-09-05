@@ -5,7 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { makeAvailablePorts, resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
+import {
+  childTerminationStatus,
+  makeAvailablePorts,
+  resolveBuiltBinary,
+} from './lib/drill-runtime-helpers.mjs'
 import { sanitizeDrillMetadata } from './lib/drill-secrets.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -239,9 +243,10 @@ async function waitForLocalDaemon(kernelUrl, workspace, worktree, daemonChild) {
       return
     } catch {
       await probe.close().catch(() => {})
-      if (daemonChild?.exitCode != null) {
+      const termination = childTerminationStatus(daemonChild)
+      if (termination) {
         const stderr = sanitizeDrillMetadata({ stderr: daemonChild.logs?.stderr?.slice(-2000) ?? '' }).stderr
-        throw new Error(`local daemon exited before readiness with code ${daemonChild.exitCode}: ${stderr}`)
+        throw new Error(`local daemon exited before readiness with ${termination}: ${stderr}`)
       }
       await sleep(250)
     }
