@@ -10,7 +10,10 @@ use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
 use zeroize::Zeroizing;
 
-use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
+use crate::config::{
+    DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
+    DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB,
+};
 use crate::error::DaemonError;
 use crate::slice_provider_auth::{SliceProviderAuthState, SliceProviderAuthSummary};
 
@@ -21,6 +24,7 @@ use super::model::{
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod broker;
+mod memory_admission;
 mod provider_inputs;
 mod state;
 #[cfg(test)]
@@ -124,7 +128,11 @@ impl LocalDockerSliceOptions {
             saved_home_archive: None,
             allow_unconfined_seccomp: managed_docker_broker_configured()
                 || linux.allow_unconfined_seccomp.unwrap_or(false),
-            memory_mb: linux.memory_mb,
+            memory_mb: Some(
+                linux
+                    .memory_mb
+                    .unwrap_or(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
+            ),
             cpus: linux.cpus.clone(),
             screen_width: linux.screen_width.unwrap_or(1280),
             screen_height: linux.screen_height.unwrap_or(800),
@@ -171,15 +179,21 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
-    if matches!(
+    let _memory_admission = if matches!(
         action,
-        LocalDockerSliceAction::Provision | LocalDockerSliceAction::RestoreState
+        LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
     ) {
         ensure_host_docker_ready()?;
+        let memory_admission = memory_admission::admit_slice_start(record, options)?;
         if action == LocalDockerSliceAction::Provision {
             ensure_local_docker_slice_ports_available(record)?;
         }
-    }
+        Some(memory_admission)
+    } else {
+        None
+    };
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
     let action_name = match action {
@@ -1055,9 +1069,10 @@ fn configure_local_docker_slice_command(
     {
         command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
     }
-    if let Some(memory_mb) = options.memory_mb {
-        command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
-    }
+    let memory_mb = options
+        .memory_mb
+        .unwrap_or(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB);
+    command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
     if let Some(cpus) = options.cpus.as_deref() {
         command.env("CHARIOX_SLICE_DOCKER_CPUS", cpus);
     }

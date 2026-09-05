@@ -49,7 +49,8 @@ pub(crate) use private_file::write_private_file;
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use room_environment::RoomEnvironmentWorkerBinding;
 pub use slices::{
-    SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
+    SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig,
+    DEFAULT_LINUX_SLICE_DOCKER_IMAGE, DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB,
 };
 pub use storage::{
     ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, StateBackend,

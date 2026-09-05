@@ -834,6 +834,25 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
 }
 
 #[test]
+fn local_docker_slice_uses_the_safe_default_memory_limit() {
+    let record = test_record();
+    let mut command = Command::new("slice-provisioner");
+
+    configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
+        .expect("slice command should configure");
+
+    let memory_limit = command
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == "CHARIOX_SLICE_DOCKER_MEMORY")
+                .then(|| value.and_then(|value| value.to_str()))
+                .flatten()
+        })
+        .expect("slice memory limit should be configured");
+    assert_eq!(memory_limit, "2048m");
+}
+
+#[test]
 fn local_docker_slice_compatibility_mode_probes_the_named_apparmor_boundary() {
     let _guard = crate::env_lock::lock();
     let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
