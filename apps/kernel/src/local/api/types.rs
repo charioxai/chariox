@@ -13,6 +13,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
+mod browser_import;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
@@ -41,6 +42,7 @@ mod workspace;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
+pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
@@ -66,5 +68,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 312 adds cancellable browser lifecycle operations and receipt recovery.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 312;
+/// Version 313 adds human-bound browser import consent, without cookie payloads.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 313;

@@ -6,6 +6,7 @@ use crate::local::{
 };
 
 mod core;
+mod browser_import;
 mod credential_enrollment;
 mod event_publication;
 mod managed_context;

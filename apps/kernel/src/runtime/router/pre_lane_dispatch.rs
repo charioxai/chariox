@@ -35,6 +35,17 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        if matches!(
+            request,
+            LocalDaemonRequest::PrepareBrowserImport(_)
+                | LocalDaemonRequest::ApproveBrowserImport(_)
+                | LocalDaemonRequest::CancelBrowserImport(_)
+        ) {
+            return self.runtime_state
+                .execute_browser_import_consent(command, request)
+                .await
+                .map(Some);
+        }
         if let Some(response) = projected_session_read_response(
             &self.runtime_state,
             &self.session_projection,

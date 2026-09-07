@@ -1,7 +1,7 @@
 # Browser session import components
 
-These are internal import components, not a usable importer. Nothing
-here is wired to a user's profile, kernel or product Environment. The source
+These are internal import components, not a usable importer. Cookie transfer is
+not wired to a user's profile or product Environment. The source
 reader uses Chrome's extension APIs when called by a trusted connector. It does
 not request permissions, transmit cookies or register a web-accessible endpoint.
 
@@ -129,6 +129,17 @@ relay, authenticated kernel pairing or destination admission. Its recipient key,
 consent callback and independent destination scope are controlled test inputs.
 
 ## Required before product integration
+
+Protocol 313 now exposes kernel-owned prepare/approve/cancel consent requests.
+Shared request builders whitelist metadata, excluding cookie payloads. The kernel
+checks interactive attachment ownership, verified relay client identity and Room
+membership. The consent ledger binds the source key and realm to the exact
+selection and current destination generation/document. A changed binding requires
+new consent, and agent/service callers cannot approve it. The router tests cover
+local and verified relay callers, identity/scope changes, replay and navigation.
+This is not source-connector pairing or application authorization: no public
+cookie-apply request exists yet. Claims must still revalidate the current pairing,
+destination and permission before reading or applying any source cookie.
 
 `applyCookieImport` and `createCdpCookieStore` provide the internal destination
 operation. They are not routed from the Browser Controller, a web endpoint or a

@@ -40,6 +40,7 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
+    BrowserImportConsent { request_id: String, status: BrowserImportConsentStatus, },
     RoomEnvironmentSlice { binding: Option<RoomEnvironmentSliceBinding>, },
     RoomEnvironmentScreenshotCaptured { artifact: RoomEnvironmentScreenshotArtifact, },
     RoomEnvironmentScreenshotChunk { chunk: RoomEnvironmentScreenshotChunk, },

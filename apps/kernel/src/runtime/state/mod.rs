@@ -56,6 +56,7 @@ mod room_computer_observation;
 mod room_display;
 mod room_environment_placement;
 mod room_environment_state;
+mod browser_import_consent;
 mod room_screenshot;
 
 #[derive(Clone)]
