@@ -7,6 +7,21 @@ not request permissions, transmit cookies or register a web-accessible endpoint.
 
 ## Source reader
 
+`readKernelApprovedChromeCookies({chrome, requestId, selection, sourceTabId,
+request, signal, timeoutMs})` is the connector entry point. `request` must use the
+initiating client's authenticated kernel transport. The entry point snapshots
+the selected metadata with the shared kernel-client builders, claims approval
+once, and requires the matching `source_authorized` response before Chrome access,
+between queries and before returning. A boolean, wrong request ID or wrong phase
+cannot authorize a read. Timeout/cancellation also prevents a late claim response
+from issuing further requests. Failed reads leave no destination writer; an
+unacknowledged source claim expires under the kernel's original consent lifetime.
+
+This module imports the shared TypeScript request builders. The disposable browser
+fixture transpiles that source when assembling its MV3 extension; a distributable
+connector still needs its normal bundling, pairing and permission UI. No actual
+transport or page-message endpoint is created by this module.
+
 `readApprovedChromeCookies({chrome, scope, sourceTabId, authorize, signal,
 timeoutMs})` snapshots the selected source tab, store and domains. It rejects
 incognito tabs and ambiguous or mismatched stores. Existing cookie and exact-host
@@ -78,6 +93,7 @@ Run dependency-free tests with:
 ```sh
 node --test apps/browser-session-import/chrome-cookie-batch.test.mjs
 node --test apps/browser-session-import/chrome-cookie-reader.test.mjs
+node --test apps/browser-session-import/kernel-source-reader.test.mjs
 node --test apps/browser-session-import/cookie-import-flow.test.mjs
 ```
 
@@ -112,9 +128,11 @@ The native relay crypto decrypts it before the destination operation applies
 the cookies in a separate browser context. Reloading a controlled fixture page
 then proves the destination authenticates without exposing HttpOnly cookies to
 page scripts. Only ciphertext crosses the extension evaluation boundary.
-The generated extension and browser profile are removed in `finally`. These are
-fixture-only permissions and an injected authorization callback, not product
-consent, pairing, or a distributable connector.
+The generated extension and browser profile are removed in `finally`. The fixture
+now uses the grant-aware reader and shared request builders, with simulated
+metadata-only kernel replies. It also verifies boolean approval is rejected.
+Permissions and transport replies are fixtures, not live kernel consent, pairing
+or a distributable connector.
 
 `@chariox/kernel-client/browser-relay-crypto` exposes the existing Cloud WebCrypto
 implementation using the shared relay envelope type. Its implementation comes
@@ -143,11 +161,10 @@ selection. Cancellation or expiry releases a reading reservation, since it owns
 no destination writer. Destination execution has a separate private claim and
 cannot start from an unclaimed approval.
 
-These handlers are not yet wired to the reader's `authorize` callback. The source
-connector must claim once per read and require a matching `source_authorized`
-kernel response at each checkpoint. Source-connector pairing, permission UX and
-live encrypted delivery still need integration. No public cookie-apply request
-exists yet; destination authorization and exclusion remain separate requirements.
+The grant-aware reader wires these requests to the source authorization
+checkpoints. Source-connector pairing, permission UX and live encrypted delivery
+still need integration. No public cookie-apply request exists yet; destination
+authorization and exclusion remain separate requirements.
 
 `applyCookieImport` and `createCdpCookieStore` provide the internal destination
 operation. They are not routed from the Browser Controller, a web endpoint or a
