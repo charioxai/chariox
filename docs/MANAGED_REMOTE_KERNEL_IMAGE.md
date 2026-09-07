@@ -101,8 +101,10 @@ works. The namespace entry wrapper validates the daemon child PID, owner, and
 namespace handles before invoking `nsenter`. The broker still uses its scoped
 filesystem Unix socket; no new host TCP listener or Docker access is granted.
 Image preparation verifies a minimal build through this same entrypoint,
-including the production Dockerfile's pinned frontend and client-side registry
-authentication. A host-side image pull does not cover this failure.
+with an explicitly digest-pinned external Dockerfile frontend and client-side
+registry authentication. The probe forces `DOCKER_BUILDKIT=1`, so missing
+BuildKit/buildx support fails acceptance instead of silently using the legacy
+builder. A host-side image pull does not cover this failure.
 
 The offline regression needs no Docker daemon or external network. Run it as
 root in a disposable Linux test VM with Python 3, iproute2, and util-linux:
