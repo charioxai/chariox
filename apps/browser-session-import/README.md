@@ -142,6 +142,15 @@ cover both directions, tampering and wrong recipient keys. No encryption scheme
 or wire shape changes here. Cloud still imports its original local copy; moving
 that caller to this package requires a separate Cloud dependency change.
 
+For protocol 316 import pairing, retain the keypair returned by
+`createRelayKeypair()` and pass it as the third argument to `encryptRelayPayload`.
+`relayPublicKeyThumbprint(publicKeyBase64)` matches the kernel's SHA-256 hex over
+the encoded string, not the decoded P-256 bytes. Generated private keys are
+non-extractable. Pass the kernel key established during trusted enrollment as
+the third argument to `decryptRelayPayload`; never take that expected key from
+the received envelope. Ordinary requests can retain the two-argument ephemeral
+behavior. These APIs do not implement enrollment, persistence or transport.
+
 This fixture tests encrypted component composition, not delivery through a live
 relay, authenticated kernel pairing or destination admission. Its recipient key,
 consent callback and independent destination scope are controlled test inputs.
