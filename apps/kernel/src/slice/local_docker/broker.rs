@@ -309,6 +309,7 @@ fn provisioner_environment(command: &Command) -> BTreeMap<String, String> {
                         | "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY"
                         | "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID"
                         | "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID"
+                        | "CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE"
                 )
             {
                 return None;
@@ -596,6 +597,20 @@ pub(super) fn mark_broker_stream_close_on_exec(stream: &UnixStream) -> io::Resul
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_provider_isolation_probe_survives_broker_filter() {
+        let mut command = Command::new("unused-provisioner");
+        command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
+        command.env("CHARIOX_MANAGED_UNKNOWN", "do-not-forward");
+        assert_eq!(
+            provisioner_environment(&command),
+            BTreeMap::from([(
+                "CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE".to_string(),
+                "1".to_string()
+            ),])
+        );
+    }
 
     #[test]
     fn managed_room_binding_survives_provisioner_request_serialization() {
