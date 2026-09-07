@@ -25,8 +25,7 @@ impl TestRoot {
             Some(self.0.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
             Some(self.0.join("artifacts.db").display().to_string());
-        config.session_history_root_default = self.0.join("sessions");
-        config
+        config.with_session_history_root(self.0.join("sessions"))
     }
 }
 
