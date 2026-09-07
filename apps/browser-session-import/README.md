@@ -105,11 +105,52 @@ consent, pairing, or a distributable connector.
 
 ## Required before product integration
 
+`applyCookieImport` and `createCdpCookieStore` provide the internal destination
+operation. They are not routed from the Browser Controller, a web endpoint or a
+kernel request yet. The operation validates input, reads a bounded destination
+snapshot, rejects existing-cookie conflicts unless overwrite was explicitly
+approved, applies the batch, and verifies values and supported semantics. It
+returns only counts and approved domain names. The CDP adapter binds reads and
+writes to the selected target's browser context.
+
+If cancellation or authorization loss follows a completed write, the operation
+removes only the attempted identities, restores their previous values and checks
+the snapshot. Same-name cookies in a different partition remain untouched.
+Unrelated-cookie loss, including browser eviction, fails verification. It is not
+repaired by silently rewriting unapproved domains. Unknown destination fields,
+opaque partitions and ambiguous identities are rejected before mutation.
+Snapshots are capped at 10,000 records and 4 MiB after the browser API returns.
+
+The caller must supply `runExclusive(operation)` using the kernel's exclusive
+Environment operation and `authorize()` bound to that exact user, destination,
+generation, request and overwrite consent. It must stop page/network cookie
+writers as well as competing Chariox actions while the snapshot is in use.
+The injected functions in tests are not implemented kernel exclusion or consent.
+The store/CDP transport must enforce bounded command timeouts. Cancellation
+waits for a pending write to settle before attempting cleanup; it must not release
+the Environment while an acknowledged mutation is still pending.
+
+Any transport/write exception sets `recoveryRequired: true`, even if the cleanup
+read looks correct, because a lost acknowledgement can hide a late mutation.
+Rollback failure and unrelated-cookie loss also set it. The kernel must quarantine
+that Environment until recovery verifies it. Fixed error codes never include
+original transport errors or cookies. These recovery flags are not yet wired to
+kernel lifecycle state. Snapshots are in memory, not a crash-safe journal, so
+process death or browser restart during import remains unhandled. This must not
+be advertised as durable atomic import.
+
+Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
+for nine destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
+`cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
+sign-in, cancellation rollback and an untouched partitioned control cookie.
+
 Implement the MV3 connector and source-profile/site selection, kernel-owned
 consent and destination authorization, encrypted transport, bounded decoding,
 expiry and replay protection, cancellation and transactional application with
 rollback. Add shared protocol versioning and Web/TUI progress and results when
 that transport is implemented. No shared protocol shape changes in this step.
+The remaining destination work includes kernel integration, writer quiescence,
+durable encrypted recovery state and process/browser-crash drills.
 Complete the security and service validation matrix in
 `docs/BROWSER_SESSION_IMPORT_RESEARCH.md` before importing real sign-ins.
 
