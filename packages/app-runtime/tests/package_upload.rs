@@ -912,3 +912,46 @@ fn lazy_upload_creation_rejects_unsafe_roots_without_changing_existing_permissio
         0o777
     );
 }
+
+#[test]
+fn maintenance_discovery_uses_creation_parent_policy_and_existing_store_lease() {
+    let root = Root::new();
+    let database = root.parent.join("state.db");
+    let limits = UploadLimits::default();
+    assert!(PackageUploadStore::open_if_present(&database, limits, 1)
+        .unwrap()
+        .is_none());
+    assert_eq!(fs::read_dir(&root.parent).unwrap().count(), 1);
+    assert!(
+        PackageUploadStore::open_if_present(&root.parent.join("missing/state.db"), limits, 1)
+            .is_err()
+    );
+    assert!(!root.parent.join("missing").exists());
+    let store = PackageUploadStore::open_or_create(&database, limits, 1).unwrap();
+    let upload = store
+        .begin("alice", "request", 4, &digest(b"test"), 100, 1)
+        .unwrap();
+    assert!(matches!(
+        PackageUploadStore::open_if_present(&database, limits, 2),
+        Err(UploadError::Busy)
+    ));
+    drop(store);
+    fs::set_permissions(&root.parent, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(matches!(
+        PackageUploadStore::open_if_present(&database, limits, 2),
+        Err(UploadError::UnsafeEntry)
+    ));
+    assert_eq!(
+        fs::metadata(&root.parent).unwrap().permissions().mode() & 0o777,
+        0o777
+    );
+    fs::set_permissions(&root.parent, fs::Permissions::from_mode(0o755)).unwrap();
+    let reopened = PackageUploadStore::open_if_present(&database, limits, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.status("alice", &upload.handle, 2).unwrap(), upload);
+    assert!(matches!(
+        PackageUploadStore::open_or_create(&database, limits, 2),
+        Err(UploadError::Busy)
+    ));
+}

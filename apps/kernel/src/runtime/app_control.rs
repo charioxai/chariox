@@ -34,6 +34,10 @@ impl AppControlService {
         }
     }
 
+    pub(crate) fn schedule_maintenance(&self) {
+        self.uploads.schedule_maintenance(&self.admission);
+    }
+
     pub(crate) async fn execute(
         &self,
         command: &KernelCommand,

@@ -130,3 +130,45 @@ fn atomic_recovery_names_do_not_claim_unrelated_files() {
         assert!(!is_atomic_temporary(OsStr::new(name)));
     }
 }
+
+#[test]
+fn existing_child_discovery_requires_publication_sync_and_the_original_parent_policy() {
+    let scratch = Scratch::new();
+    let name = OsStr::new("uploads");
+    assert!(Dir::open_private_child_if_present(&scratch.0, name)
+        .unwrap()
+        .is_none());
+    assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+    let parent = scratch.directory();
+    // Simulate a visible child left by a creator whose parent publication
+    // failed. No existing-store handle may escape the same failure on retry.
+    drop(parent.create_child(name).unwrap());
+    let mut reached_sync = false;
+    let failed = Dir::open_existing_child_checked(&scratch.0, name, || {
+        reached_sync = true;
+        Err(FsError::Io(std::io::Error::other(
+            "injected parent sync failure",
+        )))
+    });
+    assert!(reached_sync);
+    assert!(matches!(failed, Err(FsError::Io(_))));
+    assert!(scratch.0.join(name).is_dir());
+    let reopened = Dir::open_private_child_if_present(&scratch.0, name)
+        .unwrap()
+        .unwrap();
+    assert!(reopened.try_lock().unwrap());
+    drop(reopened);
+    fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(matches!(
+        Dir::open_private_child_if_present(&scratch.0, name),
+        Err(FsError::UnsafeEntry)
+    ));
+    assert!(matches!(
+        Dir::open_or_create_private_child(&scratch.0, name),
+        Err(FsError::UnsafeEntry)
+    ));
+    assert_eq!(
+        fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777,
+        0o777
+    );
+}

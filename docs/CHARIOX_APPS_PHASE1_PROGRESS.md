@@ -369,9 +369,20 @@ superseded by the next candidate, so no macOS result is inferred from Linux.
 Evidence: `kernel-upload-store-tests.log`, `kernel-upload-client-tests.log`,
 `kernel-upload-client-typecheck.log`, `kernel-upload-typecheck.log` and
 `kernel-upload-typecheck-resources.log` under the existing evidence directory.
-Publisher trust, verified installation/activation and periodic upload garbage
-collection remain separate integration work; upload TTL already bounds access,
-with expired data collected on store open and subsequent upload operations.
+Publisher trust and verified installation/activation remain separate integration
+work. Periodic upload collection now uses the kernel maintenance pump and the
+same bounded App admission as requests. It recovers existing expired uploads
+without creating storage for kernels that have never used Apps. Existing-root
+discovery validates the same held parent as creation and completes child/parent
+publication before acknowledging recovered data. Faulted instances reopen only
+through the exclusive lease and durable recovery boundary.
+
+The updated runtime suite passed all 72 tests locally, including 18 upload tests
+and the existing-root publication/ownership regressions. The final guarded kernel
+test typecheck also passed (peak 3,369,984 KiB process-group RSS); execution of the
+new kernel maintenance fixture is assigned to hosted CI. Evidence:
+`worker-upload-runtime-tests.log`, `kernel-migration-maintenance-final-typecheck.log`
+and its resource log in the existing evidence directory.
 
 ## Implementation progress: native boundary and worker ownership
 

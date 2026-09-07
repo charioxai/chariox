@@ -257,3 +257,62 @@ async fn cancelled_awaiter_cannot_release_admission_while_blocking_work_is_live(
         .unwrap();
     drop(permit);
 }
+
+#[tokio::test]
+async fn maintenance_recovers_expired_uploads_without_creating_unused_storage_or_bypassing_admission(
+) {
+    let root = Scratch::new();
+    let unused = root.service();
+    unused.cleanup_existing(10).unwrap();
+    assert_eq!(fs::read_dir(&root.0).unwrap().count(), 0);
+    drop(unused);
+    fs::write(root.0.join("unrelated"), b"keep").unwrap();
+    let service = root.service();
+    let upload = service.execute_at("alice", begin(), 10).unwrap();
+    service
+        .execute_at(
+            "alice",
+            UploadCommand::Chunk {
+                handle: upload.handle.clone(),
+                offset: 0,
+                data_base64: STANDARD.encode(b"test"),
+                chunk_sha256: digest(b"test"),
+            },
+            20,
+        )
+        .unwrap();
+    let directory = fs::read_dir(&root.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir())
+        .unwrap();
+    let before = fs::read_dir(&directory).unwrap().count();
+    assert!(before >= 2);
+    drop(service);
+    let reopened = root.service();
+    let admission = Arc::new(Semaphore::new(8));
+    let held = admission.acquire_many(8).await.unwrap();
+    reopened.schedule_maintenance(&admission);
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), before);
+    drop(held);
+    // Scheduling captures the permit synchronously. Acquiring every permit now
+    // waits for the admitted maintenance task to finish, without polling/sleeps.
+    reopened.schedule_maintenance(&admission);
+    let _finished =
+        tokio::time::timeout(std::time::Duration::from_secs(5), admission.acquire_many(8))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+    assert_eq!(fs::read(root.0.join("unrelated")).unwrap(), b"keep");
+    assert_eq!(
+        reopened.execute_at(
+            "alice",
+            UploadCommand::Status {
+                handle: upload.handle
+            },
+            crate::session::unix_epoch_ms()
+        ),
+        Err(UploadControlError::NotFound)
+    );
+}

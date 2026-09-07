@@ -42,6 +42,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        self.app_control().schedule_maintenance();
         if !self.owned.publication_activation.is_active() {
             return;
         }

@@ -37,11 +37,7 @@ impl Dir {
     /// Creates only one private child under an existing kernel-owned parent.
     /// Both validation and subsequent I/O retain the same directory descriptors.
     pub(crate) fn open_or_create_private_child(parent: &Path, name: &OsStr) -> Result<Self> {
-        let parent = Self::open_real(parent)?;
-        let metadata = parent.0.metadata()?;
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
-            return Err(FsError::UnsafeEntry);
-        }
+        let parent = Self::open_owned_parent(parent)?;
         let child = match parent.create_child(name) {
             Ok(child) => child,
             Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -54,6 +50,45 @@ impl Dir {
         child.sync()?;
         parent.sync()?;
         Ok(child)
+    }
+
+    /// Discovers the same owned child without creating it. A previous creator
+    /// may have failed after mkdir but before syncing its parent; discovery
+    /// must finish that publication before returning a usable cached store.
+    pub(crate) fn open_private_child_if_present(
+        parent: &Path,
+        name: &OsStr,
+    ) -> Result<Option<Self>> {
+        Self::open_existing_child_checked(parent, name, || Ok(()))
+    }
+
+    fn open_existing_child_checked(
+        parent: &Path,
+        name: &OsStr,
+        before_parent_sync: impl FnOnce() -> Result<()>,
+    ) -> Result<Option<Self>> {
+        let parent = Self::open_owned_parent(parent)?;
+        let child = match parent.child(name) {
+            Ok(child) => child,
+            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        child.require_private()?;
+        child.sync()?;
+        before_parent_sync()?;
+        parent.sync()?;
+        Ok(Some(child))
+    }
+
+    fn open_owned_parent(path: &Path) -> Result<Self> {
+        let parent = Self::open_real(path)?;
+        let metadata = parent.0.metadata()?;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+            return Err(FsError::UnsafeEntry);
+        }
+        Ok(parent)
     }
 
     fn open_real(path: &Path) -> Result<Self> {

@@ -3,20 +3,23 @@
 //! activates Apps. Inspection will consume a finalized descriptor separately.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chariox_app_runtime::package_upload::{
     PackageUploadStore, UploadError, UploadLimits, UploadStatus, MAX_UPLOAD_ARCHIVE_BYTES,
     MAX_UPLOAD_CHUNK_BYTES,
 };
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) const MAX_ENCODED_UPLOAD_CHUNK_BYTES: usize = MAX_UPLOAD_CHUNK_BYTES.div_ceil(3) * 4;
 const UPLOAD_TTL_MS: u64 = 30 * 60 * 1_000;
+const MAINTENANCE_INTERVAL_MS: u64 = 60_000;
 
 /// The owner is deliberately absent: AppControl derives it from KernelCaller.
 pub(crate) enum UploadCommand {
@@ -60,6 +63,8 @@ struct Inner {
     database_path: PathBuf,
     // The live store owns its directory lock across requests and service clones.
     store: Mutex<Option<PackageUploadStore>>,
+    started: Instant,
+    next_maintenance_ms: AtomicU64,
 }
 
 impl AppPackageUploadControl {
@@ -70,8 +75,76 @@ impl AppPackageUploadControl {
             inner: Arc::new(Inner {
                 database_path,
                 store: Mutex::new(None),
+                started: Instant::now(),
+                next_maintenance_ms: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// The existing kernel maintenance pump calls this without awaiting disk I/O.
+    /// At most one task per minute is admitted; it shares AppControl's permits.
+    pub(crate) fn schedule_maintenance(&self, admission: &Arc<Semaphore>) {
+        let elapsed = self
+            .inner
+            .started
+            .elapsed()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let due = self.inner.next_maintenance_ms.load(Ordering::Relaxed);
+        if elapsed < due {
+            return;
+        }
+        let Ok(permit) = Arc::clone(admission).try_acquire_owned() else {
+            return;
+        };
+        if self
+            .inner
+            .next_maintenance_ms
+            .compare_exchange(
+                due,
+                elapsed.saturating_add(MAINTENANCE_INTERVAL_MS),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return;
+        }
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            if let Err(error) = service.cleanup_existing(crate::session::unix_epoch_ms()) {
+                if error != UploadControlError::Busy {
+                    tracing::warn!(?error, "App package upload maintenance unavailable");
+                }
+            }
+        });
+    }
+
+    fn cleanup_existing(&self, now_ms: u64) -> Result<(), UploadControlError> {
+        let mut store = self.inner.store.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => UploadControlError::Busy,
+            TryLockError::Poisoned(_) => UploadControlError::StorageUnavailable,
+        })?;
+        if store.is_none() {
+            *store = PackageUploadStore::open_if_present(
+                &self.inner.database_path,
+                UploadLimits::default(),
+                now_ms,
+            )
+            .map_err(upload_error)?;
+        }
+        let Some(opened) = store.as_ref() else {
+            return Ok(());
+        };
+        let result = opened.cleanup_expired(now_ms).map_err(upload_error);
+        // A faulted instance remains unusable. Later maintenance may reopen it
+        // through the normal lease/sync/recovery boundary after all old users
+        // release their references; no cached uncertain offset is acknowledged.
+        if result.is_err() && result != Err(UploadControlError::Busy) {
+            store.take();
+        }
+        result
     }
 
     /// Uses AppControl's shared admission permit. The blocking operation retains

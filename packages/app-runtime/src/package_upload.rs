@@ -24,7 +24,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 struct Inner {
@@ -85,18 +85,31 @@ impl PackageUploadStore {
         now_ms: u64,
     ) -> Result<Self> {
         limits.validate()?;
-        if !kernel_database_path.is_absolute() {
-            return Err(UploadError::UnsafeEntry);
-        }
-        let parent = kernel_database_path
-            .parent()
-            .ok_or(UploadError::UnsafeEntry)?;
-        let database_name = kernel_database_path
-            .file_name()
-            .ok_or(UploadError::UnsafeEntry)?;
-        let name = format!("app-uploads-{:x}", Sha256::digest(database_name.as_bytes()));
-        let root = Dir::open_or_create_private_child(parent, OsStr::new(&name))?;
+        let path = database_root(kernel_database_path)?;
+        let root = Dir::open_or_create_private_child(
+            path.parent().ok_or(UploadError::UnsafeEntry)?,
+            path.file_name().ok_or(UploadError::UnsafeEntry)?,
+        )?;
         Self::open_directory(root, limits, now_ms)
+    }
+
+    /// Startup/maintenance discovery without creating an unused upload store.
+    /// Opening an existing store uses the same lease and durability recovery.
+    pub fn open_if_present(
+        kernel_database_path: &Path,
+        limits: UploadLimits,
+        now_ms: u64,
+    ) -> Result<Option<Self>> {
+        limits.validate()?;
+        let path = database_root(kernel_database_path)?;
+        let Some(root) = Dir::open_private_child_if_present(
+            path.parent().ok_or(UploadError::UnsafeEntry)?,
+            path.file_name().ok_or(UploadError::UnsafeEntry)?,
+        )?
+        else {
+            return Ok(None);
+        };
+        Self::open_directory(root, limits, now_ms).map(Some)
     }
 
     fn open_directory(root: Dir, limits: UploadLimits, now_ms: u64) -> Result<Self> {
@@ -442,4 +455,20 @@ impl PackageUploadStore {
         state.durable = next;
         Ok(())
     }
+}
+
+fn database_root(kernel_database_path: &Path) -> Result<PathBuf> {
+    if !kernel_database_path.is_absolute() {
+        return Err(UploadError::UnsafeEntry);
+    }
+    let parent = kernel_database_path
+        .parent()
+        .ok_or(UploadError::UnsafeEntry)?;
+    let database_name = kernel_database_path
+        .file_name()
+        .ok_or(UploadError::UnsafeEntry)?;
+    Ok(parent.join(format!(
+        "app-uploads-{:x}",
+        Sha256::digest(database_name.as_bytes())
+    )))
 }
