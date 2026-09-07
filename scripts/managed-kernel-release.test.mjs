@@ -189,6 +189,10 @@ async function makeFixture(root, variant = "") {
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
     ],
     ["apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh", "#!/bin/sh\nexec \"$@\"\n"],
+    ...await Promise.all(["managed-rootless-service.sh", "chariox-rootless-engine.service", "chariox-rootless-user-manager.conf"].map(async (name) => {
+      const path = `apps/kernel/slice-linux-docker/${name}`
+      return [path, await readFile(join(repositoryRoot, path))]
+    })),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
     ["apps/kernel/slice-linux-docker/toolchain/package-lock.json", "{\"lockfileVersion\":3}\n"],
@@ -206,7 +210,7 @@ async function makeFixture(root, variant = "") {
     const destination = join(sourceRepository, path)
     await mkdir(join(destination, ".."), { recursive: true })
     await writeFile(destination, contents, {
-      mode: path.endsWith("enter-rootless-docker-namespace.sh") || path.endsWith("provision-linux-docker-slice.sh") || path.endsWith("managed-publication-access.sh") ? 0o755 : 0o644,
+      mode: path.endsWith(".sh") ? 0o755 : 0o644,
     })
   }
   const git = (args) => spawnSync("git", args, {
@@ -312,6 +316,9 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/build-attestation.sig",
     "usr/lib/chariox/builder-public-key",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-engine.service",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-user-manager.conf",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
@@ -424,6 +431,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     0o755,
   )
   assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-kernel")).mode, 0o755)
+  assert.equal(snapshot.find((entry) => entry.path.endsWith("/managed-rootless-service.sh")).mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-relay")).mode, 0o755)
   assert.equal(
     snapshot
@@ -431,6 +439,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         entry.type === "file" &&
         !entry.path.startsWith("usr/local/bin/") &&
         !entry.path.endsWith("/enter-rootless-docker-namespace.sh") &&
+        !entry.path.endsWith("/managed-rootless-service.sh") &&
         !entry.path.endsWith("/provision-linux-docker-slice.sh") &&
         !entry.path.endsWith("/managed-publication-access.sh") &&
         !entry.path.endsWith("/prebuilt/chariox-kernel") &&
@@ -787,7 +796,10 @@ async function createInstallerHarness(root) {
   await mkdir(bin, { recursive: true })
   await mkdir(state, { recursive: true })
   await writeHarnessCommand(join(bin, "id"), `#!/bin/sh
-if [ "\${1:-}" = "-u" ]; then echo 0; exit 0; fi
+if [ "\${1:-}" = "-u" ]; then
+  if [ "\${2:-}" = chariox-docker ]; then echo 997; else echo 0; fi
+  exit 0
+fi
 if [ "\${1:-}" = "-gn" ]; then
   [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ] && echo chariox && exit 0
   [ "\${2:-}" = "chariox-docker" ] && [ -f "$HARNESS_STATE/user-chariox-docker" ] && echo chariox-docker && exit 0
@@ -806,6 +818,11 @@ exit 2
   await writeHarnessCommand(join(bin, "groupadd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/group-$name\"\n")
   await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
   await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nexit 0\n")
+  await writeHarnessCommand(join(bin, "loginctl"), `#!/bin/sh
+[ "$*" = "enable-linger chariox-docker" ] || exit 1
+[ "\${HARNESS_LOGINCTL_FAIL:-0}" = 0 ] || exit 1
+printf '%s\\n' "$*" >> "$HARNESS_STATE/loginctl"
+`)
   await writeHarnessCommand(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n")
   await writeHarnessCommand(join(bin, "systemctl"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HARNESS_STATE/systemctl"
@@ -889,6 +906,14 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     env: { ...env, HARNESS_MUTATE_SOURCE: sourceKernel },
   })
   assert.equal(first.status, 0, first.stderr)
+  const contextPath = "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker"
+  for (const [link, source] of [
+    ["etc/systemd/user/chariox-rootless-engine.service", "chariox-rootless-engine.service"],
+    ["etc/systemd/system/user@997.service.d/50-chariox-docker.conf", "chariox-rootless-user-manager.conf"],
+  ]) {
+    assert.deepEqual(await readFile(join(harness.installRoot, link)), await readFile(join(args[0], contextPath, source)))
+  }
+  assert.equal(await readFile(join(harness.state, "loginctl"), "utf8"), "enable-linger chariox-docker\n")
   const deterministicRelease = join(
     harness.installRoot,
     "usr/lib/chariox/releases",
@@ -1064,6 +1089,14 @@ test("managed image installer atomically pivots current to a different release",
   const first = installRelease(firstOutput, firstPackage, firstFixture)
   assert.equal(first.status, 0, first.stderr)
   const current = join(harness.installRoot, "usr/lib/chariox/current")
+  assert.equal(await readlink(current), `releases/${firstPackage.stdout.trim().slice(7)}`)
+
+  const failedLinger = installRelease(secondOutput, secondPackage, secondFixture, {
+    ...env,
+    HARNESS_LOGINCTL_FAIL: "1",
+  })
+  assert.equal(failedLinger.status, 1)
+  assert.match(failedLinger.stderr, /restored previous current release/)
   assert.equal(await readlink(current), `releases/${firstPackage.stdout.trim().slice(7)}`)
 
   const failedSecond = installRelease(secondOutput, secondPackage, secondFixture, {

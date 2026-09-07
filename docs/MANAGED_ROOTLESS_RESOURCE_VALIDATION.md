@@ -1,6 +1,6 @@
 # Managed rootless resource enforcement
 
-The managed image's current rootless Docker unit runs as a system service with
+The affected managed image's rootless Docker unit runs as a system service with
 `User=chariox-docker` and forces `native.cgroupdriver=cgroupfs`. The headed-slice
 acceptance attempt on 2026-09-07 reported rootless mode without cgroups. This is
 not evidence that the requested slice memory, CPU, or PID limits are enforced.
@@ -35,7 +35,38 @@ Each probe caps its own daemon service at 384MiB and half a CPU, with a
 imports only the local static BusyBox executable, and removes the service,
 container, image and state. No provider or host Docker configuration is used.
 
-## Recorded result and remaining implementation
+## Shipped configuration and lifecycle regression
+
+The signed release now includes a dedicated `chariox-rootless-engine.service`
+user unit and a small system-service lifecycle adapter. The adapter retains
+the protected socket and state directories, starts the dedicated user manager,
+waits on the user engine, checks cgroup capabilities before reporting ready,
+and stops the engine even when its own startup or main process fails.
+Only the adapter owns restart policy. The user unit cannot independently
+restart after the system service has released its runtime directory.
+
+The installer enables lingering for `chariox-docker` and installs controller
+delegation for that UID's `user@UID.service` only. Both the user unit and its
+delegation file link into the signed release. Image preparation installs the
+user session bus and checks real container cgroup files during the existing
+mount-handle lifecycle drill. An unenforced resource configuration fails image
+validation and boot readiness.
+
+On a disposable systemd Linux VM with the prerequisites above, run:
+
+```sh
+sudo python3 scripts/managed-rootless-lifecycle-drill.py <ordinary-test-user>
+```
+
+This uses the shipped adapter, helper and engine unit with isolated fixture
+names and paths. It retains adapter hardening, uses the installed official
+Docker launcher with an offline VFS fixture, and caps the daemon at 384MiB and
+half a CPU. It tests real container limits at start, after killing the engine,
+after killing the adapter, and after explicit stop/start. It also switches the
+fixture to the unsupported driver and requires boot readiness to fail, then
+checks that the daemon stopped. All owned units, images and state are removed.
+
+## Recorded result and remaining validation
 
 On the existing local ARM64 Ubuntu 24.04 test VM, Docker 29.2.1 with cgroup v2:
 
@@ -44,14 +75,13 @@ On the existing local ARM64 Ubuntu 24.04 test VM, Docker 29.2.1 with cgroup v2:
 - `systemd` reported all required capabilities and the real container's cgroup
   files matched all three requested limits. Its owned unit was stopped.
 
-This establishes a red-capable Linux drill and a working supported configuration.
-It does **not** fix or accept the production managed image. The product change
-must install and supervise a user service for the dedicated Docker principal,
-delegate the required controllers only to that principal, and retain the
-existing protected socket/state paths and separation from the kernel user.
-Its system-service lifecycle adapter must propagate readiness, failure,
-restart and stop without leaving a detached daemon. Update signed packaging,
-image preparation and boot-time checks together. Verify actual cgroup files on
-the fresh x86_64 Ubuntu 26.04 managed image before long workloads, including
-after reboot and slice save/restore. Do not suppress the warning or substitute
-unenforced Docker flags for this acceptance.
+The shipped-unit lifecycle drill also passed all five scenarios on that local
+VM. Its boot-check regression caught a Docker Go-template field-name mismatch
+that static packaging tests did not catch; the corrected readiness command
+was then exercised successfully, including rejection of the unsupported driver.
+
+This is local implementation evidence, not production-image acceptance. The
+fixture reuses an existing ordinary user with delegated controllers; it does
+not prove fresh dedicated-account creation, image boot or reboot. Verify those
+paths and actual container cgroup files on a fresh x86_64 Ubuntu 26.04 managed
+image, then repeat after reboot and slice save/restore before long workloads.

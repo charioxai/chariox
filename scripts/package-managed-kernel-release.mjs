@@ -228,6 +228,7 @@ async function normalizeTree(root, timestamp) {
         path.endsWith("/slice-linux-docker/prebuilt/chariox-kernel") ||
         path.endsWith("/slice-linux-docker/prebuilt/chariox-relay") ||
         path.endsWith("/enter-rootless-docker-namespace.sh") ||
+        path.endsWith("/managed-rootless-service.sh") ||
         path.endsWith("/provision-linux-docker-slice.sh") ||
         path.endsWith("/managed-publication-access.sh")
       await chmod(path, executable ? 0o755 : 0o644)
