@@ -4,12 +4,10 @@
 //! policy/signature reverification after restart.
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-#[path = "release_store/fs.rs"]
-mod fs;
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
-    use super::fs::{check, entry_metadata, publish, remove_contents, same_entry, Dir};
+    use crate::private_fs::{
+        check, entry_metadata, publish, remove_contents_preserving, same_entry, Dir, FsError,
+    };
     use chariox_app_package::VerifiedPackage;
     use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, BTreeSet};
@@ -18,7 +16,7 @@ mod unix {
     use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
-    use std::path::{Component, Path, PathBuf};
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const ARCHIVE: &str = "envelope.cxapp";
@@ -44,8 +42,20 @@ mod unix {
         UnsafeEntry,
         #[error("app_release_entry_limit")]
         EntryLimit,
+        #[error("app_release_busy")]
+        Busy,
         #[error("app_release_io: {0}")]
         Io(#[from] std::io::Error),
+    }
+
+    impl From<FsError> for ReleaseStoreError {
+        fn from(error: FsError) -> Self {
+            match error {
+                FsError::Io(error) => Self::Io(error),
+                FsError::UnsafeEntry => Self::UnsafeEntry,
+                FsError::EntryLimit => Self::EntryLimit,
+            }
+        }
     }
 
     type Result<T> = std::result::Result<T, ReleaseStoreError>;
@@ -65,6 +75,15 @@ mod unix {
         Created,
         FileSynced(String),
         BeforePublish,
+        Published,
+        BeforeParentSync,
+        ParentSynced,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CleanupCheckpoint {
+        PayloadEntryRemoved,
+        BeforeMarkerRemoval,
     }
 
     #[derive(Debug)]
@@ -93,21 +112,10 @@ mod unix {
         /// Open an existing kernel-owned mode-0700 directory. Every ancestor
         /// must be a real directory: relative paths, `..` and symlinks fail.
         pub fn open(path: &Path) -> Result<Self> {
-            if !path.is_absolute() {
-                return Err(ReleaseStoreError::InvalidRoot);
-            }
-            let mut root = Dir::absolute_root()?;
-            for component in path.components() {
-                match component {
-                    Component::RootDir => {}
-                    Component::Normal(name) => root = root.child(name)?,
-                    _ => return Err(ReleaseStoreError::InvalidRoot),
-                }
-            }
-            let metadata = root.0.metadata()?;
-            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
-                return Err(ReleaseStoreError::InvalidRoot);
-            }
+            let root = Dir::open_private(path).map_err(|error| match error {
+                FsError::UnsafeEntry => ReleaseStoreError::InvalidRoot,
+                other => other.into(),
+            })?;
             Ok(Self {
                 root,
                 path: path.to_owned(),
@@ -157,8 +165,7 @@ mod unix {
             let marker = format!("{MAGIC}{digest}\n");
             let tree = ExpectedTree::new(package, archive, marker.as_bytes())?;
             if let Some(existing) = self.open_existing(final_name)? {
-                verify_tree(&existing, &tree)?;
-                return self.result(final_name, digest, existing, true);
+                return self.reuse(final_name, digest, existing, &tree, &mut checkpoint);
             }
             self.check_budget(&tree, budget)?;
             let mut temporary = Temporary::create(&self.root)?;
@@ -183,32 +190,42 @@ mod unix {
                 parent.write_new(&name, bytes)?;
                 checkpoint(StageCheckpoint::FileSynced(path.clone()))?;
             }
-            // Sync and remove write permission from descendants before parents.
+            // Darwin requires the directory being renamed to remain writable.
+            // Seal every descendant first; the locked root stays 0700 until the
+            // exclusive rename, then becomes 0500 before any acknowledgment.
             for directory in tree.directories.iter().rev() {
+                if directory.is_empty() {
+                    continue;
+                }
                 let dir = descend(&temporary.dir, directory)?;
                 dir.readonly()?;
                 dir.0.sync_all()?;
             }
+            temporary.dir.0.sync_all()?;
             checkpoint(StageCheckpoint::BeforePublish)?;
-            verify_tree(&temporary.dir, &tree)?;
+            verify_tree(&temporary.dir, &tree, RootMode::Publishing)?;
             if !same_entry(&self.root, &temporary.name, &temporary.dir)? {
                 return Err(ReleaseStoreError::UnsafeEntry);
             }
             match publish(&self.root, &temporary.name, OsStr::new(final_name)) {
                 Ok(()) => {
                     temporary.published = true;
-                    self.root.0.sync_all()?;
-                    let directory = self.root.child(OsStr::new(final_name))?;
+                    checkpoint(StageCheckpoint::Published)?;
                     if !same_entry(&self.root, OsStr::new(final_name), &temporary.dir)? {
                         return Err(ReleaseStoreError::UnsafeEntry);
                     }
-                    verify_tree(&directory, &tree)?;
-                    self.result(final_name, digest, directory, false)
+                    self.finish(
+                        final_name,
+                        digest,
+                        &temporary.dir,
+                        &tree,
+                        false,
+                        &mut checkpoint,
+                    )
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     let existing = self.root.child(OsStr::new(final_name))?;
-                    verify_tree(&existing, &tree)?;
-                    self.result(final_name, digest, existing, true)
+                    self.reuse(final_name, digest, existing, &tree, &mut checkpoint)
                 }
                 Err(error) => Err(error.into()),
             }
@@ -217,6 +234,15 @@ mod unix {
         /// Collect recognizable abandoned stages only. A live stage holds a
         /// nonblocking advisory lock; unknown entries and all releases survive.
         pub fn collect_abandoned(&self) -> Result<CleanupReport> {
+            self.collect_abandoned_with_checkpoint(|_| Ok(()))
+        }
+
+        /// Interruptions leave the marker intact until all payload deletion is
+        /// durable, so a later recovery pass can recognize and finish the stage.
+        pub fn collect_abandoned_with_checkpoint(
+            &self,
+            mut checkpoint: impl FnMut(CleanupCheckpoint) -> std::io::Result<()>,
+        ) -> Result<CleanupReport> {
             let mut report = CleanupReport::default();
             for name in self.root.entries(MAX_TREE_ENTRIES)? {
                 if !stage_name(&name) {
@@ -261,7 +287,12 @@ mod unix {
                     continue;
                 }
                 let mut remaining = MAX_TREE_ENTRIES;
-                remove_contents(&dir, &mut remaining, 0)?;
+                remove_contents_preserving(&dir, &mut remaining, OsStr::new(MARKER), &mut || {
+                    checkpoint(CleanupCheckpoint::PayloadEntryRemoved)
+                })?;
+                checkpoint(CleanupCheckpoint::BeforeMarkerRemoval)?;
+                dir.remove_file(OsStr::new(MARKER))?;
+                dir.0.sync_all()?;
                 if same_entry(&self.root, &name, &dir)? {
                     self.root.remove_directory(&name)?;
                     report.removed += 1;
@@ -306,22 +337,63 @@ mod unix {
         fn open_existing(&self, name: &str) -> Result<Option<Dir>> {
             match self.root.child(OsStr::new(name)) {
                 Ok(directory) => Ok(Some(directory)),
-                Err(ReleaseStoreError::Io(error))
-                    if error.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    Ok(None)
-                }
-                Err(error) => Err(error),
+                Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.into()),
             }
         }
 
-        fn result(
+        fn reuse(
             &self,
             name: &str,
             digest: &str,
             dir: Dir,
-            reused: bool,
+            tree: &ExpectedTree<'_>,
+            checkpoint: &mut impl FnMut(StageCheckpoint) -> Result<()>,
         ) -> Result<StagedRelease> {
+            if !dir.try_lock()? {
+                return Err(ReleaseStoreError::Busy);
+            }
+            self.finish(name, digest, &dir, tree, true, checkpoint)
+        }
+
+        fn finish(
+            &self,
+            name: &str,
+            digest: &str,
+            locked: &Dir,
+            tree: &ExpectedTree<'_>,
+            reused: bool,
+            checkpoint: &mut impl FnMut(StageCheckpoint) -> Result<()>,
+        ) -> Result<StagedRelease> {
+            if !same_entry(&self.root, OsStr::new(name), locked)? {
+                return Err(ReleaseStoreError::UnsafeEntry);
+            }
+            match locked.0.metadata()?.mode() & 0o7777 {
+                0o700 => {
+                    // Recover only a complete, exact verified tree and marker.
+                    // The exclusive inode lock excludes an unfinished publisher.
+                    verify_tree(locked, tree, RootMode::Publishing)?;
+                    locked.readonly()?;
+                }
+                0o500 => {}
+                _ => return Err(ReleaseStoreError::UnsafeEntry),
+            }
+            locked.0.sync_all()?;
+            verify_tree(locked, tree, RootMode::Sealed)?;
+            checkpoint(StageCheckpoint::BeforeParentSync)?;
+            self.root.0.sync_all()?;
+            checkpoint(StageCheckpoint::ParentSynced)?;
+            // A fresh descriptor prevents returning the publication flock to a
+            // long-lived consumer. The caller retains its lock through return.
+            let dir = self.root.child(OsStr::new(name))?;
+            let expected = locked.0.metadata()?;
+            let actual = dir.0.metadata()?;
+            if actual.dev() != expected.dev()
+                || actual.ino() != expected.ino()
+                || !same_entry(&self.root, OsStr::new(name), locked)?
+            {
+                return Err(ReleaseStoreError::UnsafeEntry);
+            }
             Ok(StagedRelease {
                 package_digest: digest.to_owned(),
                 path: self.path.join(name),
@@ -416,12 +488,12 @@ mod unix {
                         }
                         return Ok(temporary);
                     }
-                    Err(ReleaseStoreError::Io(error))
+                    Err(FsError::Io(error))
                         if error.kind() == std::io::ErrorKind::AlreadyExists =>
                     {
                         continue
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 }
             }
             Err(ReleaseStoreError::UnsafeEntry)
@@ -435,7 +507,15 @@ mod unix {
             // Do not remove a replacement that no longer names this stage.
             if same_entry(self.root, &self.name, &self.dir).unwrap_or(false) {
                 let mut remaining = MAX_TREE_ENTRIES;
-                if remove_contents(&self.dir, &mut remaining, 0).is_ok()
+                if remove_contents_preserving(
+                    &self.dir,
+                    &mut remaining,
+                    OsStr::new(MARKER),
+                    &mut || Ok(()),
+                )
+                .is_ok()
+                    && self.dir.remove_file(OsStr::new(MARKER)).is_ok()
+                    && self.dir.0.sync_all().is_ok()
                     && same_entry(self.root, &self.name, &self.dir).unwrap_or(false)
                 {
                     let _ = self.root.remove_directory(&self.name);
@@ -445,10 +525,16 @@ mod unix {
         }
     }
 
-    fn verify_tree(root: &Dir, tree: &ExpectedTree<'_>) -> Result<()> {
+    #[derive(Clone, Copy)]
+    enum RootMode {
+        Publishing,
+        Sealed,
+    }
+
+    fn verify_tree(root: &Dir, tree: &ExpectedTree<'_>, mode: RootMode) -> Result<()> {
         let mut actual = BTreeSet::new();
         let mut remaining = MAX_TREE_ENTRIES;
-        inspect_tree(root, "", &mut actual, &mut remaining)?;
+        inspect_tree(root, "", &mut actual, &mut remaining, mode)?;
         let expected: BTreeSet<_> = tree
             .files
             .keys()
@@ -483,12 +569,19 @@ mod unix {
         prefix: &str,
         actual: &mut BTreeSet<String>,
         remaining: &mut usize,
+        mode: RootMode,
     ) -> Result<()> {
         if prefix.split('/').count() > 64 {
             return Err(ReleaseStoreError::EntryLimit);
         }
         let metadata = dir.0.metadata()?;
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o222 != 0 {
+        let expected_mode = if prefix.is_empty() && matches!(mode, RootMode::Publishing) {
+            0o700
+        } else {
+            0o500
+        };
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7777 != expected_mode
+        {
             return Err(ReleaseStoreError::UnsafeEntry);
         }
         actual.insert(prefix.to_owned());
@@ -504,7 +597,7 @@ mod unix {
             };
             let metadata = entry_metadata(dir, &name)?;
             match metadata.st_mode & libc::S_IFMT {
-                libc::S_IFDIR => inspect_tree(&dir.child(&name)?, &path, actual, remaining)?,
+                libc::S_IFDIR => inspect_tree(&dir.child(&name)?, &path, actual, remaining, mode)?,
                 libc::S_IFREG => {
                     actual.insert(path);
                 }

@@ -2,7 +2,7 @@
 
 use chariox_app_package::{pack, verify, Limits, Manifest, TrustedPublisher, VerificationPolicy};
 use chariox_app_runtime::release_store::{
-    ReleaseStore, ReleaseStoreError, StageBudget, StageCheckpoint,
+    CleanupCheckpoint, ReleaseStore, ReleaseStoreError, StageBudget, StageCheckpoint,
 };
 use ed25519_dalek::SigningKey;
 use serde_json::json;
@@ -357,19 +357,21 @@ fn simultaneous_same_digest_stages_publish_once_and_validate_the_winner() {
     let barrier = Barrier::new(2);
     std::thread::scope(|scope| {
         let run = || {
-            store
-                .stage_with_checkpoint(&verified, &archive, budget(), |checkpoint| {
-                    if checkpoint == StageCheckpoint::BeforePublish {
-                        barrier.wait();
-                    }
-                    Ok(())
-                })
-                .unwrap()
-                .reused
+            store.stage_with_checkpoint(&verified, &archive, budget(), |checkpoint| {
+                if checkpoint == StageCheckpoint::BeforePublish {
+                    barrier.wait();
+                }
+                Ok(())
+            })
         };
         let one = scope.spawn(run);
         let two = scope.spawn(run);
-        assert_ne!(one.join().unwrap(), two.join().unwrap());
+        let results = [one.join().unwrap(), two.join().unwrap()];
+        let completed = results.map(|result| match result {
+            Err(ReleaseStoreError::Busy) => store.stage(&verified, &archive, budget()).unwrap(),
+            other => other.unwrap(),
+        });
+        assert_ne!(completed[0].reused, completed[1].reused);
     });
     assert_eq!(names(&directory.0).len(), 1);
 }
@@ -447,4 +449,180 @@ fn recovery_skips_live_stages_and_removes_only_recognized_abandoned_trees() {
     assert!(!abandoned.exists());
     assert!(unrelated.join("preserve").exists());
     assert!(staged.path.join("envelope.cxapp").exists());
+}
+
+#[test]
+fn publication_keeps_root_renameable_and_excludes_reuse_until_sealed_and_synced() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let verified = verify(&archive, &policy).unwrap();
+    let final_path = directory
+        .0
+        .join(verified.package_digest().strip_prefix("sha256:").unwrap());
+    let mut published = false;
+    let mut parent_synced = false;
+    let staged = store
+        .stage_with_checkpoint(&verified, &archive, budget(), |point| {
+            match point {
+                StageCheckpoint::BeforePublish => {
+                    let stage = stage_path(&directory.0);
+                    assert_eq!(fs::metadata(&stage).unwrap().mode() & 0o777, 0o700);
+                    assert_eq!(
+                        fs::metadata(stage.join("payload")).unwrap().mode() & 0o777,
+                        0o500
+                    );
+                }
+                StageCheckpoint::Published => {
+                    published = true;
+                    assert_eq!(fs::metadata(&final_path).unwrap().mode() & 0o777, 0o700);
+                    assert!(matches!(
+                        store.stage(&verified, &archive, budget()),
+                        Err(ReleaseStoreError::Busy)
+                    ));
+                }
+                StageCheckpoint::BeforeParentSync => {
+                    assert_eq!(fs::metadata(&final_path).unwrap().mode() & 0o777, 0o500);
+                    assert!(matches!(
+                        store.stage(&verified, &archive, budget()),
+                        Err(ReleaseStoreError::Busy)
+                    ));
+                }
+                StageCheckpoint::ParentSynced => parent_synced = true,
+                _ => {}
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(published && parent_synced);
+    assert_eq!(staged.directory.metadata().unwrap().mode() & 0o777, 0o500);
+    // Returning a consumer descriptor must not retain the publication flock.
+    assert!(store.stage(&verified, &archive, budget()).unwrap().reused);
+}
+
+#[test]
+fn interrupted_rename_is_verified_repaired_and_parent_synced_before_reuse_ack() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let verified = verify(&archive, &policy).unwrap();
+    let final_path = directory
+        .0
+        .join(verified.package_digest().strip_prefix("sha256:").unwrap());
+    assert!(store
+        .stage_with_checkpoint(&verified, &archive, budget(), |point| {
+            if point == StageCheckpoint::Published {
+                return Err(std::io::Error::other("interrupted after rename").into());
+            }
+            Ok(())
+        })
+        .is_err());
+    assert_eq!(fs::metadata(&final_path).unwrap().mode() & 0o777, 0o700);
+    drop(store);
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    // Refuse the sync boundary: even a matching reused tree cannot acknowledge.
+    assert!(store
+        .stage_with_checkpoint(&verified, &archive, budget(), |point| {
+            if point == StageCheckpoint::BeforeParentSync {
+                return Err(std::io::Error::other("publication sync unavailable").into());
+            }
+            Ok(())
+        })
+        .is_err());
+    assert_eq!(fs::metadata(&final_path).unwrap().mode() & 0o777, 0o500);
+    let mut synced = false;
+    let reused = store
+        .stage_with_checkpoint(&verified, &archive, budget(), |point| {
+            if point == StageCheckpoint::ParentSynced {
+                synced = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(reused.reused && synced);
+    assert_eq!(
+        fs::read(reused.path.join("envelope.cxapp")).unwrap(),
+        archive
+    );
+}
+
+#[test]
+fn repair_rejects_tampered_unsealed_published_tree_without_acknowledging_it() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let verified = verify(&archive, &policy).unwrap();
+    let final_path = directory
+        .0
+        .join(verified.package_digest().strip_prefix("sha256:").unwrap());
+    assert!(store
+        .stage_with_checkpoint(&verified, &archive, budget(), |point| {
+            if point == StageCheckpoint::Published {
+                return Err(std::io::Error::other("interruption").into());
+            }
+            Ok(())
+        })
+        .is_err());
+    let file = final_path.join("envelope.cxapp");
+    permissions(&file, 0o600);
+    fs::write(&file, b"unverified replacement").unwrap();
+    permissions(&file, 0o400);
+    assert!(matches!(
+        store.stage(&verified, &archive, budget()),
+        Err(ReleaseStoreError::InvalidExisting)
+    ));
+    assert_eq!(fs::metadata(&final_path).unwrap().mode() & 0o777, 0o700);
+}
+
+#[test]
+fn interrupted_cleanup_preserves_marker_until_all_payload_deletion_is_durable() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let verified = verify(&archive, &policy).unwrap();
+    let abandoned = directory.child(".stage-7-8-abcd");
+    let marker = abandoned.join(".chariox-stage");
+    fs::write(
+        &marker,
+        format!(
+            "chariox.app.release-stage.v1\n{}\n",
+            verified.package_digest()
+        ),
+    )
+    .unwrap();
+    let payload = abandoned.join("payload");
+    fs::create_dir(&payload).unwrap();
+    permissions(&payload, 0o700);
+    fs::write(payload.join("first"), b"partial package").unwrap();
+    fs::write(payload.join(".chariox-stage"), b"ordinary nested filename").unwrap();
+    permissions(&payload, 0o500);
+    permissions(&abandoned, 0o500);
+    assert!(store
+        .collect_abandoned_with_checkpoint(|point| {
+            if point == CleanupCheckpoint::PayloadEntryRemoved {
+                return Err(std::io::Error::other("cleanup interrupted"));
+            }
+            Ok(())
+        })
+        .is_err());
+    assert!(
+        marker.exists(),
+        "the recovery marker must outlive partial payload deletion"
+    );
+    drop(store);
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    assert!(store
+        .collect_abandoned_with_checkpoint(|point| {
+            if point == CleanupCheckpoint::BeforeMarkerRemoval {
+                assert_eq!(names(&abandoned), [".chariox-stage"]);
+                return Err(std::io::Error::other(
+                    "interrupted before final marker removal",
+                ));
+            }
+            Ok(())
+        })
+        .is_err());
+    assert!(marker.exists());
+    assert_eq!(store.collect_abandoned().unwrap().removed, 1);
+    assert!(!abandoned.exists());
 }

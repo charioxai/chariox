@@ -5,6 +5,10 @@
 //! establish confinement before executing any App code.
 
 pub mod installation;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod package_upload;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod private_fs;
 #[cfg(unix)]
 pub mod release_store;
 pub mod wire;
