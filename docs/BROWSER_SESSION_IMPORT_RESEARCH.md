@@ -191,8 +191,12 @@ involved in this fixture.
 The shared browser relay encryption helper now accepts an explicit sender keypair
 for the protocol 316 paired-identity contract. Its generated private keys are
 non-extractable. Ordinary calls still generate independent ephemeral identities.
-Seven public-boundary tests cover identity reuse, concurrent nonce separation,
-native request/reply interoperability, private-key export rejection and tampering.
+Nine public-boundary tests cover identity reuse, concurrent nonce separation,
+native request/reply interoperability, private-key export rejection, tampering,
+kernel-compatible fingerprints and sender-bound reply decryption. The fingerprint
+hashes the encoded public-key string, matching kernel terminal pairing. A paired
+caller must supply its trusted kernel key when decrypting responses; encryption
+to the client's public key alone does not authenticate the responder.
 This does not persist or enroll a paired identity, issue its scoped token, or wire
 the product connector. Those consumers and the destination transaction remain
 required before a real sign-in import can run.

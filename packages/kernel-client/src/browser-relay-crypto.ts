@@ -11,6 +11,12 @@ export type RelayKeypair = {
   readonly publicKeyBase64: string
 }
 
+export async function relayPublicKeyThumbprint(publicKeyBase64: string): Promise<string> {
+  // Kernel terminal pairing hashes the encoded string, not decoded key bytes.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(publicKeyBase64))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")
+}
+
 export async function createRelayKeypair(): Promise<RelayKeypair> {
   const keypair = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
@@ -52,7 +58,13 @@ export async function encryptRelayPayload(
 export async function decryptRelayPayload(
   privateKey: CryptoKey,
   payload: EncryptedRelayPayload,
+  expectedSenderPublicKey?: string,
 ): Promise<string> {
+  // Paired callers supply the kernel key from trusted enrollment, not the envelope.
+  // Legacy callers may omit it; decryption alone does not establish sender identity.
+  if (expectedSenderPublicKey !== undefined && payload.sender_public_key !== expectedSenderPublicKey) {
+    throw new Error("relay sender identity mismatch")
+  }
   const nonce = base64ToBytes(payload.nonce)
   if (nonce.byteLength !== relayNonceLength) {
     throw new Error("invalid relay nonce")
