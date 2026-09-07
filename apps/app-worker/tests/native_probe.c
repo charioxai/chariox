@@ -16,6 +16,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <dlfcn.h>
+extern int sandbox_check(pid_t, const char*, int, ...);
+#endif
 #if defined(__linux__)
 #include <sys/inotify.h>
 #include <sys/syscall.h>
@@ -82,6 +86,14 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   check("unrelated_host_read_denied", fd < 0);
   if (fd >= 0) close(fd);
   snprintf(path, sizeof(path), "%s/fixture.bin", getenv("CHARIOX_APP_PACKAGE"));
+#if defined(__APPLE__)
+  // SANDBOX_FILTER_PATH=1. Query the compiled rule as well as exercising mmap:
+  // a readable-file fallback is a policy bug, not a code-signing observation.
+  check("package_executable_policy_denied", sandbox_check(getpid(), "file-map-executable", 1, path) > 0);
+  Dl_info runtime_info = {0};
+  check("runtime_executable_policy_allowed", dladdr((void*)chariox_app_runtime_run, &runtime_info) != 0 &&
+      runtime_info.dli_fname && sandbox_check(getpid(), "file-map-executable", 1, runtime_info.dli_fname) == 0);
+#endif
   fd = open(path, O_RDONLY);
   check("package_read", fd >= 0);
   if (fd >= 0) {

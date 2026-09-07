@@ -17,6 +17,11 @@ extern int sandbox_check(pid_t, const char*, int, ...);
 static const char profile[] =
     "(version 1)\n"
     "(deny default)\n"
+    // Mapping policy needs its own default. A file-read* grant can otherwise
+    // supply the fallback on older macOS; (deny default) is insufficient.
+    // Apple/WebKit likewise explicitly denies file-map-executable before its
+    // trusted library exceptions. Keep this distinct from JIT/mprotect policy.
+    "(deny file-map-executable)\n"
     "(allow signal (target self))\n"
     "(allow process-info-pidinfo (target self))\n"
     "(allow file-read* (subpath (param \"PACKAGE\")) (subpath (param \"RUNTIME\")) "

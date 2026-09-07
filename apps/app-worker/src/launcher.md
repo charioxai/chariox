@@ -131,8 +131,14 @@ supervised startup before importing the installation entry point.
 The macOS profile denies by default; it permits private files, exact ancestor
 metadata, self signals/process metadata and named CPU/OS sysctls. Read/executable
 mapping support is restricted to the verified runtime, `/usr/lib`, the system
-dyld directory and OS Cryptex paths. Direct executable mappings from
-package/data/tmp are denied. **The unsigned macOS probe observed that a read-only
+dyld directory and OS Cryptex paths. `file-map-executable` has an explicit deny
+before the trusted library exceptions: relying on `(deny default)` while
+allowing private `file-read*` failed the direct-mapping probe on macOS 14.8.9
+([failed run 34169996404](https://github.com/charioxai/chariox/actions/runs/34169996404)).
+The direct-mapping denial assertion remains mandatory; the probe also checks
+compiled policy denial for the package and permission for the runtime. The
+explicit policy correction still requires macOS 14 CI confirmation.
+**The unsigned macOS probe observed that a read-only
 file mapping can later become executable through `mprotect`. Seatbelt alone is
 not evidence of a complete executable-memory policy.** The signed/hardened JIT
 fixture must establish that stronger contract; the outer sandbox must contain
@@ -188,5 +194,7 @@ signed macOS/JIT acceptance and the hostile JavaScript suite remain to implement
 
 Policy references: [Chromium Seatbelt entry points](https://github.com/chromium/chromium/blob/main/sandbox/mac/seatbelt.cc),
 [Chromium macOS common policy](https://github.com/chromium/chromium/blob/main/sandbox/policy/mac/common.sb),
+[Apple/WebKit explicit mapping policy](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/Resources/SandboxProfiles/ios/com.apple.WebKit.Networking.sb),
+[Apple XNU mmap and mprotect checks](https://github.com/apple-oss-distributions/xnu/blob/xnu-10002.81.5/bsd/kern/kern_mman.c),
 [Linux seccomp documentation](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html),
 [upstream bubblewrap](https://github.com/containers/bubblewrap).
