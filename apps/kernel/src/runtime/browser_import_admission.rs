@@ -2,7 +2,7 @@
 //! transports, never from an import payload. No cookie values belong in this store.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const LIFETIME: Duration = Duration::from_secs(120);
@@ -54,9 +54,9 @@ struct Entry {
     phase: Phase,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct BrowserImportAdmission {
-    entries: Mutex<BTreeMap<ImportRequestId, Entry>>,
+    entries: Arc<Mutex<BTreeMap<ImportRequestId, Entry>>>,
 }
 
 impl BrowserImportAdmission {
@@ -389,8 +389,34 @@ mod tests {
     }
 
     #[test]
+    fn cloned_handles_share_consent_cancellation_and_environment_reservation() {
+        let store = BrowserImportAdmission::default();
+        let other = store.clone();
+        let now = Instant::now();
+        let scope = binding();
+        let id = store.prepare(scope.clone(), now).unwrap();
+        other.approve(&id, &scope, now).unwrap();
+        store.claim(&id, &scope, now).unwrap();
+        assert_eq!(
+            other.claim(&id, &scope, now),
+            Err(ImportAdmissionError::Denied)
+        );
+        other.cancel(&id, &scope.user_id).unwrap();
+        assert_eq!(
+            store.authorize_active(&id, &scope, now),
+            Err(ImportAdmissionError::Denied)
+        );
+        assert_eq!(
+            other.prepare(scope.clone(), now),
+            Err(ImportAdmissionError::Busy)
+        );
+        store.finish(&id).unwrap();
+        other.prepare(scope, now).unwrap();
+    }
+
+    #[test]
     fn racing_claims_have_exactly_one_winner() {
-        let store = std::sync::Arc::new(BrowserImportAdmission::default());
+        let store = BrowserImportAdmission::default();
         let now = Instant::now();
         let scope = binding();
         let id = store.prepare(scope.clone(), now).unwrap();
