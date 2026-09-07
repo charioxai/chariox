@@ -8,7 +8,7 @@ use crate::slice::SliceDevelopmentPublication;
 use std::fs;
 use std::path::Path;
 
-const PUBLICATION: &str = "empty-development";
+const PUBLICATION: &str = "development";
 const STAGING: &str = ".empty-development-staging";
 const RECEIPT: &str = ".chariox-empty-workspace";
 const RECEIPT_BYTES: &[u8] = b"chariox-empty-slice-workspace-v1\n";

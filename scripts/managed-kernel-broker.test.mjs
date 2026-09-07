@@ -49,7 +49,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-test-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
-  const workspace = join(share, "managed-context/kernel/workspace")
+  const workspace = join(share, "slices/development/slice-dev/development/workspace")
   await mkdir(workspace, { recursive: true })
 
   assert.equal(validate({ kind: "docker", args: ["info"] }, share).status, 0)
@@ -458,11 +458,14 @@ process.stdout.write(readFileSync(credential))
 })
 
 test("managed slice broker pins a provisioner path inode across caller replacement", async (context) => {
-  if (process.platform !== "linux" || process.env.CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS !== "1") return
+  if (process.platform !== "linux" || process.env.CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS !== "1") {
+    context.skip("requires an explicitly enabled Linux mount namespace")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-pin-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
-  const workspace = join(share, "workspace")
+  const workspace = join(share, "slices/development/slice-dev/development/workspace")
   const moved = join(share, "workspace-original")
   const outside = join(root, "outside")
   const started = join(root, "started")
