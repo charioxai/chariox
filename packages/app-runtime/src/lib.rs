@@ -13,3 +13,5 @@ mod private_fs;
 pub mod release_store;
 pub mod wire;
 mod wire_json;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub mod worker_process;

@@ -372,3 +372,35 @@ Evidence: `kernel-upload-store-tests.log`, `kernel-upload-client-tests.log`,
 Publisher trust, verified installation/activation and periodic upload garbage
 collection remain separate integration work; upload TTL already bounds access,
 with expired data collected on store open and subsequent upload operations.
+
+## Implementation progress: native boundary and worker ownership
+
+Protocol-289 candidate `e2652c393` passed the full configured App component jobs
+on [Linux and macOS](https://github.com/charioxai/chariox/actions/runs/34167932018),
+including kernel upload routing, real relay replay, durable writes and protocol
+snapshots. The independent incremental review found no actionable issues.
+
+The native launcher confines itself before loading the runtime library, checks
+bounded launch identity and roots, filters descriptors/environment, reports Ready
+and waits for the supervisor's Continue. The Rust worker owner retains the
+prepared objects and resource-domain lease through process termination and reap;
+it bounds startup, IPC ownership and logs, including cancellation and panic
+cleanup. Its production preparation factory still requires enrolled runtime
+artifacts, platform provisioning and full quota/resource enforcement.
+
+The first [hosted Linux native fixture](https://github.com/charioxai/chariox/actions/runs/34169010393)
+passed on `0f89936d9`: all 28 production libc probe checks and both negative
+controls passed inside pinned bubblewrap 0.12.0, private namespaces/mounts and
+a 1 GiB/no-swap, one-CPU, 64-task cgroup. It verified actual process identity,
+capabilities, seccomp and mount flags before Continue. This is evidence for the
+native boundary with fixture provisioning, not for Node compatibility, the
+production installer or the complete Phase 1 resource gate.
+
+Local macOS native tests passed all seven scenarios, including constructor
+ordering, private I/O, denied host access, pthreads and bidirectional FD3 traffic.
+Two Rust supervisor tests passed, exercising the actual C launch-record parser
+and process lifecycle without building Node. Evidence is recorded in
+`native-linux-34169010393/`, `native-launcher-extended-macos.log` and
+`worker-supervisor-tests.log` under the existing evidence directory. The pinned
+Node compile remains a separate hosted job. Signed macOS/JIT containment and
+the full production resource/compatibility scenarios remain unverified.
