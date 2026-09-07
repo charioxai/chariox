@@ -68,5 +68,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 316 binds browser import relay requests to live client sender keys.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 316;
+/// Version 317 binds encrypted browser import replies to their request nonce.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 317;

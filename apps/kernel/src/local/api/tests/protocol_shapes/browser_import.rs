@@ -5,8 +5,24 @@ use crate::local::{
 };
 
 #[test]
+fn browser_import_relay_response_binds_the_encrypted_request_nonce() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 317);
+    let response = crate::transport::kernel_protocol::BrowserImportRelayResponse {
+        request_nonce: "AAAAAAAAAAAAAAAA".into(),
+        response: serde_json::json!({"BrowserImportConsent":{"request_id":"fixture","status":"prepared"}}),
+    };
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({
+            "request_nonce":"AAAAAAAAAAAAAAAA",
+            "response":{"BrowserImportConsent":{"request_id":"fixture","status":"prepared"}}
+        })
+    );
+}
+
+#[test]
 fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloads() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 316);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 317);
     let selection = BrowserImportSelection {
         session_id: "room-1".into(),
         attachment_id: "attachment-1".into(),

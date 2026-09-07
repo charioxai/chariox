@@ -105,6 +105,15 @@ impl ImportClient {
         request: Value,
         identity: Option<RelayCallerIdentity>,
     ) -> Result<Value, RelayError> {
+        let is_import = [
+            "PrepareBrowserImport",
+            "ApproveBrowserImport",
+            "ClaimBrowserImportSource",
+            "AuthorizeBrowserImportSource",
+            "CancelBrowserImport",
+        ]
+        .iter()
+        .any(|kind| request.get(kind).is_some());
         let peer =
             relay_crypto::public_key_from_private_key_base64(&self.router.relay_private_key())
                 .unwrap();
@@ -114,6 +123,7 @@ impl ImportClient {
             &serde_json::to_vec(&json!({"command_id": command_id, "request": request})).unwrap(),
         )
         .unwrap();
+        let request_nonce = encrypted.nonce.clone();
         let result = handle_daemon_request(
             &self.router,
             &self.sequence,
@@ -130,7 +140,15 @@ impl ImportClient {
             &result.encrypted_response.unwrap(),
         )
         .unwrap();
-        Ok(serde_json::from_slice(&decrypted.plaintext).unwrap())
+        let response: Value = serde_json::from_slice(&decrypted.plaintext).unwrap();
+        if is_import {
+            assert_eq!(response["request_nonce"], request_nonce);
+            assert!(response.get("response").is_some());
+            Ok(response["response"].clone())
+        } else {
+            assert!(response.get("request_nonce").is_none());
+            Ok(response)
+        }
     }
 
     async fn start_read(&self) -> String {
