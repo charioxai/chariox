@@ -1035,3 +1035,21 @@ async fn wait_for_output(client: &LocalIpcClient, session_id: &str, attachment_i
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+#[test]
+fn app_upload_maximum_chunk_fits_the_existing_local_transport_frame() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let bytes = vec![7_u8; chariox_app_runtime::package_upload::MAX_UPLOAD_CHUNK_BYTES];
+    let request = crate::local::LocalDaemonRequest::PutAppPackageUploadChunk(
+        crate::local::PutAppPackageUploadChunkRequest {
+            handle: format!("upload_{}", "a".repeat(64)),
+            offset: 0,
+            data_base64: STANDARD.encode(&bytes),
+            chunk_sha256: format!("sha256:{:064x}", 1),
+        },
+    );
+    let payload = serde_json::to_vec(&request).unwrap();
+    let frame = super::encode_frame(&payload).unwrap();
+    assert_eq!(frame.len(), payload.len() + 4);
+    assert!(payload.len() < super::MAX_IPC_FRAME_BYTES);
+}

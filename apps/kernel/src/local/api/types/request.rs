@@ -2,6 +2,10 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    BeginAppPackageUpload(BeginAppPackageUploadRequest),
+    PutAppPackageUploadChunk(PutAppPackageUploadChunkRequest),
+    GetAppPackageUpload(AppPackageUploadRequest),
+    AbortAppPackageUpload(AppPackageUploadRequest),
     ListAppInstallations(ListAppInstallationsRequest),
     GetAppInstallation(AppInstallationRequest),
     GetAppInstallationJournal(AppInstallationRequest),

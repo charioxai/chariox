@@ -805,3 +805,110 @@ fn failed_recovery_sync_blocks_retries_and_cleanup_until_durable_reopen() {
             .starts_with(b"1234"));
     }
 }
+
+#[test]
+fn lazy_upload_roots_are_private_database_scoped_and_keep_the_process_lease() {
+    let root = Root::new();
+    fs::set_permissions(&root.parent, fs::Permissions::from_mode(0o755)).unwrap();
+    let database_a = root.parent.join("first.db");
+    let database_b = root.parent.join("second.db");
+    let first =
+        PackageUploadStore::open_or_create(&database_a, UploadLimits::default(), 1).unwrap();
+    let second =
+        PackageUploadStore::open_or_create(&database_b, UploadLimits::default(), 1).unwrap();
+    let begin = |store: &PackageUploadStore| {
+        store
+            .begin("alice", "same-request", 4, &digest(b"test"), 100, 1)
+            .unwrap()
+    };
+    let upload_a = begin(&first);
+    let upload_b = begin(&second);
+    assert_ne!(upload_a.handle, upload_b.handle);
+    assert!(matches!(
+        first.status("alice", &upload_b.handle, 2),
+        Err(UploadError::NotFound)
+    ));
+    assert!(matches!(
+        PackageUploadStore::open_or_create(&database_a, UploadLimits::default(), 2),
+        Err(UploadError::Busy)
+    ));
+    let roots: Vec<_> = fs::read_dir(&root.parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("app-uploads-")
+        })
+        .collect();
+    assert_eq!(roots.len(), 2);
+    for path in roots {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    assert_eq!(
+        fs::metadata(&root.parent).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    drop(first);
+    let reopened =
+        PackageUploadStore::open_or_create(&database_a, UploadLimits::default(), 2).unwrap();
+    assert_eq!(
+        reopened.status("alice", &upload_a.handle, 2).unwrap(),
+        upload_a
+    );
+}
+
+#[test]
+fn lazy_upload_creation_rejects_unsafe_roots_without_changing_existing_permissions() {
+    let root = Root::new();
+    let limits = UploadLimits::default();
+    assert!(PackageUploadStore::open_or_create(
+        std::path::Path::new("relative/state.db"),
+        limits,
+        1
+    )
+    .is_err());
+    let missing = root.parent.join("missing");
+    assert!(PackageUploadStore::open_or_create(&missing.join("state.db"), limits, 1).is_err());
+    assert!(!missing.exists());
+    let linked = root.parent.join("linked");
+    symlink(&root.path, &linked).unwrap();
+    assert!(PackageUploadStore::open_or_create(&linked.join("state.db"), limits, 1).is_err());
+
+    let database = root.parent.join("state.db");
+    let leaf = root
+        .parent
+        .join(format!("app-uploads-{:x}", Sha256::digest(b"state.db")));
+    symlink(&root.path, &leaf).unwrap();
+    assert!(PackageUploadStore::open_or_create(&database, limits, 1).is_err());
+    assert_eq!(fs::read_dir(&root.path).unwrap().count(), 0);
+    fs::remove_file(&leaf).unwrap();
+    fs::create_dir(&leaf).unwrap();
+    fs::set_permissions(&leaf, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        PackageUploadStore::open_or_create(&database, limits, 1),
+        Err(UploadError::UnsafeEntry)
+    ));
+    assert_eq!(
+        fs::metadata(&leaf).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    fs::remove_dir(&leaf).unwrap();
+    fs::set_permissions(&root.parent, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(matches!(
+        PackageUploadStore::open_or_create(&database, limits, 1),
+        Err(UploadError::UnsafeEntry)
+    ));
+    assert!(
+        !leaf.exists(),
+        "An unsafe parent must be rejected before mkdir"
+    );
+    assert_eq!(
+        fs::metadata(&root.parent).unwrap().permissions().mode() & 0o777,
+        0o777
+    );
+}

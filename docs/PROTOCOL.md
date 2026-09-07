@@ -994,6 +994,18 @@ Workflow trigger and deployment direction:
   private. `AppRequestFailed` returns stable bounded error codes. These inspection
   requests do not stage, approve, activate or execute an App; installed metadata
   does not assert worker health or sandbox verification.
+- protocol 289 adds `BeginAppPackageUpload`, `PutAppPackageUploadChunk`,
+  `GetAppPackageUpload` and `AbortAppPackageUpload`. Every terminal uses the same
+  authenticated kernel path and opaque owner-bound upload handle; clients cannot
+  provide an owner, host path or expiry. Begin binds a client retry ID to an exact
+  size and SHA-256. Chunks are at most 512 KiB decoded and acknowledge only durable
+  offsets. Repeated begin/status/chunk requests consult the upload ledger rather
+  than the transport result cache. Abort retains its receipt until the original
+  30-minute expiry and cannot resurrect through a delayed begin retry. Package
+  bytes are omitted from command/audit payloads and Debug output. The
+  `AppPackageUploadStatus` response exposes bounded progress and phase, with
+  stable `AppRequestFailed` codes. Uploaded bytes are untrusted; this transport
+  does not enroll a publisher, approve capabilities, activate or run App code.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

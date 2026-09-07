@@ -23,6 +23,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
@@ -71,6 +72,34 @@ impl PackageUploadStore {
     pub fn open(root: &Path, limits: UploadLimits, now_ms: u64) -> Result<Self> {
         limits.validate()?;
         let root = Dir::open_private(root)?;
+        Self::open_directory(root, limits, now_ms)
+    }
+
+    /// Lazily creates this database's dedicated upload directory. The trusted
+    /// kernel supplies its absolute durable database path, never a wire field.
+    /// Only the private leaf is created; existing ancestors are not changed.
+    /// Different database filenames in one parent receive independent stores.
+    pub fn open_or_create(
+        kernel_database_path: &Path,
+        limits: UploadLimits,
+        now_ms: u64,
+    ) -> Result<Self> {
+        limits.validate()?;
+        if !kernel_database_path.is_absolute() {
+            return Err(UploadError::UnsafeEntry);
+        }
+        let parent = kernel_database_path
+            .parent()
+            .ok_or(UploadError::UnsafeEntry)?;
+        let database_name = kernel_database_path
+            .file_name()
+            .ok_or(UploadError::UnsafeEntry)?;
+        let name = format!("app-uploads-{:x}", Sha256::digest(database_name.as_bytes()));
+        let root = Dir::open_or_create_private_child(parent, OsStr::new(&name))?;
+        Self::open_directory(root, limits, now_ms)
+    }
+
+    fn open_directory(root: Dir, limits: UploadLimits, now_ms: u64) -> Result<Self> {
         if !root.try_lock()? {
             return Err(UploadError::Busy);
         }
@@ -289,12 +318,12 @@ impl PackageUploadStore {
         })
     }
 
-    pub fn abort(&self, owner: &str, handle: &str, now_ms: u64) -> Result<()> {
+    pub fn abort(&self, owner: &str, handle: &str, now_ms: u64) -> Result<UploadStatus> {
         validate_owner(owner)?;
         let mut state = self.lock()?;
         self.prune(&mut state, now_ms)?;
         if self.entry(&state, owner, handle, now_ms)?.phase == UploadPhase::Aborted {
-            return Ok(());
+            return Ok(self.entry(&state, owner, handle, now_ms)?.status(handle));
         }
         if state.leases.contains(handle) {
             return Err(UploadError::Busy);
@@ -305,7 +334,8 @@ impl PackageUploadStore {
             .ok_or(UploadError::CorruptState)?
             .phase = UploadPhase::Aborted;
         self.commit(&mut state, next, &mut |_| Ok(()))?;
-        storage::cleanup(&self.inner.root, &state.durable)
+        storage::cleanup(&self.inner.root, &state.durable)?;
+        Ok(self.entry(&state, owner, handle, now_ms)?.status(handle))
     }
 
     /// Invoke from the kernel's bounded maintenance tick as well as on startup.

@@ -175,3 +175,30 @@ async fn app_control_admission_is_bounded_and_invalid_pages_do_not_read() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn app_upload_chunk_payload_is_bounded_before_clone_and_absent_from_audit_and_debug() {
+    use super::uploads;
+    use crate::runtime::app_package_upload_control::MAX_ENCODED_UPLOAD_CHUNK_BYTES;
+    let mut chunk = PutAppPackageUploadChunkRequest {
+        handle: format!("upload_{}", "a".repeat(64)),
+        offset: 0,
+        data_base64: "c2VjcmV0LWJ1bmRsZS1jb250ZW50".into(),
+        chunk_sha256: format!("sha256:{:064x}", 1),
+    };
+    let request = LocalDaemonRequest::PutAppPackageUploadChunk(chunk.clone());
+    let command = KernelCommand::from_local_request("chunk", None, None, &request);
+    let encoded = serde_json::to_string(&command).unwrap();
+    assert!(!encoded.contains(&chunk.data_base64));
+    assert!(!encoded.contains("data_base64"));
+    assert!(!format!("{request:?}").contains(&chunk.data_base64));
+    assert_eq!(
+        command.payload["PutAppPackageUploadChunk"]["encoded_bytes"],
+        chunk.data_base64.len()
+    );
+    chunk.data_base64 = "A".repeat(MAX_ENCODED_UPLOAD_CHUNK_BYTES + 1);
+    assert!(matches!(
+        uploads::command(&LocalDaemonRequest::PutAppPackageUploadChunk(chunk)),
+        Err(AppRequestErrorCode::LimitExceeded)
+    ));
+}

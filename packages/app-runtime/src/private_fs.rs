@@ -29,6 +29,34 @@ pub(crate) struct Dir(pub(crate) File);
 impl Dir {
     /// Kernel-private directory with no symlink traversal in any ancestor.
     pub(crate) fn open_private(path: &Path) -> Result<Self> {
+        let root = Self::open_real(path)?;
+        root.require_private()?;
+        Ok(root)
+    }
+
+    /// Creates only one private child under an existing kernel-owned parent.
+    /// Both validation and subsequent I/O retain the same directory descriptors.
+    pub(crate) fn open_or_create_private_child(parent: &Path, name: &OsStr) -> Result<Self> {
+        let parent = Self::open_real(parent)?;
+        let metadata = parent.0.metadata()?;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+            return Err(FsError::UnsafeEntry);
+        }
+        let child = match parent.create_child(name) {
+            Ok(child) => child,
+            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                parent.child(name)?
+            }
+            Err(error) => return Err(error),
+        };
+        child.require_private()?;
+        // Also complete a previous creator's interrupted directory publication.
+        child.sync()?;
+        parent.sync()?;
+        Ok(child)
+    }
+
+    fn open_real(path: &Path) -> Result<Self> {
         if !path.is_absolute() {
             return Err(FsError::UnsafeEntry);
         }
@@ -40,11 +68,15 @@ impl Dir {
                 _ => return Err(FsError::UnsafeEntry),
             }
         }
-        let metadata = root.0.metadata()?;
+        Ok(root)
+    }
+
+    fn require_private(&self) -> Result<()> {
+        let metadata = self.0.metadata()?;
         if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
             return Err(FsError::UnsafeEntry);
         }
-        Ok(root)
+        Ok(())
     }
 
     pub(crate) fn absolute_root() -> Result<Self> {

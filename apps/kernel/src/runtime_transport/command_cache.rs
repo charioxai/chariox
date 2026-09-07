@@ -99,14 +99,19 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
-    // App reads must reach owner authorization and current durable state on every
-    // replay. This transport cache predates owner-scoped, sessionless Apps and
-    // its fingerprint does not carry the authenticated caller.
+    // App reads and upload retries must reach owner authorization and current
+    // durable state. Uploads deduplicate in their own owner-scoped ledger with
+    // original expiries and abort receipts. This older transport fingerprint
+    // does not carry the caller, and cached results could outlive the upload.
     !matches!(
         request,
         LocalDaemonRequest::ListAppInstallations(_)
             | LocalDaemonRequest::GetAppInstallation(_)
             | LocalDaemonRequest::GetAppInstallationJournal(_)
+            | LocalDaemonRequest::BeginAppPackageUpload(_)
+            | LocalDaemonRequest::PutAppPackageUploadChunk(_)
+            | LocalDaemonRequest::GetAppPackageUpload(_)
+            | LocalDaemonRequest::AbortAppPackageUpload(_)
     )
 }
 

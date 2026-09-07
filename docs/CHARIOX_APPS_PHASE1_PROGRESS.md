@@ -339,3 +339,36 @@ Evidence: `post-rebase-cli-validation.json`, `post-rebase-cli-shared-tests.log`,
 `upload-durability-tests.log`, and `kernel-app-control-resources.log` in the
 existing evidence directory. This increment does not install or start App code.
 Full release-matrix rows retain their unverified status.
+
+## Implementation progress: shared package upload transport
+
+Protocol 289 integrates bounded package uploads into the existing App control
+service and authenticated local/relay router. All four operations derive their
+owner from the kernel caller; the upload store derives its private root from the
+kernel's durable database path. No terminal-supplied path or expiry is accepted.
+Blocking work uses the same eight-permit admission bound as App inspection, and
+cancellation retains that permit until the operation actually finishes.
+
+The shared client supplies begin/chunk/status/abort builders. Raw package bytes
+are excluded from command payloads and Debug formatting, and encoded chunks are
+bounded before copying/decoding. Upload retries bypass the transport cache so
+ownership, current durable offsets and original abort/expiry receipts are checked
+on every retry. Tests exercise the actual relay dispatcher with the same command
+IDs for two owners, forbidden foreign chunks, local observation of relay writes,
+current status after a chunk, and an abort followed by a delayed begin replay.
+
+Local verification passed all 17 upload-store tests, 17 focused shared-client
+request/command tests and shared-client TypeScript compilation. A guarded
+`cargo check -p chariox-kernel --tests` passed in 109 seconds at a peak 2,524,752
+KiB process-group RSS. This validates compilation of the new kernel fixtures;
+their execution and protocol hashes are delegated to the expanded hosted CI.
+The earlier protocol-288 candidate `85de67ec5` passed Linux's component, kernel
+routing/relay replay, durable writer, protocol and catalog job; its macOS job was
+superseded by the next candidate, so no macOS result is inferred from Linux.
+
+Evidence: `kernel-upload-store-tests.log`, `kernel-upload-client-tests.log`,
+`kernel-upload-client-typecheck.log`, `kernel-upload-typecheck.log` and
+`kernel-upload-typecheck-resources.log` under the existing evidence directory.
+Publisher trust, verified installation/activation and periodic upload garbage
+collection remain separate integration work; upload TTL already bounds access,
+with expired data collected on store open and subsequent upload operations.

@@ -14,16 +14,21 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 mod projection;
 #[cfg(test)]
 mod tests;
+mod uploads;
 
 #[derive(Clone)]
 pub(crate) struct AppControlService {
     store: DurableKernelStateStore,
+    uploads: super::app_package_upload_control::AppPackageUploadControl,
     admission: Arc<Semaphore>,
 }
 
 impl AppControlService {
     pub(crate) fn new(store: DurableKernelStateStore) -> Self {
         Self {
+            uploads: super::app_package_upload_control::AppPackageUploadControl::new(
+                store.path().to_path_buf(),
+            ),
             store,
             admission: Arc::new(Semaphore::new(8)),
         }
@@ -39,6 +44,10 @@ impl AppControlService {
             LocalDaemonRequest::ListAppInstallations(_)
                 | LocalDaemonRequest::GetAppInstallation(_)
                 | LocalDaemonRequest::GetAppInstallationJournal(_)
+                | LocalDaemonRequest::BeginAppPackageUpload(_)
+                | LocalDaemonRequest::PutAppPackageUploadChunk(_)
+                | LocalDaemonRequest::GetAppPackageUpload(_)
+                | LocalDaemonRequest::AbortAppPackageUpload(_)
         ) {
             return None;
         }
@@ -50,6 +59,16 @@ impl AppControlService {
             Ok(permit) => permit,
             Err(_) => return Some(failed(AppRequestErrorCode::Busy)),
         };
+        match uploads::command(request) {
+            Ok(Some(upload)) => {
+                return Some(match self.uploads.execute(owner, upload, permit).await {
+                    Ok(status) => uploads::response(status),
+                    Err(error) => failed(uploads::error_code(error)),
+                });
+            }
+            Err(code) => return Some(failed(code)),
+            Ok(None) => {}
+        }
         let store = self.store.clone();
         let request = request.clone();
         Some(

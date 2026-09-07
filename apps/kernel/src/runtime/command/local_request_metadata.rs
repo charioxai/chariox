@@ -423,6 +423,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ListAppInstallations(_) => "app.list",
+        LocalDaemonRequest::BeginAppPackageUpload(_) => "app.package_upload.begin",
+        LocalDaemonRequest::PutAppPackageUploadChunk(_) => "app.package_upload.chunk",
+        LocalDaemonRequest::GetAppPackageUpload(_) => "app.package_upload.status",
+        LocalDaemonRequest::AbortAppPackageUpload(_) => "app.package_upload.abort",
         LocalDaemonRequest::GetAppInstallation(_) => "app.status",
         LocalDaemonRequest::GetAppInstallationJournal(_) => "app.journal",
         LocalDaemonRequest::CreateSession(_) => "session.create",
