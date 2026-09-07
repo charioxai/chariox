@@ -1,0 +1,23 @@
+{
+  "name": "@chariox/app-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./internal": {
+      "types": "./src/internal.d.ts",
+      "default": "./src/internal.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "lint": "tsc -p tsconfig.json"
+  }
+}

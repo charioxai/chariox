@@ -353,6 +353,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "chariox-app-package"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "jsonschema",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "tar",
+ "url",
+]
+
+[[package]]
+name = "chariox-app-runtime"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "chariox-event-protocol"
 version = "0.1.0"
 dependencies = [
