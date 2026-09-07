@@ -2,18 +2,22 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { readOnboardingTurnTools } from "./live-room-onboarding-history.mjs"
 
-test("complete tool records may contain plain-text output without becoming structured success evidence", async () => {
+test("plain-text tool output is classified without persisting private values or proving success", async () => {
+  for (const output of ["Artifact private-selector https://private.example is unavailable", JSON.stringify("private-selector")]) {
   const input = { sessionId: "room", agentId: "agent", withTimeout: async p => p,
     requests: { getSessionHistoryOutlineRequest: () => ({}) },
     client: { send: async () => ({ SessionHistoryOutline: { agents: [{ agent_id: "agent", turns: [{
       prompt_id: "current", lifecycle: "completed", entries: [{ entry_index: 1, entry: {
         kind: "provider_tool", text: JSON.stringify({ tool: "write_artifact", id: "write-1", status: "completed",
-          output: "Artifact writing is unavailable" }),
+          output }),
       } }],
     }] }] } }) } }
   const tools = await readOnboardingTurnTools(input, "current")
-  assert.equal(tools[0].output, "Artifact writing is unavailable")
+  assert.deepEqual(tools[0].output, { kind: "unstructured_tool_output", redacted: true })
   assert.equal(tools[0].output.registered, undefined)
+  assert.equal(JSON.stringify(tools).includes("private-selector"), false)
+  assert.equal(JSON.stringify(tools).includes("private.example"), false)
+  }
 })
 
 test("onboarding classifies provider tool errors without retaining private error text", async () => {
