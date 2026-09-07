@@ -65,6 +65,7 @@ SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
+SLICE_CHROMIUM_MIGRATION_ID="${CHARIOX_SLICE_CHROMIUM_MIGRATION_ID:-}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
 SLICE_START_RUNTIME="${CHARIOX_SLICE_START_RUNTIME:-0}"
@@ -217,22 +218,86 @@ container_running() {
   [[ "$state" == "true" ]]
 }
 
+recover_migration_restore_helpers() {
+  [[ -n "$SLICE_CHROMIUM_MIGRATION_ID" ]] || return 0
+  local helpers helper metadata holders
+  local owned=()
+  helpers="$(run_with_timeout 20 docker ps -a --no-trunc \
+    --filter "label=io.chariox.chromium-restore=$SLICE_CHROMIUM_MIGRATION_ID" \
+    --format '{{.ID}}')" || fail "failed to inspect interrupted home restore helpers"
+  while IFS= read -r helper; do
+    [[ -n "$helper" ]] || continue
+    [[ "$helper" =~ ^[a-f0-9]{64}$ ]] || fail "invalid home restore helper identity; left untouched"
+    [[ "${#owned[@]}" -lt 32 ]] || fail "too many interrupted home restore helpers; left untouched"
+    metadata="$(run_with_timeout 20 docker inspect --format \
+      '{{index .Config.Labels "io.chariox.chromium-restore"}}{{"\n"}}{{index .Config.Labels "io.chariox.chromium-slice"}}{{"\n"}}{{range .Mounts}}{{if eq .Destination "/home-dst"}}{{.Type}}:{{.Name}}{{"\n"}}{{end}}{{end}}' \
+      "$helper")" || fail "failed to inspect home restore helper ownership; left untouched"
+    [[ "$metadata" == "$SLICE_CHROMIUM_MIGRATION_ID"$'\n'"$SLICE_NAME"$'\n'"volume:$SLICE_HOME_VOLUME" ]] \
+      || fail "home restore helper ownership differs; left untouched"
+    owned+=("$helper")
+  done <<< "$helpers"
+  if [[ "${#owned[@]}" -gt 0 ]]; then
+    for helper in "${owned[@]}"; do
+      run_with_timeout 30 docker rm -f "$helper" >/dev/null \
+        || fail "failed to remove the owned interrupted home restore helper"
+    done
+  fi
+  holders="$(run_with_timeout 20 docker ps --filter "volume=$SLICE_HOME_VOLUME" --format '{{.ID}}')" \
+    || fail "failed to inspect current slice home holders"
+  [[ -z "$holders" ]] || fail "slice home is still mounted by a running container; left untouched"
+}
+
 restore_saved_home_volume() {
-  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
-  [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local helper
-  helper="${SLICE_NAME}-home-restore-$$"
-  log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
-  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
-  run_with_timeout 60 docker create --name "$helper" --user root \
-    -v "$SLICE_HOME_VOLUME:/home-dst" \
-    "$SLICE_IMAGE" \
-    sleep infinity >/dev/null
-  run_with_timeout 60 docker start "$helper" >/dev/null
-  run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"
-  run_with_timeout 120 docker exec -u root "$helper" \
-    bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"
-  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+  (
+    [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
+    [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+    local helper="${SLICE_NAME}-home-restore-$$-$RANDOM-$RANDOM"
+    local helper_id=""
+    local created_id=""
+    local helper_labels=()
+    recover_migration_restore_helpers
+    if [[ -n "$SLICE_CHROMIUM_MIGRATION_ID" ]]; then
+      helper_labels+=(--label "io.chariox.chromium-restore=$SLICE_CHROMIUM_MIGRATION_ID"
+        --label "io.chariox.chromium-slice=$SLICE_NAME")
+    fi
+    log "restoring saved home archive into volume $SLICE_HOME_VOLUME"
+    created_id="$(run_with_timeout 60 docker create --name "$helper" --user root \
+      ${helper_labels[@]+"${helper_labels[@]}"} -v "$SLICE_HOME_VOLUME:/home-dst" "$SLICE_IMAGE" sleep infinity)"
+    [[ "$created_id" =~ ^[a-f0-9]{64}$ ]] || fail "home restore helper returned an invalid container identity"
+    helper_id="$created_id"
+    # Bind only the validated immutable ID into the trap. Function locals may
+    # already have unwound when older Bash versions run an EXIT trap on error.
+    trap "restore_status=\$?; run_with_timeout 30 docker rm -f '$helper_id' >/dev/null 2>&1 || restore_status=1; exit \"\$restore_status\"" EXIT
+    run_with_timeout 60 docker start "$helper_id" >/dev/null
+    run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper_id:/tmp/home.tar.zst"
+    run_with_timeout 120 docker exec -u root \
+      -e "CHARIOX_VERIFY_RESTORED_PROFILE=${SLICE_CHROMIUM_MIGRATION_ID:+1}" "$helper_id" \
+      bash -lc '
+        set -euo pipefail
+        find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        cd /home-dst
+        tar --zstd -xf /tmp/home.tar.zst
+        if [[ -n "$CHARIOX_VERIFY_RESTORED_PROFILE" ]]; then
+          # Stream the archive. Compare only profile and keyring contents, never
+          # buffer or hash unrelated workspace/provider files for this gate.
+          profile="$(realpath --canonicalize-missing --no-symlinks -- "${CHARIOX_SLICE_CHROME_PROFILE:-/home/slice/.config/chariox-slice-chromium}")"
+          if [[ "$profile" == /home/slice/* ]]; then
+            export CHARIOX_RESTORED_PROFILE_MEMBER="./${profile#/home/slice/}/"
+          else
+            # External custom profiles are preserved by their existing image
+            # or workspace owner; this home checkpoint cannot verify them.
+            export CHARIOX_RESTORED_PROFILE_MEMBER=""
+          fi
+          tar --zstd -tf /tmp/home.tar.zst | awk "\$0 == ENVIRON[\"CHARIOX_RESTORED_PROFILE_MEMBER\"] || \$0 == \"./.local/share/keyrings/\" { print }" > /tmp/chariox-profile-members
+          if [[ -s /tmp/chariox-profile-members ]]; then
+            tar --zstd --compare --file /tmp/home.tar.zst --verbatim-files-from \
+              --files-from /tmp/chariox-profile-members >/tmp/chariox-profile-compare.log 2>&1 \
+              || { echo "restored Chromium profile differs from its checkpoint" >&2; exit 1; }
+          fi
+        fi
+        chown -R slice:slice /home-dst
+      '
+  )
 }
 
 machine_id_hex() {
@@ -279,7 +344,9 @@ refresh_slice_support_files() {
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" \
     || log "provider server script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" \
-    || log "screen script overlay refresh unavailable; continuing"
+    || fail "screen script overlay refresh failed; refusing to launch an outdated browser policy"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/chromium-sandbox-probe.mjs" \
+    || fail "Chromium sandbox verifier overlay refresh failed"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" \
@@ -461,21 +528,23 @@ refresh_saved_state_runtime() {
   log "refreshed saved slice worker runtime to $SLICE_RUNTIME_SOURCE_REVISION"
 }
 
+migration_container_id() {
+  local metadata identity ownership
+  metadata="$(run_with_timeout 20 docker container inspect --format \
+    '{{.Id}}{{"\n"}}{{index .Config.Labels "io.chariox.chromium-migration"}}{{"\n"}}{{range .Mounts}}{{if eq .Destination "/home/slice"}}{{.Type}}:{{.Name}}{{"\n"}}{{end}}{{end}}' \
+    "$SLICE_NAME")" || fail "failed to inspect the migration replacement; left untouched"
+  identity="${metadata%%$'\n'*}"
+  ownership="${metadata#*$'\n'}"
+  [[ "$identity" =~ ^[a-f0-9]{64}$ && "$ownership" == "$SLICE_CHROMIUM_MIGRATION_ID"$'\n'"volume:$SLICE_HOME_VOLUME" ]] \
+    || fail "migration replacement ownership differs; left untouched"
+  printf '%s\n' "$identity"
+}
+
 ensure_container() {
   local created_container=0
-  if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
-    log "recreating container $SLICE_NAME"
-    run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null
-  fi
-  if container_exists; then
-    local container_image_id desired_image_id
-    container_image_id="$(docker container inspect -f '{{.Image}}' "$SLICE_NAME" 2>/dev/null || true)"
-    desired_image_id="$(docker image inspect -f '{{.Id}}' "$SLICE_IMAGE" 2>/dev/null || true)"
-    if [[ -n "$desired_image_id" && "$container_image_id" != "$desired_image_id" ]]; then
-      log "recreating $SLICE_NAME because its worker image is stale"
-      run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null
-    fi
-  fi
+  local start_browser="${1:-0}"
+  local recreate_reason=""
+  local migration_existing_id=""
   case "$SLICE_WORKSPACE_MOUNT_MODE" in
     rw|ro) ;;
     *) fail "CHARIOX_SLICE_WORKSPACE_MOUNT_MODE must be rw or ro" ;;
@@ -484,8 +553,46 @@ ensure_container() {
     0|1) ;;
     *) fail "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
   esac
-
   if container_exists; then
+    if [[ -n "$SLICE_CHROMIUM_MIGRATION_ID" ]]; then
+      migration_existing_id="$(migration_container_id)" || return 1
+    fi
+    if [[ "$SLICE_RECREATE" == "1" ]]; then
+      recreate_reason="recreation was requested"
+    else
+      local container_image_id desired_image_id
+      container_image_id="$(docker container inspect -f '{{.Image}}' "$SLICE_NAME" 2>/dev/null || true)"
+      desired_image_id="$(docker image inspect -f '{{.Id}}' "$SLICE_IMAGE" 2>/dev/null || true)"
+      if [[ -n "$desired_image_id" && "$container_image_id" != "$desired_image_id" ]]; then
+        recreate_reason="its worker image is stale"
+      fi
+    fi
+  fi
+  local chromium_seccomp_digest=""
+  if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "0" ]]; then
+    [[ -r "$SCRIPT_DIR/chromium-seccomp.json" ]] || fail "Chromium seccomp profile is missing"
+    chromium_seccomp_digest="$(hash_stdin < "$SCRIPT_DIR/chromium-seccomp.json")"
+    if [[ "$start_browser" == "1" || -n "$recreate_reason" ]] && container_exists; then
+      local installed_seccomp_digest
+      installed_seccomp_digest="$(run_with_timeout 10 docker container inspect \
+        -f '{{index .Config.Labels "io.chariox.chromium-seccomp"}}' "$SLICE_NAME")" \
+        || fail "failed to inspect the existing Chromium sandbox configuration"
+      if [[ "$installed_seccomp_digest" != "$chromium_seccomp_digest" ]]; then
+        # Docker security options cannot be updated in place. Neither a stale
+        # saved archive nor SLICE_RECREATE proves that live state was saved.
+        # The kernel must checkpoint the current container before removing it.
+        fail "slice.chromium_sandbox_migration_required: preserve $SLICE_NAME, save its current filesystem and home volume through the kernel, then recreate it with the Chromium seccomp profile"
+      fi
+    fi
+  fi
+  if [[ -n "$recreate_reason" ]]; then
+    log "recreating $SLICE_NAME because $recreate_reason"
+    run_with_timeout 60 docker rm -f "${migration_existing_id:-$SLICE_NAME}" >/dev/null
+  fi
+  if container_exists; then
+    if [[ -n "$SLICE_CHROMIUM_MIGRATION_ID" ]]; then
+      migration_container_id >/dev/null || return 1
+    fi
     log "container $SLICE_NAME already exists"
   else
     log "creating container $SLICE_NAME"
@@ -516,6 +623,17 @@ ensure_container() {
         --security-opt apparmor=unconfined
         --security-opt systempaths=unconfined
       )
+    else
+      # Permit Chromium's own unprivileged namespaces while retaining Docker's
+      # remaining syscall restrictions. This label versions migration only;
+      # runtime sandbox evidence must come from the actual browser processes.
+      docker_create_args+=(
+        --security-opt "seccomp=$SCRIPT_DIR/chromium-seccomp.json"
+        --label "io.chariox.chromium-seccomp=$chromium_seccomp_digest"
+      )
+    fi
+    if [[ -n "$SLICE_CHROMIUM_MIGRATION_ID" ]]; then
+      docker_create_args+=(--label "io.chariox.chromium-migration=$SLICE_CHROMIUM_MIGRATION_ID")
     fi
     if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
       docker_create_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
@@ -1034,7 +1152,7 @@ print_status() {
     probe chromium chromium --version || true
     probe tesseract tesseract --version | head -n 1 || true
     echo '--- browser smoke'
-    if probe chromium-headless chromium --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err; then
+    if probe chromium-headless chromium --headless=new --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err; then
       grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=headless-ok
     else
       cat /tmp/chromium-smoke.err 2>/dev/null || true
@@ -1095,7 +1213,7 @@ main() {
     provision)
       require_docker
       build_image
-      ensure_container
+      ensure_container "$SLICE_START_DESKTOP"
       if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
         import_provider_auth
       fi
@@ -1158,15 +1276,25 @@ main() {
       ensure_container
       docker exec -it -u slice "$SLICE_NAME" opencode auth logout
       ;;
+    restore-migration-home)
+      require_docker
+      [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "migration home checkpoint is required"
+      restore_saved_home_volume
+      ;;
+    verify-chromium-sandbox)
+      require_docker
+      run_with_timeout 30 docker exec -u slice "$SLICE_NAME" \
+        timeout --kill-after=2s 25s node /opt/chariox-slice/chromium-sandbox-probe.mjs
+      ;;
     start-desktop)
       require_docker
-      ensure_container
+      ensure_container 1
       require_slice_free_space "desktop" /home/slice /tmp
       run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
       ;;
     validate-screen)
       require_docker
-      ensure_container
+      ensure_container 1
       exec_slice /opt/chariox-slice/validate-screen.sh prepare
       exec_slice /opt/chariox-slice/validate-screen.sh interact
       ;;

@@ -31,24 +31,45 @@ pub fn save_local_docker_slice_state(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container)
+    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container, None)
 }
 
 pub fn save_local_docker_slice_state_live(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop)
+    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop, None)
+}
+
+pub(super) fn save_chromium_migration_checkpoint(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    source_container_id: &str,
+) -> Result<SliceSavedStateRecord, DaemonError> {
+    save_local_docker_slice_state_inner(
+        record,
+        options,
+        SliceSnapshotQuiesce::Container,
+        Some(source_container_id),
+    )
+}
+
+pub(super) fn update_checkpoint_manifest(state: &SliceSavedStateRecord) -> Result<(), DaemonError> {
+    write_state_manifest(Path::new(&state.manifest_path), state)
 }
 
 fn save_local_docker_slice_state_inner(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
     quiesce: SliceSnapshotQuiesce,
+    migration_source: Option<&str>,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
-    let state_id = active_state_id(record);
+    let state_id = match migration_source {
+        Some(_) => format!("{}-chromium-{:016x}", active_state_id(record), rand::random::<u64>()),
+        None => active_state_id(record),
+    };
     let image_ref = active_state_image_ref(&state_id);
     let state_dir = options.root.join("states").join(&state_id);
     let manifest_path = state_dir.join("manifest.json");
@@ -61,23 +82,35 @@ fn save_local_docker_slice_state_inner(
     } else {
         None
     };
-    std::fs::create_dir_all(&state_dir).map_err(|error| DaemonError::LocalTransport {
+    let create_directory = if migration_source.is_some() {
+        // A retained checkpoint is a fresh generation. Never overwrite a
+        // generation after a name collision, and sync the new states entry.
+        std::fs::create_dir_all(options.root.join("states"))
+            .and_then(|()| std::fs::File::open(&options.root)?.sync_all())
+            .and_then(|()| std::fs::create_dir(&state_dir))
+    } else {
+        std::fs::create_dir_all(&state_dir)
+    };
+    create_directory.map_err(|error| DaemonError::LocalTransport {
         operation: "slice.state.save",
         message: format!(
             "failed to create slice state directory {}: {error}",
             state_dir.display()
         ),
     })?;
-    with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", || {
-        docker_commit_container(record, &image_ref, "slice.state.save")?;
-        let archive_result = archive_local_docker_home_volume(
-            record,
-            options,
-            &state_dir.join("home.tar.zst"),
-            "state",
-            &state_id,
-            "slice.state.save",
-        );
+    let snapshot = || {
+        if let Some(source_id) = migration_source {
+            super::chromium_migration::commit_checkpoint_image(source_id, &image_ref)?;
+        } else {
+            docker_commit_container(record, &image_ref, "slice.state.save")?;
+        }
+        let archive_result = if migration_source.is_some() {
+            super::chromium_migration::archive_checkpoint_home(record, &image_ref, &state_dir.join("home.tar.zst"))
+        } else {
+            archive_local_docker_home_volume(
+                record, options, &state_dir.join("home.tar.zst"), "state", &state_id, "slice.state.save",
+            )
+        };
         let (home_archive_path, size_bytes) = match archive_result {
             Ok(captured) => captured,
             Err(error) => {
@@ -85,9 +118,19 @@ fn save_local_docker_slice_state_inner(
                 return Err(error);
             }
         };
+        if migration_source.is_some() {
+            // The retained generation must be durable before the lifecycle can
+            // rename the original container or restore its owned home volume.
+            std::fs::File::open(&home_archive_path)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.chromium.migrate",
+                    message: format!("failed to sync the migration home checkpoint: {error}"),
+                })?;
+        }
         let now_ms = crate::session::unix_epoch_ms();
         let state = SliceSavedStateRecord {
-            id: state_id,
+            id: state_id.clone(),
             slice_name: record.name.clone(),
             source_slice_id: record.id.clone(),
             backend: record.backend.clone(),
@@ -98,14 +141,30 @@ fn save_local_docker_slice_state_inner(
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             size_bytes: Some(size_bytes),
-            last_operation: Some("state.save".to_string()),
-            last_operation_status: Some(crate::slice::model::SliceOperationStatus::Completed),
+            last_operation: Some(if migration_source.is_some() {
+                super::chromium_migration::MIGRATION_OPERATION.to_string()
+            } else {
+                "state.save".to_string()
+            }),
+            last_operation_status: Some(if migration_source.is_some() {
+                crate::slice::model::SliceOperationStatus::InProgress
+            } else {
+                crate::slice::model::SliceOperationStatus::Completed
+            }),
             last_error: None,
         };
         if let Err(error) = write_state_manifest(&manifest_path, &state) {
             remove_home_archive_generation_best_effort("state", &state.id, &home_archive_path);
             remove_docker_image_best_effort(&image_ref);
             return Err(error);
+        }
+        if migration_source.is_some() {
+            std::fs::File::open(options.root.join("states"))
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.chromium.migrate",
+                    message: format!("failed to sync the migration checkpoint directory: {error}"),
+                })?;
         }
         if let Some(previous) = previous_state.as_ref() {
             if previous.home_archive_path != state.home_archive_path {
@@ -120,7 +179,23 @@ fn save_local_docker_slice_state_inner(
             }
         }
         Ok(state)
-    })
+    };
+    let result = if let Some(source_id) = migration_source {
+        // The canonical name may have been rebound outside the kernel. Every
+        // migration stop/exec must remain tied to the inspected source ID.
+        super::chromium_migration::with_checkpoint_source_stopped(source_id, snapshot)
+    } else {
+        with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", snapshot)
+    };
+    if migration_source.is_some() && result.is_err() {
+        // Only this unpublished, exclusively-created generation is eligible.
+        // remove_dir refuses unexpected contents instead of deleting them.
+        remove_home_archive_generation_best_effort("state", &state_id, &state_dir.join("home.tar.zst"));
+        let _ = std::fs::remove_file(&manifest_path);
+        let _ = std::fs::remove_dir(&state_dir);
+        remove_docker_image_best_effort(&image_ref);
+    }
+    result
 }
 
 pub fn create_local_docker_slice_backup(

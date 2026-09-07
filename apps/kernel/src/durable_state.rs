@@ -19,6 +19,7 @@ pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
 mod owner;
+mod slice_saved_state;
 pub(crate) mod workflow_runtime;
 
 #[derive(Debug, Clone)]
@@ -126,6 +127,7 @@ enum DurableWriterRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    SliceSavedState(Box<slice_saved_state::SavedSliceStateWrite>),
     Event {
         event_id: String,
         kind: String,
@@ -1338,6 +1340,9 @@ fn commit_durable_write_batch(
     let mut failure = None;
     for request in &batch {
         let result = match &request.operation {
+            DurableWriteOperation::SliceSavedState(write) => {
+                slice_saved_state::write(&transaction, write)
+            }
             DurableWriteOperation::Event {
                 event_id,
                 kind,

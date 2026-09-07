@@ -101,6 +101,7 @@ RUN groupadd --gid 1001 slice \
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.mjs /opt/chariox-slice/chromium-sandbox-probe.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
@@ -109,7 +110,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.s
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh
 
-RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
+RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/chromium-sandbox-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
 
 ARG CHARIOX_RELAY_PEER_PROTOCOL_VERSION=unknown
 ARG CHARIOX_RUNTIME_SOURCE_REVISION=unknown

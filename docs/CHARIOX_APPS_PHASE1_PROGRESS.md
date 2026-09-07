@@ -415,3 +415,35 @@ and process lifecycle without building Node. Evidence is recorded in
 `worker-supervisor-tests.log` under the existing evidence directory. The pinned
 Node compile remains a separate hosted job. Signed macOS/JIT containment and
 the full production resource/compatibility scenarios remain unverified.
+
+## Implementation progress: Chromium migration recovery
+
+The production primary, fallback and recovery launch paths now enable Chromium's
+sandbox. The existing profile path and password-store selection are preserved.
+The image and live overlays include the real sandbox probe and the provisioner
+uses the committed seccomp policy. Its policy label versions configuration;
+actual browser processes and `chrome://sandbox` supply runtime evidence.
+
+Legacy slice startup captures a fresh durable checkpoint before replacement.
+Snapshot stopping and destructive migration/helper operations use checked
+immutable container IDs. Saved-state and active-reference events commit together
+through the existing writer before volatile publication. A completed migration
+can retry old-container cleanup without restoring an old checkpoint over later
+user work; post-commit audit errors cannot trigger rollback. Cancellation retains
+the existing slice lifecycle exclusion until the blocking operation finishes.
+
+Local deterministic launch/restore/probe checks passed 46 cases with one
+GNU-tar-only case skipped on macOS. The kernel test typecheck passed before the
+last helper ownership refinement. The refined helper's four actual process tests
+then passed through a tiny harness importing the production module: timeout,
+output overflow, descendant pipe cleanup and lost wait authority. The production
+CI now runs these plus migration and atomic-publication regressions on both
+platforms. Evidence: `chromium-sandbox-tests.log`, `bounded-helper-tests.log` and
+the kernel typecheck logs already listed above. Real browser save/restore,
+full kernel migration and live Google session acceptance remain separate gates.
+
+The trusted JS bootstrap now imports one ESM default or CommonJS registration
+function with the frozen App SDK, owns readiness and the inherited channel, and
+drains the shutdown response before exit. Its nine ordinary-Node wire/lifecycle
+fixtures passed (`bootstrap-wire-tests.log`); they do not establish execution
+inside the pinned embedded runtime or native sandbox.

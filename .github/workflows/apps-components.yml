@@ -50,6 +50,12 @@ jobs:
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
       - name: Test runtime build planning and resource guards
         run: node --test scripts/build-app-runtime.test.mjs
+      - name: Test Chromium launch, sandbox probing and restore control
+        run: >-
+          node --test --test-concurrency=1
+          apps/kernel/slice-linux-docker/chromium-sandbox.test.mjs
+          apps/kernel/slice-linux-docker/chromium-restore.test.mjs
+          apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.test.mjs
       - name: Test kernel App routing and durable writer
         env:
           RUST_MIN_STACK: '16777216'
@@ -59,6 +65,13 @@ jobs:
           cargo test --locked -p chariox-kernel --lib runtime::app_package_upload_control:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib app_upload_maximum_chunk -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib durable_state:: -- --test-threads=1
+      - name: Test Chromium migration and atomic checkpoint recovery
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          cargo test --locked -p chariox-kernel --lib chromium_migration:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib saved_state_persistence:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib bounded_output::tests:: -- --test-threads=1
       - name: Check shared protocol snapshots and terminal catalog
         env:
           RUST_MIN_STACK: '16777216'
