@@ -68,5 +68,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 315 revalidates browser import consent on transport replay.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 315;
+/// Version 316 binds browser import relay requests to live client sender keys.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 316;

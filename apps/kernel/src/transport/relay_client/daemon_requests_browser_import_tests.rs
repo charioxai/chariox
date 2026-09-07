@@ -95,6 +95,16 @@ impl ImportClient {
     }
 
     async fn send(&self, command_id: &str, request: Value) -> Result<Value, RelayError> {
+        self.send_with_identity(command_id, request, Some(self.identity.clone()))
+            .await
+    }
+
+    async fn send_with_identity(
+        &self,
+        command_id: &str,
+        request: Value,
+        identity: Option<RelayCallerIdentity>,
+    ) -> Result<Value, RelayError> {
         let peer =
             relay_crypto::public_key_from_private_key_base64(&self.router.relay_private_key())
                 .unwrap();
@@ -107,7 +117,7 @@ impl ImportClient {
         let result = handle_daemon_request(
             &self.router,
             &self.sequence,
-            Some(self.identity.clone()),
+            identity,
             encrypted,
             &self.cache,
         )
@@ -249,5 +259,82 @@ fn browser_import_relay_replay_cannot_repeat_claim_or_change_caller() {
             client.send("authorize", authorize).await.is_err(),
             "another user must not obtain a cached authorization"
         );
+    });
+}
+
+#[test]
+fn browser_import_relay_requires_possession_of_the_bound_sender_key() {
+    run(async || {
+        let mut client = ImportClient::new();
+        let id = client.start_read().await;
+        let authorize = json!({"AuthorizeBrowserImportSource": {"request_id": id, "selection": client.selection}});
+        client
+            .send("owner-authorize", authorize.clone())
+            .await
+            .unwrap();
+        // Keep the authenticated relay identity, but encrypt with another key.
+        // This models a copied client token without its bound private key.
+        let owner_key = client.private_key.clone();
+        client.private_key = relay_crypto::generate_private_key_base64();
+        assert!(
+            client.send("other-key", authorize.clone()).await.is_err(),
+            "a token without its bound private key must not authorize cookie reads"
+        );
+        client.private_key = owner_key;
+        client.send("owner-again", authorize).await.unwrap();
+    });
+}
+
+#[test]
+fn browser_import_relay_requires_live_client_identity_before_reserving_consent() {
+    run(async || {
+        let client = ImportClient::new();
+        let prepare = json!({"PrepareBrowserImport": {"selection": client.selection}});
+        let mut invalid = vec![None];
+        for expiry in [0, crate::session::unix_epoch_ms().saturating_sub(1)] {
+            let mut identity = client.identity.clone();
+            identity.expires_at_ms = expiry;
+            invalid.push(Some(identity));
+        }
+        for kind in [
+            RelaySubjectKind::Service,
+            RelaySubjectKind::Machine,
+            RelaySubjectKind::Kernel,
+        ] {
+            let mut identity = client.identity.clone();
+            identity.subject_kind = kind;
+            invalid.push(Some(identity));
+        }
+        for thumbprint in [None, Some(String::new())] {
+            let mut identity = client.identity.clone();
+            identity.public_key_thumbprint = thumbprint;
+            invalid.push(Some(identity));
+        }
+        for identity in invalid {
+            let error = client
+                .send_with_identity("prepare", prepare.clone(), identity)
+                .await
+                .expect_err("invalid identity cannot reserve consent");
+            assert_eq!(error.code, "unauthorized");
+        }
+        client.start_read().await;
+    });
+}
+
+#[test]
+fn browser_import_relay_does_not_require_bound_keys_for_ordinary_client_reads() {
+    run(async || {
+        let mut client = ImportClient::new();
+        client.identity.public_key_thumbprint = None;
+        client
+            .send(
+                "list",
+                serde_json::to_value(LocalDaemonRequest::ListSessions(
+                    crate::local::ListSessionsRequest,
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
     });
 }

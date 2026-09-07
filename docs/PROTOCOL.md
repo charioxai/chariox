@@ -1005,6 +1005,16 @@ for one-use transitions; clients must treat a failed replay as denial, not retry
 cookie reads using a previously successful response. Import clients require
 protocol 315; unrelated Web/TUI and peer minimum versions are unchanged.
 
+Protocol v316 binds all five import relay requests to the authenticated client's
+sender key. After decrypting the request and before dispatch, the kernel requires
+a Client identity with a future expiry and a public-key thumbprint matching the
+encrypted sender key. A copied token alone cannot authorize import reads, change
+consent or cancel an import. Missing identity, missing key, expired identity and
+non-client subjects are denied before ledger mutation. Ordinary browser requests
+retain their existing ephemeral-key behavior. Import connectors must use their
+paired key throughout consent and source reads and require protocol 316; general
+Web/TUI and peer minimums are unchanged.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.

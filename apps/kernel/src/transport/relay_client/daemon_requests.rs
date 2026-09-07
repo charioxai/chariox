@@ -19,7 +19,7 @@ use crate::transport::kernel_protocol::{
 use crate::transport::relay_crypto;
 
 use super::request_errors::{relay_error, relay_request_kind};
-use super::sender_identity::validate_bound_service_sender;
+use super::sender_identity::{validate_bound_service_sender, validate_browser_import_sender};
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
@@ -79,6 +79,14 @@ pub(super) async fn handle_daemon_request(
             daemon_private_key,
         )
     };
+    if let Err(error) =
+        validate_browser_import_sender(&request, caller_identity.as_ref(), &encrypted_request)
+    {
+        return RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(error),
+        };
+    }
     let request_kind = relay_request_kind(&request);
     let quiet_success_request =
         crate::runtime::command_latency::is_quiet_success_command_type(request_kind);
