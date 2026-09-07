@@ -983,6 +983,30 @@ mod tests {
         use std::io::Write;
         use std::process::{Command, Stdio};
 
+        const ISOLATED: &str = "CHARIOX_TEST_EMPTY_SLICE_ISOLATED";
+        if std::env::var_os(ISOLATED).is_none() {
+            // Managed provider children inherit a slice root that takes precedence over
+            // config. Isolate this test without mutating the parallel test process.
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::state::slice_runtime_state::tests::empty_slice_development_has_a_broker_safe_workspace_and_preserves_edits",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(ISOLATED, "1")
+                .env_remove("CHARIOX_SLICE_ROOT")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "isolated regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+
         struct Scratch(std::path::PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -1003,6 +1027,15 @@ mod tests {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.user_config.slices.root = Some(share.join("slices").display().to_string());
+        assert_eq!(config.slice_root(), share.join("slices"));
+        config.local_socket_path = root.join("kernel.sock");
+        config.session_history_root_default = root.join("history");
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
         let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
         let runtime = owned_runtime_state(&app).await;
         let created = runtime
