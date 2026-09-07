@@ -1,4 +1,8 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
+import { readFile } from "node:fs/promises"
+
+const verifierSha256 = createHash("sha256").update(await readFile(new URL(import.meta.url))).digest("hex")
 
 // Read only process security metadata, never URLs, page text, or cookie values.
 const probe = `
@@ -38,5 +42,5 @@ export async function verifyChromiumRendererSandbox(run) {
     assert.ok(renderer.pidNamespaceDepth > browsers[0].pidNamespaceDepth,
       "renderer lacks its own PID namespace")
   }
-  return { rendererCount: renderers.length, rendererSandboxVerified: true }
+  return { rendererCount: renderers.length, rendererSandboxVerified: true, verifierSha256 }
 }

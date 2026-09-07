@@ -7,6 +7,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { verifyChromiumRendererSandbox } from "./lib/chromium-renderer-sandbox.mjs"
 
 import {
   assertRetainedClipboardEvidenceIsRedacted,
@@ -380,6 +381,8 @@ async function main() {
       "256",
       "--network",
       "none",
+      "--security-opt",
+      `seccomp=${path.join(repoRoot, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`,
       "--entrypoint",
       "/bin/sleep",
       image,
@@ -494,7 +497,7 @@ async function main() {
       containerName,
       "/bin/bash",
       "-lc",
-      `exec chromium --user-data-dir=${containerProfile} --no-sandbox --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 about:blank >${containerRoot}/chromium.log 2>&1`,
+      `exec chromium --user-data-dir=${containerProfile} --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 about:blank >${containerRoot}/chromium.log 2>&1`,
     ])
     await waitFor(async () => {
       const result = await run("docker", [
@@ -508,6 +511,11 @@ async function main() {
       ])
       return result.code === 0 && result.stdout.trim().length > 0
     }, "Chromium readiness", 45_000)
+    // Process presence alone does not prove the blank-page renderer is ready.
+    report.browserSandbox = await waitFor(() =>
+      verifyChromiumRendererSandbox(async args =>
+        (await docker(["exec", "-u", "slice", containerName, ...args])).stdout),
+    "Chromium renderer sandbox", 10_000)
 
     for (const clipboardCase of clipboardCases) {
       const caseNeedles = clipboardCase.value.length > 0 ? [clipboardCase.value, canary] : []
