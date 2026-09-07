@@ -343,7 +343,7 @@ test("managed slice image locks every network and compiler input", async () => {
     "@openai/codex": "0.144.5",
     "opencode-ai": "1.18.23",
     pnpm: "11.22.0",
-    ws: "8.18.3",
+    ws: "8.21.3",
   })
   assert.equal(toolchainLock.lockfileVersion, 3)
   for (const [path, entry] of Object.entries(toolchainLock.packages)) {
