@@ -19,6 +19,12 @@ production `restore-migration-home` action into a fresh volume, then starts a
 fresh browser and verifies the exact data and restored fixture tab. Independent
 negative checks revoke the fixture session on the server and use an empty
 profile; neither may pass the successful authentication/storage check.
+The probe requires observed renderer PID nesting, UID/capability lockdown and
+additional seccomp filters. It checks namespace inodes when readable; Chromium's
+non-dumpable renderers may deny those ptrace-gated links. In that case network
+isolation is attested by `chrome://sandbox`, with no claim of independent network
+inode inspection and no added ptrace capability. The result records bounded
+renderer and restricted-link counts, so evidence distinguishes these paths.
 
 Browser containers have no external network or published ports, two CPUs,
 2 GiB memory without extra swap, and 512 PIDs. The BuildKit container also has

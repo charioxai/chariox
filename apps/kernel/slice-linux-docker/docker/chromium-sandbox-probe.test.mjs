@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundedResponseJson, formatProbeFailure, validateSandboxReport, withSandboxText } from "./chromium-sandbox-probe.mjs";
+import { boundedResponseJson, formatProbeFailure, namespaceLink, validateSandboxReport, withSandboxText } from "./chromium-sandbox-probe.mjs";
 
 const text = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes\n";
-const browser = { uid: 1000, uids: [1000, 1000, 1000, 1000], pidNamespace: "pid:[100]", netNamespace: "net:[100]", seccompFilters: 1 };
-const renderer = { ...browser, pidNamespace: "pid:[200]", netNamespace: "net:[200]",
+const browser = { pid: 40, namespacePids: [40], uid: 1000, uids: [1000, 1000, 1000, 1000], pidNamespace: "pid:[100]", netNamespace: "net:[100]", seccompFilters: 1 };
+const renderer = { ...browser, pid: 50, namespacePids: [50, 1], pidNamespace: "pid:[200]", netNamespace: "net:[200]",
   capabilities: "0000000000000000", noNewPrivileges: 1, seccomp: 2, seccompFilters: 2 };
 
 test("diagnostic labels require independent renderer namespace and seccomp evidence", () => {
@@ -95,4 +95,24 @@ test("owned diagnostic target survives process inspection and closes on either o
       assert.deepEqual(methods.slice(-3), ["inspect.finished", "Target.closeTarget", "socket.close"]);
     }
   } finally { globalThis.WebSocket = original; }
+});
+
+test("ptrace-protected namespace links retain independent process sandbox checks", async () => {
+  const protectedRenderer = { ...renderer, pidNamespace: null, netNamespace: null,
+    pidNamespaceRestricted: true, netNamespaceRestricted: true };
+  assert.deepEqual(validateSandboxReport(text, browser, [protectedRenderer]),
+    { rendererCount: 1, restrictedPidNamespaceLinks: 1, restrictedNetworkNamespaceLinks: 1 });
+  assert.deepEqual(validateSandboxReport(text, browser, [renderer, protectedRenderer]),
+    { rendererCount: 2, restrictedPidNamespaceLinks: 1, restrictedNetworkNamespaceLinks: 1 });
+  assert.deepEqual(validateSandboxReport(text, browser, [renderer]),
+    { rendererCount: 1, restrictedPidNamespaceLinks: 0, restrictedNetworkNamespaceLinks: 0 });
+  for (const change of [{ namespacePids: [50] }, { namespacePids: [] }, { namespacePids: [99, 1] },
+    { pidNamespaceRestricted: false }, { netNamespaceRestricted: false }, { seccompFilters: 1 }, { noNewPrivileges: 0 }])
+    assert.throws(() => validateSandboxReport(text, browser, [{ ...protectedRenderer, ...change }]));
+  assert.throws(() => validateSandboxReport(text.replace("Network namespaces Yes", "Network namespaces No"), browser, [protectedRenderer]));
+  for (const code of ["EACCES", "EPERM"])
+    assert.deepEqual(await namespaceLink("/fixture", async () => { throw Object.assign(new Error("private"), { code }); }),
+      { value: null, restricted: true });
+  for (const code of ["ENOENT", "EIO"])
+    await assert.rejects(namespaceLink("/fixture", async () => { throw Object.assign(new Error("private"), { code }); }), { code });
 });

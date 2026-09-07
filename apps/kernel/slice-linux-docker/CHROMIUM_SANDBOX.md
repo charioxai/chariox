@@ -94,12 +94,21 @@ retains that operation guard even if the requesting future is cancelled.
    files are restored normally and are not hashed for this
    browser gate. The current launcher and verification helper must overlay
    successfully before the browser can start.
-5. Check the actual `chrome://sandbox` report and renderer process metadata:
-   non-root real/effective/saved/filesystem UIDs, separate PID/network namespaces,
-   no effective capabilities, no-new-privileges, and a seccomp filter beyond the
-   browser's container baseline. Verify the original profile path and `basic`
-   password-storage option, then mark the migration complete and remove the old
-   stopped container. Retain the checkpoint/image for recovery.
+5. Check the actual `chrome://sandbox` PID/network report and independent
+   renderer process metadata: non-root real/effective/saved/filesystem UIDs,
+   nested `NSpid` hierarchy, no effective capabilities, no-new-privileges, and a
+   seccomp filter beyond the browser's container baseline. Readable PID/network
+   namespace inodes must also differ from the browser's. Linux
+   [ptrace access checks](https://man7.org/linux/man-pages/man2/ptrace.2.html)
+   can deny namespace links for Chromium's deliberately non-dumpable sandbox
+   processes; this denial does not discard their remaining process evidence.
+   In that case PID nesting still comes from kernel
+   [`NSpid` metadata](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html),
+   while network isolation relies on Chromium's own diagnostic report. This
+   probe does not claim independent network-inode observation when access was
+   denied and never adds ptrace privileges. Verify the original profile path
+   and `basic` password-storage option, then mark the migration complete and
+   remove the old stopped container. Retain the checkpoint/image for recovery.
 
 If creation, validation or publication fails, rollback rechecks identities,
 removes only the owned replacement by immutable ID, restores the checkpoint home,

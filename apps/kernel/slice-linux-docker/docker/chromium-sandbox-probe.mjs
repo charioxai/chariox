@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Kernel-owned migration verification. Report booleans only, never page data.
+// Kernel-owned migration verification. Report booleans and bounded counts, never page data.
 import { opendir, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -24,20 +24,43 @@ export function validateSandboxReport(text, browser, renderers) {
     && Array.isArray(process.uids) && process.uids.length === 4 && process.uids.every(uid => uid === process.uid);
   const validNamespaces = process => /^pid:\[\d+\]$/.test(process.pidNamespace)
     && /^net:\[\d+\]$/.test(process.netNamespace);
-  requireCheck(validUid(browser) && validNamespaces(browser),
+  const validPidHierarchy = process => Number.isSafeInteger(process.pid) && process.pid > 0
+    && Array.isArray(process.namespacePids) && process.namespacePids.length > 0 && process.namespacePids.length <= 32
+    && process.namespacePids[0] === process.pid
+    && process.namespacePids.every(pid => Number.isSafeInteger(pid) && pid > 0);
+  requireCheck(validUid(browser) && validNamespaces(browser) && validPidHierarchy(browser),
     "non-root browser with observed namespaces is required");
   requireCheck(Number.isSafeInteger(browser.seccompFilters) && browser.seccompFilters >= 0,
     "browser seccomp baseline is unavailable");
-  requireCheck(renderers.length > 0, "no observable browser renderer processes");
+  requireCheck(Array.isArray(renderers) && renderers.length > 0 && renderers.length <= 8192,
+    "no observable browser renderer processes");
   for (const renderer of renderers) {
     requireCheck(validUid(renderer) && renderer.uid === browser.uid, "unexpected renderer UID");
     requireCheck(renderer.capabilities === "0000000000000000", "renderer retains capabilities");
     requireCheck(renderer.noNewPrivileges === 1 && renderer.seccomp === 2, "renderer lockdown is incomplete");
-    requireCheck(validNamespaces(renderer) && renderer.pidNamespace !== browser.pidNamespace && renderer.netNamespace !== browser.netNamespace,
-      "renderer shares the browser's PID or network namespace");
+    requireCheck(validPidHierarchy(renderer) && renderer.namespacePids.length > browser.namespacePids.length,
+      "renderer lacks an observed nested PID namespace");
+    // Namespace symlinks are ptrace-gated. Chromium's non-dumpable sandbox
+    // processes can intentionally deny them, even to this same-UID observer.
+    // NSpid remains independent kernel evidence for PID nesting. Chromium's
+    // own diagnostic above attests network isolation; if namespace inodes are
+    // readable, they must independently agree as well. Missing data without an
+    // explicit access denial is never accepted as evidence.
+    for (const kind of ["pid", "net"]) {
+      const field = `${kind}Namespace`;
+      const observed = renderer[field];
+      requireCheck(observed === null && renderer[`${field}Restricted`] === true
+        || typeof observed === "string" && new RegExp(`^${kind}:\\[\\d+\\]$`).test(observed) && observed !== browser[field],
+      "renderer namespace evidence is missing or contradicts isolation");
+    }
     requireCheck(Number.isSafeInteger(renderer.seccompFilters) && renderer.seccompFilters > browser.seccompFilters,
       "renderer did not install an additional seccomp filter");
   }
+  return {
+    rendererCount: renderers.length,
+    restrictedPidNamespaceLinks: renderers.filter(renderer => renderer.pidNamespaceRestricted === true).length,
+    restrictedNetworkNamespaceLinks: renderers.filter(renderer => renderer.netNamespaceRestricted === true).length,
+  };
 }
 
 async function boundedText(path, limit = 65536) {
@@ -58,17 +81,28 @@ async function boundedText(path, limit = 65536) {
   } finally { await file.close(); }
 }
 
+export async function namespaceLink(path, inspect = readlink) {
+  try { return { value: await inspect(path), restricted: false }; }
+  catch (error) {
+    if (["EACCES", "EPERM"].includes(error.code)) return { value: null, restricted: true };
+    throw error;
+  }
+}
+
 async function processInfo(pid) {
   const [status, command, pidNamespace, netNamespace] = await Promise.all([
     boundedText(`/proc/${pid}/status`), boundedText(`/proc/${pid}/cmdline`),
-    readlink(`/proc/${pid}/ns/pid`), readlink(`/proc/${pid}/ns/net`),
+    namespaceLink(`/proc/${pid}/ns/pid`), namespaceLink(`/proc/${pid}/ns/net`),
   ]);
   const number = name => Number(status.match(new RegExp(`^${name}:\\s+(\\d+)`, "m"))?.[1] ?? NaN);
-  const uids = status.match(/^Uid:\s+([0-9 \t]+)$/m)?.[1].trim().split(/\s+/).map(Number) ?? [];
+  const list = name => status.match(new RegExp(`^${name}:\\s+([0-9 \\t]+)$`, "m"))?.[1].trim().split(/\s+/).map(Number) ?? [];
+  const uids = list("Uid");
   return { pid, parent: number("PPid"), uid: uids[0], uids, command: command.split("\0"),
     capabilities: status.match(/^CapEff:\s+([a-f0-9]+)$/m)?.[1],
     noNewPrivileges: number("NoNewPrivs"), seccomp: number("Seccomp"), seccompFilters: number("Seccomp_filters"),
-    pidNamespace, netNamespace };
+    namespacePids: list("NSpid"),
+    pidNamespace: pidNamespace.value, pidNamespaceRestricted: pidNamespace.restricted,
+    netNamespace: netNamespace.value, netNamespaceRestricted: netNamespace.restricted };
 }
 
 export async function boundedResponseJson(response, limit = 16384) {
@@ -180,11 +214,11 @@ export async function withSandboxText(inspect) {
 async function main() {
   requireCheck(process.getuid?.() > 0, "sandbox verification requires the slice user");
   const profile = process.env.CHARIOX_SLICE_CHROME_PROFILE || join(homedir(), ".config/chariox-slice-chromium");
-  await withSandboxText(async text => {
+  const observation = await withSandboxText(async text => {
     const { browser, renderers } = await inspectProcesses(profile);
-    validateSandboxReport(text, browser, renderers);
+    return validateSandboxReport(text, browser, renderers);
   });
-  console.log(JSON.stringify({ chromiumSandboxVerified: true, profilePathVerified: true, basicPasswordStoreVerified: true }));
+  console.log(JSON.stringify({ chromiumSandboxVerified: true, profilePathVerified: true, basicPasswordStoreVerified: true, observation }));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
