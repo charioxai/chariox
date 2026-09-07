@@ -1599,7 +1599,7 @@ mod tests {
         config.user_config.slices.root = Some(share.join("slices").display().to_string());
         assert_eq!(config.slice_root(), share.join("slices"));
         config.local_socket_path = root.join("kernel.sock");
-        config.session_history_root_default = root.join("history");
+        config = config.with_session_history_root(root.join("history"));
         config.user_config.history.operational.path =
             Some(root.join("operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
