@@ -17,6 +17,23 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("browser controller action was cancelled (controller fenced: {controller_fenced})")]
+    BrowserControllerActionCancelled { controller_fenced: bool },
+    #[error(
+        "browser controller restarted at generation {runtime_generation} before the operation"
+    )]
+    BrowserControllerRecoveryRequired { runtime_generation: u64 },
+    #[error("internal invariant `{operation}` failed: {message}")]
+    InternalInvariant {
+        operation: &'static str,
+        message: String,
+    },
+    #[error("worker cleanup failed for `{agent_id}`; agent retained. Resolve the reported failure and retry cleanup: {source}")]
+    AgentWorkerCleanup {
+        agent_id: String,
+        #[source]
+        source: Box<DaemonError>,
+    },
     #[error("managed context `{operation}` failed: {message}")]
     ManagedContext {
         code: &'static str,

@@ -20,6 +20,7 @@ import {
   listSlicesRequest,
   removeSliceProviderAuthRequest,
   resetSliceStateRequest,
+  restoreSliceBackupRequest,
   saveSliceStateRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -159,4 +160,13 @@ export async function createSliceBackup(
 ): Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }> {
   const response = await client.send<Record<string, unknown>>(createSliceBackupRequest(sliceRef, name))
   return expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>(response, "SliceBackupCreated")
+}
+
+export async function restoreSliceBackup(
+  client: LocalIpcClient,
+  sliceRef: string,
+  backupRef: string,
+): Promise<{ slice: SliceRecord; backup: SliceBackupRecord }> {
+  const response = await client.send<Record<string, unknown>>(restoreSliceBackupRequest(sliceRef, backupRef))
+  return expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord }>(response, "SliceBackupRestored")
 }

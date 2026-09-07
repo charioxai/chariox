@@ -154,6 +154,17 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn dispatch_forwarded_room_browser_runtime_tool_call(
+        &self,
+        from_worker_kernel_id: &str,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .dispatch_forwarded_room_browser_runtime_tool_call(from_worker_kernel_id, context, call)
+            .await
+    }
+
     pub(crate) async fn dispatch_forwarded_home_extension_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,

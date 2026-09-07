@@ -38,6 +38,10 @@ _Avoid_: CDP target, Page handle
 A user or agent that observes or acts in an Environment. Presence alone grants no input ownership.
 _Avoid_: Client, Connection
 
+**Pointer**:
+An Actor's ephemeral desktop-pixel position in the canonical viewport. The kernel derives its Actor identity and stable presentation color. A Pointer grants no input ownership and is not an Action.
+_Avoid_: Cursor lock, DOM pointer
+
 **Action**:
 One attributed attempt by an Actor to observe or change a Tab or the desktop. An Action has a target, lifecycle, and recorded outcome.
 _Avoid_: Tool call, Input event

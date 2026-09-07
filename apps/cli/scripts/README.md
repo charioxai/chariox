@@ -181,6 +181,80 @@ pnpm --filter @chariox/cli run multi-user-workflow:drill
 
 It launches a scoped-token relay plus a local kernel, connects three relay clients with different `user_id`s, joins them into one session through an invite, and verifies the live transport path for per-user agent visibility, workflow node ownership, cross-owner edge creation, unrelated edge-removal denial, stale workflow revision rejection, endpoint-owner invocation denial, incident-edge removal by node owner, and private node-instruction redaction. It uses `dev-stub` agents only, so it does not spend provider turns.
 
+## Room Environment M1 Drill
+
+Use this after changing the shared Room Environment contract, relay routing, actor reconciliation, event replay, or Action-history reads:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run room-environment:m1-drill
+```
+
+Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
+
+## Computer secret input protocol drill
+
+Use this after changing Computer credential policy, approval, relay resolution,
+desktop input transport, or Room Environment action recording:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run computer-secret-input:drill
+```
+
+The drill first invokes the slice desktop helper with a one-time canary and
+proves it types into the existing X11 focus without the clipboard or browser
+controller. It then runs the public runtime-MCP path, including deny and allow
+approval outcomes, exact secret delivery, redacted MCP/action history, actor
+attribution, and the versioned remote-home credential proxy shape. Disposable
+state containing the canary is always deleted. Non-secret reports and test logs
+are written under
+`~/.codex/evidence/browser-computer-use/computer-secret-input/`.
+
+## Computer clipboard X11 drill
+
+Use this after changing the Computer clipboard helper or its container runtime:
+
+```bash
+pnpm --filter @chariox/cli run computer-clipboard:x11-drill
+```
+
+The drill reuses the existing slice image under explicit CPU, memory, process,
+and network limits. It runs the production helper against real Xvfb, Chromium,
+and `xclip`; checks exact empty, Unicode, whitespace, trailing-newline,
+repeat-read, and 256 KiB boundary behavior; forces an `xclip` write failure;
+scans helper output and slice logs; and verifies removal of the container and
+all plaintext temporary files. Retained evidence contains only digests, sizes,
+resource samples, and cleanup results under
+`~/.codex/evidence/browser-computer-use/computer-clipboard-x11/`.
+
+For an interruption-cleanup drill, set
+`CHARIOX_COMPUTER_CLIPBOARD_INTERRUPT_WINDOW_MS=30000`, start the command, and
+send `SIGINT` after the container starts. The command must fail with an
+interruption diagnostic, and its retained report must still record
+`containerRemoved: true` and `tempRootRemoved: true`. The window is test-only
+and bounded to 60 seconds.
+
+## Room clipboard end-to-end drill
+
+Use this after changing the Room clipboard authority, relay route, TUI Action
+projection, or physical slice adapter:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run computer-clipboard:room-e2e-drill
+```
+
+The drill starts a local kernel, a scoped relay, a headed Selkies slice, one
+slice-bound agent, and direct local plus relay-attached remote TUIs. It proves
+that an agent clipboard write crosses the home-owned Room Action path to the
+real X11 clipboard, that human takeover rejects an agent write, and that a
+human write and read use the same physical clipboard without creating a read
+Action. Room history and both TUIs retain attribution and byte/character counts
+without retaining clipboard text. The run scans all disposable state and
+evidence for its clipboard canaries and removes its container, volume,
+processes, listeners, and temporary files on success or failure.
+
 ## Hosted Cloud Relay Drill
 
 Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:

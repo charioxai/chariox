@@ -34,6 +34,33 @@ test("redacts token-shaped text without dropping surrounding diagnostics", () =>
   assert.equal(redactDrillSecretText("no secret here"), "no secret here")
 })
 
+test("redacts every repeated secret of the same kind", () => {
+  const cases = [
+    [
+      "Bearer abcdefghijklmnopqrstuvwxyz then Bearer zyxwvutsrqponmlkjihgfedcba",
+      ["abcdefghijklmnopqrstuvwxyz", "zyxwvutsrqponmlkjihgfedcba"],
+    ],
+    [
+      "chariox-scoped-v1.claims.signature then chariox-scoped-v1.other.signature",
+      ["chariox-scoped-v1.claims.signature", "chariox-scoped-v1.other.signature"],
+    ],
+    [
+      "sk-aaaaaaaaaaaaaaaa then sk-bbbbbbbbbbbbbbbb",
+      ["sk-aaaaaaaaaaaaaaaa", "sk-bbbbbbbbbbbbbbbb"],
+    ],
+    [
+      "ghp_aaaaaaaaaaaaaaaa then gho_bbbbbbbbbbbbbbbb",
+      ["ghp_aaaaaaaaaaaaaaaa", "gho_bbbbbbbbbbbbbbbb"],
+    ],
+  ]
+
+  for (const [input, secretValues] of cases) {
+    const redacted = redactDrillSecretText(input)
+    assert.equal((redacted.match(/<redacted>/g) ?? []).length, 2)
+    for (const secretValue of secretValues) assert.equal(redacted.includes(secretValue), false)
+  }
+})
+
 test("sanitizes nested drill metadata", () => {
   assert.deepEqual(sanitizeDrillMetadata({
     drill: "remote",
@@ -55,5 +82,15 @@ test("sanitizes nested drill metadata", () => {
     },
     list: ["safe", "<redacted>"],
     unsupported: null,
+  })
+})
+
+test("preserves non-secret cleanup results whose names mention credentials", () => {
+  assert.deepEqual(sanitizeDrillMetadata({
+    provider_credentials_removed: true,
+    provider_credentials_cleanup_error: "Bearer abcdefghijklmnopqrstuvwxyz",
+  }), {
+    provider_credentials_removed: true,
+    provider_credentials_cleanup_error: "<redacted>",
   })
 })

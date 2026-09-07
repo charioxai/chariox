@@ -77,7 +77,7 @@ pub(crate) async fn create_relay_execution_lease(
 pub(crate) async fn destroy_relay_execution_lease(
     runtime_state: &KernelRuntimeState,
     lease_id: &str,
-) -> Result<ExecutionLease, DaemonError> {
+) -> Result<(), DaemonError> {
     runtime_state.destroy_relay_execution_lease(lease_id).await
 }
 
@@ -113,7 +113,7 @@ pub(crate) async fn create_relay_leased_agent(
 pub(crate) async fn destroy_relay_leased_agent(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
-) -> Result<LeasedAgent, DaemonError> {
+) -> Result<(), DaemonError> {
     runtime_state
         .destroy_relay_leased_agent(leased_agent_id)
         .await
@@ -186,6 +186,9 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    provider_launch_credential: Option<
+        crate::transport::relay_peer::RemoteProviderLaunchCredential,
+    >,
 ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
     runtime_state
         .launch_relay_leased_native_provider_run(
@@ -200,6 +203,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
             required_mcps,
             required_skills,
             remote_extension_manifest,
+            provider_launch_credential,
         )
         .await
 }
@@ -244,6 +248,9 @@ pub(crate) async fn submit_relay_leased_prompt(
     required_mcps: Vec<RequiredRemoteMcp>,
     required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    provider_launch_credential: Option<
+        crate::transport::relay_peer::RemoteProviderLaunchCredential,
+    >,
 ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
     runtime_state
         .submit_relay_leased_prompt(
@@ -256,6 +263,7 @@ pub(crate) async fn submit_relay_leased_prompt(
             required_mcps,
             required_skills,
             remote_extension_manifest,
+            provider_launch_credential,
         )
         .await
 }

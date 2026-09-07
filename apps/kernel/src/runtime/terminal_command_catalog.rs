@@ -207,6 +207,82 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_catalog_includes_room_environment_status() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+
+        let room = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "room")
+            .expect("Room environment commands should be present");
+        let status = nodes
+            .into_iter()
+            .find(|node| node.id == "room-status")
+            .expect("Room environment status command should be present");
+        assert_eq!(status.value, "/room status");
+        assert_eq!(
+            status.execution_target,
+            TerminalCommandCatalogExecutionTarget::Kernel
+        );
+        assert_eq!(
+            status.surfaces,
+            vec![TerminalCommandCatalogSurface::Session]
+        );
+        assert_eq!(
+            room.children
+                .iter()
+                .map(|node| node.value.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/room status",
+                "/room start ",
+                "/room stop",
+                "/room retry",
+                "/room reconnect",
+                "/room view",
+                "/room screenshot",
+                "/room browser ",
+                "/room takeover ",
+                "/room release ",
+                "/room cancel ",
+                "/room save ",
+            ]
+        );
+        let cancel = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-cancel")
+            .expect("Room action cancellation command should be present");
+        assert_eq!(cancel.examples, vec!["/room cancel action-7"]);
+        let browser = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-browser")
+            .expect("Room browser history command should be present");
+        assert_eq!(
+            browser.examples,
+            vec![
+                "/room browser back",
+                "/room browser forward tab-1",
+                "/room browser reload",
+                "/room browser activate tab-2",
+                "/room browser close tab-1"
+            ]
+        );
+        let save = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-save")
+            .expect("Room Environment save command should be present");
+        assert_eq!(
+            save.examples,
+            vec!["/room save restart", "/room save shutdown"]
+        );
+    }
+
+    #[test]
     fn terminal_command_catalog_explains_scheduled_prompt_syntax() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let wait_in = catalog

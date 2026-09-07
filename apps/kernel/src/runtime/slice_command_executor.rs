@@ -8,6 +8,7 @@ use crate::local::{
     ImportSliceProviderAuthRequest, LocalDaemonRequest, LocalDaemonResponse,
     RemoveSliceProviderAuthRequest, StartSliceProviderLoginRequest,
 };
+use crate::runtime::command::KernelCaller;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
@@ -15,12 +16,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use display_endpoint::execute_get_slice_display_endpoint_request;
+pub(crate) use display_endpoint::register_room_selkies_display_endpoint;
 use lifecycle::{
     execute_create_slice_backup_request, execute_create_slice_request,
     execute_delete_slice_request, execute_get_slice_logs_request, execute_get_slice_request,
     execute_get_slice_state_status_request, execute_list_slice_audit_request,
     execute_list_slices_request, execute_reset_slice_state_request,
-    execute_save_slice_state_request, execute_start_slice_request, execute_stop_slice_request,
+    execute_restore_slice_backup_request, execute_save_slice_state_request,
+    execute_start_slice_request, execute_stop_slice_request,
 };
 use provider_auth::{
     merge_profile_scoped_provider_auth, normalized_slice_provider, scoped_provider_auth_summaries,
@@ -31,9 +34,13 @@ pub(crate) async fn execute_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
-    owner_user_id: &str,
+    caller: &KernelCaller,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner_user_id = caller
+        .user_id
+        .as_deref()
+        .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
     match request {
         LocalDaemonRequest::ListSlices(request) => {
             execute_list_slices_request(runtime_state, request).await
@@ -87,6 +94,7 @@ pub(crate) async fn execute_slice_request(
                 runtime_state,
                 config_projection,
                 relay_state,
+                caller,
                 request,
             )
             .await
@@ -109,6 +117,9 @@ pub(crate) async fn execute_slice_request(
         }
         LocalDaemonRequest::CreateSliceBackup(request) => {
             execute_create_slice_backup_request(runtime_state, config_projection, request).await
+        }
+        LocalDaemonRequest::RestoreSliceBackup(request) => {
+            execute_restore_slice_backup_request(runtime_state, config_projection, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "slice request",

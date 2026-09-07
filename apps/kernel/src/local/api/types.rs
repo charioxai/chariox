@@ -29,6 +29,7 @@ mod provider_control;
 mod remote_access;
 mod request;
 mod response;
+mod room_environment;
 mod session_control;
 mod slice;
 mod terminal_command_catalog;
@@ -56,6 +57,7 @@ pub use provider_control::*;
 pub use remote_access::*;
 pub use request::*;
 pub use response::*;
+pub use room_environment::*;
 pub use session_control::*;
 pub use slice::*;
 pub use terminal_command_catalog::*;
@@ -64,4 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 284;
+/// Version 312 adds cancellable browser lifecycle operations and receipt recovery.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 312;

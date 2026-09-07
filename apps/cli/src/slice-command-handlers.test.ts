@@ -389,6 +389,42 @@ test("slice backup command supports explicit create action and backup name", asy
   assert.match(harness.notices.at(-1) ?? "", /Use this backup by swapping slice state directories/)
 })
 
+test("slice backup restore routes the selected backup and reports the stopped result", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(
+    harness.deps,
+    command("backup", "restore", "linux-dev", "before-upgrade"),
+  )
+
+  assert.deepEqual(harness.restoredBackups, [
+    { sliceRef: "linux-dev", backupRef: "before-upgrade" },
+  ])
+  assert.match(harness.notices.at(-1) ?? "", /restored slice backup linux-dev/)
+  assert.match(harness.notices.at(-1) ?? "", /status=stopped/)
+})
+
+test("slice backup restore blocks slices with attached agents", async () => {
+  const harness = sliceHarness({
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      agent_ids: ["agent-build"],
+    })],
+  })
+
+  await handleSliceSlashCommand(
+    harness.deps,
+    command("backup", "restore", "linux-dev", "before-upgrade"),
+  )
+
+  assert.deepEqual(harness.restoredBackups, [])
+  assert.equal(
+    harness.footers.at(-1)?.message,
+    "cannot restore backup for slice linux-dev; move or end attached agents first: agent-build",
+  )
+})
+
 test("slice command auth import can target the focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [
@@ -565,6 +601,7 @@ function sliceHarness(options: {
   const stateStatusRequests: string[] = []
   const resetStates: string[] = []
   const backups: Array<{ sliceRef: string; name: string | null | undefined }> = []
+  const restoredBackups: Array<{ sliceRef: string; backupRef: string }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
@@ -706,8 +743,15 @@ function sliceHarness(options: {
         instructions: "Use this backup by swapping slice state directories.",
       }
     },
+    restoreSliceBackup: async (sliceRef, backupRef) => {
+      restoredBackups.push({ sliceRef, backupRef })
+      return {
+        slice: slice({ id: sliceRef, name: sliceRef, status: "stopped" }),
+        backup: backup({ source_slice_id: sliceRef, id: backupRef }),
+      }
+    },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups, restoredBackups }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

@@ -24,6 +24,36 @@ import {
   makeWorkflowWatchdog,
 } from "./shell-executor.test-support.js"
 
+test("executeShellCommand restores a named slice backup through the shared request", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("RestoreSliceBackup" in request) {
+      return {
+        SliceBackupRestored: {
+          slice: { id: "slice-1", name: "linux-a", status: "stopped" },
+          backup: { id: "baseline", name: "baseline" },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+
+  const result = await executeShellCommand(
+    parseShellCommand("slice backup restore linux-a baseline"),
+    context,
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{
+    RestoreSliceBackup: { slice_ref: "linux-a", backup_ref: "baseline" },
+  }])
+  assert.match(result.message ?? "", /restored slice backup linux-a/)
+  assert.match(result.message ?? "", /status=stopped/)
+})
+
 test("executeShellCommand renders slice doctor diagnostics", async () => {
   const fake = fakeClient((request) => {
     if ("GetSlice" in request) {

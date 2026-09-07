@@ -7,6 +7,7 @@ use super::*;
 
 mod agent_messaging;
 mod capability_registry;
+mod computer_secret;
 mod connector;
 mod credential;
 mod extension_list_tool;
@@ -16,6 +17,7 @@ mod home_connector_executor;
 mod home_extension_authorizer;
 mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
+mod home_room_browser_runtime;
 mod home_script_executor;
 mod meta;
 mod recall;
@@ -24,8 +26,15 @@ mod remote_extension_control_plane;
 mod script;
 mod skill_package_response;
 mod slice;
+pub(super) use slice::{
+    capture_room_environment_screenshot, execute_room_computer_observation,
+    reset_room_computer_input, run_room_clipboard_read, run_room_clipboard_write,
+    run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
+    run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
+};
 mod worker_home_credential_client;
 mod worker_home_extension_client;
+mod worker_home_room_browser_client;
 mod workflow_authenticated;
 mod workflow_forwarding;
 mod workspace_live_sync_access;
@@ -69,9 +78,7 @@ impl KernelRuntimeState {
                     }),
             );
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
-            if self.slice_kernel_id().is_some() {
-                specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
-            }
+            specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
             return specs;
         }
         if matches!(provider_runs.as_slice(), [_]) {
@@ -86,9 +93,7 @@ impl KernelRuntimeState {
             specs.extend(self.script_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(self.connector_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(crate::transport::runtime_tools::credential_runtime_tool_specs());
-            if self.slice_kernel_id().is_some() {
-                specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
-            }
+            specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
         }
         // MCP discovery runs independently of the app mutex.  Leased-run identity is
         // projected into the lock-free provider projection when the lease launches or
@@ -175,7 +180,9 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
             let is_metaagent_allowed_direct_tool = is_metaagent_direct_runtime_tool_allowed(
                 canonical_tool_name,
-                self.slice_kernel_id().is_some(),
+                self.slice_kernel_id().is_some()
+                    || matches!(provider_runs.as_slice(), [run]
+                    if self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some()),
             );
             if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -370,17 +377,46 @@ impl KernelRuntimeState {
                     )
                     .await;
             }
-            if matches!(
-                canonical_tool_name,
-                crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
-                    | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
-                    | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
-                    | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
-                    | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
-                    | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
-            ) {
+            if is_home_credential_runtime_tool(canonical_tool_name) {
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
                 if let Some(result) = self
                     .try_dispatch_remote_home_credential_runtime_tool_call(
+                        provider_run,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
+                if canonical_tool_name
+                    == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+                {
+                    let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_paste_secret_to_computer",
+                            message: "provider run is not bound to an agent".to_string(),
+                        }
+                    })?;
+                    return Box::pin(self.dispatch_computer_secret_input_tool(
+                        provider_run,
+                        agent_id,
+                        arguments,
+                    ))
+                    .await;
+                }
+                return self
+                    .dispatch_credential_runtime_tool_call(
+                        provider_run,
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
+            if is_slice_runtime_tool(canonical_tool_name) {
+                if let Some(result) = self
+                    .try_dispatch_remote_room_browser_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
@@ -389,15 +425,6 @@ impl KernelRuntimeState {
                 {
                     return Ok(result);
                 }
-                return self
-                    .dispatch_credential_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments,
-                    )
-                    .await;
-            }
-            if is_slice_runtime_tool(canonical_tool_name) {
                 return self
                     .dispatch_slice_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
@@ -415,6 +442,61 @@ impl KernelRuntimeState {
         }
     }
 
+    fn slice_tool_specs_for_provider_runs(
+        &self,
+        runs: &[crate::provider::RuntimeProviderRun],
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        crate::transport::runtime_tools::slice_runtime_tool_specs()
+            .into_iter()
+            .filter(|spec| {
+                self.slice_kernel_id().is_some()
+                    || matches!(runs, [run]
+                if self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some())
+            })
+            .collect()
+    }
+
+    fn room_browser_slice_for_tool(&self, session_id: &str, tool_name: &str) -> Option<String> {
+        use crate::transport::runtime_tools::*;
+        // Advertise only operations whose physical worker path is implemented.
+        // Never run the legacy screen helper on a home machine as a fallback.
+        if !matches!(
+            canonical_slice_tool_name(tool_name),
+            Some(
+                SLICE_SCREEN_STATUS_TOOL
+                    | SLICE_OCR_TOOL
+                    | SLICE_FIND_TEXT_TOOL
+                    | SLICE_BROWSER_STATUS_TOOL
+                    | SLICE_BROWSER_TAB_TOOL
+                    | SLICE_BROWSER_HISTORY_TOOL
+                    | SLICE_SCREENSHOT_TOOL
+                    | SLICE_MOUSE_TOOL
+                    | SLICE_KEYBOARD_TOOL
+                    | SLICE_CLIPBOARD_WRITE_TOOL
+                    | SLICE_OPEN_URL_TOOL
+                    | SLICE_BROWSER_CLICK_TOOL
+                    | SLICE_BROWSER_FILL_TOOL
+                    | SLICE_BROWSER_SUBMIT_TOOL
+                    | SLICE_BROWSER_DIALOG_TOOL
+                    | SLICE_BROWSER_EVENTS_TOOL
+                    | SLICE_BROWSER_DOWNLOADS_TOOL
+                    | SLICE_BROWSER_UPLOAD_TOOL
+                    | SLICE_BROWSER_PERMISSION_TOOL
+                    | SLICE_BROWSER_FIND_TOOL
+                    | SLICE_BROWSER_TEXT_TOOL
+                    | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+                    | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
+                    | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
+            )
+        ) {
+            return None;
+        }
+        self.owned
+            .slice_store
+            .environment_slice(session_id)
+            .map(|slice| slice.id)
+    }
+
     fn slice_kernel_id(&self) -> Option<String> {
         self.owned
             .config_projection
@@ -425,8 +507,55 @@ impl KernelRuntimeState {
     }
 }
 
+fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
+            | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
+            | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+            | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+            | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
+    )
+}
+
 fn is_slice_runtime_tool(tool_name: &str) -> bool {
     crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some()
+        || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+}
+
+fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
+    use crate::transport::runtime_tools::*;
+    matches!(
+        canonical_slice_tool_name(tool_name),
+        Some(
+            SLICE_SCREEN_STATUS_TOOL
+                | SLICE_OCR_TOOL
+                | SLICE_FIND_TEXT_TOOL
+                | SLICE_BROWSER_STATUS_TOOL
+                | SLICE_BROWSER_TAB_TOOL
+                | SLICE_BROWSER_HISTORY_TOOL
+                | SLICE_SCREENSHOT_TOOL
+                | SLICE_MOUSE_TOOL
+                | SLICE_KEYBOARD_TOOL
+                | SLICE_CLIPBOARD_WRITE_TOOL
+                | SLICE_OPEN_URL_TOOL
+                | SLICE_BROWSER_CLICK_TOOL
+                | SLICE_BROWSER_FILL_TOOL
+                | SLICE_BROWSER_SUBMIT_TOOL
+                | SLICE_BROWSER_DIALOG_TOOL
+                | SLICE_BROWSER_EVENTS_TOOL
+                | SLICE_BROWSER_DOWNLOADS_TOOL
+                | SLICE_BROWSER_UPLOAD_TOOL
+                | SLICE_BROWSER_PERMISSION_TOOL
+                | SLICE_BROWSER_FIND_TOOL
+                | SLICE_BROWSER_TEXT_TOOL
+                | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+                | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
+                | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
+        )
+    )
 }
 
 fn unambiguous_runtime_tool_provider_run<'a>(
@@ -480,5 +609,57 @@ mod tests {
                 spec.name
             );
         }
+    }
+
+    #[test]
+    fn browser_secret_paste_uses_slice_dispatch_and_computer_secret_uses_home_authority() {
+        assert!(super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(!super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
+        assert!(super::is_home_credential_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
+    }
+
+    #[test]
+    fn worker_room_browser_forwarding_has_one_explicit_tool_allowlist() {
+        use crate::transport::runtime_tools::*;
+        for tool_name in [
+            SLICE_SCREEN_STATUS_TOOL,
+            SLICE_SCREENSHOT_TOOL,
+            SLICE_OCR_TOOL,
+            SLICE_FIND_TEXT_TOOL,
+            SLICE_MOUSE_TOOL,
+            SLICE_KEYBOARD_TOOL,
+            SLICE_CLIPBOARD_WRITE_TOOL,
+            SLICE_BROWSER_STATUS_TOOL,
+            SLICE_BROWSER_TAB_TOOL,
+            SLICE_BROWSER_HISTORY_TOOL,
+            SLICE_OPEN_URL_TOOL,
+            SLICE_BROWSER_CLICK_TOOL,
+            SLICE_BROWSER_FILL_TOOL,
+            SLICE_BROWSER_SUBMIT_TOOL,
+            SLICE_BROWSER_DIALOG_TOOL,
+            SLICE_BROWSER_EVENTS_TOOL,
+            SLICE_BROWSER_DOWNLOADS_TOOL,
+            SLICE_BROWSER_UPLOAD_TOOL,
+            SLICE_BROWSER_PERMISSION_TOOL,
+            SLICE_BROWSER_FIND_TOOL,
+            SLICE_BROWSER_TEXT_TOOL,
+            SLICE_BROWSER_WAIT_FOR_TEXT_TOOL,
+            SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL,
+            SLICE_BROWSER_WAIT_FOR_IDLE_TOOL,
+        ] {
+            assert!(super::is_room_browser_controller_runtime_tool(tool_name));
+        }
+        assert!(!super::is_room_browser_controller_runtime_tool(
+            PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(!super::is_room_browser_controller_runtime_tool(
+            PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
     }
 }

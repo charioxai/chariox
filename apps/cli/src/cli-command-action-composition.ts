@@ -3,9 +3,14 @@ import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
+import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
+import {
+  defaultRoomScreenshotOutputRoot,
+  downloadRoomEnvironmentScreenshot,
+} from "./room-screenshot-api.js"
 import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
@@ -162,6 +167,7 @@ import {
   listSlices,
   removeSliceProviderAuth,
   resetSliceState,
+  restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
   startSlice,
@@ -438,6 +444,29 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     isRelayConnection: () => Boolean(options.relayUrl),
     flashFooter,
     appendNotice,
+    sendRoomEnvironmentRequest: (request) => client.send(request),
+    reconnectRoomEventStream: async () => {
+      if (!client.supportsKernelEvents()) return false
+      await client.restartKernelEventStream()
+      return true
+    },
+    openRoomViewer: async (target) => {
+      const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
+        ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
+      if (!apiUrl) return null
+      const url = buildHostedCloudViewUrl(apiUrl, target)
+      return { url, opened: await openExternalUrl(url) }
+    },
+    captureRoomScreenshot: async () => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
+      return downloadRoomEnvironmentScreenshot({
+        sessionId: sessionState().id,
+        attachmentId: attachment.id,
+        outputRoot: defaultRoomScreenshotOutputRoot(),
+        send: (request) => client.send(request),
+      })
+    },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     appendCloudNotice,
     formatError,
@@ -606,6 +635,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     createSliceBackup: async (sliceRef, name) => {
       const result = await createSliceBackup(client, sliceRef, name)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    restoreSliceBackup: async (sliceRef, backupRef) => {
+      const result = await restoreSliceBackup(client, sliceRef, backupRef)
       setSlicesState(await listSlices(client))
       return result
     },

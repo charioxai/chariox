@@ -192,12 +192,14 @@ test("builds stable default matrix artifact index paths", () => {
 test("extracts artifact hints from structured and text drill output", () => {
   const hints = extractDrillArtifactHints([
     '[drill] preserved-failed-run {"rootDir":"/tmp/chariox-drill-one","manifestPath":"/tmp/chariox-drill-one/chariox-drill-failure.json","token":"secret"}',
+    '[drill] evidence-written {"evidenceRoot":"/tmp/chariox-drill-evidence"}',
     'remote workspace live sync permission drill artifacts kept at /tmp/chariox-drill-two',
     'bad artifacts kept at /tmp/chariox-drill-sk-this-should-not-persist',
     'ignored token=/not-an-artifact-token',
   ].join("\n"))
 
   assert.deepEqual(hints, [
+    "/tmp/chariox-drill-evidence",
     "/tmp/chariox-drill-one",
     "/tmp/chariox-drill-one/chariox-drill-failure.json",
     "/tmp/chariox-drill-two",

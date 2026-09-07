@@ -138,13 +138,38 @@ fn render_tool_raw_detail(raw: &str) -> String {
     }
 }
 
-pub(super) fn format_session_status(kind: &str) -> String {
-    match kind {
+pub(super) fn format_session_status(
+    status: &crate::provider::opencode_client::OpenCodeSessionStatus,
+) -> String {
+    match status.kind.as_str() {
         "busy" => "OpenCode is thinking...".to_string(),
         "idle" => "OpenCode is idle.".to_string(),
-        _ if is_connection_retry_status(kind) => {
-            crate::provider::provider_retry_status("OpenCode", None)
+        "retry" => {
+            let mut text = match status
+                .message
+                .as_deref()
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+            {
+                Some(message) => format!("OpenCode retrying: {message}"),
+                None => "OpenCode is retrying.".to_string(),
+            };
+            if let Some(attempt) = status.attempt {
+                text.push_str(&format!(" Attempt {attempt}."));
+            }
+            if let Some(next) = status
+                .next
+                .and_then(|value| i64::try_from(value).ok())
+                .and_then(chrono::DateTime::from_timestamp_millis)
+            {
+                text.push_str(&format!(
+                    " Next retry: {}.",
+                    next.format("%Y-%m-%d %H:%M:%S UTC")
+                ));
+            }
+            text
         }
+        "reconnecting" => crate::provider::provider_retry_status("OpenCode", None),
         other => format!("OpenCode status: {other}"),
     }
 }
@@ -164,13 +189,15 @@ fn is_connection_retry_status(kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn retry_and_reconnecting_statuses_use_the_shared_connection_message() {
-        for status in ["retry", "reconnecting"] {
-            assert_eq!(
-                super::format_session_status(status),
-                "OpenCode connection interrupted — retrying."
-            );
-        }
+    fn retry_without_a_reason_does_not_invent_a_connection_failure() {
+        assert_eq!(
+            super::format_session_status(&"retry".into()),
+            "OpenCode is retrying."
+        );
+        assert_eq!(
+            super::format_session_status(&"reconnecting".into()),
+            "OpenCode connection interrupted — retrying."
+        );
     }
 
     #[test]

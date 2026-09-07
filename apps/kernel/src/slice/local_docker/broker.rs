@@ -69,6 +69,11 @@ enum BrokerRequest<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<&'a str>,
     },
+    HomeArchiveVerify {
+        scope: &'a str,
+        id: &'a str,
+        path: &'a str,
+    },
 }
 
 #[cfg(unix)]
@@ -336,7 +341,7 @@ pub(super) fn capture_home_archive(
     container: &str,
     scope: &str,
     id: &str,
-) -> io::Result<Option<(std::path::PathBuf, u64)>> {
+) -> io::Result<Option<(std::path::PathBuf, u64, String)>> {
     if !broker_is_configured() {
         return Ok(None);
     }
@@ -366,7 +371,55 @@ pub(super) fn capture_home_archive(
                 "managed home archive digest is invalid",
             ));
         }
-        Ok(Some((captured.path.into(), captured.size_bytes)))
+        Ok(Some((
+            captured.path.into(),
+            captured.size_bytes,
+            captured.sha256,
+        )))
+    }
+    #[cfg(not(unix))]
+    unreachable!()
+}
+
+pub(super) fn verify_home_archive(
+    scope: &str,
+    id: &str,
+    path: &std::path::Path,
+) -> io::Result<Option<(u64, String)>> {
+    if !broker_is_configured() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "managed home archive path is not UTF-8",
+            )
+        })?;
+        let output = execute(&BrokerRequest::HomeArchiveVerify { scope, id, path })?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "managed home archive verification failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let verified: HomeArchiveCaptureResponse = serde_json::from_slice(&output.stdout)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if verified.path != path
+            || verified.size_bytes == 0
+            || verified.sha256.len() != 64
+            || !verified
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "managed home archive verification response is invalid",
+            ));
+        }
+        Ok(Some((verified.size_bytes, verified.sha256)))
     }
     #[cfg(not(unix))]
     unreachable!()

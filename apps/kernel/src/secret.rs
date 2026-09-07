@@ -274,6 +274,24 @@ impl RuntimeSecretService {
                     ),
                 ));
             }
+            UserCredentialInjectionConfig::Computer => {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    format!(
+                        "credential `{}` is configured for computer input",
+                        credential.id
+                    ),
+                ));
+            }
+            UserCredentialInjectionConfig::Provider => {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    format!(
+                        "credential `{}` is configured for provider launch",
+                        credential.id
+                    ),
+                ));
+            }
         }
 
         if request.timeout_ms == 0 {
@@ -330,6 +348,29 @@ impl RuntimeSecretService {
             ));
         }
         self.resolve_secret(credential)
+    }
+
+    pub fn computer_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
+        let credential = self.validate_computer_secret_input(credential_id)?;
+        self.resolve_secret(credential)
+    }
+
+    pub fn validate_computer_secret_input(
+        &self,
+        credential_id: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Computer)?;
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Computer
+        ) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for computer input"),
+            ));
+        }
+        Ok(credential)
     }
 
     pub fn browser_secret_input_for_target_url(
@@ -394,6 +435,24 @@ impl RuntimeSecretService {
         let credential = self.credential(credential_id)?;
         self.ensure_use_allowed(credential, UserCredentialUse::Mcp)?;
         self.resolve_secret(credential)
+    }
+
+    pub fn provider_secret_input(
+        &self,
+        credential_id: &str,
+    ) -> Result<Zeroizing<String>, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Provider)?;
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Provider
+        ) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for provider launch"),
+            ));
+        }
+        self.resolve_secret(credential).map(Zeroizing::new)
     }
 
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
@@ -775,6 +834,8 @@ fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
         UserCredentialInjectionConfig::Hmac { .. } => "hmac",
         UserCredentialInjectionConfig::Pty => "pty",
         UserCredentialInjectionConfig::Browser => "browser",
+        UserCredentialInjectionConfig::Computer => "computer",
+        UserCredentialInjectionConfig::Provider => "provider",
     }
 }
 

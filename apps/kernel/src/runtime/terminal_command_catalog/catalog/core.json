@@ -136,6 +136,188 @@
     ]
   },
   {
+    "id": "room",
+    "label": "/room",
+    "description": "Inspect and control the current Room environment",
+    "value": "/room ",
+    "searchAliases": [
+      "room environment",
+      "shared browser",
+      "shared computer"
+    ],
+    "children": [
+      {
+        "id": "room-status",
+        "label": "status",
+        "description": "Show Room environment lifecycle, health, viewport, focused tab, actors, input ownership, and latest action",
+        "value": "/room status",
+        "searchAliases": [
+          "room environment",
+          "browser status",
+          "computer status",
+          "shared browser",
+          "input owner"
+        ]
+      },
+      {
+        "id": "room-start",
+        "label": "start",
+        "description": "Start the Room Environment; optionally append WIDTHxHEIGHT and display scale",
+        "value": "/room start ",
+        "examples": [
+          "/room start",
+          "/room start 1440x900 2"
+        ],
+        "searchAliases": [
+          "start browser",
+          "start computer",
+          "start environment"
+        ]
+      },
+      {
+        "id": "room-stop",
+        "label": "stop",
+        "description": "Stop the Room Environment while preserving its identity",
+        "value": "/room stop",
+        "searchAliases": [
+          "stop browser",
+          "stop computer",
+          "stop environment"
+        ]
+      },
+      {
+        "id": "room-retry",
+        "label": "retry",
+        "description": "Retry a failed Room Environment with a fresh runtime generation",
+        "value": "/room retry",
+        "searchAliases": [
+          "restart browser",
+          "retry computer",
+          "recover environment"
+        ]
+      },
+      {
+        "id": "room-reconnect",
+        "label": "reconnect",
+        "description": "Reconnect this TUI to the Room event stream and resume from its last received event",
+        "value": "/room reconnect",
+        "searchAliases": [
+          "reconnect room",
+          "resume events",
+          "recover terminal"
+        ]
+      },
+      {
+        "id": "room-view",
+        "label": "view",
+        "description": "Open the focused agent's Room Environment in the authenticated Chariox Cloud Web View",
+        "value": "/room view",
+        "searchAliases": [
+          "view room",
+          "open browser",
+          "open computer",
+          "cloud viewer"
+        ]
+      },
+      {
+        "id": "room-screenshot",
+        "label": "screenshot",
+        "description": "Capture the Room Environment and save a verified PNG on this TUI host",
+        "value": "/room screenshot",
+        "searchAliases": [
+          "capture screen",
+          "save screenshot",
+          "computer image"
+        ]
+      },
+      {
+        "id": "room-browser",
+        "label": "browser",
+        "description": "Navigate, activate, or close Room browser tabs through stable TAB_IDs",
+        "value": "/room browser ",
+        "examples": [
+          "/room browser back",
+          "/room browser forward tab-1",
+          "/room browser reload",
+          "/room browser activate tab-2",
+          "/room browser close tab-1"
+        ],
+        "searchAliases": [
+          "browser back",
+          "browser forward",
+          "reload tab",
+          "refresh page",
+          "browser history",
+          "activate tab",
+          "focus tab",
+          "close tab"
+        ]
+      },
+      {
+        "id": "room-takeover",
+        "label": "takeover",
+        "description": "Request authenticated human input ownership; defaults to desktop or append tab TAB_ID",
+        "value": "/room takeover ",
+        "examples": [
+          "/room takeover",
+          "/room takeover tab tab-1"
+        ],
+        "searchAliases": [
+          "take control",
+          "input ownership",
+          "control browser",
+          "control computer"
+        ]
+      },
+      {
+        "id": "room-release",
+        "label": "release",
+        "description": "Release authenticated human input ownership; defaults to desktop or append tab TAB_ID",
+        "value": "/room release ",
+        "examples": [
+          "/room release",
+          "/room release tab tab-1"
+        ],
+        "searchAliases": [
+          "release control",
+          "release input",
+          "unlock browser",
+          "unlock computer"
+        ]
+      },
+      {
+        "id": "room-cancel",
+        "label": "cancel",
+        "description": "Cancel or request cancellation of an active Room Action by ID",
+        "value": "/room cancel ",
+        "examples": [
+          "/room cancel action-7"
+        ],
+        "searchAliases": [
+          "cancel browser action",
+          "cancel computer action",
+          "stop agent input",
+          "complete takeover"
+        ]
+      },
+      {
+        "id": "room-save",
+        "label": "save",
+        "description": "Save the Room Environment slice, then restart its agents or shut the slice down",
+        "value": "/room save ",
+        "examples": [
+          "/room save restart",
+          "/room save shutdown"
+        ],
+        "searchAliases": [
+          "save and restart agents",
+          "save and shut down slice",
+          "persist Room environment"
+        ]
+      }
+    ]
+  },
+  {
     "id": "agent",
     "label": "/agent",
     "description": "Manage agents in the current session",

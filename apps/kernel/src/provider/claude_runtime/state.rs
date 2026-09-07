@@ -25,6 +25,7 @@ pub struct ClaudeRuntimeState {
     pub(super) program: String,
     pub(super) args: Vec<String>,
     pub(super) env: BTreeMap<String, String>,
+    pub(super) provider_credential_env: crate::provider::ProviderCredentialEnvironment,
     pub(super) env_remove: Vec<String>,
     pub(super) working_directory: Option<PathBuf>,
     pub(super) context_file: Option<PathBuf>,
@@ -48,6 +49,7 @@ pub struct ClaudeRuntimeState {
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
     pub(super) emitted_text_by_block: BTreeMap<String, String>,
+    pub(super) tool_transcript: super::tool_transcript::ClaudeToolTranscript,
     pub(super) completed_text_blocks: BTreeSet<String>,
     pub(super) exit_reported: bool,
 }

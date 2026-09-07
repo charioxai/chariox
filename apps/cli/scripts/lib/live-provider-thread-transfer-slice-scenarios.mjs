@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { promisify } from "node:util"
 
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
@@ -11,8 +13,10 @@ import {
   getProviderRunRequest,
   getSessionStateRequest,
   getSliceRequest,
-  importSliceProviderAuthRequest,
+  getSliceStateStatusRequest,
+  getSliceLogsRequest,
   launchProviderRunRequest,
+  listSliceAuditRequest,
   moveAgentToLocalRequest,
   moveAgentToRemoteRequest,
   resetSliceStateRequest,
@@ -28,15 +32,17 @@ import {
 import {
   collectProviderProcesses,
   logStep,
-  providerAuthName,
   providerEffort,
   providerModel,
   providerRunSnapshot,
+  providerThreadKernelEventSnapshot,
   providerThreadId,
   realProviderEnv,
   sendControlRequest,
   sliceRecordSnapshot,
+  sliceRestartContinuityChecks,
   sliceSavedStateSnapshot,
+  sliceShutdownCheckpointChecks,
   variant,
   variantAny,
   waitForHistoryOutputMarker,
@@ -48,7 +54,11 @@ import {
   withTimeout,
 } from "./live-provider-thread-transfer-runtime.mjs"
 
+const execFileAsync = promisify(execFile)
+
 export async function runSliceRestartScenario({ provider, root, kernelUrl, options }) {
+  const shutdownThenStart = options.drill === "slice-shutdown"
+  const lifecycleLabel = shutdownThenStart ? "slice shutdown and explicit start" : "slice restart"
   const workspace = path.join(root, provider, "workspace")
   await mkdir(workspace, { recursive: true })
   await writeFile(path.join(workspace, "README.md"), `# Slice restart provider thread transfer drill for ${provider}\n`, "utf8")
@@ -58,12 +68,14 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     kernelMaxMissedPongs: 10,
   })
   const result = {
-    drill: "slice-restart",
+    drill: options.drill,
     provider,
     status: "failed",
     started_at_ms: Date.now(),
     evidence: {
-      scope: "home-managed local Docker slice save/restart with the same Chariox agent record",
+      scope: shutdownThenStart
+        ? "home-managed local Docker slice save/shutdown followed by explicit start with the same Chariox agent record"
+        : "home-managed local Docker slice save/restart with the same Chariox agent record",
       same_chariox_agent_record: true,
     },
     checks: {},
@@ -75,10 +87,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
   const kernelEvents = []
   try {
     client.onKernelEvent((event) => {
-      kernelEvents.push({
-        observed_at_ms: Date.now(),
-        ...event,
-      })
+      kernelEvents.push(providerThreadKernelEventSnapshot(event))
     })
 
     const sliceName = `provider-thread-slice-${provider.replaceAll("-", "_")}-${process.pid}`
@@ -121,16 +130,10 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     })
     result.evidence.slice_ready_before_restart = sliceRecordSnapshot(readySlice)
 
-    logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
-    const authImported = variant(
-      await withTimeout(
-        client.send(importSliceProviderAuthRequest(sliceId, providerAuthName(provider))),
-        `import slice provider auth for ${provider}`,
-        Math.min(options.timeoutMs, 120_000),
-      ),
-      "SliceProviderAuthImported",
-    ).slice
-    result.evidence.slice_auth_imported = sliceRecordSnapshot(authImported)
+    result.evidence.provider_account_transfer = {
+      path: "kernel_execution_lease_materialization",
+      account_profile: "default",
+    }
 
     logStep(result, provider, "create-session", { workspace })
     const session = variant(
@@ -238,11 +241,15 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.evidence.slice_before_restart = sliceRecordSnapshot(sliceBeforeRestart)
     result.evidence.remember_marker = rememberMarker
 
-    logStep(result, provider, "save-slice-state-restart-agents", { sliceId, providerSessionId: beforeThreadId })
+    const saveMode = shutdownThenStart ? "shutdown" : "restart_agents"
+    logStep(result, provider, shutdownThenStart ? "save-slice-state-shutdown" : "save-slice-state-restart-agents", {
+      sliceId,
+      providerSessionId: beforeThreadId,
+    })
     const savedState = variant(
       await withTimeout(
-        client.send(saveSliceStateRequest(sliceId, "restart_agents", "this_slice")),
-        `save and restart slice for ${provider}`,
+        client.send(saveSliceStateRequest(sliceId, saveMode, "this_slice")),
+        `save ${lifecycleLabel} for ${provider}`,
         options.timeoutMs,
       ),
       "SliceStateSaved",
@@ -250,6 +257,50 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.evidence.slice_state_saved = {
       slice: sliceRecordSnapshot(savedState.slice),
       state: sliceSavedStateSnapshot(savedState.state),
+    }
+
+    let restartedSlice = savedState.slice
+    if (shutdownThenStart) {
+      const parkedRun = await waitForProviderRunEnded({
+        client,
+        providerRunId: beforeRun.id,
+        timeoutMs: Math.min(options.timeoutMs, 60_000),
+        pollMs: options.pollMs,
+      })
+      const stoppedState = variantAny(
+        await client.send(getSessionStateRequest(session.id)),
+        "SessionState",
+        "SessionStateLoaded",
+      )
+      const stoppedSession = stoppedState.session ?? stoppedState
+      result.evidence.provider_after_shutdown = providerRunSnapshot(parkedRun)
+      result.evidence.session_after_shutdown = {
+        id: stoppedSession.id ?? null,
+        active_provider_run_id: stoppedSession.active_provider_run_id ?? null,
+      }
+      Object.assign(result.checks, sliceShutdownCheckpointChecks({
+        savedSlice: savedState.slice,
+        parkedRun,
+        stoppedSession,
+      }))
+      if (!result.checks.slice_shutdown_checkpoint_valid) {
+        throw new Error(`slice shutdown did not leave ${sliceId} stopped with provider run ${beforeRun.id} parked`)
+      }
+
+      logStep(result, provider, "start-slice-explicitly", { sliceId })
+      restartedSlice = variant(
+        await withTimeout(
+          client.send(startSliceRequest(sliceId)),
+          `explicitly start slice for ${provider}`,
+          options.timeoutMs,
+        ),
+        "SliceStarted",
+      ).slice
+      result.evidence.slice_started_explicitly = sliceRecordSnapshot(restartedSlice)
+      result.checks.slice_explicit_start_completed = String(restartedSlice.status ?? "").toLowerCase() === "running"
+      if (!result.checks.slice_explicit_start_completed) {
+        throw new Error(`explicit start did not return ${sliceId} to running state`)
+      }
     }
 
     const afterRun = await waitForSessionActiveProviderRun({
@@ -278,13 +329,23 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     result.checks.provider_thread_id_before = beforeThreadId
     result.checks.provider_thread_id_after = afterThreadId
     result.checks.provider_thread_id_preserved = beforeThreadId === afterThreadId
-    result.checks.slice_worker_restarted = (
-      result.evidence.slice_before_restart.worker_kernel_id
-      && result.evidence.slice_state_saved.slice.worker_kernel_id
-      && result.evidence.slice_before_restart.worker_kernel_id !== result.evidence.slice_state_saved.slice.worker_kernel_id
-    )
+    result.checks.provider_run_relaunched = beforeRun.id !== afterRun.id
+    result.checks.account_profile_preserved = beforeRun.account_profile === afterRun.account_profile
+    result.checks.execution_mode_preserved = beforeRun.execution_mode === afterRun.execution_mode
+    result.checks.permission_level_preserved = beforeRun.permission_level === afterRun.permission_level
+    const beforeBinding = agent.remote_execution ?? null
+    const afterBinding = afterAgent?.remote_execution ?? null
+    Object.assign(result.checks, sliceRestartContinuityChecks({
+      beforeRun,
+      afterRun,
+      beforeBinding,
+      afterBinding,
+      sliceBeforeRestart,
+      restartedSlice,
+      savedState: savedState.state,
+    }))
     if (!result.checks.same_chariox_agent_record) {
-      throw new Error(`slice restart did not preserve same Chariox agent record ${agent.id}`)
+      throw new Error(`${lifecycleLabel} did not preserve same Chariox agent record ${agent.id}`)
     }
     if (!result.checks.slice_working_directory_preserved) {
       throw new Error(
@@ -292,7 +353,32 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       )
     }
     if (!result.checks.provider_thread_id_preserved) {
-      throw new Error(`provider thread id changed across slice restart: before=${beforeThreadId} after=${afterThreadId}`)
+      throw new Error(`provider thread id changed across ${lifecycleLabel}: before=${beforeThreadId} after=${afterThreadId}`)
+    }
+    if (!result.checks.provider_run_relaunched) {
+      throw new Error(`${lifecycleLabel} reused stale provider run ${beforeRun.id}`)
+    }
+    if (!result.checks.account_profile_preserved) {
+      throw new Error(
+        `provider account changed across ${lifecycleLabel}: before=${beforeRun.account_profile ?? "<unset>"} after=${afterRun.account_profile ?? "<unset>"}`,
+      )
+    }
+    if (!result.checks.execution_mode_preserved || !result.checks.permission_level_preserved) {
+      throw new Error(
+        `provider execution authority changed across ${lifecycleLabel}: mode ${beforeRun.execution_mode ?? "<unset>"}->${afterRun.execution_mode ?? "<unset>"}, permission ${beforeRun.permission_level ?? "<unset>"}->${afterRun.permission_level ?? "<unset>"}`,
+      )
+    }
+    if (!result.checks.agent_binding_repaired) {
+      throw new Error(`${lifecycleLabel} did not replace the remote execution binding for ${agent.id}`)
+    }
+    if (!result.checks.slice_worker_identity_preserved) {
+      throw new Error(`${lifecycleLabel} changed durable worker identity for ${sliceId}`)
+    }
+    if (!result.checks.slice_restart_timeline_valid) {
+      throw new Error(`${lifecycleLabel} timestamps do not prove save-before-relaunch ordering for ${agent.id}`)
+    }
+    if (!result.checks.slice_restart_completed) {
+      throw new Error(`${lifecycleLabel} did not produce a running slice with fresh execution for ${agent.id}`)
     }
 
     const recallMarker = `${rememberMarker}_SLICE_RECALLED`
@@ -303,7 +389,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
         session.id,
         attachment.id,
         agent.id,
-        "If you remember the marker from before the slice restart, reply with it followed immediately by the suffix `_SLICE_RECALLED`. Do not include any other text.",
+        `If you remember the marker from before the ${lifecycleLabel}, reply with it followed immediately by the suffix \`_SLICE_RECALLED\`. Do not include any other text.`,
         [],
       ),
       `submit slice recall marker prompt for ${provider}`,
@@ -338,6 +424,23 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       throw new Error(`slice provider run ${afterRun.id} ended during the recall turn`)
     }
 
+    if (options.drill === "slice-save-failure") {
+      await validateSliceSaveFailureRecovery({
+        client,
+        kernelUrl,
+        options,
+        provider,
+        session,
+        attachment,
+        agent,
+        sliceId,
+        sliceName,
+        baselineState: savedState.state,
+        activeRun: settledAfterRun,
+        result,
+      })
+    }
+
     result.evidence.provider_processes = await collectProviderProcesses(client, provider)
     result.evidence.kernel_events = kernelEvents.slice(-50)
     result.status = "passed"
@@ -345,6 +448,12 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
   } catch (error) {
     result.errors.push(error.stack ?? error.message ?? String(error))
     result.evidence.kernel_events = kernelEvents.slice(-50)
+    if (sliceId) {
+      result.evidence.slice_failure_diagnostics = await collectSliceFailureDiagnostics(
+        client,
+        sliceId,
+      )
+    }
     result.evidence.provider_processes = await collectProviderProcesses(client, provider).catch((processError) => ({
       error: processError.message ?? String(processError),
     }))
@@ -357,11 +466,201 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
       await cleanupSliceRuntime(client, sliceId, result.evidence, { resetSavedState: true })
+      failResultOnSliceCleanupErrors(result, { resetSavedState: true })
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
     await client.close().catch(() => {})
   }
+}
+
+export async function runSliceShutdownScenario(args) {
+  return await runSliceRestartScenario(args)
+}
+
+async function validateSliceSaveFailureRecovery({
+  client,
+  kernelUrl,
+  options,
+  provider,
+  session,
+  attachment,
+  agent,
+  sliceId,
+  sliceName,
+  baselineState,
+  activeRun,
+  result,
+}) {
+  const temporaryImage = options.sliceImage
+  if (!/^chariox-slice-save-failure:[A-Za-z0-9_.-]+$/.test(temporaryImage ?? "")) {
+    throw new Error(`refusing save-failure injection for non-temporary image ${temporaryImage ?? "<unset>"}`)
+  }
+  const container = `chariox-slice-${sliceName}`
+  const { stdout: containerIdOutput } = await execFileAsync("docker", [
+    "container",
+    "inspect",
+    "-f",
+    "{{.Id}}",
+    container,
+  ])
+  const containerIdBefore = containerIdOutput.trim()
+  const statusBefore = variant(
+    await client.send(getSliceStateStatusRequest(sliceId)),
+    "SliceStateStatus",
+  )
+  if (statusBefore.state?.id !== baselineState.id) {
+    throw new Error(`baseline saved state changed before failure injection: ${statusBefore.state?.id ?? "<none>"}`)
+  }
+
+  const failureMarker = `SLICE_SAVE_FAILURE_${provider.replaceAll("-", "_").toUpperCase()}_${process.pid}_${Date.now()}`
+  const readyMarker = `${failureMarker}_READY`
+  logStep(result, provider, "submit-pre-failure-marker", { marker: failureMarker })
+  await sendControlRequest(
+    kernelUrl,
+    submitPromptRequest(
+      session.id,
+      attachment.id,
+      agent.id,
+      [
+        `Remember this exact marker across an intentionally failed slice save: ${failureMarker}`,
+        "Reply with that marker followed immediately by the suffix `_READY`, and nothing else.",
+      ].join("\n"),
+      [],
+    ),
+    `submit pre-failure marker for ${provider}`,
+    Math.min(options.timeoutMs, 60_000),
+  )
+  await waitForHistoryOutputMarker({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId: agent.id,
+    marker: readyMarker,
+    timeoutMs: options.timeoutMs,
+    pollMs: options.pollMs,
+    historyDir: options.historyDir,
+  })
+  await waitForPromptIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId: agent.id,
+    timeoutMs: options.timeoutMs,
+    pollMs: options.pollMs,
+  })
+
+  logStep(result, provider, "remove-temporary-base-image", { image: temporaryImage })
+  await execFileAsync("docker", ["image", "rm", temporaryImage])
+  let saveFailure = null
+  try {
+    await withTimeout(
+      client.send(saveSliceStateRequest(sliceId, "restart_agents", "this_slice")),
+      `injected failing save for ${provider}`,
+      options.timeoutMs,
+    )
+  } catch (error) {
+    saveFailure = error
+  }
+  if (!saveFailure) {
+    throw new Error("injected slice save unexpectedly succeeded")
+  }
+  const saveFailureText = saveFailure.message ?? String(saveFailure)
+  if (!saveFailureText.includes("home archive helper")) {
+    throw new Error(`slice save failed outside the intended archive injection point: ${saveFailureText}`)
+  }
+  result.evidence.injected_save_failure = saveFailureText
+
+  const recoveredRun = await waitForSessionActiveProviderRun({
+    client,
+    sessionId: session.id,
+    timeoutMs: Math.min(options.timeoutMs, 180_000),
+    pollMs: options.pollMs,
+  })
+  const recoveredStatus = variant(
+    await client.send(getSliceStateStatusRequest(sliceId)),
+    "SliceStateStatus",
+  )
+  const recoveredState = variantAny(
+    await client.send(getSessionStateRequest(session.id)),
+    "SessionState",
+    "SessionStateLoaded",
+  )
+  const recoveredSession = recoveredState.session ?? recoveredState
+  const recoveredAgent = (recoveredSession.agents ?? []).find((entry) => entry.id === agent.id)
+  const { stdout: recoveredContainerIdOutput } = await execFileAsync("docker", [
+    "container",
+    "inspect",
+    "-f",
+    "{{.Id}}",
+    container,
+  ])
+  const containerIdAfter = recoveredContainerIdOutput.trim()
+  const activeThreadId = providerThreadId(activeRun)
+  const recoveredThreadId = providerThreadId(recoveredRun)
+  Object.assign(result.checks, {
+    failed_save_returned_error: true,
+    failed_save_slice_running: recoveredStatus.slice?.status === "running",
+    failed_save_container_preserved: Boolean(containerIdBefore) && containerIdBefore === containerIdAfter,
+    failed_save_prior_state_preserved: (
+      recoveredStatus.state?.id === baselineState.id
+      && recoveredStatus.slice?.saved_state_ref === baselineState.id
+      && recoveredStatus.slice?.saved_state_status === "saved"
+    ),
+    failed_save_agent_preserved: recoveredAgent?.id === agent.id,
+    failed_save_provider_relaunched: recoveredRun.id !== activeRun.id,
+    failed_save_provider_thread_preserved: Boolean(activeThreadId) && activeThreadId === recoveredThreadId,
+  })
+  result.evidence.failed_save_recovery = {
+    container_id_before: containerIdBefore,
+    container_id_after: containerIdAfter,
+    slice: sliceRecordSnapshot(recoveredStatus.slice),
+    state: sliceSavedStateSnapshot(recoveredStatus.state),
+    provider_before: providerRunSnapshot(activeRun),
+    provider_after: providerRunSnapshot(recoveredRun),
+    agent_after: {
+      id: recoveredAgent?.id ?? null,
+      remote_execution: recoveredAgent?.remote_execution ?? null,
+    },
+  }
+  for (const [check, passed] of Object.entries(result.checks).filter(([key]) => key.startsWith("failed_save_"))) {
+    if (!passed) throw new Error(`failed-save recovery check did not pass: ${check}`)
+  }
+
+  const recallMarker = `${failureMarker}_RECOVERED`
+  logStep(result, provider, "submit-post-failure-recall", { marker: recallMarker })
+  await sendControlRequest(
+    kernelUrl,
+    submitPromptRequest(
+      session.id,
+      attachment.id,
+      agent.id,
+      `Reply with the marker from immediately before the failed save followed by the suffix \`_RECOVERED\`, and nothing else.`,
+      [],
+    ),
+    `submit post-failure recall for ${provider}`,
+    Math.min(options.timeoutMs, 60_000),
+  )
+  await waitForHistoryOutputMarker({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId: agent.id,
+    marker: recallMarker,
+    timeoutMs: options.timeoutMs,
+    pollMs: options.pollMs,
+    historyDir: options.historyDir,
+  })
+  result.checks.failed_save_current_thread_recalled = true
+  result.evidence.failed_save_recall_marker = recallMarker
+  await waitForPromptIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId: agent.id,
+    timeoutMs: options.timeoutMs,
+    pollMs: options.pollMs,
+  })
 }
 
 export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl, options }) {
@@ -395,10 +694,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
   const kernelEvents = []
   try {
     client.onKernelEvent((event) => {
-      kernelEvents.push({
-        observed_at_ms: Date.now(),
-        ...event,
-      })
+      kernelEvents.push(providerThreadKernelEventSnapshot(event))
     })
 
     logStep(result, provider, "create-local-session", { workspace })
@@ -541,16 +837,10 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       providerEnv: options.providerStateSourceEnv ?? realProviderEnv(),
     })
 
-    logStep(result, provider, "import-slice-provider-auth", { authProvider: providerAuthName(provider) })
-    const authImported = variant(
-      await withTimeout(
-        client.send(importSliceProviderAuthRequest(sliceId, providerAuthName(provider))),
-        `import slice provider auth for ${provider}`,
-        Math.min(options.timeoutMs, 120_000),
-      ),
-      "SliceProviderAuthImported",
-    ).slice
-    result.evidence.slice_auth_imported = sliceRecordSnapshot(authImported)
+    result.evidence.provider_account_transfer = {
+      path: "kernel_execution_lease_materialization",
+      account_profile: "default",
+    }
 
     const machineRef = readySlice.worker_machine_id ?? `slice:${sliceId}`
     logStep(result, provider, "move-same-agent-to-slice", { agentId: agent.id, machineRef })
@@ -850,6 +1140,12 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
   } catch (error) {
     result.errors.push(error.stack ?? error.message ?? String(error))
     result.evidence.kernel_events = kernelEvents.slice(-80)
+    if (sliceId) {
+      result.evidence.slice_failure_diagnostics = await collectSliceFailureDiagnostics(
+        client,
+        sliceId,
+      )
+    }
     result.evidence.provider_processes = await collectProviderProcesses(client, provider).catch((processError) => ({
       error: processError.message ?? String(processError),
     }))
@@ -862,6 +1158,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
       await cleanupSliceRuntime(client, sliceId, result.evidence)
+      failResultOnSliceCleanupErrors(result)
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
@@ -883,4 +1180,41 @@ export async function cleanupSliceRuntime(
   await client.send(deleteSliceRequest(sliceId)).catch((error) => {
     evidence.slice_cleanup_error = error.message ?? String(error)
   })
+}
+
+export function failResultOnSliceCleanupErrors(result, { resetSavedState = false } = {}) {
+  const errors = [
+    ...(resetSavedState ? [result.evidence.slice_state_cleanup_error] : []),
+    result.evidence.slice_cleanup_error,
+  ].filter(Boolean)
+  if (errors.length === 0) return
+  result.status = "failed"
+  result.errors.push(`slice cleanup failed: ${errors.join(": ")}`)
+}
+
+async function collectSliceFailureDiagnostics(client, sliceId) {
+  const diagnostics = {}
+  try {
+    const logs = variant(
+      await client.send(getSliceLogsRequest(sliceId, 200)),
+      "SliceLogs",
+    )
+    diagnostics.logs = (logs.entries ?? []).map((entry) => ({
+      source: entry.source ?? null,
+      text: entry.text ?? "",
+      truncated: entry.truncated ?? false,
+    }))
+  } catch (error) {
+    diagnostics.logs_error = error.message ?? String(error)
+  }
+  try {
+    const audit = variant(
+      await client.send(listSliceAuditRequest(sliceId, 100)),
+      "SliceAuditListed",
+    )
+    diagnostics.audit = audit.events ?? []
+  } catch (error) {
+    diagnostics.audit_error = error.message ?? String(error)
+  }
+  return diagnostics
 }

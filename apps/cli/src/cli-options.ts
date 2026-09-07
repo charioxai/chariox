@@ -258,6 +258,7 @@ function printUsage() {
     "  /slice state [s]      show saved slice state and restart requirements",
     "  /slice save-state [s] save slice state after shutdown or agent restart",
     "  /slice backup [s]     create a recoverable slice state backup",
+    "  /slice backup restore restore a stopped slice from a verified backup",
     "  /slice reset-state [s] reset saved slice state after agents are detached",
     "  /slice start [s]      start a slice, defaulting to focused agent slice",
     "  /slice stop [s]       stop a slice, defaulting to focused agent slice",

@@ -24,7 +24,7 @@ Backup operation:
 Create backup
 ```
 
-This writes a separate backup copy, but does not make Chariox manage multiple visible versions in normal UX. After backup creation, Chariox shows where it lives and explains how to manually swap it in if needed.
+This writes a separate immutable backup copy. Chariox can restore a stopped, agent-free slice from a named backup after verifying its manifest, home archive, and Docker image identity.
 
 User-facing concepts:
 
@@ -191,7 +191,7 @@ Create backup:
 1. Copy active state image to a backup image tag, or commit the current container if requested from a live slice.
 2. Copy/export the home archive into `backups/<backup_id>/home.tar.zst`.
 3. Write backup manifest.
-4. Show a message with the backup path and manual swap instructions.
+4. Show the backup id and the kernel-owned restore command.
 
 ## UI, CLI, And Slash Commands
 
@@ -219,23 +219,19 @@ chariox slice state save <slice>
 chariox slice state status <slice>
 chariox slice state reset <slice>
 chariox slice backup create <slice> --name gmail-ready
+chariox slice backup restore <slice> <backup-ref>
 ```
 
 After backup creation, show:
 
 ```text
-Backup saved:
-  ~/.chariox/slices/backups/gmail-work-20260609-181500
+Backup saved: gmail-work-20260609-181500
 
-To use it manually, stop Chariox slice operations, then swap this backup directory
-with the active state directory:
-  ~/.chariox/slices/states/gmail-work
-
-The Docker image tag for this backup is:
-  chariox-slice-backup:gmail-work-20260609-181500
+Restore it after stopping the slice with:
+  /slice backup restore gmail-work gmail-work-20260609-181500
 ```
 
-First-class restore-from-backup can be added later, but is not required for the initial feature.
+Restore validates all backup artifacts before mutation, captures a temporary rollback generation, recreates the slice from the selected backup, and leaves it stopped. The rollback generation remains available until the restored active-state record is durably committed. If replacement, state capture, or durable publication fails, Chariox restores the rollback generation and republishes it as the active saved state; rollback artifacts are retained if automatic recovery itself fails.
 
 ## Runtime MCP
 
@@ -298,4 +294,4 @@ Backup drill:
 1. Create backup.
 2. Verify backup directory and image exist.
 3. Verify surfaced instructions are correct.
-4. Optionally manually swap backup into active state and relaunch.
+4. Restore the named backup through the kernel request and verify the slice remains stopped with a new active saved state.

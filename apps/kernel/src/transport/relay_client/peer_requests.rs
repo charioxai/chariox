@@ -118,6 +118,147 @@ pub(super) async fn handle_daemon_peer_request(
     }
 
     let response = match request {
+        RelayPeerRequest::RoomBrowserController {
+            session_id,
+            slice_id,
+            command,
+        } => {
+            match router
+                .relay_room_browser_controller(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    command,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomBrowserController {
+                    session_id,
+                    slice_id,
+                    result,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::OpenRoomDisplay {
+            session_id,
+            slice_id,
+            viewer_public_key,
+        } => {
+            match router
+                .relay_open_room_display(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    viewer_public_key,
+                )
+                .await
+            {
+                Ok(endpoint) => RelayPeerResponse::RoomDisplayOpened {
+                    session_id,
+                    slice_id,
+                    endpoint,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::CaptureRoomScreenshot {
+            session_id,
+            slice_id,
+        } => {
+            match router
+                .relay_capture_room_screenshot(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                )
+                .await
+            {
+                Ok(artifact) => RelayPeerResponse::RoomScreenshotCaptured {
+                    session_id,
+                    slice_id,
+                    artifact,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::ReadRoomScreenshotChunk {
+            session_id,
+            slice_id,
+            artifact_id,
+            offset,
+            max_bytes,
+        } => {
+            match router.relay_read_room_screenshot_chunk(
+                stable_peer_daemon_id(from_daemon_id),
+                &requester_public_key,
+                &session_id,
+                &slice_id,
+                &artifact_id,
+                offset,
+                max_bytes,
+            ) {
+                Ok(chunk) => RelayPeerResponse::RoomScreenshotChunk {
+                    session_id,
+                    slice_id,
+                    chunk,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::ObserveRoomComputer {
+            session_id,
+            slice_id,
+            call,
+        } => {
+            match router
+                .relay_observe_room_computer(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    call,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomComputerObserved {
+                    session_id,
+                    slice_id,
+                    result: crate::transport::relay_peer::RemoteRoomComputerObservationResult(
+                        result,
+                    ),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
         RelayPeerRequest::InstallManagedSliceRelayToken {
             slice_id,
@@ -466,6 +607,7 @@ pub(super) async fn handle_daemon_peer_request(
             required_mcps,
             required_skills,
             remote_extension_manifest,
+            provider_launch_credential,
         } => {
             let launched = router
                 .relay_launch_leased_native_provider_run(
@@ -480,6 +622,7 @@ pub(super) async fn handle_daemon_peer_request(
                     required_mcps,
                     required_skills,
                     remote_extension_manifest,
+                    provider_launch_credential,
                 )
                 .await;
             match launched {
@@ -556,6 +699,7 @@ pub(super) async fn handle_daemon_peer_request(
             required_mcps,
             required_skills,
             remote_extension_manifest,
+            provider_launch_credential,
         } => {
             let submitted = router
                 .relay_submit_leased_prompt(
@@ -568,6 +712,7 @@ pub(super) async fn handle_daemon_peer_request(
                     required_mcps,
                     required_skills,
                     remote_extension_manifest,
+                    provider_launch_credential,
                 )
                 .await;
             match submitted {
@@ -897,6 +1042,28 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, call } => {
+            let handled = router
+                .dispatch_forwarded_room_browser_runtime_tool_call(
+                    stable_peer_daemon_id(from_daemon_id),
+                    context,
+                    call,
+                )
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::RoomBrowserRuntimeToolHandled {
+                    result: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolResult(
+                        result,
+                    ),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::InvokeHomeExtensionTool {
             context,
             metadata,
@@ -984,7 +1151,10 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok((credential_id, secret_input)) => {
                     RelayPeerResponse::HomeCredentialSecretResolved {
                         credential_id,
-                        secret_input,
+                        secret_input:
+                            crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                                secret_input,
+                            ),
                     }
                 }
                 Err(error) => {
@@ -1693,6 +1863,7 @@ mod tests {
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
                 display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: crate::slice::SliceDisplayBackend::default(),
                 workspace_id: None,
                 worktree_id: None,
                 workspace_mount: None,

@@ -17,6 +17,7 @@ mod private_file;
 mod provider;
 mod publication_state;
 mod relay_profile;
+mod room_environment;
 mod slices;
 mod storage;
 mod user_config_mutation;
@@ -46,8 +47,10 @@ pub use persisted_daemon::{
 };
 pub(crate) use private_file::write_private_file;
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
+pub use room_environment::RoomEnvironmentWorkerBinding;
 pub use slices::{
-    SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
+    SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig,
+    DEFAULT_LINUX_SLICE_DOCKER_IMAGE, DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB,
 };
 pub use storage::{
     ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, StateBackend,
@@ -110,6 +113,7 @@ pub struct DaemonConfig {
     pub relay_heartbeat_ms: u64,
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
+    pub room_environment_worker_binding: Option<RoomEnvironmentWorkerBinding>,
     pub event_delivery_url: Option<String>,
     pub event_delivery_token: Option<String>,
     pub event_delivery_environment_id: String,
@@ -213,6 +217,7 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: true,
+            room_environment_worker_binding: None,
             event_delivery_url: None,
             event_delivery_token: None,
             event_delivery_environment_id: daemon_id.clone(),

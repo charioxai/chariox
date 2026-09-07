@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict"
+import { randomUUID } from "node:crypto"
 import fs from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
@@ -82,6 +83,7 @@ async function readProbeResult() {
 }
 
 const socket = await connectKernel()
+const requestNamespace = randomUUID()
 let sequence = 0
 const pending = new Map()
 socket.on("message", (payload) => {
@@ -107,7 +109,7 @@ socket.on("close", () => {
 })
 
 async function send(request, label) {
-  const requestId = `managed-provider-isolation-${++sequence}`
+  const requestId = `managed-provider-isolation-${requestNamespace}-${++sequence}`
   const response = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }))
   socket.send(JSON.stringify({
     type: "request",
@@ -116,6 +118,24 @@ async function send(request, label) {
     request,
   }))
   return withTimeout(response, label)
+}
+
+async function waitForProviderRunRunning(providerRunId) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const response = await send({
+      GetProviderRun: { provider_run_id: providerRunId },
+    }, "probe provider run readiness")
+    const providerRun = response?.ProviderRun?.provider_run
+    assert.ok(providerRun, `kernel did not return ProviderRun for ${providerRunId}`)
+    const state = String(providerRun.state ?? "").toLowerCase()
+    if (state === "running") return
+    if (["failed", "ended"].includes(state)) {
+      throw new Error(`isolation probe provider run entered ${providerRun.state}`)
+    }
+    await sleep(100)
+  }
+  throw new Error(`isolation probe provider run ${providerRunId} did not become ready`)
 }
 
 let sessionId
@@ -149,11 +169,14 @@ try {
       launched?.ProviderRunLaunchAccepted?.provider_run,
     `kernel did not launch the real Codex provider: ${JSON.stringify(launched)}`,
   )
+  const providerRun = launched.ProviderRunLaunched?.provider_run ??
+    launched.ProviderRunLaunchAccepted.provider_run
 
   const result = await readProbeResult()
   assert.match(result, /^managed_provider_isolation=ok$/m)
   assert.match(result, /^real_provider=\//m)
   assert.match(result, new RegExp(`^workspace=${escapeRegExp(workspace)}$`, "m"))
+  await waitForProviderRunRunning(providerRun.id)
 
   process.stdout.write(`${JSON.stringify({
     authenticated: true,
