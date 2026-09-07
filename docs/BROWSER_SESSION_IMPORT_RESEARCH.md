@@ -1,7 +1,7 @@
 # Optional Chrome session import
 
-Status: feasibility and implementation requirements, not implemented.
-Updated: 2026-09-06.
+Status: cookie conversion implemented and fixture-tested; product import not implemented.
+Updated: 2026-09-07.
 
 ## User request
 
@@ -153,6 +153,15 @@ reauthentication when [DBSC](https://developer.chrome.com/docs/web-platform/devi
 or another service check rejects the copied session.
 
 ## Current evidence and remaining work
+
+`apps/browser-session-import/` now contains a pure Chrome-cookie-to-CDP converter,
+six unit tests and a disposable real-browser test. The browser test verifies
+fixture authentication transfers between isolated contexts without changing the
+source, widening host-only scope or losing HttpOnly or partition metadata. It
+asserts both unsafe Chromium flags are absent. The test constructs source API
+records; it does not prove extension permissions or real-service portability.
+See its README for supported fields and limits. The connector, kernel consent,
+encrypted transport and transactional destination application remain unimplemented.
 
 The repository saves browser home state and has a live Docker browser state
 drill. Local validation now includes persistent and session cookies plus browser
