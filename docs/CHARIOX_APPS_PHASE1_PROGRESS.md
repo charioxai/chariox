@@ -447,3 +447,48 @@ function with the frozen App SDK, owns readiness and the inherited channel, and
 drains the shutdown response before exit. Its nine ordinary-Node wire/lifecycle
 fixtures passed (`bootstrap-wire-tests.log`); they do not establish execution
 inside the pinned embedded runtime or native sandbox.
+
+## Implementation progress: verified preparation and current evidence
+
+Publisher enrollment and revocation now use the existing kernel writer and
+owner-scoped, revision-bound decisions. Verified packages retain the exact
+signing key. Installation staging binds that provenance, and activation checks
+the retained enrollment revision in the same transaction as the active pointer.
+The older metadata commit API rejects trust-bound stages, closing an alternate
+activation route found during review. Re-enrollment cannot revive an older
+stage. This does not yet provide terminal enrollment, runtime preparation or
+revocation of a running worker.
+
+The eight publisher tests, twelve verified-staging tests and seventeen existing
+installation tests passed locally. The kernel library compiled during the new
+guarded check; the larger test-target check was stopped at the local memory
+ceiling (3,614,096 KiB peak sampled process-group RSS). Its five new kernel writer
+tests are assigned to hosted CI, with no local execution claim. Evidence:
+`verified-activation-alternate-route-tests.log`, publisher test logs and
+`kernel-verified-installation-typecheck.log` plus their resource logs.
+
+The [macOS 14 native job](https://github.com/charioxai/chariox/actions/runs/34170581264)
+passed all sixteen bootstrap/native tests on `093ebb30b`, preserving all 23
+native probe records. An earlier real macOS 14 failure showed direct executable
+mapping of package files remained allowed. The explicit executable-mapping
+denial corrected that failure without changing the syscall assertion. The
+unsigned read-map-to-mprotect observation still does not prove signed hardened
+runtime code integrity. Failed and successful evidence remains in
+`native-macos-34169996404/` and `native-macos-34170581264/`.
+
+[Linux and macOS component CI](https://github.com/charioxai/chariox/actions/runs/34169996393)
+passed the fourteen kernel Chromium migration cases, atomic checkpoint failure
+injection and four actual process-ownership tests on each platform. The real
+browser drill exposed a verifier lifecycle race and ptrace-restricted namespace
+links, both corrected with explicit observation evidence. The probe retains
+kernel PID-nesting, identity and seccomp checks and records when network
+isolation relies on Chromium's diagnostic. A real browser persistence pass and
+live Google acceptance remain outstanding until their separate drills pass.
+
+Unsigned runtime bundle assembly now checks exact committed bootstrap/SDK
+sources, bounded complete inventories and native provenance without rebuilding
+Node. Ten deterministic/tampering tests passed (`runtime-bundle-tests.log`).
+Historical native artifacts require an explicit evidence-only mode; neither
+assembly nor unsigned manifests establish release authenticity, embedded Node
+execution or production containment. No full Phase 1 release gate is advanced
+by these component results alone.
