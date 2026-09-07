@@ -93,9 +93,31 @@ The credential vault remains under the private `chariox` home. Docker and the
 broker are soft dependencies: kernel bootstrap still runs if either is
 unavailable, while slice operations report Docker as unavailable.
 
-The broker runs as `chariox-docker` inside the rootless Docker daemon's user
-and mount namespaces, but not its network namespace. The namespace entry
-wrapper validates the daemon child PID and owner before invoking `nsenter`.
+The broker runs as `chariox-docker` inside the rootless Docker daemon's user,
+mount, and network namespaces. Its mount namespace contains RootlessKit's
+private DNS resolver, which must use the matching network namespace. Otherwise
+Docker CLI registry-auth requests fail even when a host-side `docker pull`
+works. The namespace entry wrapper validates the daemon child PID, owner, and
+namespace handles before invoking `nsenter`. The broker still uses its scoped
+filesystem Unix socket; no new host TCP listener or Docker access is granted.
+Image preparation verifies a minimal build through this same entrypoint,
+with an explicitly digest-pinned external Dockerfile frontend and client-side
+registry authentication. The probe forces `DOCKER_BUILDKIT=1`, so missing
+BuildKit/buildx support fails acceptance instead of silently using the legacy
+builder. A host-side image pull does not cover this failure.
+
+The offline regression needs no Docker daemon or external network. Run it as
+root in a disposable Linux test VM with Python 3, iproute2, and util-linux:
+
+```sh
+sudo python3 scripts/managed-rootless-network-drill.py \
+  apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh
+```
+
+It exercises the real helper against a private DNS fixture, checks command
+exit propagation and parent-network isolation, and removes its processes and
+temporary state. It complements, rather than replaces, fresh-image acceptance.
+
 For each repository bind, the broker opens the published directory without
 following symlinks, records its device and inode, and bind-mounts that open file
 descriptor onto a broker-owned stable handle below
