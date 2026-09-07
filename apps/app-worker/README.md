@@ -118,6 +118,11 @@ and native macOS/arm64 builders still need validation.
 
 ## Remaining release integration
 
+The [separate bundle assembler](bundle.md) adds the pinned trusted bootstrap and
+complete SDK graph to an existing native artifact without rebuilding Node.
+Its deterministic inventory and unsigned integrity verifier are available now;
+they do not provide runtime enrollment or embedded Node execution evidence.
+
 The artifact manifest records source and tool digests, Git provenance, commands,
 library dependencies, and output digests. It always records **unsigned**,
 **not notarized**, **containment not tested**, and **reproducibility not compared**.

@@ -137,7 +137,9 @@ allowing private `file-read*` failed the direct-mapping probe on macOS 14.8.9
 ([failed run 34169996404](https://github.com/charioxai/chariox/actions/runs/34169996404)).
 The direct-mapping denial assertion remains mandatory; the probe also checks
 compiled policy denial for the package and permission for the runtime. The
-explicit policy correction still requires macOS 14 CI confirmation.
+explicit policy correction passed on the same macOS 14.8.9 image in
+[run 34170581264](https://github.com/charioxai/chariox/actions/runs/34170581264),
+including the actual direct-mapping denial and all host-authority checks.
 **The unsigned macOS probe observed that a read-only
 file mapping can later become executable through `mprotect`. Seatbelt alone is
 not evidence of a complete executable-memory policy.** The signed/hardened JIT

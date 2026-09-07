@@ -1,0 +1,35 @@
+name: App runtime bundle tooling
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/app-worker/bundle.lock.json'
+      - 'apps/app-worker/runtime.lock.json'
+      - 'apps/app-worker/src/bootstrap*.cjs'
+      - 'packages/app-sdk/**'
+      - 'scripts/package-app-runtime*.mjs'
+      - 'scripts/app-runtime-bundle*.mjs'
+      - '.github/workflows/app-runtime-bundle.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-runtime-bundle-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify deterministic inventory and tampering cases
+        run: node --test --test-concurrency=1 scripts/package-app-runtime.test.mjs
