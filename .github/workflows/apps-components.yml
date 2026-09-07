@@ -65,6 +65,7 @@ jobs:
           cargo test --locked -p chariox-kernel --lib runtime::app_control:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib app_relay_ -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::app_package_upload_control:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::app_package_preparation:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib app_upload_maximum_chunk -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib durable_state:: -- --test-threads=1
       - name: Test Chromium migration and atomic checkpoint recovery

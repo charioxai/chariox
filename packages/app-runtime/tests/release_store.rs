@@ -626,3 +626,56 @@ fn interrupted_cleanup_preserves_marker_until_all_payload_deletion_is_durable() 
     assert_eq!(store.collect_abandoned().unwrap().removed, 1);
     assert!(!abandoned.exists());
 }
+
+#[test]
+fn database_root_creation_is_private_durable_reusable_and_separates_kernels() {
+    let directory = Directory::new();
+    let first = ReleaseStore::open_or_create(&directory.0.join("first.db")).unwrap();
+    let second = ReleaseStore::open_or_create(&directory.0.join("second.db")).unwrap();
+    let (archive, policy) = package();
+    let verified = verify(&archive, &policy).unwrap();
+    let first_release = first.stage(&verified, &archive, budget()).unwrap();
+    let second_release = second.stage(&verified, &archive, budget()).unwrap();
+    assert_ne!(first_release.path, second_release.path);
+    for release in [&first_release, &second_release] {
+        assert_eq!(
+            fs::metadata(release.path.parent().unwrap()).unwrap().mode() & 0o777,
+            0o700
+        );
+    }
+    drop(first);
+    let reopened = ReleaseStore::open_or_create(&directory.0.join("first.db")).unwrap();
+    let recovered = reopened.stage(&verified, &archive, budget()).unwrap();
+    assert!(recovered.reused);
+    assert_eq!(recovered.path, first_release.path);
+    assert_eq!(
+        names(&directory.0).len(),
+        2,
+        "Only fixed release leaves are created"
+    );
+}
+
+#[test]
+fn database_release_constructor_rejects_symlinks_and_unsafe_parents_without_chmod() {
+    let directory = Directory::new();
+    assert!(ReleaseStore::open_or_create(Path::new("relative.db")).is_err());
+    let original = directory.child("original");
+    let alias = directory.0.join("alias");
+    symlink(&original, &alias).unwrap();
+    assert!(ReleaseStore::open_or_create(&alias.join("state.db")).is_err());
+    let database = original.join("state.db");
+    ReleaseStore::open_or_create(&database).unwrap();
+    let release_leaf = original.join(names(&original).pop().unwrap());
+    fs::remove_dir(&release_leaf).unwrap();
+    symlink(&directory.0, &release_leaf).unwrap();
+    assert!(ReleaseStore::open_or_create(&database).is_err());
+    assert!(fs::symlink_metadata(&release_leaf)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let shared = directory.child("shared");
+    permissions(&shared, 0o777);
+    assert!(ReleaseStore::open_or_create(&shared.join("state.db")).is_err());
+    assert_eq!(fs::metadata(&shared).unwrap().mode() & 0o777, 0o777);
+    assert!(names(&shared).is_empty());
+}

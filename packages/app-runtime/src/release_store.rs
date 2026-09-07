@@ -15,6 +15,7 @@ mod unix {
     use std::fs::File;
     use std::io::Read;
     use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -119,6 +120,31 @@ mod unix {
             Ok(Self {
                 root,
                 path: path.to_owned(),
+            })
+        }
+
+        /// Create only this kernel database's private release leaf. The fixed
+        /// leaf derives from the trusted database filename, separating kernels
+        /// in one state parent. Anchored creation checks ownership, rejects
+        /// symlinks and syncs the child and its parent before returning.
+        pub fn open_or_create(kernel_database_path: &Path) -> Result<Self> {
+            if !kernel_database_path.is_absolute() {
+                return Err(ReleaseStoreError::InvalidRoot);
+            }
+            let parent = kernel_database_path
+                .parent()
+                .ok_or(ReleaseStoreError::InvalidRoot)?;
+            let database_name = kernel_database_path
+                .file_name()
+                .ok_or(ReleaseStoreError::InvalidRoot)?;
+            let name = format!(
+                "app-releases-{:x}",
+                Sha256::digest(database_name.as_bytes())
+            );
+            let root = Dir::open_or_create_private_child(parent, OsStr::new(&name))?;
+            Ok(Self {
+                root,
+                path: parent.join(name),
             })
         }
 

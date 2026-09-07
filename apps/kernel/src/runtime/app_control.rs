@@ -20,15 +20,21 @@ mod uploads;
 pub(crate) struct AppControlService {
     store: DurableKernelStateStore,
     uploads: super::app_package_upload_control::AppPackageUploadControl,
+    preparation: super::app_package_preparation::AppPackagePreparation,
     admission: Arc<Semaphore>,
 }
 
 impl AppControlService {
     pub(crate) fn new(store: DurableKernelStateStore) -> Self {
+        let uploads = super::app_package_upload_control::AppPackageUploadControl::new(
+            store.path().to_path_buf(),
+        );
         Self {
-            uploads: super::app_package_upload_control::AppPackageUploadControl::new(
-                store.path().to_path_buf(),
+            preparation: super::app_package_preparation::AppPackagePreparation::new(
+                store.clone(),
+                uploads.clone(),
             ),
+            uploads,
             store,
             admission: Arc::new(Semaphore::new(8)),
         }

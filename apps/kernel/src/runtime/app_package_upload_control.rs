@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chariox_app_runtime::package_upload::{
-    PackageUploadStore, UploadError, UploadLimits, UploadStatus, MAX_UPLOAD_ARCHIVE_BYTES,
-    MAX_UPLOAD_CHUNK_BYTES,
+    PackageUploadStore, UploadError, UploadLimits, UploadStatus, UploadedPackage,
+    MAX_UPLOAD_ARCHIVE_BYTES, MAX_UPLOAD_CHUNK_BYTES,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -228,6 +228,25 @@ impl AppPackageUploadControl {
                     .map_err(upload_error)
             }
         }
+    }
+
+    /// Blocking installer-only seam. Reuses the live upload authority and its
+    /// read lease; no path leaves this method. The caller holds bounded kernel
+    /// admission throughout verification/publication and drops the lease there.
+    pub(crate) fn finalize_for_preparation(
+        &self,
+        trusted_owner: &str,
+        handle: &str,
+        now_ms: u64,
+    ) -> Result<UploadedPackage, UploadError> {
+        if !valid_identity(trusted_owner) || validate_handle(handle).is_err() {
+            return Err(UploadError::Invalid("owner or handle"));
+        }
+        let store = self.store(now_ms).map_err(|error| match error {
+            UploadControlError::Busy => UploadError::Busy,
+            _ => UploadError::Unavailable,
+        })?;
+        store.finalize(trusted_owner, handle, now_ms)
     }
 
     fn store(&self, now_ms: u64) -> Result<PackageUploadStore, UploadControlError> {
