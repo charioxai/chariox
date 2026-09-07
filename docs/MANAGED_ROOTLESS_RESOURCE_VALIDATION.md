@@ -66,6 +66,20 @@ after killing the adapter, and after explicit stop/start. It also switches the
 fixture to the unsupported driver and requires boot readiness to fail, then
 checks that the daemon stopped. All owned units, images and state are removed.
 
+To include fresh service-account setup, run this root-only wrapper on the
+disposable VM:
+
+```sh
+sudo python3 scripts/managed-rootless-account-drill.py
+```
+
+It creates a temporary system user with a nologin shell, applies the shipped
+UID-scoped delegation policy and enables lingering. It checks automatic bus
+startup before running the full lifecycle drill. The whole fixture user tree
+is capped at 512MiB, 0.75 CPU and 256 tasks, including container scopes. It
+refuses subordinate-ID overlap and removes the account, allocation, user
+manager, linger entry, policy and home afterward.
+
 ## Recorded result and remaining validation
 
 On the existing local ARM64 Ubuntu 24.04 test VM, Docker 29.2.1 with cgroup v2:
@@ -80,8 +94,9 @@ VM. Its boot-check regression caught a Docker Go-template field-name mismatch
 that static packaging tests did not catch; the corrected readiness command
 was then exercised successfully, including rejection of the unsupported driver.
 
-This is local implementation evidence, not production-image acceptance. The
-fixture reuses an existing ordinary user with delegated controllers; it does
-not prove fresh dedicated-account creation, image boot or reboot. Verify those
-paths and actual container cgroup files on a fresh x86_64 Ubuntu 26.04 managed
-image, then repeat after reboot and slice save/restore before long workloads.
+The fresh nologin-account wrapper also passed on that VM, including automatic
+bus startup and scoped delegation. This is local implementation evidence, not
+production-image acceptance. It does not execute the complete signed installer
+on a pristine OS or prove image boot/reboot. Verify those paths and actual
+container cgroup files on a fresh x86_64 Ubuntu 26.04 managed image, then repeat
+after reboot and slice save/restore before long workloads.
