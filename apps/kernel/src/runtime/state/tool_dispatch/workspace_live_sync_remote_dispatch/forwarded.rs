@@ -31,7 +31,7 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
         artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
     ) -> ForwardedWorkspaceLiveSyncResult {
-        let Some(workspace_context) = self.forwarded_workspace_context(&context).await? else {
+        let Some(_) = self.forwarded_workspace_context(&context).await? else {
             return Ok(remote_workspace_not_coordinated_result());
         };
         let permission_level = self
@@ -84,8 +84,13 @@ impl KernelRuntimeState {
             return Ok(forwarded_result);
         }
 
-        let forwarded_result = {
+        let forwarded_result = async {
             let mut coordinator = self.owned.workspace_live_sync_coordinator.lock().await;
+            // Approval and coordinator contention can outlive the run or mount
+            // that admitted this request. Recheck before using artifact state.
+            let Some(workspace_context) = self.forwarded_workspace_context(&context).await? else {
+                return Ok(remote_workspace_not_coordinated_result());
+            };
             match tool_name.as_str() {
                 crate::transport::runtime_tools::READ_ARTIFACT_TOOL => {
                     read::dispatch_forwarded_read(
@@ -148,7 +153,8 @@ impl KernelRuntimeState {
                 }
                 _ => Ok(unsupported_remote_workspace_live_sync_tool(&tool_name)),
             }
-        };
+        }
+        .await;
 
         let forwarded_result = match forwarded_result {
             Ok(forwarded_result) => forwarded_result,

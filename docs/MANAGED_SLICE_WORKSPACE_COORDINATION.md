@@ -35,14 +35,21 @@ identities and the managed-mount mapping require the current home-agent binding,
 worker identity, leased agent and provider run. Replay and finalization recheck
 that binding before returning a cached reply or publishing changes.
 
+An approval is not a durable grant to an old provider run. Dispatch revalidates
+the workspace after the approval wait and coordinator acquisition, before
+editing. An authorization failure removes the in-flight invocation so its
+waiting transport retries terminate rather than receiving a stale write or
+waiting indefinitely.
+
 ## Validation status
 
 The router regression reproduced the non-Git rejection, then passed with the
 mapping. A further router regression reproduced acceptance of a stale lease
 when the worker claimed the home folder's exact identity, then passed after
 moving authorization ahead of identity matching. The focused kernel workspace
-suite passes 280 tests, including negative mount/binding cases, relay-sender
-checks, permission retry, replay and finalization after provider-run replacement.
+suite passes 281 tests, including negative mount/binding cases, relay-sender
+checks, permission retry, replay and finalization after provider-run replacement,
+and provider-run replacement while a mutation approval and retry are pending.
 Three stale protocol-version assertions and a Docker test fixture missing the
 already-required file-descriptor limit were corrected without changing the
 protocol version or production provisioning policy.

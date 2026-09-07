@@ -295,6 +295,15 @@ async fn forwarded_workspace_live_sync_invocation_replays_completed_mutation_onc
 
 #[tokio::test]
 async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_result() {
+    run_workspace_permission_retry(false).await;
+}
+
+#[tokio::test]
+async fn forwarded_workspace_live_sync_rechecks_binding_after_permission_wait() {
+    run_workspace_permission_retry(true).await;
+}
+
+async fn run_workspace_permission_retry(replace_run: bool) {
     let worktree = create_test_git_worktree("workspace-live-sync-inflight-permission");
     let mut config = DaemonConfig::for_tests();
     config.daemon_id = "home-kernel".into();
@@ -405,6 +414,17 @@ async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_resul
         "a transport retry should wait for the original permission result"
     );
 
+    if replace_run {
+        app.lock()
+            .await
+            .agents_mut()
+            .set_remote_execution_active_worker_provider_run_id(
+                &agent_id,
+                Some("replacement-during-approval".into()),
+            )
+            .unwrap();
+    }
+
     let response =
         LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
             session_id: session_id.clone(),
@@ -428,17 +448,27 @@ async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_resul
     let first_result = tokio::time::timeout(Duration::from_secs(2), first)
         .await
         .expect("original invocation should finish")
-        .expect("original invocation task should not panic")
-        .expect("original invocation should succeed");
+        .expect("original invocation task should not panic");
     let duplicate_result = tokio::time::timeout(Duration::from_secs(2), duplicate)
         .await
         .expect("retry invocation should finish")
-        .expect("retry invocation task should not panic")
-        .expect("retry invocation should succeed");
-    assert!(first_result.0.ok, "original result: {first_result:?}");
-    assert_eq!(duplicate_result, first_result);
-
+        .expect("retry invocation task should not panic");
     let _ = std::fs::remove_dir_all(worktree);
+    if replace_run {
+        assert!(
+            matches!(first_result, Err(DaemonError::LocalTransport { .. })),
+            "approving an old request must not authorize the replaced run: {first_result:?}"
+        );
+        assert!(
+            matches!(duplicate_result, Err(DaemonError::LocalTransport { .. })),
+            "an in-flight retry must also finish without an authorized write: {duplicate_result:?}"
+        );
+    } else {
+        let first_result = first_result.expect("original invocation should succeed");
+        let duplicate_result = duplicate_result.expect("retry invocation should succeed");
+        assert!(first_result.0.ok, "original result: {first_result:?}");
+        assert_eq!(duplicate_result, first_result);
+    }
 }
 
 fn bind_workspace_test_worker(app: &mut DaemonApp, agent_id: &str) {
