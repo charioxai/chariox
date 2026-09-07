@@ -372,9 +372,13 @@ dependencies = [
 name = "chariox-app-runtime"
 version = "0.1.0"
 dependencies = [
+ "chariox-app-package",
+ "ed25519-dalek",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -397,6 +401,7 @@ dependencies = [
  "argon2",
  "base64",
  "bytes",
+ "chariox-app-runtime",
  "chariox-event-protocol",
  "chariox-relay",
  "chrono",

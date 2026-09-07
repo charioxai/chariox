@@ -5,5 +5,7 @@
 //! establish confinement before executing any App code.
 
 pub mod installation;
+#[cfg(unix)]
+pub mod release_store;
 pub mod wire;
 mod wire_json;

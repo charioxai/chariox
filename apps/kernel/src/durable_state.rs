@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod apps;
+#[cfg(test)]
+mod apps_tests;
 mod owner;
 pub(crate) mod workflow_runtime;
 
@@ -69,7 +72,7 @@ mod settlement_retry_tests {
 
 #[derive(Debug)]
 struct DurableStateWriter {
-    sender: Mutex<Option<SyncSender<DurableWriteRequest>>>,
+    sender: Mutex<Option<SyncSender<DurableWriterRequest>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     health: Arc<DurableWriterHealth>,
 }
@@ -113,6 +116,12 @@ pub(crate) struct DurableIncrementalReclaimOutcome {
 struct DurableWriteRequest {
     operation: DurableWriteOperation,
     response: mpsc::Sender<Result<u64, String>>,
+}
+
+#[derive(Debug)]
+enum DurableWriterRequest {
+    Ordinary(DurableWriteRequest),
+    App(Box<apps::AppRegistryRequest>),
 }
 
 #[derive(Debug)]
@@ -251,10 +260,11 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             })?;
         }
-        let connection = Connection::open(&path).map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.open",
-            message: error.to_string(),
-        })?;
+        let mut connection =
+            Connection::open(&path).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.open",
+                message: error.to_string(),
+            })?;
         if initialize_incremental_vacuum {
             connection
                 .pragma_update(None, "auto_vacuum", "INCREMENTAL")
@@ -275,6 +285,7 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        apps::initialize(&mut connection)?;
         let writer = DurableStateWriter::start(&path)?;
         connection
             .pragma_update(None, "query_only", true)
@@ -1191,7 +1202,14 @@ impl DurableStateWriter {
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
-            .spawn(move || run_durable_writer(connection, receiver, worker_health))
+            .spawn(move || {
+                run_durable_writer(
+                    connection,
+                    receiver,
+                    worker_health,
+                    DURABLE_WRITE_BATCH_WINDOW,
+                )
+            })
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
                 message: error.to_string(),
@@ -1205,6 +1223,23 @@ impl DurableStateWriter {
 
     fn execute(&self, operation: DurableWriteOperation) -> Result<u64, DaemonError> {
         let (response_tx, response_rx) = mpsc::channel();
+        self.enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+            operation,
+            response: response_tx,
+        }))?;
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.await_write",
+                message: error.to_string(),
+            })?
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "durable_state.commit_write",
+                message,
+            })
+    }
+
+    fn enqueue(&self, request: DurableWriterRequest) -> Result<(), DaemonError> {
         let sender = self
             .sender
             .lock()
@@ -1219,23 +1254,10 @@ impl DurableStateWriter {
                 message: "durable writer is shutting down".to_string(),
             })?;
         sender
-            .send(DurableWriteRequest {
-                operation,
-                response: response_tx,
-            })
+            .send(request)
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.enqueue_write",
                 message: error.to_string(),
-            })?;
-        response_rx
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.await_write",
-                message: error.to_string(),
-            })?
-            .map_err(|message| DaemonError::LocalTransport {
-                operation: "durable_state.commit_write",
-                message,
             })
     }
 
@@ -1267,18 +1289,31 @@ impl Drop for DurableStateWriter {
 
 fn run_durable_writer(
     mut connection: Connection,
-    receiver: Receiver<DurableWriteRequest>,
+    receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
+    batch_window: Duration,
 ) {
-    while let Ok(first) = receiver.recv() {
+    let mut pending = None;
+    while let Some(first) = pending.take().or_else(|| receiver.recv().ok()) {
+        let first = match first {
+            DurableWriterRequest::Ordinary(request) => request,
+            DurableWriterRequest::App(request) => {
+                apps::execute(&mut connection, *request);
+                continue;
+            }
+        };
         let mut batch = vec![first];
-        let deadline = Instant::now() + DURABLE_WRITE_BATCH_WINDOW;
+        let deadline = Instant::now() + batch_window;
         while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
             match receiver.recv_timeout(remaining) {
-                Ok(request) => batch.push(request),
+                Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
+                Ok(request @ DurableWriterRequest::App(_)) => {
+                    pending = Some(request);
+                    break;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }

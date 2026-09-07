@@ -11,6 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 pub const RETAINED_UPDATE_RECORDS: usize = 64;
+pub const MAX_INSTALLATION_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallationError {
@@ -143,6 +144,12 @@ pub struct Installation {
     pub admission_paused: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallationPage {
+    pub installations: Vec<Installation>,
+    pub next_cursor: Option<String>,
+}
+
 pub struct InstallationRegistry<'a> {
     connection: &'a mut Connection,
 }
@@ -168,6 +175,8 @@ impl<'a> InstallationRegistry<'a> {
                 admission_paused INTEGER NOT NULL DEFAULT 0
                     CHECK(admission_paused IN (0, 1))
              );
+             CREATE INDEX IF NOT EXISTS app_installations_owner
+                ON app_installations(owner_id, installation_id);
              CREATE TABLE IF NOT EXISTS app_installation_updates (
                 installation_id TEXT NOT NULL,
                 generation INTEGER NOT NULL CHECK(generation > 0),
@@ -186,22 +195,76 @@ impl<'a> InstallationRegistry<'a> {
         app_id: &str,
         owner_id: &str,
     ) -> Result<Installation> {
-        identifier(installation_id)?;
-        identifier(app_id)?;
-        identifier(owner_id)?;
-        let changed = self.connection.execute(
-            "INSERT INTO app_installations(installation_id, app_id, owner_id)
-             VALUES (?1, ?2, ?3) ON CONFLICT(installation_id) DO NOTHING",
-            params![installation_id, app_id, owner_id],
-        )?;
-        if changed != 1 {
-            return Err(InstallationError::Conflict);
-        }
+        create_installation(self.connection, installation_id, app_id, owner_id)?;
         self.get(installation_id)
+    }
+
+    /// Initial identity and candidate are committed together. A failed stage
+    /// leaves neither an installation nor a consumed generation behind.
+    pub fn create_and_stage(
+        &mut self,
+        installation_id: &str,
+        owner_id: &str,
+        release: ReleaseMetadata,
+        now_ms: u64,
+    ) -> Result<UpdateRecord> {
+        validate_release(&release)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        create_installation(&transaction, installation_id, &release.app_id, owner_id)?;
+        let record = stage_release(&transaction, installation_id, 0, release, now_ms)?;
+        transaction.commit()?;
+        Ok(record)
     }
 
     pub fn get(&self, installation_id: &str) -> Result<Installation> {
         load_installation(self.connection, installation_id)
+    }
+
+    /// Stable identifier pagination, always scoped to one authenticated owner
+    /// supplied by the kernel. Concurrent state changes appear on later reads.
+    pub fn list(
+        &self,
+        owner_id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<InstallationPage> {
+        identifier(owner_id)?;
+        if let Some(cursor) = after {
+            identifier(cursor)?;
+        }
+        if !(1..=MAX_INSTALLATION_PAGE_SIZE).contains(&limit) {
+            return Err(InstallationError::Invalid("installation page limit"));
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT installation_id, app_id, owner_id, generation, active_json,
+                pending_generation, admission_paused FROM app_installations
+             WHERE owner_id = ?1 AND installation_id > ?2
+             ORDER BY installation_id LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![owner_id, after.unwrap_or(""), sql_limit(limit + 1)?],
+            |row| Ok((row.get::<_, String>(0)?, stored_installation_row(row, 1)?)),
+        )?;
+        let mut installations = rows
+            .map(|row| {
+                let (id, fields) = row?;
+                installation_from_fields(&id, fields)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if installations.len() > limit {
+            installations.pop();
+            installations
+                .last()
+                .map(|item| item.installation_id.clone())
+        } else {
+            None
+        };
+        Ok(InstallationPage {
+            installations,
+            next_cursor,
+        })
     }
 
     /// Check immediately before admission; an old cached catalog is insufficient.
@@ -230,58 +293,7 @@ impl<'a> InstallationRegistry<'a> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let installation = load_installation(&transaction, installation_id)?;
-        expected_generation(&installation, expected)?;
-        if installation.pending_generation.is_some() {
-            return Err(InstallationError::Conflict);
-        }
-        if installation.app_id != release.app_id {
-            return Err(InstallationError::Invalid("different App identity"));
-        }
-        if installation
-            .active
-            .as_ref()
-            .is_some_and(|active| active.release.publisher_id != release.publisher_id)
-        {
-            return Err(InstallationError::Invalid(
-                "publisher change requires separate trust migration",
-            ));
-        }
-        let generation = allocate_generation(&transaction, installation_id)?;
-        let record = UpdateRecord {
-            token: StageToken {
-                installation_id: installation_id.into(),
-                base_generation: expected,
-                generation,
-            },
-            release,
-            decision: CapabilityDecision::Pending,
-            phase: UpdatePhase::Staged,
-            created_at_ms: now_ms,
-            updated_at_ms: now_ms,
-            abort_reason: None,
-        };
-        transaction.execute(
-            "INSERT INTO app_installation_updates
-                 (installation_id, generation, phase, record_json)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                installation_id,
-                sql_generation(generation)?,
-                record.phase.name(),
-                serde_json::to_string(&record)?
-            ],
-        )?;
-        let changed = transaction.execute(
-            "UPDATE app_installations SET pending_generation = ?2
-             WHERE installation_id = ?1 AND generation = ?3 AND pending_generation IS NULL",
-            params![
-                installation_id,
-                sql_generation(generation)?,
-                sql_generation(expected)?
-            ],
-        )?;
-        require_changed(changed)?;
+        let record = stage_release(&transaction, installation_id, expected, release, now_ms)?;
         transaction.commit()?;
         Ok(record)
     }
@@ -476,25 +488,114 @@ impl<'a> InstallationRegistry<'a> {
     }
 }
 
+fn create_installation(
+    connection: &Connection,
+    installation_id: &str,
+    app_id: &str,
+    owner_id: &str,
+) -> Result<()> {
+    identifier(installation_id)?;
+    identifier(app_id)?;
+    identifier(owner_id)?;
+    require_changed(connection.execute(
+        "INSERT INTO app_installations(installation_id, app_id, owner_id)
+         VALUES (?1, ?2, ?3) ON CONFLICT(installation_id) DO NOTHING",
+        params![installation_id, app_id, owner_id],
+    )?)
+}
+
+fn stage_release(
+    connection: &Connection,
+    installation_id: &str,
+    expected: u64,
+    release: ReleaseMetadata,
+    now_ms: u64,
+) -> Result<UpdateRecord> {
+    let installation = load_installation(connection, installation_id)?;
+    expected_generation(&installation, expected)?;
+    if installation.pending_generation.is_some() {
+        return Err(InstallationError::Conflict);
+    }
+    if installation.app_id != release.app_id {
+        return Err(InstallationError::Invalid("different App identity"));
+    }
+    if installation
+        .active
+        .as_ref()
+        .is_some_and(|active| active.release.publisher_id != release.publisher_id)
+    {
+        return Err(InstallationError::Invalid(
+            "publisher change requires separate trust migration",
+        ));
+    }
+    let generation = allocate_generation(connection, installation_id)?;
+    let record = UpdateRecord {
+        token: StageToken {
+            installation_id: installation_id.into(),
+            base_generation: expected,
+            generation,
+        },
+        release,
+        decision: CapabilityDecision::Pending,
+        phase: UpdatePhase::Staged,
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+        abort_reason: None,
+    };
+    connection.execute(
+        "INSERT INTO app_installation_updates
+             (installation_id, generation, phase, record_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            installation_id,
+            sql_generation(generation)?,
+            record.phase.name(),
+            serde_json::to_string(&record)?
+        ],
+    )?;
+    let changed = connection.execute(
+        "UPDATE app_installations SET pending_generation = ?2
+         WHERE installation_id = ?1 AND generation = ?3 AND pending_generation IS NULL",
+        params![
+            installation_id,
+            sql_generation(generation)?,
+            sql_generation(expected)?
+        ],
+    )?;
+    require_changed(changed)?;
+    Ok(record)
+}
+
 fn load_installation(connection: &Connection, id: &str) -> Result<Installation> {
     let row = connection
         .query_row(
             "SELECT app_id, owner_id, generation, active_json, pending_generation,
             admission_paused FROM app_installations WHERE installation_id = ?1",
             [id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, bool>(5)?,
-                ))
-            },
+            |row| stored_installation_row(row, 0),
         )
         .optional()?
         .ok_or(InstallationError::NotFound)?;
+    installation_from_fields(id, row)
+}
+
+type StoredInstallation = (String, String, i64, Option<String>, Option<i64>, bool);
+
+fn stored_installation_row(
+    row: &rusqlite::Row<'_>,
+    start: usize,
+) -> rusqlite::Result<StoredInstallation> {
+    Ok((
+        row.get(start)?,
+        row.get(start + 1)?,
+        row.get(start + 2)?,
+        row.get(start + 3)?,
+        row.get(start + 4)?,
+        row.get(start + 5)?,
+    ))
+}
+
+fn installation_from_fields(id: &str, row: StoredInstallation) -> Result<Installation> {
     Ok(Installation {
         installation_id: id.into(),
         app_id: row.0,

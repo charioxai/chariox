@@ -660,3 +660,101 @@ fn negative_stored_generations_are_rejected_instead_of_wrapping() {
         Err(InstallationError::Invalid("negative stored generation"))
     ));
 }
+
+#[test]
+fn initial_stage_failure_rolls_back_identity_and_generation() {
+    let database = Database::new();
+    let mut connection = database.open();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_initial_stage BEFORE UPDATE OF pending_generation
+         ON app_installations WHEN NEW.pending_generation IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'stage failed after journal insert');
+         END;",
+        )
+        .unwrap();
+    let mut registry = InstallationRegistry::new(&mut connection);
+    assert!(matches!(
+        registry.create_and_stage("todo", "owner", release(1), 1),
+        Err(InstallationError::Database(_))
+    ));
+    assert!(matches!(
+        registry.get("todo"),
+        Err(InstallationError::NotFound)
+    ));
+    drop(connection);
+
+    let mut connection = database.open();
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM app_installation_updates", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    connection
+        .execute_batch("DROP TRIGGER fail_initial_stage")
+        .unwrap();
+    let mut registry = InstallationRegistry::new(&mut connection);
+    let stage = registry
+        .create_and_stage("todo", "owner", release(1), 2)
+        .unwrap();
+    assert_eq!(stage.token.generation, 1);
+    assert!(matches!(
+        registry.create_and_stage("todo", "other", release(2), 3),
+        Err(InstallationError::Conflict)
+    ));
+    assert_eq!(registry.get("todo").unwrap().owner_id, "owner");
+    assert_eq!(registry.journal("todo").unwrap(), vec![stage]);
+}
+
+#[test]
+fn owner_pages_are_bounded_stable_and_work_on_read_only_connection() {
+    let database = Database::new();
+    let mut connection = database.open();
+    let mut registry = InstallationRegistry::new(&mut connection);
+    for (id, owner) in [
+        ("a", "owner"),
+        ("b", "other"),
+        ("c", "owner"),
+        ("d", "owner"),
+    ] {
+        registry.create_and_stage(id, owner, release(1), 1).unwrap();
+    }
+    registry.uninstall("a", 0, 2).unwrap();
+    connection.pragma_update(None, "query_only", true).unwrap();
+    let registry = InstallationRegistry::new(&mut connection);
+    let first = registry.list("owner", None, 2).unwrap();
+    assert_eq!(
+        first
+            .installations
+            .iter()
+            .map(|item| item.installation_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "c"]
+    );
+    assert_eq!(first.next_cursor.as_deref(), Some("c"));
+    assert!(first.installations[0].active.is_none());
+    let second = registry
+        .list("owner", first.next_cursor.as_deref(), 2)
+        .unwrap();
+    assert_eq!(second.installations.len(), 1);
+    assert_eq!(second.installations[0].installation_id, "d");
+    assert_eq!(second.next_cursor, None);
+    assert_eq!(
+        registry.list("other", None, 2).unwrap().installations.len(),
+        1
+    );
+    assert!(registry
+        .list("unknown", None, 2)
+        .unwrap()
+        .installations
+        .is_empty());
+    for limit in [0, 101, usize::MAX] {
+        assert!(matches!(
+            registry.list("owner", None, limit),
+            Err(InstallationError::Invalid(_))
+        ));
+    }
+    assert!(registry.list("", None, 2).is_err());
+    assert!(registry.list("owner", Some("\n"), 2).is_err());
+}
