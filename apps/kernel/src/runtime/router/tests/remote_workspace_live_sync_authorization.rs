@@ -353,7 +353,7 @@ async fn run_workspace_permission_retry(replace_run: bool) {
         },
     ];
 
-    let first = tokio::spawn({
+    let mut first = tokio::spawn({
         let router = Arc::clone(&router);
         let context = context.clone();
         let metadata = metadata.clone();
@@ -389,7 +389,7 @@ async fn run_workspace_permission_retry(replace_run: bool) {
     .await
     .expect("forwarded write should project a permission interaction");
 
-    let duplicate = tokio::spawn({
+    let mut duplicate = tokio::spawn({
         let router = Arc::clone(&router);
         let context = context.clone();
         let mut metadata = metadata.clone();
@@ -445,15 +445,23 @@ async fn run_workspace_permission_retry(replace_run: bool) {
         .await
         .expect("permission response should succeed");
 
-    let first_result = tokio::time::timeout(Duration::from_secs(2), first)
-        .await
+    let first_result = tokio::time::timeout(Duration::from_secs(2), &mut first).await;
+    let duplicate_result = tokio::time::timeout(Duration::from_secs(2), &mut duplicate).await;
+    if first_result.is_err() {
+        first.abort();
+        let _ = first.await;
+    }
+    if duplicate_result.is_err() {
+        duplicate.abort();
+        let _ = duplicate.await;
+    }
+    let _ = std::fs::remove_dir_all(worktree);
+    let first_result = first_result
         .expect("original invocation should finish")
         .expect("original invocation task should not panic");
-    let duplicate_result = tokio::time::timeout(Duration::from_secs(2), duplicate)
-        .await
+    let duplicate_result = duplicate_result
         .expect("retry invocation should finish")
         .expect("retry invocation task should not panic");
-    let _ = std::fs::remove_dir_all(worktree);
     if replace_run {
         assert!(
             matches!(first_result, Err(DaemonError::LocalTransport { .. })),

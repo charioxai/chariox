@@ -3,14 +3,10 @@
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) async fn forwarded_workspace_context(
+    pub(super) fn authorize_forwarded_workspace(
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
-    ) -> Result<Option<WorkspaceLiveSyncWorkspaceContext>, DaemonError> {
-        let session = self
-            .owned
-            .session_store
-            .get_session(&context.home_session_id)?;
+    ) -> Result<(), DaemonError> {
         super::super::super::home_extension_authorizer::authorize_remote_home_context(
             self,
             &crate::transport::relay_peer::RemoteExtensionInvocationContext {
@@ -23,9 +19,23 @@ impl KernelRuntimeState {
                 worker_machine_id: Some(context.worker_machine_id.clone()),
             },
             "forwarded workspace coordination",
-        )?;
+        )
+        .map(|_| ())
+    }
+
+    pub(super) async fn forwarded_workspace_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+    ) -> Result<Option<WorkspaceLiveSyncWorkspaceContext>, DaemonError> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(&context.home_session_id)?;
+        self.authorize_forwarded_workspace(context)?;
         let root = PathBuf::from(session.worktree_id());
         let home = workspace_identity_for_root_off_thread(root.clone()).await?;
+        // Off-thread Git inspection can complete after this run was replaced.
+        self.authorize_forwarded_workspace(context)?;
         let home = workspace_live_sync_identity_for_session_workspace_link(home, &session, &root);
         let worker = workspace_live_sync_identity_for_session_workspace_link(
             context.worker_workspace_identity.clone(),

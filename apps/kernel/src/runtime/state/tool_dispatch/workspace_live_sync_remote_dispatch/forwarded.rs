@@ -269,6 +269,7 @@ impl KernelRuntimeState {
             .remote_workspace_live_sync_invocations
             .lock()
             .await;
+        self.authorize_forwarded_workspace(context)?;
         let Some(existing) = invocations.get(&key) else {
             let (completion_tx, _) = tokio::sync::watch::channel(None);
             invocations.insert(
