@@ -31,6 +31,7 @@ test('a timed-out write requires recovery and a late acknowledgement cannot reop
   const cdp = {send:async method => {
     commands.push(method);
     if (method === 'Target.getTargetInfo') return {targetInfo};
+    if (method === 'Target.getBrowserContexts') return {browserContextIds:['context-1']};
     if (method === 'Storage.getCookies') return {cookies:[]};
     if (method === 'Storage.setCookies') return new Promise(resolve => {acknowledge=resolve;});
     throw new Error('unexpected fixture command');
@@ -49,6 +50,7 @@ test('a timed-out write requires recovery and a late acknowledgement cannot reop
 test('deleting a batch shares one deadline rather than multiplying it by cookie count', {timeout:500}, async () => {
   const cdp = {send:async method => {
     if (method === 'Target.getTargetInfo') return {targetInfo};
+    if (method === 'Target.getBrowserContexts') return {browserContextIds:['context-1']};
     await delay(30);
     return {};
   }};
@@ -71,6 +73,7 @@ test('invalid timeout settings cannot disable the destination deadline', async (
 test('transport errors are redacted and prevent further commands on the failed store', async () => {
   const cdp = {send:async method => {
     if (method === 'Target.getTargetInfo') return {targetInfo};
+    if (method === 'Target.getBrowserContexts') return {browserContextIds:['context-1']};
     throw new Error('fixture-cookie-value-must-not-escape');
   }};
   const store = await createCdpCookieStore({browserCdp:cdp,pageCdp:cdp});
@@ -81,4 +84,15 @@ test('transport errors are redacted and prevent further commands on the failed s
     return true;
   });
   await assert.rejects(store.write([]),{code:'cookie_import_cdp_unavailable',recoveryRequired:false});
+});
+
+test('unknown context identifiers never fall back to the default cookie store', async () => {
+  const cdp = {send:async method => {
+    if (method === 'Target.getTargetInfo') return {targetInfo};
+    if (method === 'Target.getBrowserContexts') return {browserContextIds:[],defaultBrowserContextId:'different-default'};
+    throw new Error('cookie storage must not be accessed');
+  }};
+  await assert.rejects(createCdpCookieStore({browserCdp:cdp,pageCdp:cdp}), {
+    code:'cookie_import_context_unsupported',recoveryRequired:false,
+  });
 });
