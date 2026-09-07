@@ -438,7 +438,7 @@ function validateProvisioner(action, environment, files) {
   if (!/^[a-zA-Z0-9_.:-]{1,180}$/.test(environment.CHARIOX_SLICE_ID ?? "")) {
     fail("CHARIOX_SLICE_ID is invalid")
   }
-  if (action === "provision") {
+  if (provisionsContainer) {
     for (const [name, value] of Object.entries(environment)) {
       if (name === "CHARIOX_SLICE_WORKSPACE" || /^CHARIOX_SLICE_DEVELOPMENT_MOUNT_[0-9]+$/.test(name)) {
         // Preflight must enforce the same ownership layout as persistent mount creation.

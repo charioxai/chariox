@@ -206,7 +206,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
         CHARIOX_SLICE_ID: "slice-production-1",
         CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-Production-1-home",
         CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
-        CHARIOX_SLICE_WORKSPACE: workspace,
+        CHARIOX_SLICE_WORKSPACE: join(share, "slices/development/slice-production-1/development/workspace"),
       },
       files: [],
     },
@@ -554,6 +554,9 @@ test("managed broker preflight requires the same slice publication as execution"
     const result = validate(request(workspace), share)
     assert.equal(result.status, 1, `preflight accepted invalid publication ${relative}`)
     assert.match(result.stderr, /direct repository in the matching slice publication/)
+    const restore = validate({ ...request(workspace), action: "restore-state" }, share)
+    assert.equal(restore.status, 1, `restore preflight accepted invalid publication ${relative}`)
+    assert.match(restore.stderr, /direct repository in the matching slice publication/)
   }
 })
 
