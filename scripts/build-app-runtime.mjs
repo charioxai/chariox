@@ -4,23 +4,24 @@ import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { constants, createReadStream, createWriteStream } from 'node:fs';
 import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rm, statfs, writeFile } from 'node:fs/promises';
-import { freemem, totalmem } from 'node:os';
+import { totalmem } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { availableBuildMemory, checkArtifactBudget, validateCiProfile } from './app-runtime-ci-resources.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_PATH = join(REPOSITORY, 'apps/app-worker/runtime.lock.json');
-const SOURCE_PATHS = ['apps/app-worker/runtime.lock.json', 'apps/app-worker/src/runtime.h', 'apps/app-worker/src/node_runtime.cc', 'scripts/build-app-runtime.mjs'];
+const SOURCE_PATHS = ['apps/app-worker/runtime.lock.json', 'apps/app-worker/src/runtime.h', 'apps/app-worker/src/node_runtime.cc', 'scripts/build-app-runtime.mjs', 'scripts/app-runtime-ci-resources.mjs', 'scripts/run-app-runtime-native-ci.sh', '.github/workflows/app-runtime-native.yml'];
 const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
-const USAGE = 'build-app-runtime.mjs plan|build --target <target> --scratch <new-empty-directory-outside-repositories> [--jobs 1|2] [--source-archive <cached-tar.xz>|--download-source] [--cc <path> --cxx <path> --python <path>]';
+const USAGE = 'build-app-runtime.mjs plan|build --target <target> --scratch <new-empty-directory-outside-repositories> [--jobs 1|2] [--resource-profile default|github-linux] [--source-archive <cached-tar.xz>|--download-source] [--cc <path> --cxx <path> --python <path>]';
 
 export function parseOptions(argv) {
   const mode = argv[0];
   if (!['plan', 'build'].includes(mode)) throw new Error(USAGE);
   const options = { mode, jobs: 1, downloadSource: false };
-  const names = { '--target': 'target', '--scratch': 'scratch', '--jobs': 'jobs', '--source-archive': 'sourceArchive', '--cc': 'cc', '--cxx': 'cxx', '--python': 'python' };
+  const names = { '--target': 'target', '--scratch': 'scratch', '--jobs': 'jobs', '--resource-profile': 'resourceProfile', '--source-archive': 'sourceArchive', '--cc': 'cc', '--cxx': 'cxx', '--python': 'python' };
   const seen = new Set();
   for (let index = 1; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -70,6 +71,8 @@ export function validateLock(lock) {
       || lock.build.minimumRemainingMemoryBytes < 2 * 1024 ** 3 || lock.build.minimumRemainingDiskBytes < 4 * 1024 ** 3) {
     throw new Error('build resource bounds cannot be weakened');
   }
+  validateCiProfile(lock.dedicatedCi);
+  if (!lock.dedicatedCi.builderImage.startsWith(`node:${lock.node.version}-bookworm@`)) throw new Error('CI builder must use the pinned Node release');
   return lock;
 }
 
@@ -89,7 +92,10 @@ export function createPlan(options, lock, repository = REPOSITORY) {
   validateLock(lock);
   const target = lock.targets[options.target];
   if (!target) throw new Error('unsupported runtime target');
-  if (!Number.isInteger(options.jobs) || options.jobs < 1 || options.jobs > lock.build.maxJobs) throw new Error('jobs must be 1 or 2');
+  const resourceProfile = options.resourceProfile ?? 'default';
+  if (!['default', 'github-linux'].includes(resourceProfile) || resourceProfile === 'github-linux' && target.platform !== 'linux') throw new Error('unsupported resource profile for target');
+  const resourceBounds = resourceProfile === 'github-linux' ? { ...lock.build, ...lock.dedicatedCi.resourceBounds } : lock.build;
+  if (!Number.isInteger(options.jobs) || options.jobs < 1 || options.jobs > resourceBounds.maxJobs) throw new Error('jobs exceed resource profile limit');
   const scratch = absoluteBuildPath(options.scratch, 'scratch');
   if (inside(repository, scratch) || inside(scratch, repository)) throw new Error('scratch must be separate from the source repository');
   const source = join(scratch, 'source');
@@ -113,7 +119,8 @@ export function createPlan(options, lock, repository = REPOSITORY) {
     downloadSource: options.downloadSource ?? false,
     tools: { cc, cxx, python, make: '/usr/bin/make', tar: '/usr/bin/tar' },
     toolchain: lock.toolchains[target.toolchain], requiresNativeHost: true,
-    sourceProvenance: lock.node, resourceBounds: lock.build,
+    sourceProvenance: lock.node, resourceBounds, resourceProfile,
+    ciProfile: resourceProfile === 'github-linux' ? lock.dedicatedCi : null,
     commands: [
       { program: python, args: ['./configure', ...lock.node.configure, `--dest-cpu=${target.arch}`], cwd: source },
       { program: '/usr/bin/make', args: ['-C', 'out', 'BUILDTYPE=Release', `-j${options.jobs}`, 'libnode'], cwd: source },
@@ -216,7 +223,7 @@ export async function runCommand(command, environment, plan) {
     if (checking || resourceFailure) return;
     checking = true;
     try {
-      if (freemem() < plan.resourceBounds.minimumRemainingMemoryBytes || await freeDisk(plan.scratch) < plan.resourceBounds.minimumRemainingDiskBytes) {
+      if (await availableBuildMemory(plan) < plan.resourceBounds.minimumRemainingMemoryBytes || await freeDisk(plan.scratch) < plan.resourceBounds.minimumRemainingDiskBytes) {
         stop(new Error('build stopped to preserve host memory/disk reserves'));
       }
     } catch (error) { stop(error); }
@@ -260,7 +267,7 @@ export async function buildRuntime(plan, lock) {
   await validateScratch(plan.scratch);
   let ancestor = dirname(plan.scratch);
   while (!await lstat(ancestor).catch(() => null)) ancestor = dirname(ancestor);
-  checkBuildResources(lock.build, { totalMemoryBytes: totalmem(), freeMemoryBytes: freemem(), freeDiskBytes: await freeDisk(ancestor) });
+  checkBuildResources(plan.resourceBounds, { totalMemoryBytes: totalmem(), freeMemoryBytes: await availableBuildMemory(plan), freeDiskBytes: await freeDisk(ancestor) });
   const environment = {
     PATH: [...new Set([...Object.values(plan.tools).map(dirname), '/usr/bin', '/bin'])].join(':'),
     HOME: process.env.HOME, LANG: 'C', LC_ALL: 'C', TZ: 'UTC', SOURCE_DATE_EPOCH: String(lock.build.sourceDateEpoch),
@@ -323,17 +330,20 @@ export async function buildRuntime(plan, lock) {
       dependencies[name] = checkedOutput(process.platform === 'darwin' ? '/usr/bin/otool' : '/usr/bin/readelf', process.platform === 'darwin' ? ['-L', join(plan.output, name)] : ['-d', join(plan.output, name)], environment);
       checkDependencies(process.platform, dependencies[name], plan.targetContract);
     }
+    const files = await Promise.all(artifactFiles.map(async path => ({ path, size: (await lstat(join(plan.output, path))).size, sha256: await digestFile(join(plan.output, path)) })));
     const manifest = {
       schema: 'chariox.app-runtime-artifact.v1', runtimeVersion: lock.runtimeVersion, workerAbi: lock.workerAbi,
       target: plan.target, nodeVersion: lock.node.version, nodeModuleAbi: lock.node.moduleAbi,
       source: { url: lock.node.url, sha256: lock.node.sha256 }, sourceCommit, sourceTree, buildInputs, toolInputs,
       toolchain: observed, commands: plan.commands, dependencies,
-      files: await Promise.all(artifactFiles.map(async path => ({ path, size: (await lstat(join(plan.output, path))).size, sha256: await digestFile(join(plan.output, path)) }))),
+      files, resourceProfile: plan.resourceProfile, resourceBounds: plan.resourceBounds, builderProfile: plan.ciProfile,
       signing: { status: 'unsigned', notarization: 'not-performed' },
       validation: { nativeBuild: 'completed', runtimeExecution: 'not-performed', containment: 'not-performed', reproducibility: 'not-compared' },
       loading: lock.loading,
     };
-    await writeFile(join(plan.output, 'artifact-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+    checkArtifactBudget(plan.ciProfile, [...files.map(file => file.size), Buffer.byteLength(manifestText)]);
+    await writeFile(join(plan.output, 'artifact-manifest.json'), manifestText, { flag: 'wx', mode: 0o600 });
     succeeded = true;
     return manifest;
   } finally {

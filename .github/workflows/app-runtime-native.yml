@@ -1,0 +1,81 @@
+name: App runtime native build (unsigned)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/app-worker/runtime.lock.json'
+      - 'apps/app-worker/src/runtime.h'
+      - 'apps/app-worker/src/node_runtime.cc'
+      - 'scripts/build-app-runtime*'
+      - 'scripts/app-runtime-ci-resources*'
+      - 'scripts/run-app-runtime-native-ci.sh'
+      - '.github/workflows/app-runtime-native.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-runtime-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      max-parallel: 1
+      matrix:
+        target: [linux-x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # PR path filters use the entire PR diff. Avoid recompiling Node after
+      # each unrelated upload/protocol edit to an already-open Apps PR.
+      - name: Select changes to native build inputs
+        id: inputs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          changed=true
+          if [[ "$EVENT_NAME" == pull_request && "$EVENT_ACTION" == synchronize && "$BEFORE_SHA" =~ ^[a-f0-9]{40}$ ]] && git cat-file -e "$BEFORE_SHA^{commit}"; then
+            if git diff --quiet "$BEFORE_SHA" "$HEAD_SHA" -- apps/app-worker/runtime.lock.json apps/app-worker/src/runtime.h apps/app-worker/src/node_runtime.cc 'scripts/build-app-runtime*' 'scripts/app-runtime-ci-resources*' scripts/run-app-runtime-native-ci.sh .github/workflows/app-runtime-native.yml; then
+              changed=false
+            fi
+          fi
+          printf 'changed=%s\n' "$changed" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        if: steps.inputs.outputs.changed == 'true'
+        with:
+          node-version: '24.20.0'
+      - name: Validate tooling and resource guards
+        if: steps.inputs.outputs.changed == 'true'
+        run: node --test --test-concurrency=1 scripts/build-app-runtime.test.mjs scripts/app-runtime-ci-resources.test.mjs
+      - name: Compile Node and embedder in bounded container
+        if: steps.inputs.outputs.changed == 'true'
+        id: native
+        run: bash scripts/run-app-runtime-native-ci.sh
+      - uses: actions/upload-artifact@v4
+        if: success() && steps.inputs.outputs.changed == 'true'
+        with:
+          name: UNSIGNED-NONRELEASE-${{ matrix.target }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.native.outputs.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Remove owned scratch after artifact handling
+        if: always() && steps.native.outputs.scratch != ''
+        env:
+          NATIVE_SCRATCH: ${{ steps.native.outputs.scratch }}
+        run: |
+          ci_temp="$(realpath -e -- "$RUNNER_TEMP")"
+          case "$NATIVE_SCRATCH" in
+            "$ci_temp"/chariox-native.*) rm -rf -- "$NATIVE_SCRATCH" ;;
+            *) echo 'Refusing unexpected native scratch path.' >&2; exit 1 ;;
+          esac
