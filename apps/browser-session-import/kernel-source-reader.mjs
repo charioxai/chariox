@@ -18,6 +18,7 @@ export async function readKernelApprovedChromeCookies({chrome, requestId, select
   }
   const approved = claim.ClaimBrowserImportSource.selection;
   const authorize = authorizeBrowserImportSourceRequest(requestId, approved);
+  const transport = new AbortController();
   let claimed = false;
   let finished = false;
   const deadline = performance.now() + timeoutMs;
@@ -29,15 +30,20 @@ export async function readKernelApprovedChromeCookies({chrome, requestId, select
       authorize:async () => {
         if (!active()) return false;
         if (!claimed) {
-          const response = await request(claim);
+          const response = await request(claim, {signal:transport.signal});
           if (!active() || !matches(response, requestId, 'source_claimed')) return false;
           claimed = true;
         }
-        const response = await request(authorize);
+        const response = await request(authorize, {signal:transport.signal});
         return active() && matches(response, requestId, 'source_authorized');
       },
     });
-  } finally { finished = true; }
+  } finally {
+    finished = true;
+    // End only this read's pending requests, never the shared relay connection
+    // or the caller's signal. Also runs on the source reader's own deadline.
+    transport.abort();
+  }
 }
 
 function matches(response, requestId, status) {

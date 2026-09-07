@@ -16,6 +16,11 @@ between queries and before returning. A boolean, wrong request ID or wrong phase
 cannot authorize a read. Timeout/cancellation also prevents a late claim response
 from issuing further requests. Failed reads leave no destination writer; an
 unacknowledged source claim expires under the kernel's original consent lifetime.
+The request callback receives a second argument containing the read's owned
+`AbortSignal`. Transports must honor it. Finishing, cancelling or timing out the
+read aborts its outstanding requests without closing a shared relay connection
+or aborting the caller's signal. This discards local waits; it does not retract
+a claim already received by the kernel or send a new consent-cancellation request.
 
 This module imports the shared TypeScript request builders. The disposable browser
 fixture transpiles that source when assembling its MV3 extension; a distributable

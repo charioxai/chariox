@@ -334,3 +334,28 @@ test('abort before encryption completes prevents dispatch and backpressure rejec
   await assert.rejects(blocked.request(authorize()),denied);
   assert.deepEqual(sent.map(frame => frame.kind),['client_connect']);
 });
+
+test('ending a source read releases its pending relay request immediately', async t => {
+  for (const mode of ['cancel','deadline']) {
+    const f = await fixture(t);
+    const client = await f.connect();
+    const controller = new AbortController();
+    let transportEnded = false;
+    const request = (payload,options) => client.request(payload,options)
+      .finally(() => {transportEnded = true;});
+    const chrome = {
+      tabs:{get:async () => ({id:7,incognito:false})},permissions:{contains:async () => true},
+      cookies:{getAllCookieStores:async () => [{id:'normal',tabIds:[7]}],getAll:async () => {
+        assert.fail('a pending claim must not reach the cookie store');
+      }},
+    };
+    const reading = assert.rejects(readKernelApprovedChromeCookies({chrome,requestId:'a'.repeat(32),
+      selection,sourceTabId:7,request,signal:controller.signal,timeoutMs:mode === 'deadline' ? 60 : 1000}),
+    {code:mode === 'deadline' ? 'cookie_source_timeout' : 'cookie_source_cancelled'});
+    await f.count(1);
+    if (mode === 'cancel') controller.abort('private-marker');
+    await reading;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(transportEnded,true,mode);
+  }
+});
