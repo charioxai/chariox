@@ -12,6 +12,7 @@ const CAPACITY: usize = 128;
 pub(crate) struct ImportBinding {
     pub user_id: String,
     pub source_attachment_id: String,
+    pub source_identity: String,
     pub room_id: String,
     pub environment_id: String,
     pub runtime_generation: u64,
@@ -25,6 +26,19 @@ pub(crate) struct ImportBinding {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ImportRequestId(String);
+
+impl ImportRequestId {
+    pub(crate) fn from_wire(value: &str) -> Result<Self, ImportAdmissionError> {
+        if value.len() != 32 || !value.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(ImportAdmissionError::Denied);
+        }
+        Ok(Self(value.to_string()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl std::fmt::Debug for ImportRequestId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -162,13 +176,14 @@ impl BrowserImportAdmission {
         &self,
         id: &ImportRequestId,
         user_id: &str,
+        room_id: &str,
     ) -> Result<(), ImportAdmissionError> {
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| ImportAdmissionError::Denied)?;
         let entry = entries.get_mut(id).ok_or(ImportAdmissionError::Denied)?;
-        if entry.binding.user_id != user_id {
+        if entry.binding.user_id != user_id || entry.binding.room_id != room_id {
             return Err(ImportAdmissionError::Denied);
         }
         if matches!(entry.phase, Phase::Applying | Phase::Cancelled) {
@@ -217,6 +232,7 @@ fn validate_binding(binding: &ImportBinding) -> Result<(), ImportAdmissionError>
     if ![
         &binding.user_id,
         &binding.source_attachment_id,
+        &binding.source_identity,
         &binding.room_id,
         &binding.environment_id,
         &binding.tab_id,
@@ -240,6 +256,7 @@ mod tests {
 
     fn binding() -> ImportBinding {
         ImportBinding {
+            source_identity: "source-client-key-binding".into(),
             user_id: "user-1".into(),
             source_attachment_id: "connector-1".into(),
             room_id: "room-1".into(),
@@ -350,12 +367,12 @@ mod tests {
         let scope = binding();
         let id = store.prepare(scope.clone(), now).unwrap();
         assert_eq!(
-            store.cancel(&id, "other-user"),
+            store.cancel(&id, "other-user", &scope.room_id),
             Err(ImportAdmissionError::Denied)
         );
         store.approve(&id, &scope, now).unwrap();
         store.claim(&id, &scope, now).unwrap();
-        store.cancel(&id, &scope.user_id).unwrap();
+        store.cancel(&id, &scope.user_id, &scope.room_id).unwrap();
         assert_eq!(
             store.authorize_active(&id, &scope, now),
             Err(ImportAdmissionError::Denied)
@@ -374,7 +391,7 @@ mod tests {
         let now = Instant::now();
         let scope = binding();
         let id = store.prepare(scope.clone(), now).unwrap();
-        store.cancel(&id, &scope.user_id).unwrap();
+        store.cancel(&id, &scope.user_id, &scope.room_id).unwrap();
         assert_eq!(
             store.approve(&id, &scope, now),
             Err(ImportAdmissionError::Denied)
@@ -401,7 +418,7 @@ mod tests {
             other.claim(&id, &scope, now),
             Err(ImportAdmissionError::Denied)
         );
-        other.cancel(&id, &scope.user_id).unwrap();
+        other.cancel(&id, &scope.user_id, &scope.room_id).unwrap();
         assert_eq!(
             store.authorize_active(&id, &scope, now),
             Err(ImportAdmissionError::Denied)

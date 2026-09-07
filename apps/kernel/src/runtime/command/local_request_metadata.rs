@@ -72,6 +72,21 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::PrepareBrowserImport(request) => {
+            LocalRequestMetadata::new("browser.import.prepare", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::ApproveBrowserImport(request) => {
+            LocalRequestMetadata::new("browser.import.approve", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::CancelBrowserImport(request) => {
+            LocalRequestMetadata::new("browser.import.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::BindRoomEnvironmentSlice(request) => {
             LocalRequestMetadata::new("environment.slice.bind", Interactive)
                 .session(&request.session_id)
@@ -467,6 +482,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::PrepareBrowserImport(_) => "browser.import.prepare",
+        LocalDaemonRequest::ApproveBrowserImport(_) => "browser.import.approve",
+        LocalDaemonRequest::CancelBrowserImport(_) => "browser.import.cancel",
         LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",

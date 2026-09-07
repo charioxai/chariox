@@ -1,7 +1,7 @@
 # Browser session import components
 
-These are internal import components, not a usable importer. Nothing
-here is wired to a user's profile, kernel or product Environment. The source
+These are internal import components, not a usable importer. Cookie transfer is
+not wired to a user's profile or product Environment. The source
 reader uses Chrome's extension APIs when called by a trusted connector. It does
 not request permissions, transmit cookies or register a web-accessible endpoint.
 
@@ -130,6 +130,17 @@ consent callback and independent destination scope are controlled test inputs.
 
 ## Required before product integration
 
+Protocol 313 now exposes kernel-owned prepare/approve/cancel consent requests.
+Shared request builders whitelist metadata, excluding cookie payloads. The kernel
+checks interactive attachment ownership, verified relay client identity and Room
+membership. The consent ledger binds the source key and realm to the exact
+selection and current destination generation/document. A changed binding requires
+new consent, and agent/service callers cannot approve it. The router tests cover
+local and verified relay callers, identity/scope changes, replay and navigation.
+This is not source-connector pairing or application authorization: no public
+cookie-apply request exists yet. Claims must still revalidate the current pairing,
+destination and permission before reading or applying any source cookie.
+
 `applyCookieImport` and `createCdpCookieStore` provide the internal destination
 operation. They are not routed from the Browser Controller, a web endpoint or a
 kernel request yet. The operation validates input, reads a bounded destination
@@ -213,26 +224,25 @@ reserved until completion. A fresh kernel rejects old request IDs.
 This ledger is not an authentication mechanism or a complete consent flow. Its
 internal callers must supply identities from authenticated transports and scope
 from trusted kernel state, never from a cookie payload or a sender's approval
-boolean. There is no public request handler yet, no source-connector pairing,
-and no cookie application authorized by these methods in the product. The
-shared protocol must be versioned when handlers are added. Before exposing
-them, implement authenticated-human prepare/approve/cancel requests and a
-connector-bound claim path, and test those paths through kernel IPC. The ledger
+boolean. Protocol 313 provides the human prepare/approve/cancel handlers described
+above, but there is no source-connector pairing or cookie application authorized
+by these methods in the product. A connector-bound claim path and live encrypted
+IPC/relay acceptance still need implementation and validation. The ledger
 alone does not quarantine a controller after process death, stop page/network
 writers, validate DNS cookie semantics, or provide durable recovery. Those
 remain requirements of the Environment executor.
 
 The bridge is not yet called by a kernel request or installed in the slice image.
-It does not implement kernel consent, writer quiescence or recovery. No new
-controller command or shared protocol shape is exposed by this step. Run its
+It does not consume kernel consent or implement writer quiescence or recovery.
+No controller apply command is exposed. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
 
-Implement the MV3 connector and source-profile/site selection, kernel-owned
-consent and destination authorization, encrypted transport, bounded decoding,
+Implement the MV3 connector and source-profile/site selection, consent UI and
+destination application authorization, encrypted transport, bounded decoding,
 expiry and replay protection, cancellation and transactional application with
 rollback. Add shared protocol versioning and Web/TUI progress and results when
-that transport is implemented. No shared protocol shape changes in this step.
+that transport is implemented.
 The remaining destination work includes kernel integration, writer quiescence,
 durable encrypted recovery state and process/browser-crash drills.
 Complete the security and service validation matrix in

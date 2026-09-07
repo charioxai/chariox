@@ -18,6 +18,15 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::PrepareBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::ApproveBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
         LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
             session_ref: request.session_ref.clone(),

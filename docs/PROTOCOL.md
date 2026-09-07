@@ -960,6 +960,26 @@ physical result remains authoritative. Queued URL navigation keeps the Tab
 selected at admission even if browser focus changes. Existing client minimum
 versions remain unchanged; workers must negotiate peer v46.
 
+Protocol v313 adds `PrepareBrowserImport`, `ApproveBrowserImport` and
+`CancelBrowserImport` terminal requests. These carry consent metadata only,
+never cookies. The kernel derives the initiating user from trusted local or
+verified relay caller context, checks Room membership, verifies attachment
+ownership and interactive capability, and requires relay client identity to
+match that attachment. Consent binds the source client/key/realm, source store,
+exact domain/partition selection, overwrite choice, destination Environment,
+runtime generation, Tab and document revision. Approval must repeat the exact
+selection while it is current; it cannot be replayed. Agents, services, peers,
+unverified relay callers and automation-only attachments cannot approve imports.
+Cancellation requires the owning user and Room but may follow navigation or
+Environment shutdown. Pending consent expires after 120 seconds.
+
+The response is `BrowserImportConsent` with an opaque request ID and status
+`prepared`, `approved` or `cancelled`. Approval alone does not apply cookies.
+Encrypted connector pairing, exclusive destination application, writer
+quiescence and durable crash recovery remain required before an apply request
+can be exposed. Existing Web/TUI minimum versions and relay peer version stay
+unchanged; clients using these new consent requests require protocol 313.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.
