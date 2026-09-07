@@ -20,6 +20,13 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
     for (const file of ['chrome-cookie-reader.mjs','chrome-cookie-batch.mjs']) {
       await copyFile(new URL(file, import.meta.url), path.join(extension, file));
     }
+    const readerSource = await readFile(new URL('kernel-source-reader.mjs',import.meta.url),'utf8');
+    await writeFile(path.join(extension,'kernel-source-reader.mjs'),readerSource.replace(
+      '../../packages/kernel-client/src/browser-import-requests.ts','./browser-import-requests.mjs'));
+    const requestSource = await readFile(new URL('../../packages/kernel-client/src/browser-import-requests.ts',import.meta.url),'utf8');
+    await writeFile(path.join(extension,'browser-import-requests.mjs'),ts.transpileModule(requestSource,{
+      compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022},
+    }).outputText);
     const cryptoSource = await readFile(new URL('../../packages/kernel-client/src/browser-relay-crypto.ts',import.meta.url),'utf8');
     await writeFile(path.join(extension,'browser-relay-crypto.mjs'),ts.transpileModule(cryptoSource,{
       compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022},
@@ -31,7 +38,7 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
       background:{service_worker:'worker.mjs', type:'module'},
     }));
     await writeFile(path.join(extension, 'worker.mjs'),
-      "import {readApprovedChromeCookies} from './chrome-cookie-reader.mjs'; import {encryptRelayPayload} from './browser-relay-crypto.mjs'; globalThis.readFixture = readApprovedChromeCookies; globalThis.encryptFixture = encryptRelayPayload;");
+      "import {readKernelApprovedChromeCookies} from './kernel-source-reader.mjs'; import {encryptRelayPayload} from './browser-relay-crypto.mjs'; globalThis.readFixture = readKernelApprovedChromeCookies; globalThis.encryptFixture = encryptRelayPayload;");
     context = await chromium.launchPersistentContext(path.join(root, 'profile'), {
       channel:'chromium', headless:true, chromiumSandbox:true,
       ...(process.env.CHARIOX_TEST_CHROMIUM ? {executablePath:process.env.CHARIOX_TEST_CHROMIUM} : {}),
@@ -64,10 +71,30 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
         approvedPartitionSites:['https://top.test']}};
     });
     const recipient = createRelayKeypair();
-    const encrypted = await worker.evaluate(async ({selection,publicKey}) => {
-      const collected = await globalThis.readFixture({chrome,...selection,authorize:async () => true});
-      return (await globalThis.encryptFixture(publicKey,JSON.stringify(collected))).payload;
+    const sourceResult = await worker.evaluate(async ({selection,publicKey}) => {
+      const requestId = 'a'.repeat(32);
+      const requests = [];
+      const options = {chrome,sourceTabId:selection.sourceTabId,requestId,
+        selection:{session_id:'fixture-room',attachment_id:'fixture-attachment',environment_id:'fixture-environment',
+          runtime_generation:1,tab_id:'fixture-tab',document_revision:1,
+          source_store_id:selection.scope.sourceStoreId,domains:selection.scope.approvedDomains,
+          partition_sites:selection.scope.approvedPartitionSites,overwrite:false}};
+      // Fixture transport replies, not a live kernel or paired extension.
+      let denied = false;
+      try { await globalThis.readFixture({...options,request:async () => true}); }
+      catch (error) { denied = error.code === 'cookie_source_denied'; }
+      if (!denied) throw new Error('fixture_boolean_approval_accepted');
+      const collected = await globalThis.readFixture({...options,request:async payload => {
+        requests.push(payload);
+        return {BrowserImportConsent:{request_id:requestId,
+          status:payload.ClaimBrowserImportSource ? 'source_claimed' : 'source_authorized'}};
+      }});
+      return {encrypted:(await globalThis.encryptFixture(publicKey,JSON.stringify(collected))).payload,requests};
     },{selection,publicKey:recipient.publicKeyBase64});
+    assert.equal(sourceResult.requests.filter(r => r.ClaimBrowserImportSource).length,1);
+    assert.ok(sourceResult.requests.slice(1).every(r => r.AuthorizeBrowserImportSource));
+    assert.equal(JSON.stringify(sourceResult.requests).includes('not-a-real-credential'),false);
+    const encrypted = sourceResult.encrypted;
     // The simulated relay receives ciphertext only. Destination policy comes from
     // the independently selected fixture scope, not the decrypted cookie payload.
     assert.equal(JSON.stringify(encrypted).includes('not-a-real-credential'),false);
