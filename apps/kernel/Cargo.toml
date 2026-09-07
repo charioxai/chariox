@@ -44,6 +44,7 @@ zeroize = "1.8.1"
 ed25519-dalek = "2.1.1"
 chariox-event-protocol = { path = "../../packages/event-protocol" }
 chariox-app-runtime = { path = "../../packages/app-runtime" }
+chariox-app-package = { path = "../../packages/app-package" }
 
 [lib]
 name = "chariox_kernel"

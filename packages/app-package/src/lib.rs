@@ -130,6 +130,7 @@ pub struct UntrustedPackageIdentity {
 #[derive(Debug)]
 pub struct VerifiedPackage<'a> {
     manifest: Manifest,
+    signer: TrustedPublisher,
     declarations: Declarations,
     package_digest: String,
     files: BTreeMap<String, &'a [u8]>,
@@ -138,6 +139,11 @@ pub struct VerifiedPackage<'a> {
 impl<'a> VerifiedPackage<'a> {
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+    /// Exact key that verified the signature, not merely the manifest's claimed
+    /// publisher/key IDs. Installers bind this provenance to enrolled trust.
+    pub fn signer(&self) -> &TrustedPublisher {
+        &self.signer
     }
     pub fn declarations(&self) -> &Declarations {
         &self.declarations
@@ -241,6 +247,7 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &VerificationPolicy) -> Result<Verifi
     let declarations = declarations::read_declarations(&envelope.manifest, &files, &policy.limits)?;
     Ok(VerifiedPackage {
         manifest: envelope.manifest,
+        signer: trusted.clone(),
         declarations,
         package_digest: digest(bytes),
         files,

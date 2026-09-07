@@ -7,8 +7,11 @@
 //! completes staged migration/health checks before calling `mark_prepared`.
 //! Committing metadata alone is not evidence those external steps happened.
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+
+mod verified;
+pub use verified::{StageTrustBinding, VerifiedInstallCandidate, VerifiedStageError};
 
 pub const RETAINED_UPDATE_RECORDS: usize = 64;
 pub const MAX_INSTALLATION_PAGE_SIZE: usize = 100;
@@ -183,6 +186,18 @@ impl<'a> InstallationRegistry<'a> {
                 phase TEXT NOT NULL CHECK(phase IN
                     ('staged', 'quiescing', 'prepared', 'committed', 'aborted')),
                 record_json TEXT NOT NULL,
+                PRIMARY KEY(installation_id, generation)
+             );
+             CREATE TABLE IF NOT EXISTS app_installation_stage_trust (
+                installation_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation > 0),
+                base_generation INTEGER NOT NULL CHECK(base_generation >= 0),
+                owner_id TEXT NOT NULL,
+                package_digest TEXT NOT NULL,
+                publisher_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                trust_revision INTEGER NOT NULL CHECK(trust_revision > 0),
+                public_key_fingerprint TEXT NOT NULL,
                 PRIMARY KEY(installation_id, generation)
              );",
         )?;
@@ -378,38 +393,23 @@ impl<'a> InstallationRegistry<'a> {
         Ok(record)
     }
 
+    /// Foundation API for trusted internal/test metadata. A persisted signer
+    /// binding makes this route unavailable: `commit_verified` must fence the
+    /// exact enrolled publisher trust in the activation transaction.
     pub fn commit(&mut self, token: &StageToken, now_ms: u64) -> Result<ActiveGeneration> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut record = current_update(&transaction, token)?;
-        if record.phase != UpdatePhase::Prepared {
-            return Err(InstallationError::InvalidTransition);
-        }
-        let CapabilityDecision::Approved { approval } = record.decision.clone() else {
-            return Err(InstallationError::ApprovalRequired);
-        };
-        let active = ActiveGeneration {
-            generation: token.generation,
-            release: record.release.clone(),
-            approval,
-        };
-        let changed = transaction.execute(
-            "UPDATE app_installations SET generation = ?2, active_json = ?3,
-                 pending_generation = NULL, admission_paused = 0
-             WHERE installation_id = ?1 AND generation = ?4 AND pending_generation = ?2",
-            params![
-                token.installation_id,
-                sql_generation(token.generation)?,
-                serde_json::to_string(&active)?,
-                sql_generation(token.base_generation)?
-            ],
+        let trust_bound: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_installation_stage_trust
+             WHERE installation_id = ?1 AND generation = ?2)",
+            params![token.installation_id, sql_generation(token.generation)?],
+            |row| row.get(0),
         )?;
-        require_changed(changed)?;
-        record.phase = UpdatePhase::Committed;
-        record.updated_at_ms = now_ms;
-        save_update(&transaction, &record)?;
-        prune_journal(&transaction, &token.installation_id)?;
+        if trust_bound {
+            return Err(InstallationError::Invalid("verified activation required"));
+        }
+        let active = commit_generation(&transaction, token, now_ms)?;
         transaction.commit()?;
         Ok(active)
     }
@@ -486,6 +486,44 @@ impl<'a> InstallationRegistry<'a> {
         )?;
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
+}
+
+// Shared activation mutation. The caller owns the transaction and any additional
+// verified-provenance checks; no intermediate write is committed here.
+fn commit_generation(
+    transaction: &Transaction<'_>,
+    token: &StageToken,
+    now_ms: u64,
+) -> Result<ActiveGeneration> {
+    let mut record = current_update(transaction, token)?;
+    if record.phase != UpdatePhase::Prepared {
+        return Err(InstallationError::InvalidTransition);
+    }
+    let CapabilityDecision::Approved { approval } = record.decision.clone() else {
+        return Err(InstallationError::ApprovalRequired);
+    };
+    let active = ActiveGeneration {
+        generation: token.generation,
+        release: record.release.clone(),
+        approval,
+    };
+    let changed = transaction.execute(
+        "UPDATE app_installations SET generation = ?2, active_json = ?3,
+             pending_generation = NULL, admission_paused = 0
+         WHERE installation_id = ?1 AND generation = ?4 AND pending_generation = ?2",
+        params![
+            token.installation_id,
+            sql_generation(token.generation)?,
+            serde_json::to_string(&active)?,
+            sql_generation(token.base_generation)?
+        ],
+    )?;
+    require_changed(changed)?;
+    record.phase = UpdatePhase::Committed;
+    record.updated_at_ms = now_ms;
+    save_update(transaction, &record)?;
+    prune_journal(transaction, &token.installation_id)?;
+    Ok(active)
 }
 
 fn create_installation(
@@ -680,6 +718,14 @@ fn prune_journal(connection: &Connection, id: &str) -> Result<()> {
             (SELECT generation FROM app_installation_updates WHERE installation_id = ?1
              AND phase IN ('committed', 'aborted') ORDER BY generation DESC LIMIT ?2)",
         params![id, sql_limit(RETAINED_UPDATE_RECORDS)?],
+    )?;
+    // Keep the active binding even if repeated aborted updates outlive its
+    // journal entry. Other bindings follow the existing bounded journal.
+    connection.execute(
+        "DELETE FROM app_installation_stage_trust WHERE installation_id = ?1
+         AND generation NOT IN (SELECT generation FROM app_installation_updates WHERE installation_id = ?1)
+         AND generation != (SELECT generation FROM app_installations WHERE installation_id = ?1)",
+        [id],
     )?;
     Ok(())
 }

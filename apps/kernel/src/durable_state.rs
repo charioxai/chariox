@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod app_installation_staging;
+pub(crate) mod app_publishers;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
@@ -123,6 +125,8 @@ struct DurableWriteRequest {
 enum DurableWriterRequest {
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
+    AppPublisher(Box<app_publishers::AppPublisherRequest>),
+    VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
 }
 
 #[derive(Debug)]
@@ -288,6 +292,7 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             })?;
         apps::initialize(&mut connection)?;
+        app_publishers::initialize(&mut connection)?;
         let writer = DurableStateWriter::start(&path)?;
         connection
             .pragma_update(None, "query_only", true)
@@ -1303,6 +1308,14 @@ fn run_durable_writer(
                 apps::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppPublisher(request) => {
+                app_publishers::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::VerifiedApp(request) => {
+                app_installation_staging::execute(&mut connection, *request);
+                continue;
+            }
         };
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
@@ -1312,7 +1325,11 @@ fn run_durable_writer(
             };
             match receiver.recv_timeout(remaining) {
                 Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
-                Ok(request @ DurableWriterRequest::App(_)) => {
+                Ok(
+                    request @ (DurableWriterRequest::App(_)
+                    | DurableWriterRequest::AppPublisher(_)
+                    | DurableWriterRequest::VerifiedApp(_)),
+                ) => {
                     pending = Some(request);
                     break;
                 }
