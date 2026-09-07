@@ -1,5 +1,7 @@
 use super::*;
 
+mod managed_slice;
+
 #[tokio::test]
 async fn remote_workspace_live_sync_requests_require_membership_and_record_member_identity() {
     let denied_app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
@@ -136,7 +138,9 @@ async fn forwarded_workspace_live_sync_invocation_replays_completed_mutation_onc
     let file_path = src_dir.join("lib.rs");
     std::fs::write(&file_path, "before\n").expect("fixture should be written");
 
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "home-kernel".into();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let session = app
         .sessions_mut()
         .create_session(CreateSessionRequest::new(
@@ -148,7 +152,9 @@ async fn forwarded_workspace_live_sync_invocation_replays_completed_mutation_onc
     let agent = spawn_test_agent(&mut app, &session_id, "sync-agent", "codex");
     let agent_id = agent.id().to_string();
     focus_test_agent(&mut app, &session_id, &agent_id);
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+    bind_workspace_test_worker(&mut app, &agent_id);
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 2);
 
     let metadata = crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata {
         invocation_id: "workspace-live-sync-replay-1".to_string(),
@@ -239,23 +245,60 @@ async fn forwarded_workspace_live_sync_invocation_replays_completed_mutation_onc
         .expect("first finalize should succeed");
     router
         .finalize_forwarded_workspace_live_sync_runtime_tool_call(
-            context,
-            metadata,
+            context.clone(),
+            metadata.clone(),
             crate::transport::runtime_tools::APPLY_PATCH_TOOL.to_string(),
-            arguments,
-            initial_states,
-            final_states,
+            arguments.clone(),
+            initial_states.clone(),
+            final_states.clone(),
         )
         .await
         .expect("duplicate finalize should be a no-op");
 
+    app.lock()
+        .await
+        .agents_mut()
+        .set_remote_execution_active_worker_provider_run_id(
+            &agent_id,
+            Some("replacement-run".into()),
+        )
+        .unwrap();
+    let replay_after_replacement = router
+        .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
+            context.clone(),
+            metadata.clone(),
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.into(),
+            arguments.clone(),
+            initial_states.clone(),
+        )
+        .await;
+    let finalize_after_replacement = router
+        .finalize_forwarded_workspace_live_sync_runtime_tool_call(
+            context,
+            metadata,
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.into(),
+            arguments,
+            initial_states,
+            final_states,
+        )
+        .await;
     let _ = std::fs::remove_dir_all(worktree);
+    assert!(
+        matches!(replay_after_replacement, Err(DaemonError::LocalTransport { .. })),
+        "cached replies must recheck the current provider run"
+    );
+    assert!(
+        matches!(finalize_after_replacement, Err(DaemonError::LocalTransport { .. })),
+        "even completed finalizations must recheck the current provider run"
+    );
 }
 
 #[tokio::test]
 async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_result() {
     let worktree = create_test_git_worktree("workspace-live-sync-inflight-permission");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "home-kernel".into();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let session = app
         .sessions_mut()
         .create_session(CreateSessionRequest::new(
@@ -273,6 +316,7 @@ async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_resul
         .expect("required-permission agent should spawn");
     let agent_id = agent.id().to_string();
     focus_test_agent(&mut app, &session_id, &agent_id);
+    bind_workspace_test_worker(&mut app, &agent_id);
     let app = Arc::new(Mutex::new(app));
     let router = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::clone(&app),
@@ -395,6 +439,26 @@ async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_resul
     assert_eq!(duplicate_result, first_result);
 
     let _ = std::fs::remove_dir_all(worktree);
+}
+
+fn bind_workspace_test_worker(app: &mut DaemonApp, agent_id: &str) {
+    app.agents_mut()
+        .bind_remote_execution(
+            agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease-1".into(),
+                leased_agent_id: "leased-agent-1".into(),
+                active_worker_provider_run_id: Some("worker-provider-run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
 }
 
 fn remote_workspace_live_sync_context(

@@ -1269,6 +1269,11 @@ if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
   printf 'true\n'
   exit 0
 fi
+if [ "$1" = "inspect" ] && [ "$2" = "--format" ]; then
+  case "$3" in
+    *HostConfig.Ulimits*) printf '8192:8192\n'; exit 0 ;;
+  esac
+fi
 for argument in "$@"; do
   if [ "$argument" = "df" ]; then
     printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'

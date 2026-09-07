@@ -76,6 +76,21 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    if let RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool { context, .. }
+    | RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool { context, .. } = &request
+    {
+        let sender = stable_peer_daemon_id(from_daemon_id);
+        if sender.is_empty() || sender != context.worker_kernel_id {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "unauthorized",
+                    "workspace relay sender does not match the worker kernel",
+                    false,
+                )),
+            };
+        }
+    }
     let managed_context_caller = if managed_context_request(&request) {
         let identity = match require_bound_managed_context_sender(
             caller_identity.as_ref(),
@@ -1492,6 +1507,10 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::GetManagedContextImportStatus { .. }
     )
 }
+
+#[cfg(test)]
+#[path = "peer_requests/workspace_sender_tests.rs"]
+mod workspace_sender_tests;
 
 #[cfg(test)]
 mod tests {
