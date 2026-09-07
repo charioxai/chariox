@@ -193,8 +193,9 @@ repository object database and must not each acquire a Cargo `target`,
 `node_modules`, package cache, browser profile, container image, or slice state.
 Put the smallest necessary test binary or generated file in a task-specific
 disposable directory outside every repository, then remove it immediately
-after validation. Use final-head remote CI for full builds while the laptop is
-under disk pressure. Remove a worktree as soon as its PR merges, and keep only
+after validation. Use resource-bounded local or managed-machine checks during
+development; reserve GitHub CI for the final whole-goal gate below. Remove a
+worktree as soon as its PR merges, and keep only
 the worktrees needed for active or externally gated PRs.
 
 ### Commit, push, and review after every completed subtask
