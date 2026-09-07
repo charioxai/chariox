@@ -170,6 +170,15 @@ incognito/store mismatches, and discards results after cancellation or revocatio
 The fixture injects authorization and grants only its test host. It does not
 implement kernel pairing, real consent UI or transfer into an Environment.
 
+An internal destination operation now detects overwrite conflicts, verifies
+applied cookies and attempts snapshot rollback for completed writes. Nine tests
+and a real-CDP fixture cover cancellation, authorization loss, silent cookie
+drops, uncertain write errors, destination metadata and an untouched partition.
+This operation is not exposed through the kernel/controller protocol. Kernel
+exclusion, page/network quiescence, bounded transport, quarantine on uncertain
+recovery and a durable encrypted crash-recovery journal remain mandatory before
+production use. In-memory rollback is not crash-atomic import.
+
 The repository saves browser home state and has a live Docker browser state
 drill. Local validation now includes persistent and session cookies plus browser
 storage through restart and full container/home-volume removal, recorded outside
