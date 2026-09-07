@@ -118,7 +118,7 @@ async function inspectProcesses(profile) {
   return { browser, renderers };
 }
 
-async function withSandboxText(inspect) {
+export async function withSandboxText(inspect) {
   const response = await fetch("http://127.0.0.1:9222/json/version", { signal: AbortSignal.timeout(3000) });
   requireCheck(response.ok, "Chromium debugger is unavailable");
   const version = await boundedResponseJson(response);

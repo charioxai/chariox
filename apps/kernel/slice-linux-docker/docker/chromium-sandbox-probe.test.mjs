@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundedResponseJson, formatProbeFailure, validateSandboxReport } from "./chromium-sandbox-probe.mjs";
+import { boundedResponseJson, formatProbeFailure, validateSandboxReport, withSandboxText } from "./chromium-sandbox-probe.mjs";
 
 const text = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes\n";
 const browser = { uid: 1000, uids: [1000, 1000, 1000, 1000], pidNamespace: "pid:[100]", netNamespace: "net:[100]", seccompFilters: 1 };
@@ -57,4 +57,42 @@ test("probe failures expose only fixed local diagnostic messages", () => {
   const prefix = "Chromium sandbox/profile verification failed";
   for (const error of [new Error("secret profile path"), { message: "secret page data" }, "secret bytes"])
     assert.equal(formatProbeFailure(error), prefix);
+});
+
+test("owned diagnostic target survives process inspection and closes on either outcome", async t => {
+  const methods = [];
+  class DebuggerSocket extends EventTarget {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); }
+    send(encoded) {
+      const { id, method } = JSON.parse(encoded);
+      methods.push(method);
+      const result = method === "Target.createTarget" ? { targetId: "owned-diagnostic" }
+        : method === "Target.attachToTarget" ? { sessionId: "diagnostic-session" }
+        : method === "Runtime.evaluate" ? { result: { value: text } } : {};
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ id, result }) })));
+    }
+    close() { this.readyState = 3; methods.push("socket.close"); this.dispatchEvent(new Event("close")); }
+  }
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/owned" })));
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = DebuggerSocket;
+  try {
+    for (const fail of [false, true]) {
+      methods.length = 0;
+      const inspect = async report => {
+        assert.equal(report, text);
+        assert.equal(methods.includes("Target.closeTarget"), false);
+        assert.equal(methods.includes("socket.close"), false);
+        await Promise.resolve();
+        methods.push("inspect.finished");
+        if (fail) throw new Error("inspection rejected");
+        return "verified";
+      };
+      if (fail) await assert.rejects(withSandboxText(inspect), /inspection rejected/);
+      else assert.equal(await withSandboxText(inspect), "verified");
+      assert.deepEqual(methods.slice(-3), ["inspect.finished", "Target.closeTarget", "socket.close"]);
+    }
+  } finally { globalThis.WebSocket = original; }
 });
