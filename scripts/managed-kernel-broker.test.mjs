@@ -295,6 +295,36 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   assert.equal(extension.status, 1)
 })
 
+test("managed broker preflight requires the same slice publication as execution", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-publication-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const request = (workspace) => ({
+    kind: "provisioner", action: "provision", files: [],
+    environment: {
+      CHARIOX_SLICE_NAME: "chariox-slice-dev",
+      CHARIOX_SLICE_ID: "slice-dev",
+      CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+      CHARIOX_SLICE_WORKSPACE: workspace,
+    },
+  })
+  const expected = join(share, "slices/development/slice-dev/development/workspace")
+  await mkdir(expected, { recursive: true })
+  assert.equal(validate(request(expected), share).status, 0)
+  for (const relative of [
+    "slices/development/slice-dev/empty-development/workspace",
+    "slices/development/other-slice/development/workspace",
+    "slices/development/slice-dev/development/.receipt",
+  ]) {
+    const workspace = join(share, relative)
+    await mkdir(workspace, { recursive: true })
+    const result = validate(request(workspace), share)
+    assert.equal(result.status, 1, `preflight accepted invalid publication ${relative}`)
+    assert.match(result.stderr, /direct repository in the matching slice publication/)
+  }
+})
+
 test("managed slice broker rejects symlink escapes from the shared root", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-symlink-"))
   context.after(() => rm(root, { recursive: true, force: true }))
