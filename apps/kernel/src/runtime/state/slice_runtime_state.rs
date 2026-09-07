@@ -31,16 +31,10 @@ impl KernelRuntimeState {
             request.worktree_id.as_deref(),
         )?;
         let config = self.owned.config_projection.snapshot();
-        let development_storage_parent = matches!(
-            request.development.as_ref(),
-            Some(
-                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-                    ..
-                }
-            )
-        )
-        .then(|| self.prepare_slice_development_storage_parent(&config))
-        .transpose()?;
+        let development_storage_parent = (request.development.is_some()
+            && request.backend == crate::slice::SliceBackendKind::LocalDocker)
+            .then(|| self.prepare_slice_development_storage_parent(&config))
+            .transpose()?;
         let from_saved_state = match request.from_saved_state.as_deref() {
             Some(state_ref) => Some(self.owned.slice_store.saved_state(state_ref)?),
             None if request.base == Some(crate::local::SliceCreateBase::Clean) => None,
