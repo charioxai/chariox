@@ -44,7 +44,10 @@ export async function readApprovedChromeCookies({chrome, scope, sourceTabId, aut
     }
   }
   await check();
-  return prepareChromeCookieBatch(cookies, scope);
+  const {summary} = prepareChromeCookieBatch(cookies, scope);
+  // Keep the source format for independent validation by the destination.
+  // CDP parameters are created only where cookies are applied.
+  return {cookies:structuredClone(cookies), summary};
 }
 
 async function sourceCall(call, signal, deadline) {
