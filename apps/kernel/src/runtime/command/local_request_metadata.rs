@@ -422,6 +422,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::ListAppInstallations(_) => "app.list",
+        LocalDaemonRequest::GetAppInstallation(_) => "app.status",
+        LocalDaemonRequest::GetAppInstallationJournal(_) => "app.journal",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::RenameProject(_) => "project.rename",

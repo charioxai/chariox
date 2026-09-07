@@ -3,6 +3,7 @@ pub mod agent_actor;
 pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
+pub(crate) mod app_control;
 pub(crate) mod app_lock;
 pub mod capability_executor;
 pub(crate) mod capability_registry;

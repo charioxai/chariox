@@ -982,6 +982,18 @@ Workflow trigger and deployment direction:
 - protocol 284 adds `ImportNativeProviderAccountProfile`. The authority owner
   can explicitly register the kernel host's provider-native scope without a
   client-supplied path, changing an existing profile, or copying credentials.
+- protocol 288 adds `ListAppInstallations`, `GetAppInstallation` and
+  `GetAppInstallationJournal` on the same local/relay terminal path. The kernel
+  derives ownership from the authenticated caller; requests cannot name an owner
+  or host path. Local IPC uses the existing linked-user identity bridge, with the
+  local identity used for an unlinked kernel. Unverified relay callers cannot
+  inherit that local identity. Lists use an exclusive `after` installation ID
+  and a `limit` of 1–100 (default 50); journals retain at most 64 completed updates
+  plus the pending update. Generations are opaque decimal strings in client
+  projections. Approval handles, authority references and host paths remain
+  private. `AppRequestFailed` returns stable bounded error codes. These inspection
+  requests do not stage, approve, activate or execute an App; installed metadata
+  does not assert worker health or sandbox verification.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

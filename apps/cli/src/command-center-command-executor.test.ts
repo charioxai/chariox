@@ -43,6 +43,16 @@ test("command center command executor dispatches wait commands", async () => {
   assert.deepEqual(harness.calls, ["wait:once:3:Check later"])
 })
 
+test("command center routes App commands and contains transport failures", async () => {
+  const harness = createHarness({ onApp: async (command) => {
+    harness.calls.push(`app:${command.args.join(" ")}`)
+    throw new Error("App connection lost")
+  } })
+  await harness.executor.execute("/app status install-1")
+  assert.deepEqual(harness.calls, ["app:status install-1"])
+  assert.deepEqual(harness.flashes, ["error:App connection lost"])
+})
+
 test("command center command executor dispatches launch config commands", async () => {
   const harness = createHarness()
 

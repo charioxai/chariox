@@ -76,6 +76,7 @@ export type CliInputRoutingCompositionDeps = {
   handleWorktreeCommand: AnyFn
   handleWorkflowCommand: AnyFn
   handleNotificationsCommand: AnyFn
+  handleAppCommand: AnyFn
   handleSettingsCommand: AnyFn
   handleLoopCommand: AnyFn
   handleGoalCommand: AnyFn
@@ -257,6 +258,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleWorktreeCommand: deps.handleWorktreeCommand,
     handleWorkflowCommand: deps.handleWorkflowCommand,
     handleNotificationsCommand: deps.handleNotificationsCommand,
+    handleAppCommand: deps.handleAppCommand,
     handleSettingsCommand: deps.handleSettingsCommand,
     handleLoopCommand: deps.handleLoopCommand,
     handleGoalCommand: deps.handleGoalCommand,

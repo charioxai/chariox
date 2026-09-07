@@ -439,6 +439,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     flashFooter,
     appendNotice,
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
+    sendAppRequest: (request) => client.send(request),
     appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>

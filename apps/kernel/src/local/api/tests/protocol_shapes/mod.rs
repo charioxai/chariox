@@ -5,6 +5,7 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod apps;
 mod core;
 mod credential_enrollment;
 mod event_publication;

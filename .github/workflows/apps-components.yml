@@ -7,6 +7,8 @@ on:
       - 'packages/app-runtime/**'
       - 'packages/app-sdk/**'
       - 'apps/app-worker/**'
+      - 'apps/kernel/**'
+      - 'packages/kernel-client/**'
       - 'scripts/build-app-runtime*'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -29,7 +31,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: '1'
       CARGO_INCREMENTAL: '0'
@@ -48,5 +50,17 @@ jobs:
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
       - name: Test runtime build planning and resource guards
         run: node --test scripts/build-app-runtime.test.mjs
+      - name: Test kernel App routing and durable writer
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          cargo test --locked -p chariox-kernel --lib runtime::app_control:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib durable_state:: -- --test-threads=1
+      - name: Check shared protocol snapshots and terminal catalog
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          cargo test --locked -p chariox-kernel --lib protocol_shapes -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib terminal_command_catalog::tests:: -- --test-threads=1
       # Component checks do not certify a signed worker or an OS sandbox. Those
       # remain separate Phase 1 artifact and hostile-package release gates.

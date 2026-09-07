@@ -64,6 +64,17 @@ test("parseSlashCommand parses the kernel notification center namespace", () => 
   ), true)
 })
 
+test("App slash commands preserve arguments and delegate to the shared shell", () => {
+  const input = "/app list --after install-1 --limit 10"
+  const parsed = parseSlashCommand(input)!
+  assert.deepEqual(parsed, { kind: "app", raw: input, args: ["list", "--after", "install-1", "--limit", "10"] })
+  assert.equal(shouldClearCommandCenterForSlashCommand(parsed), true)
+  assert.equal(sharedShellCommandForSlashCommand(input), input.slice(1))
+  assert.deepEqual(parseSlashCommand("/app\tstatus install-1")?.kind, "app")
+  assert.equal(parseSlashCommand("/application list"), null)
+  assert.equal(sharedShellCommandForSlashCommand("/application list"), null)
+})
+
 test("parseSlashCommand parses prompt settings reset namespace", () => {
   assert.deepEqual(parseSlashCommand("/settings prompts reset workflow/turn --confirm"), {
     kind: "settings",

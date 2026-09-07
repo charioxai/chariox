@@ -35,6 +35,14 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .execute(command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
         if let Some(response) = projected_session_read_response(
             &self.runtime_state,
             &self.session_projection,

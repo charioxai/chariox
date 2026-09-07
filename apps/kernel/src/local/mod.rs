@@ -196,6 +196,10 @@ pub use api::{
     WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
     DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
+pub use api::{
+    AppCapabilityDecisionStatus, AppInstallationRequest, AppInstallationSummary, AppReleaseSummary,
+    AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
+};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

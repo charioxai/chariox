@@ -36,6 +36,7 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
+mod app_runtime_state;
 mod config_runtime_state;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -61,6 +62,7 @@ pub(crate) struct KernelRuntimeState {
 
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
+    app_control: crate::runtime::app_control::AppControlService,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -481,6 +483,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
+                app_control: crate::runtime::app_control::AppControlService::new(durable_state_store.clone()),
                 config_projection,
                 session_store,
                 agent_store,
