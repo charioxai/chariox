@@ -212,9 +212,23 @@ slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b73
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker pull "$slice_base_image" >/dev/null
+# Exercise BuildKit's client-side registry-auth resolution through the real
+# broker entrypoint. A Docker pull alone only tests daemon-side resolution.
+broker_namespace=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh
+slice_dockerfile=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker/Dockerfile
+{
+  sed -n '1p' "$slice_dockerfile"
+  printf 'FROM %s\n' "$slice_base_image"
+} |
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  "$broker_namespace" docker build --pull --tag chariox-broker-network-check:local - >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image inspect "$slice_base_image" >/dev/null
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker image rm chariox-broker-network-check:local >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image rm "$slice_base_image" >/dev/null
