@@ -80,6 +80,10 @@ function validateSnapshot(cookies) {
       || new TextEncoder().encode(JSON.stringify(cookies)).byteLength > 4 * 1024 * 1024) fail('cookie_import_snapshot_too_large');
   const keys = new Set();
   for (const cookie of cookies) {
+    if (typeof cookie.session !== 'boolean' || (cookie.session ? cookie.expires !== -1
+        : !Number.isFinite(cookie.expires) || cookie.expires <= Date.now() / 1000)) {
+      fail('cookie_import_snapshot_unsupported');
+    }
     if (cookie.partitionKeyOpaque || Object.keys(cookie).some(key => ![
       'name','value','domain','path','expires','size','httpOnly','secure','session','sameSite',
       'priority','sourceScheme','sourcePort','partitionKey','partitionKeyOpaque',
@@ -92,7 +96,8 @@ function validateSnapshot(cookies) {
 
 function semantic(cookie) {
   return JSON.stringify([identity(cookie), cookie.value, cookie.secure, cookie.httpOnly,
-    cookie.sameSite ?? null, Math.round((cookie.expires ?? -1) * 1000)]);
+    cookie.sameSite ?? null, cookie.session ?? cookie.expires === undefined,
+    Math.round((cookie.expires ?? -1) * 1000)]);
 }
 
 function fingerprint(cookies) {

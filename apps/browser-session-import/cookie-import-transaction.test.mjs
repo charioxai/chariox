@@ -147,3 +147,18 @@ test('an empty approved import performs no cookie-store reads or writes', async 
   assert.deepEqual(await applyCookieImport(options), {cookieCount:0,domains:[]});
   assert.equal(writes(),0);
 });
+
+test('rejects non-restorable expiry and session combinations before replacing a cookie', async () => {
+  for (const change of [
+    {session:false,expires:null}, {session:false,expires:Infinity},
+    {session:false,expires:NaN}, {session:false,expires:-1},
+    {session:true,expires:null}, {session:true,expires:2000},
+  ]) {
+    const original = stored(change);
+    const {options,store,writes} = fixture([original]);
+    options.overwrite = true;
+    await assert.rejects(applyCookieImport(options), {code:'cookie_import_snapshot_unsupported',recoveryRequired:false});
+    assert.equal(writes(),0);
+    assert.deepEqual(await store.read(),[original]);
+  }
+});
