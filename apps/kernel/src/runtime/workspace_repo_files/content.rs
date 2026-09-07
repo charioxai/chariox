@@ -11,11 +11,9 @@ use sha2::{Digest, Sha256};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonResponse, WorkspaceFileContent};
 use crate::runtime::workspace_git_changes::workspace_git_file_changes;
-use crate::runtime::workspace_git_common::{
-    detect_git_branch, resolve_repo_root, workspace_default_compare_ref,
-};
+use crate::runtime::workspace_git_common::{detect_git_branch, workspace_default_compare_ref};
 
-use super::shared::current_unix_ms;
+use super::shared::{current_unix_ms, workspace_file_root};
 
 pub(crate) fn get_workspace_file_content(
     workspace_id: &str,
@@ -33,7 +31,7 @@ pub(crate) fn get_workspace_file_content(
         });
     }
     let normalized_path = normalize_workspace_file_content_path(path)?;
-    let repo_root = resolve_repo_root(worktree_path)?;
+    let (repo_root, has_git) = workspace_file_root(worktree_path)?;
     let repo_root_canonical =
         std::fs::canonicalize(&repo_root).map_err(|error| DaemonError::LocalTransport {
             operation: "read workspace file",
@@ -54,10 +52,10 @@ pub(crate) fn get_workspace_file_content(
             message: "file path escapes the repository root".to_string(),
         });
     }
-    if full_path_canonical.is_dir() {
+    if !full_path_canonical.is_file() {
         return Err(DaemonError::LocalTransport {
             operation: "read workspace file",
-            message: format!("`{normalized_path}` is a directory"),
+            message: format!("`{normalized_path}` is not a regular file"),
         });
     }
     let metadata =
@@ -122,16 +120,26 @@ pub(crate) fn get_workspace_file_content(
             ),
         }
     };
-    let branch = detect_git_branch(worktree_path).ok();
+    let branch = has_git
+        .then(|| detect_git_branch(worktree_path).ok())
+        .flatten();
     let repo_root_string = repo_root.display().to_string();
-    let compare_ref = requested_compare_ref
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| workspace_default_compare_ref(&repo_root_string, branch.as_deref()));
-    let change = workspace_git_file_changes(worktree_path, &compare_ref)?
-        .into_iter()
-        .find(|candidate| candidate.path == normalized_path);
+    let compare_ref = if has_git {
+        requested_compare_ref
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| workspace_default_compare_ref(&repo_root_string, branch.as_deref()))
+    } else {
+        String::new()
+    };
+    let change = if has_git {
+        workspace_git_file_changes(worktree_path, &compare_ref)?
+            .into_iter()
+            .find(|candidate| candidate.path == normalized_path)
+    } else {
+        None
+    };
     let language = workspace_file_language(&normalized_path).to_string();
     let mime = workspace_file_mime(&language).to_string();
     let name = normalized_path
