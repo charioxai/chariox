@@ -219,24 +219,25 @@ force-push away reviewed evidence unless recovery requires it. If the head
 changes, repeat review. A subtask is not complete while the reviewer has an
 unaddressed comment, a question without evidence, or a stale-head review.
 
-### Final-head CI only
+### Final-goal CI only
 
-Do not run the repository-wide GitHub CI suite for intermediate implementation
-or reviewer-fix commits. Use the narrow local unit and integration checks above
-while the PR is still evolving. Keep the PR out of the ready-to-merge CI path
-until its exact head has passed focused validation and the independent reviewer
-has no remaining comments.
+User clarification on 2026-09-07: the gate applies to the complete active goal,
+not to each finished PR or milestone. Do not start repository-wide GitHub CI
+during feature implementation, even when an individual PR has a clean review.
+Keep those PRs in draft so ready-for-review does not trigger CI. Do not dispatch
+or rerun workflows, or merge merely to trigger main-branch CI.
 
-Run GitHub CI once for that final, reviewer-clean head immediately before
-merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
-exact-head reviewer loop, and then run the final CI gate again. Do not treat a
-successful run for an older SHA as evidence for a changed head.
+Continue focused local or managed-machine functional checks, resiliency drills,
+resource monitoring, coherent commits/pushes and independent exact-head reviews.
+These must proceed while broad GitHub CI is deferred; deferral is not permission
+to skip functional validation or wait for all features before testing them.
 
-Repository workflow triggers must enforce this policy: ordinary PR
-`synchronize` events must not start the expensive CI jobs, while the explicit
-ready-for-review/final-gate transition may start them. Reviewer automation is
-independent of this CI gate and must continue to receive the commits it needs
-to review.
+Run one coordinated final GitHub CI pass only when implementation and the
+required goal-wide functional/drill work are complete and ready for final
+validation. Use the exact final reviewed revisions. If that final pass finds a
+defect, fix and review it; explain why another final run is necessary rather than
+silently resuming per-PR CI. Reviewer automation remains independent and must
+continue receiving commits without starting expensive CI jobs.
 
 ### Reviewer independence and outages
 
