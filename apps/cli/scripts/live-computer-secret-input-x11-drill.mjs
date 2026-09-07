@@ -7,6 +7,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { verifyChromiumRendererSandbox } from "./lib/chromium-renderer-sandbox.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const drillScript = fileURLToPath(import.meta.url)
@@ -344,6 +345,8 @@ async function main() {
       "256",
       "--network",
       "none",
+      "--security-opt",
+      `seccomp=${path.join(repoRoot, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`,
       "--entrypoint",
       "/bin/sleep",
       image,
@@ -451,13 +454,15 @@ async function main() {
       containerName,
       "/bin/bash",
       "-lc",
-      "exec chromium --user-data-dir=/tmp/chariox-secret-x11/profile --no-sandbox --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 http://127.0.0.1:8765/ >/tmp/chariox-secret-x11/chromium.log 2>&1",
+      "exec chromium --user-data-dir=/tmp/chariox-secret-x11/profile --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 http://127.0.0.1:8765/ >/tmp/chariox-secret-x11/chromium.log 2>&1",
     ])
 
     await waitFor(async () => {
       const current = await title()
       return current.startsWith("READY") ? current : false
     }, "password page readiness", 45_000)
+    report.browserSandbox = await verifyChromiumRendererSandbox(async args =>
+      (await docker(["exec", "-u", "slice", containerName, ...args])).stdout)
     await focusPasswordField()
 
     const clipboardSentinel = `clipboard-sentinel-${runId}`
@@ -586,6 +591,7 @@ async function main() {
     report.checks.push(
       { name: "existing-slice-image", status: "passed" },
       { name: "resource-bounded-container", status: "passed" },
+      { name: "chromium-renderer-sandbox", status: "passed" },
       { name: "real-x11-password-focus", status: "passed" },
       { name: "exact-secret-input-by-digest", status: "passed" },
       { name: "helper-output-redaction", status: "passed" },
