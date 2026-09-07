@@ -20,7 +20,9 @@ permissions:
 
 concurrency:
   group: app-components-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Finish an admitted compilation while newer source waits in the one pending
+  # slot. Frequent implementation pushes must not starve macOS verification.
+  cancel-in-progress: false
 
 jobs:
   contracts:

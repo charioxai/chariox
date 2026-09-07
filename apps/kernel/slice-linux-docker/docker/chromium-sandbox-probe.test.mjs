@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundedResponseJson, validateSandboxReport } from "./chromium-sandbox-probe.mjs";
+import { boundedResponseJson, formatProbeFailure, validateSandboxReport } from "./chromium-sandbox-probe.mjs";
 
 const text = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes\n";
 const browser = { uid: 1000, uids: [1000, 1000, 1000, 1000], pidNamespace: "pid:[100]", netNamespace: "net:[100]", seccompFilters: 1 };
@@ -46,4 +46,15 @@ test("debugger version response is bounded across streamed chunks and cancelled 
   assert.equal(cancelled, true);
   assert.ok(reads <= 4);
   await assert.rejects(boundedResponseJson(new Response(new Uint8Array([0xc0, 0x80]))));
+});
+
+// A failed hosted probe must identify the assertion without emitting browser
+// contents, process argv, profile paths, or arbitrary parser/transport errors.
+test("probe failures expose only fixed local diagnostic messages", () => {
+  let failure;
+  try { validateSandboxReport(text, browser, []); } catch (error) { failure = error; }
+  assert.match(formatProbeFailure(failure), /no observable browser renderer processes$/);
+  const prefix = "Chromium sandbox/profile verification failed";
+  for (const error of [new Error("secret profile path"), { message: "secret page data" }, "secret bytes"])
+    assert.equal(formatProbeFailure(error), prefix);
 });

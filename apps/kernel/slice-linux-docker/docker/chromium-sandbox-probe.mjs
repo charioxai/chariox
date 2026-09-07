@@ -5,8 +5,15 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Only this module's fixed diagnostic text is safe to publish. Filesystem,
+// JSON and network errors can contain paths or response bytes.
+class ProbeCheckError extends Error {}
+export function formatProbeFailure(error) {
+  const prefix = "Chromium sandbox/profile verification failed";
+  return error instanceof ProbeCheckError ? `${prefix}: ${error.message}` : prefix;
+}
 function requireCheck(value, message) {
-  if (!value) throw new Error(message);
+  if (!value) throw new ProbeCheckError(message);
 }
 
 export function validateSandboxReport(text, browser, renderers) {
@@ -17,10 +24,11 @@ export function validateSandboxReport(text, browser, renderers) {
     && Array.isArray(process.uids) && process.uids.length === 4 && process.uids.every(uid => uid === process.uid);
   const validNamespaces = process => /^pid:\[\d+\]$/.test(process.pidNamespace)
     && /^net:\[\d+\]$/.test(process.netNamespace);
-  requireCheck(validUid(browser) && validNamespaces(browser) && renderers.length > 0,
-    "non-root browser and renderers with observed namespaces are required");
+  requireCheck(validUid(browser) && validNamespaces(browser),
+    "non-root browser with observed namespaces is required");
   requireCheck(Number.isSafeInteger(browser.seccompFilters) && browser.seccompFilters >= 0,
     "browser seccomp baseline is unavailable");
+  requireCheck(renderers.length > 0, "no observable browser renderer processes");
   for (const renderer of renderers) {
     requireCheck(validUid(renderer) && renderer.uid === browser.uid, "unexpected renderer UID");
     requireCheck(renderer.capabilities === "0000000000000000", "renderer retains capabilities");
@@ -110,7 +118,7 @@ async function inspectProcesses(profile) {
   return { browser, renderers };
 }
 
-async function sandboxText() {
+async function withSandboxText(inspect) {
   const response = await fetch("http://127.0.0.1:9222/json/version", { signal: AbortSignal.timeout(3000) });
   requireCheck(response.ok, "Chromium debugger is unavailable");
   const version = await boundedResponseJson(response);
@@ -120,7 +128,7 @@ async function sandboxText() {
   let sequence = 0;
   let targetId;
   const pending = new Map();
-  const rejectAll = () => { for (const call of pending.values()) call.reject(new Error("debugger connection closed")); };
+  const rejectAll = () => { for (const call of pending.values()) call.reject(new ProbeCheckError("debugger connection closed")); };
   socket.addEventListener("close", rejectAll);
   socket.addEventListener("error", rejectAll);
   socket.addEventListener("message", event => {
@@ -128,12 +136,12 @@ async function sandboxText() {
     try {
       const message = JSON.parse(event.data);
       const call = pending.get(message.id);
-      if (call) message.error ? call.reject(new Error("debugger request failed")) : call.resolve(message.result);
+      if (call) message.error ? call.reject(new ProbeCheckError("debugger request failed")) : call.resolve(message.result);
     } catch { socket.close(); rejectAll(); }
   });
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const id = ++sequence;
-    const timer = setTimeout(() => finish(reject, new Error("debugger request timed out")), 3000);
+    const timer = setTimeout(() => finish(reject, new ProbeCheckError("debugger request timed out")), 3000);
     function finish(callback, value) { clearTimeout(timer); pending.delete(id); callback(value); }
     pending.set(id, { resolve: value => finish(resolve, value), reject: error => finish(reject, error) });
     try { socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
@@ -141,19 +149,24 @@ async function sandboxText() {
   });
   try {
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("debugger connection timed out")), 3000);
+      const timer = setTimeout(() => reject(new ProbeCheckError("debugger connection timed out")), 3000);
       socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
-      socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("debugger connection failed")); }, { once: true });
+      socket.addEventListener("error", () => { clearTimeout(timer); reject(new ProbeCheckError("debugger connection failed")); }, { once: true });
     });
     ({ targetId } = await send("Target.createTarget", { url: "chrome://sandbox", background: true }));
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     for (let attempt = 0; attempt < 20; attempt++) {
       const result = await send("Runtime.evaluate", { expression: "(document.body?.innerText ?? '').slice(0, 16384)", returnByValue: true }, sessionId);
       const text = result.result?.value;
-      if (typeof text === "string" && text.includes("Seccomp")) return text;
+      if (typeof text === "string" && text.includes("Seccomp")) {
+        // Keep the owned diagnostic renderer alive while inspecting its process
+        // sandbox. An otherwise empty browser may discard its last renderer as
+        // soon as this target closes.
+        return await inspect(text);
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    throw new Error("sandbox diagnostic page did not load");
+    throw new ProbeCheckError("sandbox diagnostic page did not load");
   } finally {
     // If createTarget's outcome is unknown after a lost connection, the kernel
     // stops/rolls back this candidate browser when verification fails. Only
@@ -167,12 +180,13 @@ async function sandboxText() {
 async function main() {
   requireCheck(process.getuid?.() > 0, "sandbox verification requires the slice user");
   const profile = process.env.CHARIOX_SLICE_CHROME_PROFILE || join(homedir(), ".config/chariox-slice-chromium");
-  const text = await sandboxText();
-  const { browser, renderers } = await inspectProcesses(profile);
-  validateSandboxReport(text, browser, renderers);
+  await withSandboxText(async text => {
+    const { browser, renderers } = await inspectProcesses(profile);
+    validateSandboxReport(text, browser, renderers);
+  });
   console.log(JSON.stringify({ chromiumSandboxVerified: true, profilePathVerified: true, basicPasswordStoreVerified: true }));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(() => { console.error("Chromium sandbox/profile verification failed"); process.exitCode = 1; });
+  main().catch(error => { console.error(formatProbeFailure(error)); process.exitCode = 1; });
 }

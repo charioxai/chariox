@@ -40,7 +40,17 @@ if (!["seed", "verify", "revoked", "empty"].includes(mode)) throw new Error("inv
 const socket = await connect();
 try {
   const url = "http://127.0.0.1:8765/app.html";
-  let target = (await socket.send("Target.getTargets")).targetInfos.find(target => target.type === "page" && target.url === url);
+  const findTarget = async () => (await socket.send("Target.getTargets")).targetInfos.find(target => target.type === "page" && target.url === url);
+  let target = await findTarget();
+  // Session restoration is asynchronous after the production launcher starts.
+  // A verification turn must observe the saved tab instead of creating one
+  // that could hide a restore failure or race a delayed restored target.
+  const restoreDeadline = Date.now() + 5000;
+  while (mode === "verify" && !target && Date.now() < restoreDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    target = await findTarget();
+  }
+  if (mode === "verify" && !target) throw new Error("saved fixture tab did not become available");
   const sessionTabRestored = !!target;
   if (!target) target = await socket.send("Target.createTarget", { url });
   const { sessionId } = await socket.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
