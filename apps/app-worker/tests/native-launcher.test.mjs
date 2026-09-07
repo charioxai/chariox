@@ -6,6 +6,7 @@ import { openSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { launchRecord as record, expectedReadiness } from './launch-record.mjs';
 
 const source = fileURLToPath(new URL('../src/', import.meta.url));
 const probe = fileURLToPath(new URL('./native_probe.c', import.meta.url));
@@ -47,32 +48,6 @@ before(async () => {
 
 after(async () => { if (scratch) await rm(scratch, { recursive: true, force: true }); });
 
-function string(value) {
-  const bytes = Buffer.from(value);
-  const size = Buffer.alloc(4);
-  size.writeUInt32BE(bytes.length);
-  return Buffer.concat([size, bytes]);
-}
-
-function record(roots, overrides = {}) {
-  const options = { generation: '1', installation: 'probe-install', digest: 'a'.repeat(64),
-    bootstrap: 'probe-v1', ...overrides };
-  const limits = Buffer.alloc(24);
-  limits.writeUInt32BE(64, 0);
-  limits.writeUInt32BE(10, 4);
-  limits.writeUInt32BE(64, 8);
-  limits.writeUInt32BE(1, 12);
-  limits.writeBigUInt64BE(1024n * 1024n, 16);
-  const body = Buffer.concat([limits, ...[
-    options.generation, options.installation, options.digest,
-    roots.package, roots.data, roots.tmp, roots.runtime, options.bootstrap,
-  ].map(string)]);
-  const header = Buffer.alloc(12);
-  header.write('CXAWL001');
-  header.writeUInt32BE(body.length, 8);
-  return Buffer.concat([header, body]);
-}
-
 async function fixture() {
   const parent = path.join(scratch, `fixture-${++fixtureNumber}`);
   await mkdir(parent, { mode: 0o700 });
@@ -92,9 +67,11 @@ function start(bytes, args = [], executable = launcher) {
   stdio[3] = 'pipe'; stdio[4] = 'pipe'; stdio[31] = secret;
   const child = spawn(executable, args, { stdio, env: { CX_TEST_SECRET: 'must-not-reach-runtime' } });
   closeSync(secret);
-  let stdout = ''; let stderr = ''; let ready = Buffer.alloc(0);
+  let stdout = ''; let stderr = ''; let sdk = ''; let ready = Buffer.alloc(0);
   child.stdout.on('data', bytes => { stdout += bytes; });
   child.stderr.on('data', bytes => { stderr += bytes; });
+  child.stdio[3].on('data', bytes => { sdk += bytes; });
+  child.stdio[3].on('error', () => {});
   child.stdio[4].on('data', bytes => { ready = Buffer.concat([ready, bytes]); });
   child.stdio[4].on('error', () => {});
   const timeout = setTimeout(() => child.kill('SIGKILL'), 20_000);
@@ -102,9 +79,10 @@ function start(bytes, args = [], executable = launcher) {
     child.once('error', reject);
     child.once('close', (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr, ready });
+      resolve({ code, signal, stdout, stderr, ready, sdk });
     });
   });
+  child.stdio[3].write('PING');
   child.stdio[4].write(bytes);
   return { child, completed, readiness: () => ready };
 }
@@ -112,7 +90,7 @@ function start(bytes, args = [], executable = launcher) {
 test('native constructors and operations remain confined after exact supervisor handshake', { skip: !enabled }, async () => {
   const roots = await fixture();
   const running = start(record(roots));
-  const expected = Buffer.concat([Buffer.from('CXAWR001'), string('1'), string('probe-install'), string('a'.repeat(64))]);
+  const expected = expectedReadiness;
   const end = Date.now() + 5000;
   while (running.readiness().length < expected.length && Date.now() < end)
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -123,7 +101,8 @@ test('native constructors and operations remain confined after exact supervisor 
   assert.equal(result.code, 0, JSON.stringify(result));
   assert.equal(result.signal, null);
   assert.ok(!result.stdout.includes(':FAIL'), result.stdout);
-  assert.equal(result.stdout.trim().split('\n').length, 19, result.stdout);
+  assert.equal(result.stdout.trim().split('\n').length, 21, result.stdout);
+  assert.equal(result.sdk, 'PONG');
   assert.match(result.stdout, /constructor_host_read_denied:ok/);
   assert.match(result.stdout, /package_executable_mapping_denied:ok/);
   assert.match(result.stdout, /fork_denied:ok/);

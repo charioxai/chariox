@@ -4,6 +4,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +40,11 @@ static int create_private(const char* root, const char* name) {
   return valid;
 }
 
+static void* thread_entry(void* context) {
+  *(int*)context = 1;
+  return context;
+}
+
 __attribute__((constructor)) static void before_runtime_entry(void) {
   const char* data = getenv("CHARIOX_APP_DATA");
   check("constructor_already_confined", data && create_private(data, "constructor-ran"));
@@ -55,6 +62,14 @@ const char* chariox_app_runtime_node_version(void) { return "24.20.0"; }
 int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   check("trusted_bootstrap", config->trusted_bootstrap_length == 8 &&
       !memcmp(config->trusted_bootstrap, "probe-v1", 8));
+  char request[4];
+  struct pollfd sdk = {3, POLLIN, 0};
+  check("inherited_sdk_bidirectional", poll(&sdk, 1, 1000) > 0 && read(3, request, 4) == 4 &&
+      !memcmp(request, "PING", 4) && write(3, "PONG", 4) == 4);
+  int thread_result = 0;
+  pthread_t thread;
+  int created = pthread_create(&thread, NULL, thread_entry, &thread_result);
+  check("native_thread_create_join", created == 0 && pthread_join(thread, NULL) == 0 && thread_result == 1);
   check("private_data_write", create_private(getenv("CHARIOX_APP_DATA"), "written"));
   check("private_tmp_write", create_private(getenv("CHARIOX_APP_TMP"), "written"));
   check("package_write_denied", !create_private(getenv("CHARIOX_APP_PACKAGE"), "forbidden"));
@@ -106,7 +121,14 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   if (child == 0) _exit(0);
   check("fork_denied", child < 0);
   if (child > 0) waitpid(child, NULL, 0);
-  check("foreign_signal_denied", kill(getppid(), 0) < 0);
+  errno = 0;
+#if defined(__linux__)
+  // PID1 has no visible parent. A non-self PID must be denied by policy even
+  // when no such target exists; ESRCH alone would not prove a signal boundary.
+  check("foreign_signal_denied", kill(getpid() + 1000, 0) < 0 && errno == EPERM);
+#else
+  check("foreign_signal_denied", kill(getppid(), 0) < 0 && (errno == EPERM || errno == EACCES));
+#endif
   struct rlimit limits;
   check("native_limit_query", getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 64);
 #if defined(__linux__)
@@ -125,6 +147,12 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   int watch_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   int watch = watch_fd < 0 ? -1 : inotify_add_watch(watch_fd, getenv("CHARIOX_APP_DATA"), IN_CREATE);
   check("private_file_watch", watch >= 0);
+  char event_bytes[512];
+  int generated = watch >= 0 && create_private(getenv("CHARIOX_APP_DATA"), "watched");
+  ssize_t event_size = generated ? read(watch_fd, event_bytes, sizeof(event_bytes)) : -1;
+  struct inotify_event event = {0};
+  if (event_size >= (ssize_t)sizeof(event)) memcpy(&event, event_bytes, sizeof(event));
+  check("private_file_watch_event", generated && event_size >= (ssize_t)sizeof(event) && (event.mask & IN_CREATE));
   snprintf(path, sizeof(path), "%s/escape", getenv("CHARIOX_APP_PACKAGE"));
   check("escaped_file_watch_denied", watch_fd >= 0 && inotify_add_watch(watch_fd, path, IN_MODIFY) < 0);
   if (watch >= 0) check("private_file_watch_remove", inotify_rm_watch(watch_fd, watch) == 0);
@@ -135,6 +163,7 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   fflush(stdout);
   char* args[] = {"false", NULL};
   char* environment[] = {NULL};
-  check("exec_denied", execve("/usr/bin/false", args, environment) < 0);
+  errno = 0;
+  check("exec_denied", execve("/usr/bin/false", args, environment) < 0 && (errno == EPERM || errno == EACCES));
   return failed ? 1 : 0;
 }
