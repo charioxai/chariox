@@ -14,7 +14,7 @@ export type RelayKeypair = {
 export async function createRelayKeypair(): Promise<RelayKeypair> {
   const keypair = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
-    true,
+    false,
     ["deriveBits"],
   ) as CryptoKeyPair
   const publicKey = await crypto.subtle.exportKey("raw", keypair.publicKey)
@@ -27,8 +27,11 @@ export async function createRelayKeypair(): Promise<RelayKeypair> {
 export async function encryptRelayPayload(
   peerPublicKeyBase64: string,
   plaintext: string,
+  sender?: RelayKeypair,
 ): Promise<{ readonly keypair: RelayKeypair; readonly payload: EncryptedRelayPayload }> {
-  const keypair = await createRelayKeypair()
+  // Paired clients retain their sender identity across consent/read requests.
+  // Ordinary requests still receive a fresh ephemeral keypair.
+  const keypair = sender ?? await createRelayKeypair()
   const key = await deriveRelayAesKey(keypair.privateKey, peerPublicKeyBase64)
   const nonce = crypto.getRandomValues(new Uint8Array(relayNonceLength))
   const ciphertext = await crypto.subtle.encrypt(
