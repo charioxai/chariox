@@ -359,6 +359,8 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "jsonschema",
+ "libc",
+ "rand 0.8.6",
  "semver",
  "serde",
  "serde_json",
@@ -366,6 +368,7 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "url",
+ "zeroize",
 ]
 
 [[package]]

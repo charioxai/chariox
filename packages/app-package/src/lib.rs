@@ -3,6 +3,8 @@
 
 mod archive;
 mod declarations;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod developer;
 mod error;
 mod json;
 mod manifest;
@@ -25,6 +27,7 @@ const SIGNATURE_SCHEMA: &str = "chariox.package-signature.v1";
 
 /// The signed envelope is versioned independently from SDK and kernel protocol.
 pub const PACKAGE_CONTRACT_VERSION: u32 = 1;
+pub const SUPPORTED_SDK_VERSION: &str = "0.1.0";
 
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -81,7 +84,7 @@ impl VerificationPolicy {
         Self {
             kernel_protocol,
             app_contract_version: APP_CONTRACT_VERSION,
-            sdk_requirement: VersionReq::parse("=0.1.0")
+            sdk_requirement: VersionReq::parse(&format!("={SUPPORTED_SDK_VERSION}"))
                 .expect("constant SDK requirement is valid"),
             resource_policies: vec![RESOURCE_POLICY.to_owned()],
             trusted_publishers,

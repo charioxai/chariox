@@ -6,6 +6,8 @@ on:
       - 'packages/app-package/**'
       - 'packages/app-runtime/**'
       - 'packages/app-sdk/**'
+      - 'apps/app-worker/**'
+      - 'scripts/build-app-runtime*'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/apps-components.yml'
@@ -44,5 +46,7 @@ jobs:
         run: cargo test --locked -p chariox-app-package -p chariox-app-runtime -- --test-threads=1
       - name: Test Node SDK
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
+      - name: Test runtime build planning and resource guards
+        run: node --test scripts/build-app-runtime.test.mjs
       # Component checks do not certify a signed worker or an OS sandbox. Those
       # remain separate Phase 1 artifact and hostile-package release gates.

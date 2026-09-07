@@ -6,6 +6,88 @@ publisher keys, fetch packages, run npm, or implement a sandbox. The kernel
 installer must supply enrolled publisher keys and compatibility policy, then
 consume only a `VerifiedPackage` when staging files.
 
+## Local developer commands
+
+The `chariox-app-package` binary and reusable `developer` module provide local
+`keygen`, `manifest`, `pack`, `validate`, and `inspect` commands on macOS/Linux.
+They use the same parser, packer, and verifier described below. They never run
+an App, install dependencies, run package scripts, contact a kernel, or alter
+the kernel's enrolled publisher store.
+
+An already built bundle contains `runtime/main.js` and `ui/index.html` by
+default. Keep the generated manifest, signing key, and resulting archive
+outside that directory. For example, after preparing `dist/`:
+
+```sh
+mkdir -m 700 "$HOME/.chariox/dev/app-publisher"
+chariox-app-package keygen --publisher-id com.example --publisher-name Developer \
+  --key-out "$HOME/.chariox/dev/app-publisher/private" --trust-out publisher.json
+chariox-app-package manifest --app-id com.example.todo --version 1.0.0 \
+  --publisher publisher.json --kernel-protocol 285 --output app-manifest.json \
+  --network GET,POST=https://api.example.com
+chariox-app-package pack --bundle dist --manifest app-manifest.json \
+  --key "$HOME/.chariox/dev/app-publisher/private" --output todo.cxapp \
+  --kernel-protocol 285
+chariox-app-package inspect todo.cxapp
+chariox-app-package validate todo.cxapp --trust publisher.json --kernel-protocol 285
+```
+
+The standalone tool requires the selected kernel protocol explicitly; the
+shared Chariox CLI will supply its actual protocol constant when integrated.
+The example number is not a claim that the complete App runtime is available
+at that protocol. `manifest` supplies the supported SDK/App/resource contracts
+and accepts optional runtime/UI entry and declaration paths. Repeat
+`--network METHODS=ORIGIN` for another exact origin. Capabilities start empty;
+generation adds only explicitly declared destinations and grants no permissions.
+JS scaffolding and a richer capability editor remain separate developer-tooling
+work. There is no handwritten manifest required for this basic flow.
+
+`keygen` uses OS randomness. The private file contains exactly 32 raw Ed25519
+seed bytes, is created with mode `0600`, and requires a current-user private
+parent directory (`0700`). Its seed is never printed or included in JSON results.
+The public file is `chariox.developer-publisher.v1` enrollment material; supplying
+it to `validate` establishes trust only for that command. The kernel must still
+enroll a publisher through its own explicit path. Generated key IDs bind the
+public-key fingerprint, and `pack` rejects a different private key.
+
+Existing outputs are preserved. Each output is written to a private temporary
+inode, synced, then atomically renamed without replacement using the supported
+OS's exclusive-rename operation. Key generation
+prepares both files before publishing the private key and then the public file.
+Two output paths are not one filesystem transaction: a crash can leave a valid
+private key without enrollment material. An enrollment-publication failure
+reports that condition; it never overwrites another key or silently enrolls
+anything. Output parents must belong to the current user and cannot be writable
+by group or others. Use a filesystem supporting exclusive rename and directory
+synchronization. The writer retains its temporary inode and checks its identity
+before publication and cleanup.
+
+Bundle traversal opens each component relative to an already opened directory
+and rejects symlinks, hard-linked files, devices, FIFOs, parent traversal,
+nonportable names, and declared bounds. Empty directories count against the
+traversal bound. File bytes are read into bounded buffers before signing;
+detected concurrent changes fail. Freeze build output before packaging: this
+tool does not supply a transaction across concurrently changing input files.
+Packing holds the selected bundle, signing-key, and output-parent descriptors;
+renaming/replacing their pathnames does not change those selections. A signing
+key inode moved into the input during traversal is rejected before its bytes
+are read into the bundle.
+The completed archive passes the shared verifier before publication. Signing
+keys and outputs cannot sit inside their own input bundle, including through
+macOS case aliases.
+
+Every CLI result is one JSON record on stdout: `{ "ok": true, "result": ... }`
+or `{ "ok": false, "error": { "code": ..., "message": ... } }`. Exit codes are
+`0` success, `2` invalid arguments, `3` rejected content/key/compatibility, and `4`
+filesystem/output failure. `inspect` always reports `untrusted-claims-only`;
+it does not authenticate signatures or payloads. `validate` reports
+`verified-against-explicit-publisher-file`, never installed or activated.
+
+The integration tests exercise the real binary, deterministic packing, explicit
+trust, tampering, key privacy, nonreplacement, link/special-file handling,
+bounds, and generation of a manifest without executing bundled code. Run them
+with `cargo test -p chariox-app-package`; no Node build or App execution occurs.
+
 ## Archive encoding
 
 A `.cxapp` is an **uncompressed USTAR archive**. There is no ZIP, gzip, PAX,
