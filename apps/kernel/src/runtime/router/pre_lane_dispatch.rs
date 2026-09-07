@@ -43,7 +43,8 @@ impl CommandRouter {
                 | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
                 | LocalDaemonRequest::CancelBrowserImport(_)
         ) {
-            return self.runtime_state
+            return self
+                .runtime_state
                 .execute_browser_import_consent(command, request)
                 .await
                 .map(Some);

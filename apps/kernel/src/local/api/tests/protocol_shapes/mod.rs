@@ -5,8 +5,8 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
-mod core;
 mod browser_import;
+mod core;
 mod credential_enrollment;
 mod event_publication;
 mod managed_context;
