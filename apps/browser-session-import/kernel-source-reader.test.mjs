@@ -40,6 +40,29 @@ test('kernel claim and current authorization guard the real cookie reader', asyn
   assert.equal(requests.at(-1).AuthorizeBrowserImportSource.request_id,requestId);
 });
 
+test('the reader owns one transport signal and releases it on success or failure', async () => {
+  for (const fail of [false,true]) {
+    const {options} = fixture();
+    const caller = new AbortController();
+    options.signal = caller.signal;
+    const send = options.request;
+    const signals = [];
+    options.request = (payload,transport) => {
+      signals.push(transport.signal);
+      assert.equal(transport.signal.aborted,false);
+      if (fail) throw new Error('private-marker');
+      return send(payload);
+    };
+    const pending = readKernelApprovedChromeCookies(options);
+    if (fail) await assert.rejects(pending,{code:'cookie_source_unavailable'});
+    else await pending;
+    assert.ok(signals.length > 0);
+    assert.equal(new Set(signals).size,1);
+    assert.equal(signals[0].aborted,true);
+    assert.equal(caller.signal.aborted,false);
+  }
+});
+
 test('late claim replies cannot issue more requests after timeout or cancellation', async () => {
   for (const mode of ['timeout','cancel']) {
     const {options,reads} = fixture();
