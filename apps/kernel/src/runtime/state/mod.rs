@@ -88,6 +88,7 @@ struct KernelRuntimeOwnedState {
     slice_store: crate::slice::SliceStore,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
+    browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
     browser_controller_generations:
@@ -522,6 +523,8 @@ impl KernelRuntimeState {
                 slice_store,
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
+                browser_import_admission:
+                    crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),

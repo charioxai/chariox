@@ -199,6 +199,29 @@ Chrome versions that supply an ID but cannot identify their default are unsuppor
 for that case. A real-controller fixture covers persistent-profile import and
 stale generation/document rejection; the existing fixtures cover explicit contexts.
 
+The kernel now owns an internal `BrowserImportAdmission` ledger. It binds a
+random one-use request to the initiating user, source attachment/store, exact
+Room/Environment, generation, Tab/document revision, domain/partition selection,
+and overwrite choice. Approval, claim and active authorization compare that
+immutable binding. Requests expire after two minutes. Concurrent claims have
+one winner; cancellation revokes authorization without freeing an active
+Environment slot until the trusted executor reports verification or recovery.
+The ledger holds at most 128 bounded metadata records and never stores cookies.
+Unclaimed expired entries are reclaimed; active or cancelled writers remain
+reserved until completion. A fresh kernel rejects old request IDs.
+
+This ledger is not an authentication mechanism or a complete consent flow. Its
+internal callers must supply identities from authenticated transports and scope
+from trusted kernel state, never from a cookie payload or a sender's approval
+boolean. There is no public request handler yet, no source-connector pairing,
+and no cookie application authorized by these methods in the product. The
+shared protocol must be versioned when handlers are added. Before exposing
+them, implement authenticated-human prepare/approve/cancel requests and a
+connector-bound claim path, and test those paths through kernel IPC. The ledger
+alone does not quarantine a controller after process death, stop page/network
+writers, validate DNS cookie semantics, or provide durable recovery. Those
+remain requirements of the Environment executor.
+
 The bridge is not yet called by a kernel request or installed in the slice image.
 It does not implement kernel consent, writer quiescence or recovery. No new
 controller command or shared protocol shape is exposed by this step. Run its
