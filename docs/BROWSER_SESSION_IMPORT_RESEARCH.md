@@ -201,6 +201,14 @@ This does not persist or enroll a paired identity, issue its scoped token, or wi
 the product connector. Those consumers and the destination transaction remain
 required before a real sign-in import can run.
 
+Protocol 317 binds encrypted import responses to the exact request nonce as well
+as the paired kernel key. The connector decoder rejects old bare responses and
+replies copied from a different attempt, including retries of the same command.
+A fixture composes that decoder with the grant-aware source reader and proves a
+replayed pre-read authorization cannot release a cookie batch after its query.
+This is request/response component validation, not a live socket, token issuer,
+extension enrollment or real-account acceptance test.
+
 The CDP destination adapter now bounds discovery and each store operation to at
 most five seconds. A timeout or transport error invalidates that store. A possible
 mutation reports recovery required, even when its acknowledgement arrives later.

@@ -1,5 +1,5 @@
-export const browserImportConsentMinimumProtocolVersion = 316
-export const browserImportSourceMinimumProtocolVersion = 316
+export const browserImportConsentMinimumProtocolVersion = 317
+export const browserImportSourceMinimumProtocolVersion = 317
 
 export type BrowserImportSelection = {
   session_id: string

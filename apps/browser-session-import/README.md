@@ -151,6 +151,13 @@ the third argument to `decryptRelayPayload`; never take that expected key from
 the received envelope. Ordinary requests can retain the two-argument ephemeral
 behavior. These APIs do not implement enrollment, persistence or transport.
 
+Protocol 317 additionally binds import replies to the nonce of the exact encrypted
+request attempt. `decryptBrowserImportResponse` in `relay-response.mjs` pins the
+trusted kernel key, verifies the encrypted `request_nonce` and unwraps `response`.
+The outer relay request ID is not authenticated and cannot replace this check.
+Retries must use fresh encryption nonces. Missing bindings and old bare responses
+fail closed. This decoder does not open a socket, pair a client or grant access.
+
 This fixture tests encrypted component composition, not delivery through a live
 relay, authenticated kernel pairing or destination admission. Its recipient key,
 consent callback and independent destination scope are controlled test inputs.

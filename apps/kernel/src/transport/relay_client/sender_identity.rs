@@ -9,20 +9,24 @@ use super::request_errors::relay_error;
 
 /// Import consent must prove possession of the initiating client's paired key.
 /// Ordinary browser requests retain their existing ephemeral-key behavior.
-pub(super) fn validate_browser_import_sender(
-    request: &crate::local::LocalDaemonRequest,
-    caller_identity: Option<&RelayCallerIdentity>,
-    encrypted_request: &EncryptedRelayPayload,
-) -> Result<(), RelayError> {
+pub(super) fn is_browser_import_request(request: &crate::local::LocalDaemonRequest) -> bool {
     use crate::local::LocalDaemonRequest;
-    if !matches!(
+    matches!(
         request,
         LocalDaemonRequest::PrepareBrowserImport(_)
             | LocalDaemonRequest::ApproveBrowserImport(_)
             | LocalDaemonRequest::ClaimBrowserImportSource(_)
             | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
             | LocalDaemonRequest::CancelBrowserImport(_)
-    ) {
+    )
+}
+
+pub(super) fn validate_browser_import_sender(
+    request: &crate::local::LocalDaemonRequest,
+    caller_identity: Option<&RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<(), RelayError> {
+    if !is_browser_import_request(request) {
         return Ok(());
     }
     let identity = caller_identity

@@ -1015,6 +1015,17 @@ retain their existing ephemeral-key behavior. Import connectors must use their
 paired key throughout consent and source reads and require protocol 316; general
 Web/TUI and peer minimums are unchanged.
 
+Protocol v317 wraps the encrypted response to each of those five import requests
+as `{request_nonce, response}`. The nonce is copied from the authenticated request
+envelope, not its outer relay request ID or reusable command ID. Import clients
+must pin the kernel sender key and compare this nonce with the exact request
+attempt before accepting its response. A retry uses a fresh encryption nonce and
+cannot accept an earlier attempt's response, even when its command ID is reused.
+This prevents a relay from replaying or swapping old consent replies under new
+outer request IDs when the client retains its paired key. Pre-317 unbound replies
+must be rejected. Import clients require 317; ordinary relay replies, local IPC
+response shapes, general Web/TUI minimums and relay peer version are unchanged.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.

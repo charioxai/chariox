@@ -14,12 +14,14 @@ use crate::runtime_transport::command_cache::{
     request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
 };
 use crate::transport::kernel_protocol::{
-    map_kernel_error, KernelOutgoingFrame, KernelTransportError,
+    map_kernel_error, BrowserImportRelayResponse, KernelOutgoingFrame, KernelTransportError,
 };
 use crate::transport::relay_crypto;
 
 use super::request_errors::{relay_error, relay_request_kind};
-use super::sender_identity::{validate_bound_service_sender, validate_browser_import_sender};
+use super::sender_identity::{
+    is_browser_import_request, validate_bound_service_sender, validate_browser_import_sender,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
@@ -88,6 +90,7 @@ pub(super) async fn handle_daemon_request(
         };
     }
     let request_kind = relay_request_kind(&request);
+    let bind_import_response = is_browser_import_request(&request);
     let quiet_success_request =
         crate::runtime::command_latency::is_quiet_success_command_type(request_kind);
     if !quiet_success_request {
@@ -120,7 +123,15 @@ pub(super) async fn handle_daemon_request(
                     }),
                 );
             }
-            let plaintext = match serde_json::to_vec(&response) {
+            let serialized = if bind_import_response {
+                serde_json::to_vec(&BrowserImportRelayResponse {
+                    request_nonce: encrypted_request.nonce.clone(),
+                    response,
+                })
+            } else {
+                serde_json::to_vec(&response)
+            };
+            let plaintext = match serialized {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return RelayRequestOutcome {
