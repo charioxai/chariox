@@ -1,0 +1,79 @@
+name: Chromium sandbox and profile persistence fixture
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/kernel/slice-linux-docker/**'
+      - 'scripts/chromium-profile-drill/**'
+      - '.github/workflows/chromium-profile-drill.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chromium-profile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chromium-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify fixture inputs and local HTTP semantics
+        run: node --test --test-concurrency=1 scripts/chromium-profile-drill/contract.test.mjs
+      - name: Prepare isolated context and evidence directory
+        id: fixture
+        env:
+          EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/chromium-profile-drill/prepare.mjs
+      - uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker-container
+          driver-opts: |
+            memory=2g
+            memory-swap=2g
+            cpu-quota=200000
+            cpu-period=100000
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 1
+      - name: Build the minimal production-launcher fixture image
+        timeout-minutes: 12
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ steps.fixture.outputs.context }}
+          load: true
+          push: false
+          tags: ${{ steps.fixture.outputs.image }}
+          build-args: CHARIOX_DRILL_ID=${{ steps.fixture.outputs.id }}
+      - name: Run the sandboxed browser and stopped-profile restore drill
+        timeout-minutes: 8
+        env:
+          FIXTURE_SCRATCH: ${{ steps.fixture.outputs.scratch }}
+        run: node scripts/chromium-profile-drill/drill.mjs run "$FIXTURE_SCRATCH"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.fixture.outputs.evidence != ''
+        with:
+          name: chromium-profile-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.fixture.outputs.evidence }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove owned fixture resources and scratch
+        if: always() && steps.fixture.outputs.scratch != ''
+        env:
+          FIXTURE_SCRATCH: ${{ steps.fixture.outputs.scratch }}
+        run: |
+          node scripts/chromium-profile-drill/drill.mjs cleanup "$FIXTURE_SCRATCH"
+          runner_temp="$(realpath -e -- "$RUNNER_TEMP")"
+          case "$FIXTURE_SCRATCH" in
+            "$runner_temp"/chariox-chromium.*) rm -rf -- "$FIXTURE_SCRATCH" ;;
+            *) echo 'Refusing unexpected fixture scratch path.' >&2; exit 1 ;;
+          esac
