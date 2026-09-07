@@ -568,6 +568,47 @@ The managed-machine drill must prove:
 12. The entire drill can tear down the slice and managed machine without
     residue in Cloud, OpenShip, the relay registry, or the host.
 
+#### Git credentials and Git-optional execution
+
+Git credentials, a Git repository and a usable workspace are separate choices.
+An Empty workspace must support agents, headed slices, Browser/Computer tasks,
+ordinary file operations and artifact export without initializing Git or granting
+source-control access. Missing Git credentials may block an authenticated Git
+operation, but must not block unrelated work. Existing Git metadata that is
+corrupt or inaccessible must produce its actual error, not silently fall back to
+an Empty workspace.
+
+When the user selects Git credentials from an authorized source kernel, deliver
+them through Chariox's existing managed-context path. Do not require manual token
+copying, put credentials in prompts or artifacts, or introduce a Cloud runtime
+proxy. Provider CLI authentication is distinct from Git authentication. Preserve
+the source account, restrict destination access to the authorized scope, and
+verify rollback and cleanup. No unattended launch may wait for a macOS Keychain
+dialog. An unavailable source must be reported before claiming delivery worked.
+
+Required acceptance, initially local and then on a managed machine through the
+Web terminal, with local and remote TUI observations of the same kernel state:
+
+| Case | Required result |
+| --- | --- |
+| Empty workspace, no Git credential grant | Agent and headed slice start; files can be created, read, listed and exported; no `.git` is created |
+| Repository present, no Git credentials | Local edits and commits remain usable when configured; authenticated push reports missing access without losing the work |
+| Explicit Git credential selection with Empty workspace | Credential delivery works independently of repository copying and kernel-context copying |
+| Authorized repository access | Read and push a disposable branch through the delivered credentials; inspect the remote commit through the repository host; remove only the drill branch afterwards |
+| Missing, expired or revoked credentials | Fixed, actionable failure without token output, retry loops, OS dialogs or fallback to another account |
+| Wrong user, source, destination or replayed materialization | Reject the transfer; preserve the source and unrelated destination credentials |
+| Provisioning fails or the managed context is removed | Roll back only the credentials owned by that context and preserve pre-existing accounts |
+| Git-free transcript file link, click and Enter | Open the file produced by the originating agent even when another pane has focus; no Git initialization or browser navigation to a local filesystem URL |
+| Traversal, external symlink, special file or oversized content | Kernel containment and bounded file responses still apply to both plain folders and repositories |
+| Target changes, disconnects or another file opens during a read | A stale response cannot display the previous agent's file as the newly selected file; reconnect offers a bounded retry |
+| Save/restart and managed-machine recovery | Workspace files and the documented credential lifecycle survive or require explicit re-enrollment; never silently use a different account |
+
+Evidence must distinguish synthetic credential-package tests from an actual
+authorized managed-host push. Similarly, a kernel file-listing test does not
+prove Web transcript activation or a complete remote artifact handoff. Record
+the deployed source revision, terminal paths exercised, resource samples and
+cleanup results. Never retain credential values in that evidence.
+
 ### Milestone 10: public benchmarks and score-driven optimization
 
 This milestone starts only after Milestone 9 and every local and remote
@@ -911,6 +952,7 @@ and persistence paths. Every milestone must select and run the relevant rows.
 | Workflows | browser tools block scheduler or relay readers | concurrent workflow and browser task with cancel/retry |
 | Workflow endpoints | managed-machine work changes routing | connected ingress and deployment invocation drill |
 | Workspace Live Sync | downloads/uploads and slice files collide with sync | managed, tracked, cross-branch, conflict, and permission drills |
+| Git credentials and ordinary files | source-control requirements block Git-free tasks or reveal another agent's files | credential selection independent of workspace copying, scoped push, Git-free file links, containment, stale-response and cleanup drills |
 | Managed remote kernels | headed slices affect heartbeat and admission | provision, restart, stale heartbeat, resource cap, teardown |
 | Slice lifecycle | streamer/controller leave orphan state | create, start, stop, save, restart, reset, backup, delete |
 | Multi-user collaboration | shared browser leaks across tenants | two-user same Room and cross-Room isolation |
@@ -1071,6 +1113,8 @@ CHA-16 is complete only when:
 - vault-backed public-service work passes leak scans
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
+- authorized Git credentials work through managed-context delivery, while
+  Git-free agents, slices, file browsing and artifact handoff work without them
 - Chariox has a verified first-place public result on every relevant maintained
   browser-use and computer-use benchmark, with all inclusions and exclusions
   recorded
