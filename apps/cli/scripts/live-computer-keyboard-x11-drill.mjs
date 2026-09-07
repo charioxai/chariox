@@ -7,6 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { verifyChromiumRendererSandbox } from "./lib/chromium-renderer-sandbox.mjs"
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")
 const screen = path.join(repo, "apps/kernel/slice-linux-docker/docker/slice-screen.sh")
@@ -91,7 +92,7 @@ try {
   report.keyboardSha256 = createHash("sha256").update(await readFile(path.join(path.dirname(screen), "slice-keyboard.py"))).digest("hex")
   report.imageId = (await docker(["image", "inspect", "--format", "{{.Id}}", image])).trim()
   await resources("before")
-  await docker(["run", "-d", "--rm", "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--entrypoint", "/bin/sleep", image, "infinity"])
+  await docker(["run", "-d", "--rm", "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--security-opt", `seccomp=${path.join(repo, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`, "--entrypoint", "/bin/sleep", image, "infinity"])
   await docker(["exec", "-u", "root", container, "mkdir", "-p", root])
   await docker(["cp", screen, `${container}:${root}/slice-screen.sh`])
   await docker(["cp", path.join(path.dirname(screen), "slice-keyboard.py"), `${container}:${root}/slice-keyboard.py`])
@@ -99,7 +100,7 @@ try {
   await exec(["node", "-e", "const fs=require('node:fs');let data='';process.stdin.on('data',c=>data+=c);process.stdin.on('end',()=>fs.writeFileSync(process.argv[1],data));", `${root}/fixture.html`], '<!doctype html><input id="input" type="password" autofocus><textarea id="multiline"></textarea><script>window.busy=false;setInterval(()=>{if(!busy)return;const end=performance.now()+120;while(performance.now()<end){}},160)</script>')
   await docker(["exec", "-d", "-u", "slice", container, "Xvfb", ":99", "-screen", "0", "1280x800x24", "-ac", "+extension", "XTEST"])
   await pause(500)
-  await docker(["exec", "-d", "-u", "slice", "-e", "DISPLAY=:99", container, "chromium", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", `--user-data-dir=${profile}`, "--remote-debugging-port=9222", `file://${root}/fixture.html`])
+  await docker(["exec", "-d", "-u", "slice", "-e", "DISPLAY=:99", container, "chromium", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", `--user-data-dir=${profile}`, "--remote-debugging-port=9222", `file://${root}/fixture.html`])
   let ready = false
   for (let attempt = 0; attempt < 60 && !ready; attempt++) {
     if (interrupted) throw new Error("drill interrupted")
@@ -107,6 +108,7 @@ try {
     if (!ready) await pause(250)
   }
   assert.ok(ready, "keyboard fixture ready")
+  report.browserSandbox = await verifyChromiumRendererSandbox(args => exec(args))
   report.containerStats = (await docker(["stats", "--no-stream", "--format", "{{json .}}", container])).trim()
   report.versions = (await exec(["bash", "-lc", "chromium --version; xdotool version"])).trim()
   for (const separator of ["\n", "\r"]) {
