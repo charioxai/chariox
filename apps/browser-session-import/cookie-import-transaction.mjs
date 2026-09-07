@@ -1,25 +1,57 @@
 import {prepareChromeCookieBatch} from './chrome-cookie-batch.mjs';
 
-export async function createCdpCookieStore({browserCdp, pageCdp}) {
-  const {targetInfo:target} = await pageCdp.send('Target.getTargetInfo');
-  const context = target.browserContextId ? {browserContextId:target.browserContextId} : {};
-  const check = async () => {
-    const {targetInfo:current} = await browserCdp.send('Target.getTargetInfo', {targetId:target.targetId});
+export async function createCdpCookieStore({browserCdp, pageCdp, timeoutMs = 5000}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) fail('cookie_import_invalid_timeout');
+  let unavailable = false;
+  let mutationPossible = false;
+  const execute = async operation => {
+    if (unavailable) fail('cookie_import_cdp_unavailable', mutationPossible);
+    const deadline = performance.now() + timeoutMs;
+    const send = async (session, method, params, mutates = false) => {
+      if (unavailable) fail('cookie_import_cdp_unavailable', mutationPossible);
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        unavailable = true;
+        fail('cookie_import_cdp_timeout', mutationPossible);
+      }
+      let timer;
+      try {
+        mutationPossible ||= mutates;
+        return await Promise.race([
+          Promise.resolve().then(() => session.send(method, params)),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new CookieImportError('cookie_import_cdp_timeout', mutationPossible)), remaining);
+          }),
+        ]);
+      } catch (error) {
+        unavailable = true;
+        fail(error instanceof CookieImportError ? error.code : 'cookie_import_cdp_failed', mutationPossible);
+      } finally { clearTimeout(timer); }
+    };
+    return operation(send);
+  };
+  let target;
+  const check = async send => {
+    const {targetInfo:current} = await send(browserCdp, 'Target.getTargetInfo', {targetId:target.targetId});
     if (current.targetId !== target.targetId || current.browserContextId !== target.browserContextId) {
       fail('cookie_import_target_changed');
     }
   };
-  await check();
+  await execute(async send => {
+    ({targetInfo:target} = await send(pageCdp, 'Target.getTargetInfo'));
+    await check(send);
+  });
+  const context = target.browserContextId ? {browserContextId:target.browserContextId} : {};
   return {
-    read:async () => {await check(); return (await browserCdp.send('Storage.getCookies',context)).cookies;},
-    write:async cookies => {await check(); await browserCdp.send('Storage.setCookies',{...context,cookies});},
-    remove:async cookies => {
-      await check();
+    read:() => execute(async send => {await check(send); return (await send(browserCdp, 'Storage.getCookies',context)).cookies;}),
+    write:cookies => execute(async send => {await check(send); await send(browserCdp, 'Storage.setCookies',{...context,cookies},true);}),
+    remove:cookies => execute(async send => {
+      await check(send);
       for (const {name,domain,path,partitionKey} of cookies) {
-        await pageCdp.send('Network.deleteCookies',{name,domain,path,
-          ...(partitionKey === undefined ? {} : {partitionKey})});
+        await send(pageCdp, 'Network.deleteCookies',{name,domain,path,
+          ...(partitionKey === undefined ? {} : {partitionKey})},true);
       }
-    },
+    }),
   };
 }
 
@@ -53,7 +85,7 @@ export async function applyCookieImport({source, scope, store, runExclusive, aut
       }
       await check();
     } catch (error) {
-      let recoveryRequired = !(error instanceof CookieImportError);
+      let recoveryRequired = !(error instanceof CookieImportError) || error.recoveryRequired;
       try {
         await store.remove(batch.cookies.map(c => ({...c, domain:c.domain ?? new URL(c.url).hostname})));
         if (replaced.length) await store.write(replaced.map(restoreParams));

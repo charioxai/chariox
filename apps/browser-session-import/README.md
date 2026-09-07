@@ -151,9 +151,21 @@ Environment operation and `authorize()` bound to that exact user, destination,
 generation, request and overwrite consent. It must stop page/network cookie
 writers as well as competing Chariox actions while the snapshot is in use.
 The injected functions in tests are not implemented kernel exclusion or consent.
-The store/CDP transport must enforce bounded command timeouts. Cancellation
-waits for a pending write to settle before attempting cleanup; it must not release
-the Environment while an acknowledged mutation is still pending.
+`createCdpCookieStore` bounds discovery and each read/write/remove operation to
+five seconds by default. `timeoutMs` may lower that limit but cannot disable or
+increase it. All commands in one operation share its deadline, including an
+entire deletion batch. Transport failure or timeout makes that store unusable;
+it issues no more CDP commands even if the abandoned command later replies.
+Errors are fixed codes, with no original browser error or cookie payload.
+
+Cancellation waits for an in-flight write to settle or reach its bounded timeout.
+CDP cannot retract a command already sent. If a mutation might have reached the
+browser, a timeout reports `recoveryRequired: true` and does not attempt rollback
+through that uncertain connection. The caller must keep the Environment
+quarantined and recover using a verified fresh connection. It must close its
+owned CDP sessions to discard pending transport requests. The adapter does not
+close caller-owned sessions or claim that a late write was cancelled. Injected
+non-CDP stores must provide equivalent bounded behavior.
 
 Any transport/write exception sets `recoveryRequired: true`, even if the cleanup
 read looks correct, because a lost acknowledgement can hide a late mutation.
@@ -168,6 +180,7 @@ Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
 for ten destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
 `cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
 sign-in, cancellation rollback and an untouched partitioned control cookie.
+`cookie-import-cdp.test.mjs` covers six deadline and uncertain-transport cases.
 
 Implement the MV3 connector and source-profile/site selection, kernel-owned
 consent and destination authorization, encrypted transport, bounded decoding,
