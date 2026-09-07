@@ -43,6 +43,9 @@ COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
+COPY packages/app-package packages/app-package
+COPY packages/app-runtime packages/app-runtime
+COPY packages/app-sdk packages/app-sdk
 COPY packages/event-protocol packages/event-protocol
 RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"

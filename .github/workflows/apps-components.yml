@@ -1,0 +1,48 @@
+name: App components
+
+on:
+  pull_request:
+    paths:
+      - 'packages/app-package/**'
+      - 'packages/app-runtime/**'
+      - 'packages/app-sdk/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/apps-components.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-components-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: App contracts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUST_TEST_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test package, persistence and Rust/Node wire contract
+        run: cargo test --locked -p chariox-app-package -p chariox-app-runtime -- --test-threads=1
+      - name: Test Node SDK
+        run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
+      # Component checks do not certify a signed worker or an OS sandbox. Those
+      # remain separate Phase 1 artifact and hostile-package release gates.

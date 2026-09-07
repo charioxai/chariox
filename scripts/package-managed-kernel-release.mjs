@@ -30,6 +30,9 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "apps/relay",
   "examples/workflow-code",
   "packages/aegs-sdk",
+  "packages/app-package",
+  "packages/app-runtime",
+  "packages/app-sdk",
   "packages/event-protocol",
 ]
 

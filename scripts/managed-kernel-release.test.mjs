@@ -199,6 +199,9 @@ async function makeFixture(root, variant = "") {
     ["deploy/managed-kernel/chariox-slice-broker.service", await readFile(sliceBrokerService)],
     ["examples/workflow-code/example.md", "workflow fixture\n"],
     ["packages/aegs-sdk/Cargo.toml", "[package]\nname = \"sdk-fixture\"\n"],
+    ["packages/app-package/Cargo.toml", "[package]\nname = \"app-package-fixture\"\n"],
+    ["packages/app-runtime/Cargo.toml", "[package]\nname = \"app-runtime-fixture\"\n"],
+    ["packages/app-sdk/package.json", '{"name":"@chariox/app-sdk"}\n'],
     ["packages/event-protocol/Cargo.toml", "[package]\nname = \"event-fixture\"\n"],
   ])
   if (variant) sourceFiles.set("release-variant.txt", `${variant}\n`)
@@ -323,6 +326,9 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/src/transport/relay_peer.rs",
     "usr/lib/chariox/slice-build-context/apps/relay/Cargo.toml",
     "usr/lib/chariox/slice-build-context/packages/event-protocol/Cargo.toml",
+    "usr/lib/chariox/slice-build-context/packages/app-package/Cargo.toml",
+    "usr/lib/chariox/slice-build-context/packages/app-runtime/Cargo.toml",
+    "usr/lib/chariox/slice-build-context/packages/app-sdk/package.json",
     "usr/local/bin/chariox-kernel",
     "usr/local/bin/chariox-managed-bootstrap",
   ]) {
