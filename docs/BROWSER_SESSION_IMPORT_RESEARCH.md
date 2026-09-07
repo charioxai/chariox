@@ -1,6 +1,6 @@
 # Optional Chrome session import
 
-Status: cookie conversion implemented and fixture-tested; product import not implemented.
+Status: cookie conversion and source reader implemented and fixture-tested; product import not implemented.
 Updated: 2026-09-07.
 
 ## User request
@@ -162,6 +162,13 @@ asserts both unsafe Chromium flags are absent. The test constructs source API
 records; it does not prove extension permissions or real-service portability.
 See its README for supported fields and limits. The connector, kernel consent,
 encrypted transport and transactional destination application remain unimplemented.
+
+The source reader now has ten focused API-boundary tests and a real MV3 fixture
+test using a disposable Chrome for Testing profile. It reads HttpOnly and
+partitioned fixture cookies through `chrome.cookies`, rejects denied access and
+incognito/store mismatches, and discards results after cancellation or revocation.
+The fixture injects authorization and grants only its test host. It does not
+implement kernel pairing, real consent UI or transfer into an Environment.
 
 The repository saves browser home state and has a live Docker browser state
 drill. Local validation now includes persistent and session cookies plus browser
