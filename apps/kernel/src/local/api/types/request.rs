@@ -29,6 +29,8 @@ pub enum LocalDaemonRequest {
     GetRoomEnvironmentState(GetRoomEnvironmentStateRequest),
     PrepareBrowserImport(PrepareBrowserImportRequest),
     ApproveBrowserImport(ApproveBrowserImportRequest),
+    ClaimBrowserImportSource(BrowserImportSourceRequest),
+    AuthorizeBrowserImportSource(BrowserImportSourceRequest),
     CancelBrowserImport(CancelBrowserImportRequest),
     GetRoomEnvironmentSlice(GetRoomEnvironmentSliceRequest),
     BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest),

@@ -102,6 +102,13 @@ async fn consent_round_trip() {
         "only one pending import per Environment"
     );
     let approve = json!({"ApproveBrowserImport": {"request_id": id, "selection": selection}});
+    let claim = json!({"ClaimBrowserImportSource": {"request_id": id, "selection": selection}});
+    let authorize =
+        json!({"AuthorizeBrowserImportSource": {"request_id": id, "selection": selection}});
+    assert!(
+        dispatch(&router, &caller, claim.clone()).await.is_err(),
+        "source read requires approval"
+    );
     let mut rotated = caller.clone();
     rotated.public_key_thumbprint = Some("replacement-key".into());
     assert!(dispatch(&router, &rotated, approve.clone()).await.is_err());
@@ -148,15 +155,81 @@ async fn consent_round_trip() {
         dispatch(&router, &caller, approve).await.is_err(),
         "approval cannot replay"
     );
+    assert!(
+        dispatch(&router, &caller, authorize.clone()).await.is_err(),
+        "approval alone is not a claimed source read"
+    );
+    assert_eq!(
+        dispatch(&router, &caller, claim.clone()).await.unwrap()["BrowserImportConsent"]["status"],
+        "source_claimed"
+    );
+    assert!(
+        dispatch(&router, &caller, claim).await.is_err(),
+        "source claim cannot replay"
+    );
+    assert_eq!(
+        dispatch(&router, &caller, authorize.clone()).await.unwrap()["BrowserImportConsent"]
+            ["status"],
+        "source_authorized"
+    );
+    assert!(
+        dispatch(&router, &rotated, authorize.clone())
+            .await
+            .is_err(),
+        "realm changes invalidate an active source read"
+    );
+    for (field, value) in [
+        ("source_store_id", json!("other-store")),
+        ("domains", json!(["other.example"])),
+        ("partition_sites", json!(["https://other.example"])),
+        ("overwrite", json!(true)),
+        ("runtime_generation", json!(99)),
+        ("document_revision", json!(99)),
+    ] {
+        let mut changed = authorize.clone();
+        changed["AuthorizeBrowserImportSource"]["selection"][field] = value;
+        assert!(
+            dispatch(&router, &caller, changed).await.is_err(),
+            "active source read rejects changed {field}"
+        );
+    }
+    let mut denied_caller = caller.clone();
+    denied_caller.public_key_thumbprint = Some("replacement-key".into());
+    assert!(dispatch(&router, &denied_caller, authorize.clone())
+        .await
+        .is_err());
+    denied_caller = caller.clone();
+    denied_caller.caller_kind = KernelCallerKind::Metaagent;
+    assert!(dispatch(&router, &denied_caller, authorize.clone())
+        .await
+        .is_err());
     let cancel = json!({"CancelBrowserImport": {"session_id": session.id(), "attachment_id": attachment.id(), "request_id": id}});
     assert_eq!(
         dispatch(&router, &caller, cancel).await.unwrap()["BrowserImportConsent"]["status"],
         "cancelled"
     );
+    assert!(
+        dispatch(&router, &caller, authorize).await.is_err(),
+        "cancelled source read must discard its result"
+    );
     let response = dispatch(&router, &caller, prepare).await.unwrap();
     let next_id = response["BrowserImportConsent"]["request_id"]
         .as_str()
         .unwrap();
+    dispatch(
+        &router,
+        &caller,
+        json!({"ApproveBrowserImport": {"request_id": next_id, "selection": selection}}),
+    )
+    .await
+    .unwrap();
+    dispatch(
+        &router,
+        &caller,
+        json!({"ClaimBrowserImportSource": {"request_id": next_id, "selection": selection}}),
+    )
+    .await
+    .unwrap();
     state
         .reconcile_room_environment_controller_tabs(
             session.id(),
@@ -173,11 +246,11 @@ async fn consent_round_trip() {
         dispatch(
             &router,
             &caller,
-            json!({"ApproveBrowserImport": {"request_id": next_id, "selection": selection}})
+            json!({"AuthorizeBrowserImportSource": {"request_id": next_id, "selection": selection}})
         )
         .await
         .is_err(),
-        "navigation invalidates consent"
+        "navigation invalidates an active source read"
     );
     let cancel = json!({"CancelBrowserImport": {"session_id": session.id(), "attachment_id": attachment.id(), "request_id": next_id}});
     assert!(

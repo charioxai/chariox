@@ -82,6 +82,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.selection.session_id)
                 .attachment(&request.selection.attachment_id)
         }
+        LocalDaemonRequest::ClaimBrowserImportSource(request) => {
+            LocalRequestMetadata::new("browser.import.source.claim", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::AuthorizeBrowserImportSource(request) => {
+            LocalRequestMetadata::new("browser.import.source.authorize", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
         LocalDaemonRequest::CancelBrowserImport(request) => {
             LocalRequestMetadata::new("browser.import.cancel", Interactive)
                 .session(&request.session_id)
@@ -484,6 +494,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::PrepareBrowserImport(_) => "browser.import.prepare",
         LocalDaemonRequest::ApproveBrowserImport(_) => "browser.import.approve",
+        LocalDaemonRequest::ClaimBrowserImportSource(_) => "browser.import.source.claim",
+        LocalDaemonRequest::AuthorizeBrowserImportSource(_) => "browser.import.source.authorize",
         LocalDaemonRequest::CancelBrowserImport(_) => "browser.import.cancel",
         LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",

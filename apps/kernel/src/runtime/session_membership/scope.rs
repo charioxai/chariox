@@ -21,6 +21,10 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
+        LocalDaemonRequest::ClaimBrowserImportSource(request)
+        | LocalDaemonRequest::AuthorizeBrowserImportSource(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
         LocalDaemonRequest::ApproveBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),

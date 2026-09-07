@@ -1,4 +1,5 @@
 export const browserImportConsentMinimumProtocolVersion = 313
+export const browserImportSourceMinimumProtocolVersion = 314
 
 export type BrowserImportSelection = {
   session_id: string
@@ -14,7 +15,7 @@ export type BrowserImportSelection = {
 }
 
 export type BrowserImportConsentResponse = {
-  BrowserImportConsent: { request_id: string; status: "prepared" | "approved" | "cancelled" }
+  BrowserImportConsent: { request_id: string; status: "prepared" | "approved" | "cancelled" | "source_claimed" | "source_authorized" }
 }
 
 // Never spread an input object here: a source adapter may also hold cookie values.
@@ -43,4 +44,12 @@ export function approveBrowserImportRequest(requestId: string, selection: Browse
 
 export function cancelBrowserImportRequest(sessionId: string, attachmentId: string, requestId: string) {
   return { CancelBrowserImport: { session_id: sessionId, attachment_id: attachmentId, request_id: requestId } }
+}
+
+export function claimBrowserImportSourceRequest(requestId: string, selection: BrowserImportSelection) {
+  return { ClaimBrowserImportSource: { request_id: requestId, selection: consentMetadata(selection) } }
+}
+
+export function authorizeBrowserImportSourceRequest(requestId: string, selection: BrowserImportSelection) {
+  return { AuthorizeBrowserImportSource: { request_id: requestId, selection: consentMetadata(selection) } }
 }

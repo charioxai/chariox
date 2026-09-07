@@ -58,6 +58,7 @@ pub(crate) enum ImportAdmissionError {
 enum Phase {
     Pending,
     Approved,
+    Reading,
     Applying,
     Cancelled,
 }
@@ -134,8 +135,8 @@ impl BrowserImportAdmission {
         Ok(())
     }
 
-    /// Claim once before any destination write, within the Environment operation.
-    pub(crate) fn claim(
+    /// Claim once before any source cookie read. This phase owns no destination writer.
+    pub(crate) fn claim_source(
         &self,
         id: &ImportRequestId,
         current: &ImportBinding,
@@ -148,6 +149,44 @@ impl BrowserImportAdmission {
         let entry = entries.get_mut(id).ok_or(ImportAdmissionError::Denied)?;
         check(entry, current, now)?;
         if entry.phase != Phase::Approved {
+            return Err(ImportAdmissionError::Denied);
+        }
+        entry.phase = Phase::Reading;
+        Ok(())
+    }
+
+    pub(crate) fn authorize_source(
+        &self,
+        id: &ImportRequestId,
+        current: &ImportBinding,
+        now: Instant,
+    ) -> Result<(), ImportAdmissionError> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| ImportAdmissionError::Denied)?;
+        let entry = entries.get(id).ok_or(ImportAdmissionError::Denied)?;
+        check(entry, current, now)?;
+        if entry.phase != Phase::Reading {
+            return Err(ImportAdmissionError::Denied);
+        }
+        Ok(())
+    }
+
+    /// Trusted destination execution only, after source claim and within the Environment operation.
+    pub(crate) fn claim(
+        &self,
+        id: &ImportRequestId,
+        current: &ImportBinding,
+        now: Instant,
+    ) -> Result<(), ImportAdmissionError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| ImportAdmissionError::Denied)?;
+        let entry = entries.get_mut(id).ok_or(ImportAdmissionError::Denied)?;
+        check(entry, current, now)?;
+        if entry.phase != Phase::Reading {
             return Err(ImportAdmissionError::Denied);
         }
         entry.phase = Phase::Applying;
@@ -282,7 +321,16 @@ mod tests {
             Err(ImportAdmissionError::Denied)
         );
         store.approve(&id, &scope, now).unwrap();
+        assert_eq!(
+            store.claim(&id, &scope, now),
+            Err(ImportAdmissionError::Denied)
+        );
+        store.claim_source(&id, &scope, now).unwrap();
         store.claim(&id, &scope, now).unwrap();
+        assert_eq!(
+            store.authorize_source(&id, &scope, now),
+            Err(ImportAdmissionError::Denied)
+        );
         assert_eq!(
             store.claim(&id, &scope, now),
             Err(ImportAdmissionError::Denied)
@@ -322,6 +370,7 @@ mod tests {
                 Err(ImportAdmissionError::Denied)
             );
             store.approve(&id, &original, now).unwrap();
+            store.claim_source(&id, &original, now).unwrap();
             assert_eq!(
                 store.claim(&id, &altered, now),
                 Err(ImportAdmissionError::Denied)
@@ -346,6 +395,7 @@ mod tests {
         );
         let id = store.prepare(scope.clone(), now + LIFETIME).unwrap();
         store.approve(&id, &scope, now + LIFETIME).unwrap();
+        store.claim_source(&id, &scope, now + LIFETIME).unwrap();
         store.claim(&id, &scope, now + LIFETIME).unwrap();
         let expired = now + LIFETIME * 2;
         assert_eq!(
@@ -371,6 +421,7 @@ mod tests {
             Err(ImportAdmissionError::Denied)
         );
         store.approve(&id, &scope, now).unwrap();
+        store.claim_source(&id, &scope, now).unwrap();
         store.claim(&id, &scope, now).unwrap();
         store.cancel(&id, &scope.user_id, &scope.room_id).unwrap();
         assert_eq!(
@@ -413,6 +464,7 @@ mod tests {
         let scope = binding();
         let id = store.prepare(scope.clone(), now).unwrap();
         other.approve(&id, &scope, now).unwrap();
+        store.claim_source(&id, &scope, now).unwrap();
         store.claim(&id, &scope, now).unwrap();
         assert_eq!(
             other.claim(&id, &scope, now),
@@ -438,6 +490,7 @@ mod tests {
         let scope = binding();
         let id = store.prepare(scope.clone(), now).unwrap();
         store.approve(&id, &scope, now).unwrap();
+        store.claim_source(&id, &scope, now).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
         let threads: Vec<_> = (0..8)
             .map(|_| {
@@ -465,7 +518,13 @@ mod tests {
         for index in 0..CAPACITY {
             let mut scope = binding();
             scope.environment_id = format!("environment-{index}");
-            store.prepare(scope, now).unwrap();
+            let id = store.prepare(scope.clone(), now).unwrap();
+            store.approve(&id, &scope, now).unwrap();
+            store.claim_source(&id, &scope, now).unwrap();
+            assert_eq!(
+                store.authorize_source(&id, &scope, now + LIFETIME),
+                Err(ImportAdmissionError::Denied)
+            );
         }
         let mut scope = binding();
         scope.environment_id = "overflow".into();

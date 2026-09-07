@@ -137,9 +137,17 @@ membership. The consent ledger binds the source key and realm to the exact
 selection and current destination generation/document. A changed binding requires
 new consent, and agent/service callers cannot approve it. The router tests cover
 local and verified relay callers, identity/scope changes, replay and navigation.
-This is not source-connector pairing or application authorization: no public
-cookie-apply request exists yet. Claims must still revalidate the current pairing,
-destination and permission before reading or applying any source cookie.
+Protocol 314 adds a one-use source claim and repeated source authorization checks.
+Both revalidate the initiating identity and current destination against the same
+selection. Cancellation or expiry releases a reading reservation, since it owns
+no destination writer. Destination execution has a separate private claim and
+cannot start from an unclaimed approval.
+
+These handlers are not yet wired to the reader's `authorize` callback. The source
+connector must claim once per read and require a matching `source_authorized`
+kernel response at each checkpoint. Source-connector pairing, permission UX and
+live encrypted delivery still need integration. No public cookie-apply request
+exists yet; destination authorization and exclusion remain separate requirements.
 
 `applyCookieImport` and `createCdpCookieStore` provide the internal destination
 operation. They are not routed from the Browser Controller, a web endpoint or a

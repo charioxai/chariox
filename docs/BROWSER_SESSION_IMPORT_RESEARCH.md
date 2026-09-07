@@ -160,8 +160,9 @@ fixture authentication transfers between isolated contexts without changing the
 source, widening host-only scope or losing HttpOnly or partition metadata. It
 asserts both unsafe Chromium flags are absent. The test constructs source API
 records; it does not prove extension permissions or real-service portability.
-See its README for supported fields and limits. The product connector, kernel
-consent and live relay routing remain unimplemented.
+See its README for supported fields and limits. Kernel metadata consent and
+source-read grant handlers now exist in protocols 313 and 314. The product
+connector, consent UI and live relay routing remain unimplemented.
 
 The source reader now has ten focused API-boundary tests and a real MV3 fixture
 test using a disposable Chrome for Testing profile. It reads HttpOnly and

@@ -19,7 +19,7 @@ fn browser_history_peer_contract_is_document_bound_and_versioned() {
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 313);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 314);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 46);
     let command = RoomBrowserControllerCommand::History {
         execution_id: "00000000000000000000000000000001".into(),
@@ -61,7 +61,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
         BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 313);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 314);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 46);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
@@ -228,7 +228,7 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 313);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 314);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 46);
     for (command, wire_command) in [
         (
