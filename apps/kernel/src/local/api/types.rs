@@ -68,5 +68,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 314 adds one-use browser import source claims and live authorization.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 314;
+/// Version 315 revalidates browser import consent on transport replay.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 315;

@@ -98,10 +98,18 @@ pub(crate) enum CommandReservation {
     Conflict,
 }
 
-pub(crate) fn request_is_cacheable(_request: &LocalDaemonRequest) -> bool {
-    // Every command needs in-memory deduplication so a transport replay cannot execute it twice.
-    // Sensitive interaction results are excluded from disk persistence separately below.
-    true
+pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    // Consent responses describe live authority, not historical command receipts.
+    // The import ledger owns one-use transitions and must revalidate every replay.
+    // Other commands retain in-memory deduplication; disk exclusions are separate.
+    !matches!(
+        request,
+        LocalDaemonRequest::PrepareBrowserImport(_)
+            | LocalDaemonRequest::ApproveBrowserImport(_)
+            | LocalDaemonRequest::ClaimBrowserImportSource(_)
+            | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
+            | LocalDaemonRequest::CancelBrowserImport(_)
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

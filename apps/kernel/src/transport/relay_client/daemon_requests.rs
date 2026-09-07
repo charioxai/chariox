@@ -310,6 +310,10 @@ fn cached_relay_dispatch_outcome(
 }
 
 #[cfg(test)]
+#[path = "daemon_requests_browser_import_tests.rs"]
+mod browser_import_tests;
+
+#[cfg(test)]
 mod tests {
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::LocalDaemonResponse;

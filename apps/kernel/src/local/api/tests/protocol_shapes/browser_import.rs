@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloads() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 314);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 315);
     let selection = BrowserImportSelection {
         session_id: "room-1".into(),
         attachment_id: "attachment-1".into(),

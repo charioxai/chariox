@@ -997,6 +997,14 @@ authorization is no longer valid. There is no public apply request, cookie paylo
 or crash-recovery bypass in these requests. Source clients require protocol 314;
 existing Web/TUI minimums and the relay peer version remain unchanged.
 
+Protocol v315 requires live import-consent validation on transport replay. All
+five browser-import requests bypass the shared command-result cache. Reusing a
+command ID cannot return an earlier approval, source claim or authorization after
+cancellation, expiry or destination changes. The ledger remains the authority
+for one-use transitions; clients must treat a failed replay as denial, not retry
+cookie reads using a previously successful response. Import clients require
+protocol 315; unrelated Web/TUI and peer minimum versions are unchanged.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.
