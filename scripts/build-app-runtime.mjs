@@ -10,10 +10,11 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { availableBuildMemory, checkArtifactBudget, validateCiProfile } from './app-runtime-ci-resources.mjs';
+import { NATIVE_BUILD_INPUTS } from './app-runtime-ci-receipt.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_PATH = join(REPOSITORY, 'apps/app-worker/runtime.lock.json');
-const SOURCE_PATHS = ['apps/app-worker/runtime.lock.json', 'apps/app-worker/src/runtime.h', 'apps/app-worker/src/node_runtime.cc', 'scripts/build-app-runtime.mjs', 'scripts/app-runtime-ci-resources.mjs', 'scripts/run-app-runtime-native-ci.sh', '.github/workflows/app-runtime-native.yml'];
+const SOURCE_PATHS = NATIVE_BUILD_INPUTS;
 const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
 const USAGE = 'build-app-runtime.mjs plan|build --target <target> --scratch <new-empty-directory-outside-repositories> [--jobs 1|2] [--resource-profile default|github-linux] [--source-archive <cached-tar.xz>|--download-source] [--cc <path> --cxx <path> --python <path>]';
 

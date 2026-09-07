@@ -9,11 +9,13 @@ on:
       - 'apps/app-worker/src/node_runtime.cc'
       - 'scripts/build-app-runtime*'
       - 'scripts/app-runtime-ci-resources*'
+      - 'scripts/app-runtime-ci-receipt*'
       - 'scripts/run-app-runtime-native-ci.sh'
       - '.github/workflows/app-runtime-native.yml'
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: app-runtime-native-${{ github.event.pull_request.number || github.ref }}
@@ -33,42 +35,54 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      # PR path filters use the entire PR diff. Avoid recompiling Node after
-      # each unrelated upload/protocol edit to an already-open Apps PR.
-      - name: Select changes to native build inputs
-        id: inputs
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_ACTION: ${{ github.event.action }}
-          BEFORE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          changed=true
-          if [[ "$EVENT_NAME" == pull_request && "$EVENT_ACTION" == synchronize && "$BEFORE_SHA" =~ ^[a-f0-9]{40}$ ]] && git cat-file -e "$BEFORE_SHA^{commit}"; then
-            if git diff --quiet "$BEFORE_SHA" "$HEAD_SHA" -- apps/app-worker/runtime.lock.json apps/app-worker/src/runtime.h apps/app-worker/src/node_runtime.cc 'scripts/build-app-runtime*' 'scripts/app-runtime-ci-resources*' scripts/run-app-runtime-native-ci.sh .github/workflows/app-runtime-native.yml; then
-              changed=false
-            fi
-          fi
-          printf 'changed=%s\n' "$changed" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
-        if: steps.inputs.outputs.changed == 'true'
         with:
           node-version: '24.20.0'
+      # PR filters use the cumulative diff, and concurrency replaces older
+      # pending runs. Reuse exact successful input evidence, never the previous
+      # push's changed-file list: a queued newer commit may contain unbuilt code.
+      - name: Compute exact native input fingerprint
+        id: inputs
+        run: node scripts/app-runtime-ci-receipt.mjs key
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.inputs.outputs.path }}
+          key: ${{ steps.inputs.outputs.key }}
+          restore-keys: ${{ steps.inputs.outputs.prefix }}
+      - name: Verify retained unsigned compilation evidence
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/app-runtime-ci-receipt.mjs check
       - name: Validate tooling and resource guards
-        if: steps.inputs.outputs.changed == 'true'
-        run: node --test --test-concurrency=1 scripts/build-app-runtime.test.mjs scripts/app-runtime-ci-resources.test.mjs
+        run: node --test --test-concurrency=1 scripts/build-app-runtime.test.mjs scripts/app-runtime-ci-resources.test.mjs scripts/app-runtime-ci-receipt.test.mjs
       - name: Compile Node and embedder in bounded container
-        if: steps.inputs.outputs.changed == 'true'
+        if: steps.reuse.outputs.reuse != 'true'
         id: native
         run: bash scripts/run-app-runtime-native-ci.sh
       - uses: actions/upload-artifact@v4
-        if: success() && steps.inputs.outputs.changed == 'true'
+        if: success() && steps.reuse.outputs.reuse != 'true'
+        id: artifact
         with:
           name: UNSIGNED-NONRELEASE-${{ matrix.target }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ steps.native.outputs.artifact_path }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+      - name: Record this successful compilation and artifact
+        if: success() && steps.reuse.outputs.reuse != 'true'
+        env:
+          NATIVE_ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+          NATIVE_ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: node scripts/app-runtime-ci-receipt.mjs save
+      # Cache only this bounded JSON receipt. PR cache scope never supplies a
+      # binary, source, object, signing decision or release trust enrollment.
+      - uses: actions/cache/save@v4
+        if: success() && steps.reuse.outputs.reuse != 'true'
+        continue-on-error: true
+        with:
+          path: ${{ steps.inputs.outputs.path }}
+          key: ${{ steps.inputs.outputs.key }}
       - name: Remove owned scratch after artifact handling
         if: always() && steps.native.outputs.scratch != ''
         env:

@@ -72,10 +72,23 @@ libraries and escaping Linux runpaths without executing either library.
 
 `app-runtime-native.yml` builds the initial Linux x64 target on a disposable
 `ubuntu-24.04` GitHub runner when native build inputs change in a PR. Later
-unrelated commits skip compilation; manual dispatch is also available once the
-workflow exists on the default branch. Only one build runs at a time for that PR,
+unrelated commits can reuse recent successful compilation evidence; manual
+dispatch is also available once the workflow exists on the default branch. Only
+one build runs at a time for that PR,
 with one matrix target and one Make job. No source/object cache, repository
 secrets, signing key, release upload, or automatic installation is involved.
+
+The only cache entry is a JSON receipt smaller than 4 KiB, written after a
+successful native build and artifact upload. Its fingerprint covers the exact
+committed native source, lock, driver, workflow, wrapper, helpers and tests.
+GitHub may replace a queued workflow with a newer pending commit; every run
+checks its full current fingerprint, so that cannot skip unbuilt native edits.
+Receipts and their original artifacts must be less than five days old. Before
+reusing a PR-scoped receipt, the workflow checks GitHub's original successful
+run, retained artifact and committed input tree. Missing, forged, expired or
+unverifiable evidence causes a fresh build. The receipt records the original run
+and artifact link; it cannot enroll a runtime or stand in for signed release
+verification. No binaries, source trees or compiler objects enter this cache.
 
 The explicit `--resource-profile github-linux` leaves the default shared-host
 limits unchanged. [Node's upstream build guidance](https://github.com/nodejs/node/blob/v24.20.0/BUILDING.md#prerequisites)
