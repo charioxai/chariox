@@ -8,10 +8,6 @@ pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
 pub use api::{
-    ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
-    CancelBrowserImportRequest, PrepareBrowserImportRequest,
-};
-pub use api::{
     deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject,
 };
@@ -209,6 +205,10 @@ pub use api::{
     WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
     WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
     DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
+};
+pub use api::{
+    ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
+    BrowserImportSourceRequest, CancelBrowserImportRequest, PrepareBrowserImportRequest,
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,

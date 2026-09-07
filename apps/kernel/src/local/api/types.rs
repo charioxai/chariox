@@ -68,5 +68,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 313 adds human-bound browser import consent, without cookie payloads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 313;
+/// Version 314 adds one-use browser import source claims and live authorization.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 314;

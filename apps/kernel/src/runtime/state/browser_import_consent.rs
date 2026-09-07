@@ -39,6 +39,25 @@ impl KernelRuntimeState {
                     .map_err(|_| denied())?;
                 (id, BrowserImportConsentStatus::Approved)
             }
+            LocalDaemonRequest::ClaimBrowserImportSource(payload)
+            | LocalDaemonRequest::AuthorizeBrowserImportSource(payload) => {
+                let binding = self
+                    .browser_import_binding(command, &payload.selection)
+                    .await?;
+                let id = ImportRequestId::from_wire(&payload.request_id).map_err(|_| denied())?;
+                let status = if matches!(request, LocalDaemonRequest::ClaimBrowserImportSource(_)) {
+                    store
+                        .claim_source(&id, &binding, Instant::now())
+                        .map_err(|_| denied())?;
+                    BrowserImportConsentStatus::SourceClaimed
+                } else {
+                    store
+                        .authorize_source(&id, &binding, Instant::now())
+                        .map_err(|_| denied())?;
+                    BrowserImportConsentStatus::SourceAuthorized
+                };
+                (id, status)
+            }
             LocalDaemonRequest::CancelBrowserImport(request) => {
                 // Cancellation remains possible after navigation or Environment shutdown.
                 let (user_id, _) = self

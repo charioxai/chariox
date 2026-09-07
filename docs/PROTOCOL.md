@@ -980,6 +980,23 @@ quiescence and durable crash recovery remain required before an apply request
 can be exposed. Existing Web/TUI minimum versions and relay peer version stay
 unchanged; clients using these new consent requests require protocol 313.
 
+Protocol v314 adds `ClaimBrowserImportSource` and `AuthorizeBrowserImportSource`,
+each carrying `{request_id, selection}` with the same strict metadata-only
+selection. Claiming consumes an approval once and returns `source_claimed`.
+Authorization returns `source_authorized` only while that read remains current.
+Both requests revalidate the authenticated initiating client/key/realm, Room
+membership, interactive attachment ownership and destination generation/document.
+The source connector must check authorization before reading cookies, between
+queries and before releasing the batch. A cancelled, expired or stale read must
+discard its result. Authorization does not extend the original 120-second expiry.
+
+The reading phase owns no destination writer: cancellation removes it and expiry
+allows a new request. Destination application still requires a private, separate
+claim within trusted exclusive execution. Once that claim succeeds, source-read
+authorization is no longer valid. There is no public apply request, cookie payload
+or crash-recovery bypass in these requests. Source clients require protocol 314;
+existing Web/TUI minimums and the relay peer version remain unchanged.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.

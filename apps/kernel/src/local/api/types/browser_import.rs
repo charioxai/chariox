@@ -31,6 +31,13 @@ pub struct ApproveBrowserImportRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BrowserImportSourceRequest {
+    pub request_id: String,
+    pub selection: BrowserImportSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelBrowserImportRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -42,5 +49,7 @@ pub struct CancelBrowserImportRequest {
 pub enum BrowserImportConsentStatus {
     Prepared,
     Approved,
+    SourceClaimed,
+    SourceAuthorized,
     Cancelled,
 }

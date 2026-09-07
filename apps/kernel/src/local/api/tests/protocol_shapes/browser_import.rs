@@ -1,12 +1,12 @@
 use super::*;
 use crate::local::{
     ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
-    CancelBrowserImportRequest, PrepareBrowserImportRequest,
+    BrowserImportSourceRequest, CancelBrowserImportRequest, PrepareBrowserImportRequest,
 };
 
 #[test]
 fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloads() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 313);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 314);
     let selection = BrowserImportSelection {
         session_id: "room-1".into(),
         attachment_id: "attachment-1".into(),
@@ -25,6 +25,14 @@ fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloa
         }),
         LocalDaemonRequest::ApproveBrowserImport(ApproveBrowserImportRequest {
             request_id: "request-1".into(),
+            selection: selection.clone(),
+        }),
+        LocalDaemonRequest::ClaimBrowserImportSource(BrowserImportSourceRequest {
+            request_id: "request-1".into(),
+            selection: selection.clone(),
+        }),
+        LocalDaemonRequest::AuthorizeBrowserImportSource(BrowserImportSourceRequest {
+            request_id: "request-1".into(),
             selection,
         }),
         LocalDaemonRequest::CancelBrowserImport(CancelBrowserImportRequest {
@@ -36,6 +44,8 @@ fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloa
     let expected: serde_json::Value = serde_json::from_str(r#"[
       {"PrepareBrowserImport":{"selection":{"session_id":"room-1","attachment_id":"attachment-1","environment_id":"environment-1","runtime_generation":2,"tab_id":"tab-1","document_revision":3,"source_store_id":"0","domains":["example.com"],"partition_sites":[],"overwrite":false}}},
       {"ApproveBrowserImport":{"request_id":"request-1","selection":{"session_id":"room-1","attachment_id":"attachment-1","environment_id":"environment-1","runtime_generation":2,"tab_id":"tab-1","document_revision":3,"source_store_id":"0","domains":["example.com"],"partition_sites":[],"overwrite":false}}},
+      {"ClaimBrowserImportSource":{"request_id":"request-1","selection":{"session_id":"room-1","attachment_id":"attachment-1","environment_id":"environment-1","runtime_generation":2,"tab_id":"tab-1","document_revision":3,"source_store_id":"0","domains":["example.com"],"partition_sites":[],"overwrite":false}}},
+      {"AuthorizeBrowserImportSource":{"request_id":"request-1","selection":{"session_id":"room-1","attachment_id":"attachment-1","environment_id":"environment-1","runtime_generation":2,"tab_id":"tab-1","document_revision":3,"source_store_id":"0","domains":["example.com"],"partition_sites":[],"overwrite":false}}},
       {"CancelBrowserImport":{"session_id":"room-1","attachment_id":"attachment-1","request_id":"request-1"}}
     ]"#).unwrap();
     assert_eq!(serde_json::to_value(&requests).unwrap(), expected);
@@ -48,6 +58,11 @@ fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloa
     for (status, wire) in [
         (BrowserImportConsentStatus::Prepared, "prepared"),
         (BrowserImportConsentStatus::Approved, "approved"),
+        (BrowserImportConsentStatus::SourceClaimed, "source_claimed"),
+        (
+            BrowserImportConsentStatus::SourceAuthorized,
+            "source_authorized",
+        ),
         (BrowserImportConsentStatus::Cancelled, "cancelled"),
     ] {
         assert_eq!(
@@ -63,6 +78,17 @@ fn browser_import_consent_protocol_shape_is_versioned_and_excludes_cookie_payloa
     bad["PrepareBrowserImport"]["selection"]["cookies"] =
         serde_json::json!([{"value":"must-not-travel"}]);
     assert!(serde_json::from_value::<LocalDaemonRequest>(bad).is_err());
+    for (index, kind) in [
+        (2, "ClaimBrowserImportSource"),
+        (3, "AuthorizeBrowserImportSource"),
+    ] {
+        let mut bad = expected[index].clone();
+        bad[kind]["selection"]["cookies"] = serde_json::json!([{"value":"must-not-travel"}]);
+        assert!(serde_json::from_value::<LocalDaemonRequest>(bad).is_err());
+        let mut bad = expected[index].clone();
+        bad[kind]["approved"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<LocalDaemonRequest>(bad).is_err());
+    }
     let mut bad = expected[0].clone();
     bad["PrepareBrowserImport"]["approved"] = serde_json::json!(true);
     assert!(serde_json::from_value::<LocalDaemonRequest>(bad).is_err());
