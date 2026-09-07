@@ -22,6 +22,8 @@ export function prepareChromeCookieBatch(source, scope) {
           || Object.keys(key).some(k => !['topLevelSite', 'hasCrossSiteAncestor'].includes(k))) fail('unsupported_cookie_partition');
       if (!approvedPartitions.has(partitionSite(key.topLevelSite))) fail('cookie_scope_denied');
     }
+    // Chromium distinguishes host-only from domain cookies using the leading dot.
+    // Keep that distinction even though hostname normalization removes the dot.
     const key = JSON.stringify([cookie.name, cookie.hostOnly,
       hostname(cookie.domain.replace(/^\./, '')), cookie.path,
       cookie.partitionKey?.topLevelSite ?? null, cookie.partitionKey?.hasCrossSiteAncestor ?? null]);

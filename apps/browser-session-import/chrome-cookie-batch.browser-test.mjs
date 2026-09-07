@@ -77,6 +77,15 @@ test('converted cookies authenticate a separate browser context without changing
     assert.ok(targetInfo.browserContextId);
     const stored = await browserCdp.send('Storage.getCookies', {browserContextId:targetInfo.browserContextId});
     assert.deepEqual(stored.cookies.find(c => c.name === 'partitioned')?.partitionKey, partitionKey);
+    const variants = prepareChromeCookieBatch([
+      {...chromeCookie, name:'identity', value:'host'},
+      {...chromeCookie, name:'identity', value:'domain', domain:'.login.example.test', hostOnly:false},
+    ], {approvedDomains:['login.example.test'], sourceStoreId:'source-store'});
+    await cdp.send('Network.setCookies', {cookies:variants.cookies});
+    const identityCookies = (await browserCdp.send('Storage.getCookies', {
+      browserContextId:targetInfo.browserContextId,
+    })).cookies.filter(c => c.name === 'identity');
+    assert.deepEqual(identityCookies.map(c => c.domain).sort(), ['.login.example.test','login.example.test']);
     await cdp.detach();
     await browserCdp.detach();
   } finally {

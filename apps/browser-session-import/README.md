@@ -57,6 +57,10 @@ survives CDP installation. It also checks neither `--no-sandbox` nor the unsafe
 insecure-origin flag is present. The source records are constructed from fixture
 cookies, so this does not yet test an actual extension's cookies API.
 
+The real-browser test also verifies same-name/path host-only and domain cookies
+coexist in the destination. Their leading-dot distinction is part of Chromium's
+cookie identity, so the converter must not reject that pair as a duplicate.
+
 ## Required before product integration
 
 Implement the MV3 connector and source-profile/site selection, kernel-owned
