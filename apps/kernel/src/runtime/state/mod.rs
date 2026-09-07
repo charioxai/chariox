@@ -36,18 +36,27 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
+mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod event_delivery_runtime_state;
+mod human_browser_action_runtime_state;
+mod human_environment_action_runtime_state;
 mod managed_activity_runtime_state;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
+mod room_browser_controller;
+mod room_computer_observation;
+mod room_display;
+mod room_environment_placement;
+mod room_environment_state;
+mod room_screenshot;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -64,6 +73,11 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    pending_provider_launch_credentials: Arc<
+        std::sync::Mutex<
+            BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
+        >,
+    >,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
     publication_activation: Arc<publication_activation::PublicationActivation>,
@@ -72,6 +86,12 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
+    browser_controller_processes:
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore,
+    computer_input_executions:
+        crate::runtime::computer_input_execution::ComputerInputExecutionStore,
+    browser_controller_generations:
+        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -205,6 +225,14 @@ mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
+mod browser_controller_action_cancellation_runtime_state;
+mod browser_controller_action_execution_runtime_state;
+mod browser_controller_compatibility_runtime_state;
+pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
+mod browser_configuration_runtime_state;
+mod browser_controller_runtime_state;
+mod browser_download_cancellation_runtime_state;
+mod browser_upload_runtime_state;
 mod capability_owned_state;
 mod detached_provider_run_owned_state;
 mod owned;
@@ -252,6 +280,7 @@ mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
+mod agent_batch_runtime_state;
 mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -263,6 +292,7 @@ mod session_lifecycle_runtime_state;
 mod session_lookup_state;
 mod slice_development_runtime_state;
 mod slice_runtime_state;
+pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
@@ -479,6 +509,9 @@ impl KernelRuntimeState {
                 agent_store,
                 attachment_store,
                 provider_store,
+                pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
+                    BTreeMap::new(),
+                )),
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
                 publication_activation,
@@ -487,6 +520,11 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
+                browser_controller_processes:
+                    crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
+                computer_input_executions:
+                    crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
+                browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
                 agent_runtime_projection,
                 provider_run_projection,

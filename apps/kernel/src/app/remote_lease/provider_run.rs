@@ -200,7 +200,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_session_id,
             &leased_agent.provider,
             &leased_agent.provider,
-            "default",
+            &leased_agent.account_profile,
             leased_agent
                 .model
                 .clone()

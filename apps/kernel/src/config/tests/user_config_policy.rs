@@ -102,6 +102,10 @@ fn user_config_defaults_to_versioned_slice_image() {
         DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
         "chariox-slice-linux:local"
     );
+    assert_eq!(
+        config.slices.linux.memory_mb,
+        Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB)
+    );
 }
 
 #[test]

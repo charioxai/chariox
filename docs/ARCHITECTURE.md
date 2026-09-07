@@ -197,7 +197,7 @@ Remote-agent note:
 - a home kernel remains the only session authority even when some agents execute on remote machines
 - worker kernels host leased execution for those remote agents but do not become session authorities
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
-- home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, keeps credentials local to home, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for local browser/PTY targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
+- home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for worker-local targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled. Computer credential calls forward only the credential handle to home; home admits the redacted Room Action and sends the one-operation secret input through the existing encrypted Room controller route. An unattended remote Claude launch is the narrow provider-launch exception: home resolves the selected profile's vaulted setup token only when the worker needs a run, sends it in the encrypted lease request, and the worker moves it directly into a zeroizing `CLAUDE_CODE_OAUTH_TOKEN` launch environment. Neither kernel persists it, and no `.credentials.json` replica is created.
 
 Runtime authority invariants:
 
@@ -276,7 +276,7 @@ Current architectural interpretation:
 
 ### Docker Remote-Machine Lab
 
-The Docker lab models containers as ordinary Chariox machines. The base image includes Chariox and provider harnesses but no baked credentials. For home-managed slices and trusted home-workers, the home kernel materializes only the selected named provider profile through the existing encrypted worker channel. Ordinary independently managed machines may still authenticate locally, but that is not a second account authority for a home-owned agent. See [PROVIDER_ACCOUNTS.md](PROVIDER_ACCOUNTS.md).
+The Docker lab models containers as ordinary Chariox machines. The base image includes Chariox and provider harnesses but no baked credentials. For home-managed slices and trusted home-workers, the home kernel materializes only the selected named provider profile through the existing encrypted worker channel. Claude materialization contains non-secret profile state only; its setup token is delivered transiently at launch. Ordinary independently managed machines may still authenticate locally, but that is not a second account authority for a home-owned agent. See [PROVIDER_ACCOUNTS.md](PROVIDER_ACCOUNTS.md).
 
 Required container properties:
 
@@ -486,7 +486,7 @@ The kernel owns:
 - save, restore, reset, reconnect, and recovery reconciliation
 - Browser mode and Computer mode projections
 
-The worker that hosts a slice owns its local browser, Browser Controller, streamer, desktop, and input processes. This is execution ownership only. The home kernel remains the Room and Environment authority and reconciles worker state through the existing leased-agent path.
+The worker that hosts a slice owns its local browser, Browser Controller, streamer, desktop, and input processes. This is execution ownership only. The home kernel remains the Room and Environment authority. Agent execution uses the existing leased-agent path; physical browser lifecycle and observations use the authenticated Room controller route over the same encrypted peer transport and do not require an agent lease.
 
 Cloud may authenticate the user, provision a machine, issue scoped relay credentials, and render the Environment projection. It must not proxy runtime display or input traffic, assign tab identity, order Actions, or store browser and desktop history. The relay transports encrypted runtime and display packets without inspecting them.
 
@@ -515,6 +515,22 @@ Lifecycle transitions must have bounded deadlines. Failure cannot leave the Envi
 
 The Browser Controller owns browser-process integration below the kernel. The kernel owns the Room-visible tab registry and assigns stable `tab_id` values. Controller or browser target identifiers remain implementation details.
 
+On Linux slices, the Browser Controller is a long-lived child process owned directly by the worker kernel. The kernel is its only caller and communicates through a private, request-correlated stdin/stdout channel with bounded health and shutdown deadlines. The controller exposes no agent-addressable socket or command surface. Each physical browser/profile has exactly one Room owner. Repeated acquisition by that Room reuses its controller; a different Room must use a different physical Environment, never another lease on the same browser. Releasing the lease stops the controller but retains the owner binding, because neither the browser nor its profile is erased by controller shutdown. Failed startup also retains that binding. Kernel shutdown terminates the complete controller process group. Controller readiness updates only the Browser Controller component health. It does not by itself make the Environment ready before the browser, desktop, and streamer have also reconciled.
+
+The opt-in local controller store currently enforces this binding for its own lifetime. Durable Room-to-slice/worker placement and recovery after kernel replacement remain required before multi-Room product enablement. Creating another store pointed at the same CDP endpoint is not isolation. The home kernel must bind distinct Rooms to distinct physical Environments and restore those bindings before admitting browser or viewer requests.
+
+The home kernel now records explicit physical placement in `SliceRecord.environment_session_id` through protocol v282. The slice store serializes competing claims and commits the reservation before publishing it. Reverse Room lookup is derived from those records, not a second mutable index. Bindings survive kernel replay and are not cleared by controller stop. Public single/batch agent spawn, session creation, and agent move requests preflight known slice reservations before worktree preparation, provider-run termination, or worker contact. They hold the existing slice operation guards through admission and attachment; batch requests acquire each canonical slice once. Creating a new Room cannot enter an already-reserved slice. Ordinary remote kernels and unassigned legacy slices retain their existing admission behavior.
+
+The Room controller route validates the provisioned home key/kernel/Room/slice tuple on the worker. Lifecycle, structured observations, mutations, integrations, events, compatibility calls, and worker-agent browser tools consume the persisted placement, while the home assigns stable tabs and opaque element references and owns action admission and history. If the worker discovers an implicit controller restart before an operation, it returns the new process generation. The home fails the admitted mutation without replay, invalidates old element references, reconciles stable Tabs, and restores component health before accepting another mutation.
+
+Provider-facing mouse, keyboard, and clipboard-write tools use that route as well. A leased provider call reaches the home kernel first, where the home derives the agent Actor, validates the current Room Environment, admits one redacted Computer Action, and sends the physical input to the bound worker. Clipboard text is bounded, transported to the physical helper over stdin, and represented in history only by byte and character counts. Agents have no clipboard-read tool. The worker executes the input but does not create a private Room, choose an Actor, or record a second Action ledger. This is the same authority path used by browser tools, human Computer input, takeover cancellation, and Computer credential input.
+
+Provider-facing screenshots follow the same Room placement without entering the mutation ledger. Home derives the Room and agent from the provider run, asks the bound worker to capture through the authenticated screenshot peer, and reads the opaque artifact back in bounded chunks. A leased provider forwards its request to home rather than invoking a worker-local screenshot path. Worker filesystem paths never cross the boundary; inline provider images are capped before allocation and verified against the worker artifact digest.
+
+Provider-facing Computer status, OCR, and text lookup use the same authority route. Direct-home and leased providers both reach the home kernel, which derives the Room, agent, bound physical worker, and canonical viewport. Home sends a typed observation over the authenticated encrypted peer; only the bound worker runs the physical screen helper. A Room agent may pass an opaque screenshot artifact ID to OCR or text lookup so the worker can inspect the exact stored frame. The worker resolves that ID only after checking its Room and slice scope. Text lookup returns every non-overlapping occurrence in visual reading order using native screenshot-pixel coordinates; `match` retains the first occurrence for compatibility while `matches` and `match_count` carry the complete result. Artifact paths, private display identifiers, viewer URLs, and raw helper output never cross the worker interface. Home returns canonical Room dimensions and requires clients to obtain viewer access through their own attachment. These reads do not enter the mutating Action ledger.
+
+Room display admission consumes the same persisted placement. The home validates the requesting attachment and key, then asks the bound worker over the authenticated peer route. The worker revalidates its provisioned home key/kernel/Room/slice tuple and registers one expiring, single-use encrypted stream with the relay. The opening grant and the active-view lease are distinct: the grant cannot be replayed, while the worker renews the private adapter only for the lifetime of the admitted WebSocket. The relay routes outer tunnel metadata and ciphertext but never becomes Room authority or sees video. Display controls are read-only. Human mouse, keyboard, and clipboard-write input enters through authenticated local protocol requests, explicit desktop takeover, and the kernel Action ledger before the same bound-worker route executes it. Clipboard reads also require the authenticated human to own desktop input and cross the same bound-worker route, but they are observations and do not create an Action. Clipboard contents are held in zeroizing, redacted values and never enter Room state, history, traces, or helper arguments. Physical input is at-most-once and has no transport replay command. The worker tracks each live input helper below that authority boundary. Cancellation kills its process group and resets held modifier keys and mouse buttons before the worker confirms cancellation, so takeover cannot transfer ownership while physical input remains active. Complete recovery, saved-state acceptance, and managed-machine acceptance remain unfinished.
+
 Tab rules:
 
 - a recoverable controller reconnect must not duplicate a Tab
@@ -526,6 +542,8 @@ Tab rules:
 
 Browser mode exposes structured tab, accessibility, document, lifecycle, console, and network observations. Computer mode exposes the same Environment through its graphical display and desktop input. Switching modes does not create a browser, move state, or change authority.
 
+Vault-backed Computer credential input uses that same desktop-input authority. The agent supplies only a credential handle. For a leased agent, its worker forwards that handle-only call to home instead of resolving a secret or creating a parallel Action locally. The home kernel validates the Computer-specific credential policy, requires user confirmation, resolves the secret, and admits the redacted `secret_input` Action against the authoritative Room. The secret reaches the physical worker only inside the existing encrypted Room controller command, where stdin types it into the current desktop focus without using the clipboard. Browser credential input remains DOM-bound and automatically rejects unmasked targets; Computer input relies on explicit user verification because arbitrary X11 controls do not expose a universal password-field contract.
+
 #### Canonical viewport
 
 One canonical viewport defines browser layout, desktop resolution, display encoding, screenshot pixels, OCR coordinates, pointer coordinates, and every viewer's aspect ratio. Clients scale presentation locally but must not resize the browser, desktop, or streamer directly.
@@ -533,6 +551,8 @@ One canonical viewport defines browser layout, desktop resolution, display encod
 The kernel accepts or rejects viewport requests. While a user owns desktop input, that user owns viewport changes. Without a user input owner, the Environment keeps its configured viewport unless kernel policy accepts another Actor's request. Every accepted change increments `viewport_revision` and reaches the browser, desktop, streamer, screenshots, coordinates, and viewers as one reconciled transition.
 
 #### Actors, Actions, and input ordering
+
+Actor presence is kernel-owned ephemeral Room state. Protocol v295 assigns each Actor a stable semantic presentation color derived from the Actor ID and projects at most one desktop-pixel pointer per Actor. An authenticated pointer update carries the runtime generation, viewport revision, and optional coordinates. The session lane supplies the Actor identity. Presence does not create an Action or grant input ownership. The kernel removes the pointer when the Actor disconnects, the canonical viewport changes, the runtime is invalidated, or the Environment stops or fails. Consecutive pointer events coalesce in replay storage so mouse motion cannot crowd lifecycle, health, ownership, or Action events out of the bounded log. The overlay belongs above the display stream in Chariox clients, never in webpage DOM.
 
 Every Browser or Computer Action records:
 
@@ -565,6 +585,13 @@ The kernel keeps an append-only Action ledger with bounded observations and reda
 Clients reconnect by event cursor. A retained cursor replays missing Environment events in order. A replay gap requires a fresh Environment snapshot plus the next event cursor. Clients discard optimistic state after a gap and never infer completion from a reappearing browser or display.
 
 Controller, browser, streamer, worker, kernel, and relay recovery must reconcile Environment identity, generation, tabs, viewport, input ownership, in-flight Actions, and saved-state generation before reporting ready. Completed Actions are never repeated. An Action without durable completion evidence fails or resumes under an explicit idempotency rule.
+
+For live slice browser mutations, the worker's bounded in-memory completion
+receipts provide that idempotency rule across an encrypted relay response loss.
+The receipt binds the Room and execution identity to a non-plaintext request
+fingerprint and terminal result. The home may retry only the identical request;
+worker restart or receipt eviction removes this proof and must not trigger a
+blind physical replay.
 
 #### Client obligations
 

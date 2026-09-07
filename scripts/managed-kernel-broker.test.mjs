@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { once } from "node:events"
 import { createConnection } from "node:net"
 import { test } from "node:test"
@@ -32,7 +33,11 @@ function validate(request, shareRoot) {
   return spawnSync(process.execPath, [broker, "--validate-request"], {
     input: JSON.stringify(request),
     encoding: "utf8",
-    env: { ...process.env, CHARIOX_SLICE_DOCKER_SHARE_ROOT: shareRoot },
+    env: {
+      ...process.env,
+      CHARIOX_SLICE_DOCKER_SHARE_ROOT: shareRoot,
+      CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT: join(shareRoot, ".broker-private/artifacts"),
+    },
   })
 }
 
@@ -49,10 +54,34 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-test-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
-  const workspace = join(share, "managed-context/kernel/workspace")
+  const workspace = join(share, "slices/development/slice-dev/development/workspace")
   await mkdir(workspace, { recursive: true })
 
   assert.equal(validate({ kind: "docker", args: ["info"] }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["info", "--format", "{{.MemTotal}}"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["ps", "-a", "--format", "{{.Names}}"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["inspect", "--format", "{{.HostConfig.Memory}}", "chariox-slice-dev"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["inspect", "--size", "--format", "{{.SizeRw}}", "chariox-slice-dev"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["info", "--format", "{{.DockerRootDir}}"],
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "docker",
+    args: ["inspect", "--format", "{{json .Config}}", "chariox-slice-dev"],
+  }, share).status, 1)
   assert.equal(validate({
     kind: "home_archive_capture",
     container: "chariox-slice-dev-home-archive-1",
@@ -63,6 +92,12 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     kind: "home_archive_remove",
     scope: "backup",
     id: "chariox-slice-dev-backup-1",
+  }, share).status, 0)
+  assert.equal(validate({
+    kind: "home_archive_verify",
+    scope: "backup",
+    id: "chariox-slice-dev-backup-1",
+    path: join(share, ".broker-private/artifacts/backups/chariox-slice-dev-backup-1/generation-abcdef/home.tar.zst"),
   }, share).status, 0)
   assert.equal(validate({
     kind: "home_archive_capture",
@@ -91,12 +126,25 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     ).status,
     0,
   )
+  const diskHelper = "chariox-slice-dev-disk-admission-0123456789abcdef"
+  for (const args of [
+    ["exec", "-u", "root", diskHelper, "du", "-sb", "/home-src"],
+    ["exec", "-u", "root", diskHelper, "bash", "-lc", "set -euo pipefail; find /home-src -printf . | wc -c"],
+    ["exec", "-u", "root", diskHelper, "df", "-B1", "--output=avail", "/tmp"],
+  ]) {
+    assert.equal(validate({ kind: "docker", args }, share).status, 0)
+  }
+  assert.equal(validate({
+    kind: "docker",
+    args: ["exec", "-u", "root", diskHelper, "du", "-sb", "/etc"],
+  }, share).status, 1)
   const provision = validate(
     {
       kind: "provisioner",
       action: "provision",
       environment: {
         CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-dev-a1b2c3d4e5f6",
         CHARIOX_SLICE_ID: "slice-dev",
         CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
         CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
@@ -107,6 +155,99 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     share,
   )
   assert.equal(provision.status, 0, provision.stderr)
+
+  const recover = validate(
+    {
+      kind: "provisioner",
+      action: "recover",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-dev-a1b2c3d4e5f6",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_WORKSPACE: workspace,
+        CHARIOX_SLICE_START_RUNTIME: "1",
+        CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT: "1",
+        CHARIOX_SLICE_DEVELOPMENT_MOUNT_0: workspace,
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(recover.status, 0, recover.stderr)
+
+  const restoreState = validate(
+    {
+      kind: "provisioner",
+      action: "restore-state",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-dev-a1b2c3d4e5f6",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_WORKSPACE: workspace,
+        CHARIOX_SLICE_SAVED_HOME_ARCHIVE: join(share, ".broker-private/artifacts/backups/chariox-slice-dev-backup-1/generation-abcdef/home.tar.zst"),
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(restoreState.status, 0, restoreState.stderr)
+
+  const existingMixedCaseHostname = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-Production-1",
+        CHARIOX_SLICE_HOSTNAME: "chariox-slice-Production-1",
+        CHARIOX_SLICE_ID: "slice-production-1",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-Production-1-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_WORKSPACE: join(share, "slices/development/slice-production-1/development/workspace"),
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(existingMixedCaseHostname.status, 0, existingMixedCaseHostname.stderr)
+
+  const namedAppArmorProfile = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_APPARMOR_PROFILE: "chariox-slice-provider",
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(namedAppArmorProfile.status, 0, namedAppArmorProfile.stderr)
+
+  const injectedAppArmorProfile = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
+        CHARIOX_SLICE_APPARMOR_PROFILE: "unconfined --privileged",
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(injectedAppArmorProfile.status, 1)
+  assert.match(injectedAppArmorProfile.stderr, /CHARIOX_SLICE_APPARMOR_PROFILE is invalid/)
 
   const malformedOwnerKey = validate(
     {
@@ -212,7 +353,6 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   for (const path of [
     "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/codex/auth.json",
     "/home/slice/.chariox/daemon/provider-accounts/owner-1/opencode/opencode-1/data/opencode/auth.json",
-    "/home/slice/.chariox/daemon/provider-accounts/owner-1/claude/claude-1/claude/.credentials.json",
   ]) {
     const accountCredential = validate({
       kind: "docker",
@@ -224,6 +364,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   for (const path of [
     "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/../../../../../../etc/shadow",
     "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/unexpected",
+    "/home/slice/.chariox/daemon/provider-accounts/owner-1/claude/claude-1/claude/.credentials.json",
   ]) {
     const accountCredentialEscape = validate({
       kind: "docker",
@@ -263,6 +404,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     { CHARIOX_SLICE_DOCKER_MEMORY: "1g --privileged" },
     { CHARIOX_SLICE_DOCKER_CPUS: "2 --volume=/etc:/vault" },
     { CHARIOX_SLICE_WORKSPACE_MOUNT_MODE: "rw,bind" },
+    { CHARIOX_SLICE_HOSTNAME: "chariox_slice_dev" },
   ]) {
     const injected = validate({
       kind: "provisioner",
@@ -293,6 +435,129 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     share,
   )
   assert.equal(extension.status, 1)
+})
+
+test("managed slice broker verifies archive size and digest before restore", {
+  skip: process.platform !== "linux" ? "managed broker pins files through Linux /proc" : false,
+}, async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-archive-verify-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  const artifactRoot = join(share, ".broker-private/artifacts")
+  const id = "backup-1"
+  const generation = join(artifactRoot, "backups", id, "generation-abcdef")
+  const archive = join(generation, "home.tar.zst")
+  const contents = Buffer.from("verified archive")
+  const digest = createHash("sha256").update(contents).digest("hex")
+  await mkdir(generation, { recursive: true })
+  await writeFile(archive, contents)
+  await writeFile(join(generation, "metadata.json"), JSON.stringify({
+    schemaVersion: 1,
+    scope: "backup",
+    id,
+    sizeBytes: contents.length,
+    sha256: digest,
+  }))
+  const request = JSON.stringify({ kind: "home_archive_verify", scope: "backup", id, path: archive })
+  const run = () => spawnSync(process.execPath, [broker, "--stdio"], {
+    input: `${request}\n`,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+      CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT: artifactRoot,
+      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+    },
+  })
+
+  const valid = run()
+  assert.equal(valid.status, 0, valid.stderr)
+  const validResponse = JSON.parse(valid.stdout)
+  assert.equal(validResponse.status, 0, Buffer.from(validResponse.stderrBase64, "base64").toString())
+  assert.deepEqual(
+    JSON.parse(Buffer.from(validResponse.stdoutBase64, "base64").toString()),
+    { path: archive, sizeBytes: contents.length, sha256: digest },
+  )
+
+  await writeFile(archive, "corrupted archive")
+  const corrupted = run()
+  assert.equal(corrupted.status, 0, corrupted.stderr)
+  const corruptedResponse = JSON.parse(corrupted.stdout)
+  assert.notEqual(corruptedResponse.status, 0)
+  assert.match(
+    Buffer.from(corruptedResponse.stderrBase64, "base64").toString(),
+    /digest does not match|metadata is invalid/,
+  )
+})
+
+test("managed slice broker permits a disk-admission helper through its execution-time start gate", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-disk-helper-start-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const run = (container) => spawnSync(process.execPath, [broker, "--stdio"], {
+    input: `${JSON.stringify({ kind: "docker", args: ["start", container] })}\n`,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DOCKER_HOST: `unix://${join(root, "unavailable-docker.sock")}`,
+      CHARIOX_SLICE_DOCKER_SHARE_ROOT: share,
+      CHARIOX_SLICE_DOCKER_HANDLE_ROOT: join(root, "handles"),
+      CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
+    },
+  })
+
+  const helper = run("chariox-slice-dev-disk-admission-0123456789abcdef")
+  assert.equal(helper.status, 0, helper.stderr)
+  const helperResponse = JSON.parse(helper.stdout)
+  assert.notEqual(helperResponse.status, 0)
+  assert.doesNotMatch(
+    Buffer.from(helperResponse.stderrBase64, "base64").toString(),
+    /no broker-owned stable mount record/,
+  )
+
+  const unowned = run("chariox-slice-dev-unowned-helper")
+  assert.equal(unowned.status, 0, unowned.stderr)
+  const unownedResponse = JSON.parse(unowned.stdout)
+  assert.equal(unownedResponse.status, 125)
+  assert.match(
+    Buffer.from(unownedResponse.stderrBase64, "base64").toString(),
+    /no broker-owned stable mount record/,
+  )
+})
+
+test("managed broker preflight requires the same slice publication as execution", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-publication-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const request = (workspace) => ({
+    kind: "provisioner", action: "provision", files: [],
+    environment: {
+      CHARIOX_SLICE_NAME: "chariox-slice-dev",
+      CHARIOX_SLICE_ID: "slice-dev",
+      CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+      CHARIOX_SLICE_WORKSPACE: workspace,
+    },
+  })
+  const expected = join(share, "slices/development/slice-dev/development/workspace")
+  await mkdir(expected, { recursive: true })
+  assert.equal(validate(request(expected), share).status, 0)
+  for (const relative of [
+    "slices/development/slice-dev/empty-development/workspace",
+    "slices/development/other-slice/development/workspace",
+    "slices/development/slice-dev/development/.receipt",
+  ]) {
+    const workspace = join(share, relative)
+    await mkdir(workspace, { recursive: true })
+    const result = validate(request(workspace), share)
+    assert.equal(result.status, 1, `preflight accepted invalid publication ${relative}`)
+    assert.match(result.stderr, /direct repository in the matching slice publication/)
+    const restore = validate({ ...request(workspace), action: "restore-state" }, share)
+    assert.equal(restore.status, 1, `restore preflight accepted invalid publication ${relative}`)
+    assert.match(restore.stderr, /direct repository in the matching slice publication/)
+  }
 })
 
 test("managed slice broker rejects symlink escapes from the shared root", async (context) => {
@@ -428,11 +693,14 @@ process.stdout.write(readFileSync(credential))
 })
 
 test("managed slice broker pins a provisioner path inode across caller replacement", async (context) => {
-  if (process.platform !== "linux" || process.env.CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS !== "1") return
+  if (process.platform !== "linux" || process.env.CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS !== "1") {
+    context.skip("requires an explicitly enabled Linux mount namespace")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-pin-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const share = join(root, "share")
-  const workspace = join(share, "workspace")
+  const workspace = join(share, "slices/development/slice-dev/development/workspace")
   const moved = join(share, "workspace-original")
   const outside = join(root, "outside")
   const started = join(root, "started")

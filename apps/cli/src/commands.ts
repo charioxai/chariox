@@ -25,6 +25,7 @@ export type ParsedSlashCommand =
   | { kind: "kernel"; raw: string; args: string[] }
   | { kind: "machine"; raw: string; args: string[] }
   | { kind: "slice"; raw: string; args: string[] }
+  | { kind: "room"; raw: string; args: string[] }
   | { kind: "relay"; raw: string; args: string[] }
   | { kind: "cloud"; raw: string; args: string[] }
   | { kind: "collab"; raw: string; args: string[] }
@@ -71,6 +72,7 @@ export type SlashCommandHandlers = {
   onKernel: (command: Extract<ParsedSlashCommand, { kind: "kernel" }>) => Promise<unknown> | unknown
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
   onSlice: (command: Extract<ParsedSlashCommand, { kind: "slice" }>) => Promise<unknown> | unknown
+  onRoom: (command: Extract<ParsedSlashCommand, { kind: "room" }>) => Promise<unknown> | unknown
   onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
   onCloud: (command: Extract<ParsedSlashCommand, { kind: "cloud" }>) => Promise<unknown> | unknown
   onCollab: (command: Extract<ParsedSlashCommand, { kind: "collab" }>) => Promise<unknown> | unknown
@@ -208,6 +210,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "slice",
       raw: trimmed,
       args: trimmed.replace(/^\/slice\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed === "/room" || trimmed.startsWith("/room ")) {
+    return {
+      kind: "room",
+      raw: trimmed,
+      args: trimmed.replace(/^\/room\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/relay")) {
@@ -466,6 +475,9 @@ export async function executeSlashCommand(
     case "slice":
       await handlers.onSlice(command)
       break
+    case "room":
+      await handlers.onRoom(command)
+      break
     case "relay":
       await handlers.onRelay(command)
       break
@@ -541,6 +553,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "kernel":
     case "machine":
     case "slice":
+    case "room":
     case "relay":
     case "cloud":
     case "collab":

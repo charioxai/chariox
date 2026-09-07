@@ -713,6 +713,12 @@ impl KernelRuntimeState {
                             .to_string(),
                 })
             }
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL => {
+                self.dispatch_forwarded_home_computer_secret_input_tool(
+                    &context, &agent, arguments,
+                )
+                .await
+            }
             crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::ManageCredentialVaultArgs,
@@ -801,7 +807,21 @@ impl KernelRuntimeState {
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
                 service.validate_terminal_secret_input(&credential_id)?
             }
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                service.validate_computer_secret_input(&credential_id)?
+            }
         };
+        if matches!(
+            &injection,
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer
+        ) {
+            self.ensure_computer_secret_input_approved(
+                &context.home_session_id,
+                agent.id(),
+                &credential_id,
+            )
+            .await?;
+        }
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -815,6 +835,9 @@ impl KernelRuntimeState {
             } => service.browser_secret_input_for_target_url(&credential_id, &target_url)?,
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
                 service.terminal_secret_input(&credential_id)?
+            }
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                service.computer_secret_input(&credential_id)?
             }
         };
         Ok((credential_id, secret_input))

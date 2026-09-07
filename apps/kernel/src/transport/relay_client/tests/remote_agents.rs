@@ -70,6 +70,7 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
     config_worker.accept_remote_leases = true;
+    config_worker.provider_runtime_init_delay_ms = 1_000;
     let app_worker = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
     ));
@@ -290,6 +291,18 @@ async fn assert_remote_native_terminal_resize(
             .and_then(|binding| binding.active_worker_provider_run_id.clone())
             .expect("worker provider run should be projected")
     };
+    {
+        let app = app_worker.lock().await;
+        let worker_run = app
+            .providers()
+            .get_run(&worker_provider_run_id)
+            .expect("worker provider run should exist");
+        assert_eq!(
+            worker_run.state(),
+            crate::provider::ProviderRunState::Starting,
+            "remote native launch must return before slow provider initialization completes"
+        );
+    }
     let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: session_id.to_string(),
         provider_run_id: Some(home_provider_run.id().to_string()),

@@ -1,3 +1,4 @@
+import type { SliceDisplayBackend } from "./kernel-types-cloud.js"
 import type { ManagedEnvironmentDevelopmentSetup } from "./ipc-managed-environment-requests.js"
 
 export function listSlicesRequest() {
@@ -9,6 +10,7 @@ export function createSliceRequest(options: {
   backend?: "local_docker" | "ssh_docker"
   os?: string
   displayMode?: "headless" | "headed"
+  displayBackend?: SliceDisplayBackend
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
@@ -25,6 +27,7 @@ export function createSliceRequest(options: {
       backend: options.backend ?? "local_docker",
       os: options.os ?? "linux",
       display_mode: options.displayMode ?? "headless",
+      ...(options.displayBackend === undefined ? {} : { display_backend: options.displayBackend }),
       workspace_id: options.workspaceId ?? null,
       worktree_id: options.worktreeId ?? null,
       workspace_mount: options.workspaceMount ?? null,
@@ -101,8 +104,26 @@ export function startSliceProviderLoginRequest(sliceRef: string, provider: strin
   }
 }
 
-export function getSliceDisplayEndpointRequest(sliceRef: string) {
-  return { GetSliceDisplayEndpoint: { slice_ref: sliceRef } }
+export function getSliceDisplayEndpointRequest(
+  sliceRef: string,
+  room?: {
+    sessionId: string
+    attachmentId: string
+    viewerPublicKey: string
+  },
+) {
+  return {
+    GetSliceDisplayEndpoint: {
+      slice_ref: sliceRef,
+      ...(room === undefined
+        ? {}
+        : {
+            session_id: room.sessionId,
+            attachment_id: room.attachmentId,
+            viewer_public_key: room.viewerPublicKey,
+          }),
+    },
+  }
 }
 
 export function getSliceLogsRequest(sliceRef: string, tailLines?: number | null) {
@@ -147,6 +168,15 @@ export function createSliceBackupRequest(sliceRef: string, name?: string | null)
     CreateSliceBackup: {
       slice_ref: sliceRef,
       name: name ?? null,
+    },
+  }
+}
+
+export function restoreSliceBackupRequest(sliceRef: string, backupRef: string) {
+  return {
+    RestoreSliceBackup: {
+      slice_ref: sliceRef,
+      backup_ref: backupRef,
     },
   }
 }

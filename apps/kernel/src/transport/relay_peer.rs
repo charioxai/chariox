@@ -69,9 +69,12 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 24 adds an authenticated post-reconnect confirmation for managed
-/// slice relay-token activation.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 24;
+/// Version 44 requires cancellable uploads and upload execution receipt recovery.
+/// Version 45 requires cancellable browser configuration and execution receipt recovery.
+/// Version 46 requires cancellable browser lifecycle operations and receipt recovery.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 46;
+pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
+    "provider_launch_credential_required";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -206,11 +209,129 @@ pub struct RemoteExtensionInvocationContext {
     pub worker_machine_id: Option<String>,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteRoomBrowserRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteRoomBrowserRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomBrowserRuntimeToolResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomBrowserRuntimeToolResult(<redacted>)")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteRoomComputerObservationCall {
+    ScreenStatus,
+    Ocr {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+    },
+    FindText {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for RemoteRoomComputerObservationCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ScreenStatus => formatter.write_str("ScreenStatus"),
+            Self::Ocr { .. } => formatter.write_str("Ocr(<redacted>)"),
+            Self::FindText { .. } => formatter.write_str("FindText(<redacted>)"),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomComputerObservationResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomComputerObservationResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomComputerObservationResult(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteCredentialSecretInjection {
     Browser { target_url: String },
+    Computer,
     Pty,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteCredentialSecretInput(String);
+
+impl RemoteCredentialSecretInput {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
+    pub fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RemoteCredentialSecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RemoteCredentialSecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted remote credential secret input]")
+    }
+}
+
+/// One provider launch secret carried only inside an encrypted kernel-to-kernel
+/// request. The worker validates the provider/profile binding, moves the value
+/// into its in-memory launch environment, and never writes it to a provider
+/// credential file or durable kernel state.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteProviderLaunchCredential {
+    pub provider: String,
+    pub account_profile: String,
+    pub secret_input: RemoteCredentialSecretInput,
+}
+
+impl std::fmt::Debug for RemoteProviderLaunchCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteProviderLaunchCredential")
+            .field("provider", &self.provider)
+            .field("account_profile", &self.account_profile)
+            .field("secret_input", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,6 +472,32 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        command: super::room_browser_controller::RoomBrowserControllerCommand,
+    },
+    OpenRoomDisplay {
+        session_id: String,
+        slice_id: String,
+        viewer_public_key: String,
+    },
+    CaptureRoomScreenshot {
+        session_id: String,
+        slice_id: String,
+    },
+    ReadRoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        artifact_id: String,
+        offset: u64,
+        max_bytes: u32,
+    },
+    ObserveRoomComputer {
+        session_id: String,
+        slice_id: String,
+        call: RemoteRoomComputerObservationCall,
+    },
     Ping {
         value: String,
     },
@@ -447,6 +594,8 @@ pub enum RelayPeerRequest {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
     SendLeasedNativeProviderInput {
         leased_agent_id: String,
@@ -480,6 +629,8 @@ pub enum RelayPeerRequest {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
     SteerLeasedPrompt {
         leased_agent_id: String,
@@ -542,6 +693,10 @@ pub enum RelayPeerRequest {
         context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
+    },
+    ForwardRoomBrowserRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteRoomBrowserRuntimeToolCall,
     },
     InvokeHomeExtensionTool {
         context: RemoteExtensionInvocationContext,
@@ -624,9 +779,34 @@ pub enum RelayPeerRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
+    RoomDisplayOpened {
+        session_id: String,
+        slice_id: String,
+        endpoint: crate::slice::SliceDisplayEndpoint,
+    },
+    RoomScreenshotCaptured {
+        session_id: String,
+        slice_id: String,
+        artifact: crate::local::RoomEnvironmentScreenshotArtifact,
+    },
+    RoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        chunk: crate::local::RoomEnvironmentScreenshotChunk,
+    },
+    RoomComputerObserved {
+        session_id: String,
+        slice_id: String,
+        result: RemoteRoomComputerObservationResult,
+    },
     Pong {
         value: String,
         daemon_id: String,
@@ -745,6 +925,9 @@ pub enum RelayPeerResponse {
     MetaRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
+    RoomBrowserRuntimeToolHandled {
+        result: RemoteRoomBrowserRuntimeToolResult,
+    },
     HomeExtensionToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
@@ -760,7 +943,7 @@ pub enum RelayPeerResponse {
     },
     HomeCredentialSecretResolved {
         credential_id: String,
-        secret_input: String,
+        secret_input: RemoteCredentialSecretInput,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,

@@ -30,9 +30,22 @@ test("functional catalog covers browser, computer, shared control, named faults,
     "fault.stale-endpoint",
     "fault.queue-saturation",
     "fault.memory-pressure",
+    "fault.disk-pressure",
+    "fault.resource-exhaustion",
   ])
   assert.throws(() => cases.push({}), TypeError)
   assert.throws(() => cases[0].assertions.push("drift"), TypeError)
+})
+
+test("functional catalog requires OAuth callback and external reauthentication evidence", () => {
+  assert.equal(BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA, "chariox.browser_computer.functional_evidence.v4")
+  const authentication = browserComputerFunctionalCases().find((item) => item.id === "browser.authentication")
+  assert.deepEqual(authentication?.assertions, [
+    "oauth-popup-callback-completed",
+    "service-session-invalidation-distinguished",
+    "browser-state-present-during-reauth",
+    "reauthentication-restores-use",
+  ])
 })
 
 test("functional evidence accepts an exact passing subset", () => {

@@ -139,7 +139,7 @@ impl KernelRuntimeState {
     pub(crate) async fn destroy_relay_execution_lease(
         &self,
         lease_id: &str,
-    ) -> Result<ExecutionLease, DaemonError> {
+    ) -> Result<(), DaemonError> {
         let lease_id = lease_id.to_string();
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).destroy_execution_lease(&lease_id)
@@ -184,7 +184,7 @@ impl KernelRuntimeState {
     pub(crate) async fn destroy_relay_leased_agent(
         &self,
         leased_agent_id: &str,
-    ) -> Result<LeasedAgent, DaemonError> {
+    ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).destroy_leased_agent(&leased_agent_id)
@@ -271,28 +271,34 @@ impl KernelRuntimeState {
         required_mcps: Vec<RequiredRemoteMcp>,
         required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let adapter_key = adapter_key.to_string();
         let provider = provider.to_string();
         let account_profile = account_profile.to_string();
         let model = model.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).launch_leased_native_provider_run(
-                &leased_agent_id,
-                &adapter_key,
-                &provider,
-                &account_profile,
-                &model,
-                variant,
-                structured_endpoint,
-                provider_session_id,
-                required_mcps,
-                required_skills,
-                remote_extension_manifest,
-            )
-        })
-        .await
+        let launch_request = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).prepare_leased_native_provider_launch(
+                    &leased_agent_id,
+                    &adapter_key,
+                    &provider,
+                    &account_profile,
+                    &model,
+                    variant,
+                    structured_endpoint,
+                    provider_session_id,
+                    required_mcps,
+                    required_skills,
+                    remote_extension_manifest,
+                )
+            })
+            .await?;
+        self.launch_provider_for_remote_lease_detached(launch_request, provider_launch_credential)
+            .await
     }
 
     pub(crate) async fn send_relay_leased_native_provider_input(
@@ -348,6 +354,9 @@ impl KernelRuntimeState {
         required_mcps: Vec<RequiredRemoteMcp>,
         required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
@@ -384,11 +393,26 @@ impl KernelRuntimeState {
             crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
                 provider_run_id.clone()
             }
-            crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => self
-                .launch_provider_for_remote_lease_detached(request.clone())
+            crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
+                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+                    && provider_launch_credential.is_none()
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "launch remote provider without credential",
+                        message: format!(
+                            "{}: the worker must relaunch the selected Claude profile",
+                            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                        ),
+                    });
+                }
+                self.launch_provider_for_remote_lease_detached(
+                    request.clone(),
+                    provider_launch_credential,
+                )
                 .await?
                 .id()
-                .to_string(),
+                .to_string()
+            }
         };
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app)

@@ -1,7 +1,9 @@
 use super::action::{EnvironmentAction, EnvironmentActionState, InputTarget};
-use super::ownership::InputOwnership;
+use super::ownership::{InputOwnership, PendingInputTakeover};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentLifecycle {
     Stopped,
     Starting,
@@ -13,7 +15,7 @@ pub enum EnvironmentLifecycle {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalViewport {
     pub css_width: u32,
     pub css_height: u32,
@@ -55,25 +57,48 @@ impl CanonicalViewport {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentActorKind {
     Human,
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentActorPresence {
     Present,
     Away,
     Disconnected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentActorColor {
+    Blue,
+    Cyan,
+    Green,
+    Amber,
+    Orange,
+    Rose,
+    Violet,
+    Slate,
+}
+
+impl Default for EnvironmentActorColor {
+    fn default() -> Self {
+        Self::Slate
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentActor {
     pub actor_id: String,
     pub kind: EnvironmentActorKind,
     pub display_label: String,
     pub presence: EnvironmentActorPresence,
+    #[serde(default)]
+    pub presentation_color: EnvironmentActorColor,
 }
 
 impl EnvironmentActor {
@@ -82,8 +107,10 @@ impl EnvironmentActor {
         kind: EnvironmentActorKind,
         display_label: impl Into<String>,
     ) -> Self {
+        let actor_id = actor_id.into();
         Self {
-            actor_id: actor_id.into(),
+            presentation_color: actor_presentation_color(&actor_id),
+            actor_id,
             kind,
             display_label: display_label.into(),
             presence: EnvironmentActorPresence::Present,
@@ -91,7 +118,41 @@ impl EnvironmentActor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+fn actor_presentation_color(actor_id: &str) -> EnvironmentActorColor {
+    const COLORS: [EnvironmentActorColor; 8] = [
+        EnvironmentActorColor::Blue,
+        EnvironmentActorColor::Cyan,
+        EnvironmentActorColor::Green,
+        EnvironmentActorColor::Amber,
+        EnvironmentActorColor::Orange,
+        EnvironmentActorColor::Rose,
+        EnvironmentActorColor::Violet,
+        EnvironmentActorColor::Slate,
+    ];
+    let hash = actor_id.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    COLORS[hash as usize % COLORS.len()]
+}
+
+pub fn human_environment_actor_id(user_id: &str) -> String {
+    format!("user:{user_id}")
+}
+
+pub fn human_environment_actor_label(user_id: &str) -> &'static str {
+    if user_id == crate::session::DEFAULT_LOCAL_USER_ID {
+        "Local user"
+    } else {
+        "Room member"
+    }
+}
+
+pub fn agent_environment_actor_id(agent_id: &str) -> String {
+    format!("agent:{agent_id}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentComponent {
     BrowserController,
     Browser,
@@ -99,7 +160,8 @@ pub enum EnvironmentComponent {
     Streamer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentComponentHealthState {
     Starting,
     Ready,
@@ -107,14 +169,14 @@ pub enum EnvironmentComponentHealthState {
     Unavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentComponentHealth {
     pub component: EnvironmentComponent,
     pub state: EnvironmentComponentHealthState,
     pub diagnostic_code: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomEnvironmentSnapshot {
     pub session_id: String,
     pub environment_id: String,
@@ -123,14 +185,32 @@ pub struct RoomEnvironmentSnapshot {
     pub health: Vec<EnvironmentComponentHealth>,
     pub viewport: CanonicalViewport,
     pub actors: Vec<EnvironmentActor>,
+    #[serde(default)]
+    pub pointers: Vec<EnvironmentPointer>,
     pub tabs: Vec<EnvironmentTab>,
     pub focused_tab_id: Option<String>,
     pub actions: Vec<EnvironmentAction>,
     pub input_ownership: Vec<InputOwnership>,
+    #[serde(default)]
+    pub pending_input_takeovers: Vec<PendingInputTakeover>,
     pub event_cursor: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentPointerPosition {
+    pub x: u32,
+    pub y: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentPointer {
+    pub actor_id: String,
+    pub x: u32,
+    pub y: u32,
+    pub viewport_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentTab {
     pub tab_id: String,
     pub url: String,
@@ -140,8 +220,33 @@ pub struct EnvironmentTab {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnvironmentTabObservation {
+    pub(crate) runtime_target_id: String,
+    pub(crate) document_id: String,
+    pub(crate) url: String,
+    pub(crate) title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnvironmentTabRuntimeBinding {
+    pub(crate) runtime_target_id: String,
+    pub(crate) document_id: String,
+    pub(crate) document_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvironmentError {
     InvalidViewport,
+    EnvironmentAlreadyExists {
+        session_id: String,
+        environment_id: String,
+    },
+    EnvironmentNotFound {
+        session_id: String,
+    },
+    RoomNotFound {
+        session_id: String,
+    },
     InvalidLifecycleTransition {
         from: EnvironmentLifecycle,
         to: EnvironmentLifecycle,
@@ -157,6 +262,12 @@ pub enum EnvironmentError {
         tab_id: String,
         expected: u64,
         actual: u64,
+    },
+    StructuredObservationUnavailable {
+        tab_id: String,
+    },
+    StaleElementReference {
+        reference_id: String,
     },
     UnknownActor {
         actor_id: String,
@@ -181,6 +292,37 @@ pub enum EnvironmentError {
     InputNotOwned {
         target: InputTarget,
     },
+    InputTakeoverRequired {
+        actor_id: String,
+    },
+    PointerOutOfBounds {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+    InvalidClickCount {
+        click_count: u8,
+    },
+    InvalidScrollSteps {
+        horizontal_steps: i16,
+        vertical_steps: i16,
+        max_steps: u16,
+    },
+    InvalidKeyboardText {
+        utf8_byte_count: usize,
+        max_utf8_bytes: usize,
+    },
+    InvalidKeyboardKey,
+    InvalidKeyboardRepeat {
+        repeat: u16,
+        max_repeat: u16,
+    },
+    InvalidClipboardText {
+        utf8_byte_count: usize,
+        max_utf8_bytes: usize,
+    },
+    InvalidIdempotencyKey,
     InvalidEventCapacity,
     IdempotencyConflict {
         idempotency_key: String,
@@ -189,7 +331,56 @@ pub enum EnvironmentError {
         action_id: String,
         state: EnvironmentActionState,
     },
+    ActionNotRunning {
+        action_id: String,
+        state: EnvironmentActionState,
+    },
+    ActionCancellationForbidden {
+        actor_id: String,
+        action_id: String,
+    },
     ActorKindConflict {
         actor_id: String,
     },
+}
+
+impl EnvironmentError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidViewport => "environment_invalid_viewport",
+            Self::EnvironmentAlreadyExists { .. } => "environment_already_exists",
+            Self::EnvironmentNotFound { .. } => "environment_not_found",
+            Self::RoomNotFound { .. } => "room_not_found",
+            Self::InvalidLifecycleTransition { .. } => "environment_invalid_lifecycle_transition",
+            Self::StaleRuntimeGeneration { .. } => "environment_stale_runtime_generation",
+            Self::UnknownTab { .. } => "environment_unknown_tab",
+            Self::StaleDocumentRevision { .. } => "environment_stale_document_revision",
+            Self::StructuredObservationUnavailable { .. } => {
+                "environment_structured_observation_unavailable"
+            }
+            Self::StaleElementReference { .. } => "environment_stale_element_reference",
+            Self::UnknownActor { .. } => "environment_unknown_actor",
+            Self::StaleViewportRevision { .. } => "environment_stale_viewport_revision",
+            Self::EnvironmentNotReady { .. } => "environment_not_ready",
+            Self::UnknownAction { .. } => "environment_unknown_action",
+            Self::HumanActorRequired { .. } => "environment_human_actor_required",
+            Self::InputOwnedByAnotherActor { .. } => "environment_input_owned",
+            Self::InputNotOwned { .. } => "environment_input_not_owned",
+            Self::InputTakeoverRequired { .. } => "environment_input_takeover_required",
+            Self::PointerOutOfBounds { .. } => "environment_pointer_out_of_bounds",
+            Self::InvalidClickCount { .. } => "environment_invalid_click_count",
+            Self::InvalidScrollSteps { .. } => "environment_invalid_scroll_steps",
+            Self::InvalidKeyboardText { .. } => "environment_invalid_keyboard_text",
+            Self::InvalidKeyboardKey => "environment_invalid_keyboard_key",
+            Self::InvalidKeyboardRepeat { .. } => "environment_invalid_keyboard_repeat",
+            Self::InvalidClipboardText { .. } => "environment_invalid_clipboard_text",
+            Self::InvalidIdempotencyKey => "environment_invalid_idempotency_key",
+            Self::InvalidEventCapacity => "environment_invalid_event_capacity",
+            Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",
+            Self::ActionAlreadyTerminal { .. } => "environment_action_terminal",
+            Self::ActionNotRunning { .. } => "environment_action_not_running",
+            Self::ActionCancellationForbidden { .. } => "environment_action_cancellation_forbidden",
+            Self::ActorKindConflict { .. } => "environment_actor_kind_conflict",
+        }
+    }
 }
