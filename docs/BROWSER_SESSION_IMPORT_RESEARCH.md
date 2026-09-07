@@ -1,6 +1,6 @@
 # Optional Chrome session import
 
-Status: cookie conversion and source reader implemented and fixture-tested; product import not implemented.
+Status: source, encrypted component transfer and bounded destination application fixture-tested; product import not implemented.
 Updated: 2026-09-07.
 
 ## User request
@@ -160,8 +160,8 @@ fixture authentication transfers between isolated contexts without changing the
 source, widening host-only scope or losing HttpOnly or partition metadata. It
 asserts both unsafe Chromium flags are absent. The test constructs source API
 records; it does not prove extension permissions or real-service portability.
-See its README for supported fields and limits. The connector, kernel consent,
-encrypted transport and transactional destination application remain unimplemented.
+See its README for supported fields and limits. The product connector, kernel
+consent and live relay routing remain unimplemented.
 
 The source reader now has ten focused API-boundary tests and a real MV3 fixture
 test using a disposable Chrome for Testing profile. It reads HttpOnly and
@@ -171,13 +171,29 @@ The fixture injects authorization and grants only its test host. It does not
 implement kernel pairing, real consent UI or transfer into an Environment.
 
 An internal destination operation now detects overwrite conflicts, verifies
-applied cookies and attempts snapshot rollback for completed writes. Nine tests
+applied cookies and attempts snapshot rollback for completed writes. Ten tests
 and a real-CDP fixture cover cancellation, authorization loss, silent cookie
 drops, uncertain write errors, destination metadata and an untouched partition.
 This operation is not exposed through the kernel/controller protocol. Kernel
-exclusion, page/network quiescence, bounded transport, quarantine on uncertain
+exclusion, page/network quiescence, quarantine on uncertain
 recovery and a durable encrypted crash-recovery journal remain mandatory before
 production use. In-memory rollback is not crash-atomic import.
+
+The real MV3 fixture now encrypts source cookies with the existing Chariox relay
+envelope, decrypts with the native relay implementation, independently validates
+at the destination and authenticates an isolated fixture browser context. This
+caught a source-format mismatch and now has a public composition regression.
+Three crypto tests prove both browser/native directions and reject tampering and
+wrong recipient keys. No live relay, kernel pairing or production consent is
+involved in this fixture.
+
+The CDP destination adapter now bounds discovery and each store operation to at
+most five seconds. A timeout or transport error invalidates that store. A possible
+mutation reports recovery required, even when its acknowledgement arrives later.
+Six focused cases cover stalls, shared deadlines, late replies and redacted
+errors. Real Chromium transaction and encrypted import tests must continue to
+pass with these bounds. Kernel quarantine, fresh-connection recovery and durable
+journaling still need implementation; this is not crash-safe production import.
 
 The repository saves browser home state and has a live Docker browser state
 drill. Local validation now includes persistent and session cookies plus browser
