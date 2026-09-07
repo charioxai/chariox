@@ -87,7 +87,7 @@ function start(bytes, args = [], executable = launcher) {
   return { child, completed, readiness: () => ready };
 }
 
-test('native constructors and operations remain confined after exact supervisor handshake', { skip: !enabled }, async () => {
+test('native constructors and operations remain confined after exact supervisor handshake', { skip: !enabled }, async context => {
   const roots = await fixture();
   const running = start(record(roots));
   const expected = expectedReadiness;
@@ -108,6 +108,7 @@ test('native constructors and operations remain confined after exact supervisor 
   assert.match(result.stdout, /fork_denied:ok/);
   assert.match(result.stdout, /raw_network_denied:ok/);
   assert.match(result.stdout, /exec_denied:ok/);
+  context.diagnostic(JSON.stringify({ scope: 'Development macOS libc probe; not signed/hardened Node acceptance', checks: result.stdout.trim().split('\n') }));
 });
 
 test('malformed authority records cannot reach readiness or load a runtime', { skip: !enabled }, async () => {

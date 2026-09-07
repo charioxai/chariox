@@ -14,7 +14,7 @@ launch processes, claim sandbox enforcement or implement a privileged fallback.
 ## App entrypoint
 
 The worker loads the immutable package after lockdown, then calls its entrypoint
-with a configured `AppSdk`. Tool and event names come from the verified package
+with a frozen `AppBackendSdk`. Tool and event names come from the verified package
 declarations. The kernel validates the declared input and output schemas on the
 operation route; App handlers can perform their own business validation.
 
@@ -37,6 +37,12 @@ export default function register(chariox) {
 
 The trusted bootstrap calls `ready()` after registration. Readiness reports the
 registered declarations and seals registration; it does not prove containment.
+The App receives neither `ready` nor `close`. Its one entry export is the
+registration function: `export default register` for ESM, or
+`module.exports = register` for CommonJS. Registration may return a promise;
+all declared tool/event handlers must exist when it settles. The verified
+manifest's `runtime.entry` selects this module. No App server port or separate
+MCP transport is required. See the [trusted bootstrap contract](../../apps/app-worker/src/bootstrap.md).
 Lifecycle handlers are optional, serialized, and deadline-bound. Tool and event
 handlers have separate names, and every delivered occurrence requires a reply.
 Wire control events never dispatch App event handlers.

@@ -1,4 +1,4 @@
-name: App worker native containment (Linux fixture)
+name: App worker bootstrap and native containment
 
 on:
   workflow_dispatch:
@@ -7,6 +7,7 @@ on:
       - 'apps/app-worker/src/**'
       - 'apps/app-worker/tests/**'
       - 'apps/app-worker/sandbox.lock.json'
+      - 'packages/app-sdk/**'
       - 'scripts/test-app-worker-linux-ci.sh'
       - 'scripts/app-worker-linux-fixture.sh'
       - '.github/workflows/app-worker-native-test.yml'
@@ -30,6 +31,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.20.0'
+      - name: Verify trusted bootstrap and SDK channel
+        run: node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs
       - name: Install small native fixture build dependencies
         run: |
           sudo apt-get update -qq
@@ -60,3 +63,38 @@ jobs:
               ;;
             *) echo 'Refusing unexpected fixture scratch path.' >&2; exit 1 ;;
           esac
+
+  native-macos:
+    needs: native-linux
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify development macOS native boundary and bootstrap
+        run: |
+          set -o pipefail
+          {
+            git rev-parse HEAD
+            uname -sm
+            sw_vers
+            /usr/bin/clang --version
+            node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs apps/app-worker/tests/native-launcher.test.mjs
+          } 2>&1 | tee "$RUNNER_TEMP/native-macos.log"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: native-macos-fixture-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/native-macos.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove owned fixture state
+        if: always()
+        run: |
+          rm -f -- "$RUNNER_TEMP/native-macos.log"
+          rm -rf -- "$HOME/.chariox/dev/apps-phase1/bootstrap-tests" "$HOME/.chariox/dev/apps-phase1/native-launcher-tests"

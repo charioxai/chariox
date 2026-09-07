@@ -108,6 +108,10 @@ export interface AppSdk {
   close(): void;
 }
 
+/** Injected into the one App registration function; bootstrap owns readiness and IPC lifetime. */
+export type AppBackendSdk = Omit<AppSdk, 'ready' | 'close'>;
+export type AppRegistration = (chariox: AppBackendSdk) => void | Promise<void>;
+
 /** Worker bootstrap options, supplied after the trusted launcher established containment. */
 export interface AppSdkOptions {
   transport: import('./internal.js').AppTransport;
