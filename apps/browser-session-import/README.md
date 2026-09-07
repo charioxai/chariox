@@ -1,8 +1,39 @@
 # Browser session import conversion
 
 This is the first import implementation step, not a usable importer. Nothing
-here reads a user's browser profile, requests extension permissions, contacts a
-kernel, or installs cookies in a product Environment.
+here is wired to a user's profile, kernel or product Environment. The source
+reader uses Chrome's extension APIs when called by a trusted connector. It does
+not request permissions, transmit cookies or register a web-accessible endpoint.
+
+## Source reader
+
+`readApprovedChromeCookies({chrome, scope, sourceTabId, authorize, signal,
+timeoutMs})` snapshots the selected source tab, store and domains. It rejects
+incognito tabs and ambiguous or mismatched stores. Existing cookie and exact-host
+permissions are required; the eventual popup must request optional permission
+from an explicit user gesture before calling it.
+
+The trusted `authorize(selection)` callback receives an immutable selection and
+must verify live kernel pairing, request expiry, consent and destination identity.
+It is called before cookie queries, after each query and before returning. A
+callback returning `true` is a test seam, not an implemented authorization system.
+Never expose this adapter to arbitrary page messages or accept a wire-supplied
+approval boolean. The eventual kernel must independently authorize application.
+
+The reader uses one normal cookie store in the profile running the extension. It
+cannot read arbitrary Chrome profiles on disk. Queries select one approved domain
+and partition site at a time. Chrome's domain filter may also return subdomains;
+the reader discards those unless separately queried under explicit approval.
+Partition queries preserve both cross-site-ancestor variants. No cookie write or
+delete API is used.
+
+Cancellation and a maximum 30-second total deadline settle even if Chrome has not
+settled an API call. Chrome does not offer cancellation of the underlying cookie
+read; late results are discarded, not published. Timers and abort listeners are
+removed. Each API result and the accumulated batch are capped at 512 records;
+conversion enforces the payload limit before another query. Chrome's API has no
+pagination, so the first returned array is allocated by Chrome before this cap
+can be checked. API errors become fixed codes and contain no original payload.
 
 `prepareChromeCookieBatch(source, scope)` converts plain Chrome cookies API
 records to CDP CookieParam records. It validates the entire batch before returning
@@ -41,6 +72,7 @@ Run dependency-free tests with:
 
 ```sh
 node --test apps/browser-session-import/chrome-cookie-batch.test.mjs
+node --test apps/browser-session-import/chrome-cookie-reader.test.mjs
 ```
 
 For the browser test, set `PLAYWRIGHT_MODULE` to an existing Playwright ESM module
@@ -60,6 +92,16 @@ cookies, so this does not yet test an actual extension's cookies API.
 The real-browser test also verifies same-name/path host-only and domain cookies
 coexist in the destination. Their leading-dot distinction is part of Chromium's
 cookie identity, so the converter must not reject that pair as a duplicate.
+
+`chrome-cookie-reader.browser-test.mjs` runs the reader inside a real disposable
+MV3 extension. Use the same Playwright environment variable; optionally set
+`CHARIOX_TEST_CHROMIUM` to an already installed Chromium/Chrome for Testing binary
+when its revision differs from Playwright's default. It never downloads a browser.
+The test extension has permission for the fixture host only. It checks actual
+HttpOnly and partitioned reads, selected-domain output and source preservation.
+The generated extension and browser profile are removed in `finally`. These are
+fixture-only permissions and an injected authorization callback, not product
+consent, pairing, or a distributable connector.
 
 ## Required before product integration
 
