@@ -20,9 +20,11 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
     for (const file of ['chrome-cookie-reader.mjs','chrome-cookie-batch.mjs']) {
       await copyFile(new URL(file, import.meta.url), path.join(extension, file));
     }
-    const readerSource = await readFile(new URL('kernel-source-reader.mjs',import.meta.url),'utf8');
-    await writeFile(path.join(extension,'kernel-source-reader.mjs'),readerSource.replace(
-      '../../packages/kernel-client/src/browser-import-requests.ts','./browser-import-requests.mjs'));
+    for (const file of ['kernel-source-reader.mjs','relay-request-metadata.mjs','chrome-import-consent-flow.mjs']) {
+      const source = await readFile(new URL(file,import.meta.url),'utf8');
+      await writeFile(path.join(extension,file),source.replace(
+        '../../packages/kernel-client/src/browser-import-requests.ts','./browser-import-requests.mjs'));
+    }
     const requestSource = await readFile(new URL('../../packages/kernel-client/src/browser-import-requests.ts',import.meta.url),'utf8');
     await writeFile(path.join(extension,'browser-import-requests.mjs'),ts.transpileModule(requestSource,{
       compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022},
@@ -39,12 +41,40 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
     }));
     await writeFile(path.join(extension, 'worker.mjs'),
       "import {readKernelApprovedChromeCookies} from './kernel-source-reader.mjs'; import {encryptRelayPayload} from './browser-relay-crypto.mjs'; globalThis.readFixture = readKernelApprovedChromeCookies; globalThis.encryptFixture = encryptRelayPayload;");
+    await writeFile(path.join(extension,'fixture.html'),
+      '<!doctype html><button id="confirm">Confirm fixture import</button><script type="module" src="fixture.mjs"></script>');
+    await writeFile(path.join(extension,'fixture.mjs'), `
+      import {prepareChromeCookieImport} from './chrome-import-consent-flow.mjs';
+      import {encryptRelayPayload} from './browser-relay-crypto.mjs';
+      globalThis.prepareFixture = async ({selection,publicKey}) => {
+        const requests = [];
+        const flow = await prepareChromeCookieImport({chrome,sourceTabId:selection.sourceTabId,
+          selection:{session_id:'fixture-room',attachment_id:'fixture-attachment',environment_id:'fixture-environment',
+            runtime_generation:1,tab_id:'fixture-tab',document_revision:1,
+            source_store_id:selection.scope.sourceStoreId,domains:selection.scope.approvedDomains,
+            partition_sites:selection.scope.approvedPartitionSites,overwrite:false},
+          request:async payload => {
+            requests.push(payload);
+            return {BrowserImportConsent:{request_id:'a'.repeat(32),status:{
+              PrepareBrowserImport:'prepared',ApproveBrowserImport:'approved',ClaimBrowserImportSource:'source_claimed',
+              AuthorizeBrowserImportSource:'source_authorized',CancelBrowserImport:'cancelled'}[Object.keys(payload)[0]]}};
+          }});
+        globalThis.fixturePrepared = flow.state;
+        document.querySelector('#confirm').onclick = async () => {
+          try {
+            const collected = await flow.confirmAndRead();
+            globalThis.fixtureResult = {encrypted:(await encryptRelayPayload(publicKey,JSON.stringify(collected))).payload,requests};
+            await flow.cancel();
+          } catch { globalThis.fixtureResult = {error:'fixture_import_failed'}; }
+        };
+      };
+    `);
     context = await chromium.launchPersistentContext(path.join(root, 'profile'), {
       channel:'chromium', headless:true, chromiumSandbox:true,
       ...(process.env.CHARIOX_TEST_CHROMIUM ? {executablePath:process.env.CHARIOX_TEST_CHROMIUM} : {}),
       args:[`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
     });
-    await context.route('**/*', route => route.fulfill({status:200, body:'fixture'}));
+    await context.route(/^https?:\/\//, route => route.fulfill({status:200, body:'fixture'}));
     const page = await context.newPage();
     await page.goto('https://example.test/');
     await context.addCookies([
@@ -71,9 +101,8 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
         approvedPartitionSites:['https://top.test']}};
     });
     const recipient = createRelayKeypair();
-    const sourceResult = await worker.evaluate(async ({selection,publicKey}) => {
+    await worker.evaluate(async ({selection}) => {
       const requestId = 'a'.repeat(32);
-      const requests = [];
       const options = {chrome,sourceTabId:selection.sourceTabId,requestId,
         selection:{session_id:'fixture-room',attachment_id:'fixture-attachment',environment_id:'fixture-environment',
           runtime_generation:1,tab_id:'fixture-tab',document_revision:1,
@@ -84,15 +113,23 @@ test('real MV3 cookies cross an encrypted relay envelope and authenticate an iso
       try { await globalThis.readFixture({...options,request:async () => true}); }
       catch (error) { denied = error.code === 'cookie_source_denied'; }
       if (!denied) throw new Error('fixture_boolean_approval_accepted');
-      const collected = await globalThis.readFixture({...options,request:async payload => {
-        requests.push(payload);
-        return {BrowserImportConsent:{request_id:requestId,
-          status:payload.ClaimBrowserImportSource ? 'source_claimed' : 'source_authorized'}};
-      }});
-      return {encrypted:(await globalThis.encryptFixture(publicKey,JSON.stringify(collected))).payload,requests};
-    },{selection,publicKey:recipient.publicKeyBase64});
+    },{selection});
+    // Exercise the actual Chrome permission API from a trusted click in an
+    // extension page. Permissions are pregranted to avoid automating Chrome's
+    // native approval dialog; deny/new-grant cases are unit fixtures separately.
+    const consentPage = await context.newPage();
+    await consentPage.goto(new URL('fixture.html',worker.url()).href);
+    await consentPage.waitForFunction(() => typeof globalThis.prepareFixture === 'function', undefined, {timeout:5000});
+    await consentPage.evaluate(options => globalThis.prepareFixture(options),{selection,publicKey:recipient.publicKeyBase64});
+    assert.equal(await consentPage.evaluate(() => globalThis.fixturePrepared),'prepared');
+    await consentPage.locator('#confirm').click();
+    await consentPage.waitForFunction(() => globalThis.fixtureResult !== undefined, undefined, {timeout:5000});
+    const sourceResult = await consentPage.evaluate(() => globalThis.fixtureResult);
+    assert.equal(sourceResult.error,undefined);
+    assert.equal(sourceResult.requests[0].PrepareBrowserImport !== undefined,true);
+    assert.equal(sourceResult.requests[1].ApproveBrowserImport !== undefined,true);
     assert.equal(sourceResult.requests.filter(r => r.ClaimBrowserImportSource).length,1);
-    assert.ok(sourceResult.requests.slice(1).every(r => r.AuthorizeBrowserImportSource));
+    assert.ok(sourceResult.requests.slice(3).every(r => r.AuthorizeBrowserImportSource || r.CancelBrowserImport));
     assert.equal(JSON.stringify(sourceResult.requests).includes('not-a-real-credential'),false);
     const encrypted = sourceResult.encrypted;
     // The simulated relay receives ciphertext only. Destination policy comes from

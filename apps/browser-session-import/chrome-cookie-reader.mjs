@@ -50,7 +50,7 @@ export async function readApprovedChromeCookies({chrome, scope, sourceTabId, aut
   return {cookies:structuredClone(cookies), summary};
 }
 
-async function sourceCall(call, signal, deadline) {
+export async function sourceCall(call, signal, deadline) {
   if (signal?.aborted) fail('cookie_source_cancelled');
   const remaining = deadline - performance.now();
   if (remaining <= 0) fail('cookie_source_timeout');

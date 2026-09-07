@@ -5,6 +5,32 @@ not wired to a user's profile or product Environment. The source
 reader uses Chrome's extension APIs when called by a trusted connector. It does
 not request permissions, transmit cookies or register a web-accessible endpoint.
 
+## Trusted confirmation flow
+
+`prepareChromeCookieImport` composes the internal reader with kernel consent and
+Chrome permission requests. Preparation snapshots and freezes the selected
+metadata and asks the kernel to prepare consent, without reading cookies.
+The extension UI must call `confirmAndRead()` directly in its confirmation click
+handler. It calls Chrome's permission API before yielding the user gesture,
+requests only the selected hosts and cookie permission, then approves and claims
+the matching kernel request before reading. Confirmation is single-use.
+
+Preparation expires within two minutes, including permission and request waits.
+Caller abort, denial, expiry and failed reads stop outstanding work and send at
+most one bounded best-effort kernel cancellation. `cancel()` reports whether that
+cancellation was acknowledged. It does not close the shared relay or retract a
+Chrome API operation already sent. Late results cannot authorize more reads.
+The returned cookie batch contains secrets and belongs only to the trusted caller;
+the flow retains no batch in its state. Successful reads leave the source claim
+for the destination operation. The caller must cancel if it abandons delivery.
+
+The eventual extension manifest must declare the optional permissions its UI
+requests. Chrome permissions can outlive one import. This flow does not remove
+them on cancellation because another import or a previous user grant may own
+them. The product UI still needs explicit permission management, pairing and
+source/destination selection. There is no installable connector or page-message
+endpoint in this change, and no user's profile is imported automatically.
+
 ## Source reader
 
 `readKernelApprovedChromeCookies({chrome, requestId, selection, sourceTabId,
@@ -99,6 +125,7 @@ Run dependency-free tests with:
 node --test apps/browser-session-import/chrome-cookie-batch.test.mjs
 node --test apps/browser-session-import/chrome-cookie-reader.test.mjs
 node --test apps/browser-session-import/kernel-source-reader.test.mjs
+node --test apps/browser-session-import/chrome-import-consent-flow.test.mjs
 node --test apps/browser-session-import/cookie-import-flow.test.mjs
 ```
 
@@ -136,8 +163,12 @@ page scripts. Only ciphertext crosses the extension evaluation boundary.
 The generated extension and browser profile are removed in `finally`. The fixture
 now uses the grant-aware reader and shared request builders, with simulated
 metadata-only kernel replies. It also verifies boolean approval is rejected.
-Permissions and transport replies are fixtures, not live kernel consent, pairing
-or a distributable connector.
+It also exercises the confirmation flow from a real extension-page click using
+Chrome's permission API. The fixture grants permissions in its manifest so no
+native authorization dialog is automated. Denial, cancellation, expiry and
+permission ordering are covered separately by unit tests. Kernel replies remain
+fixtures, not live consent or pairing. The HTTP fixture route excludes extension
+URLs so it cannot replace the extension's HTML or modules with mock responses.
 
 `@chariox/kernel-client/browser-relay-crypto` exposes the existing Cloud WebCrypto
 implementation using the shared relay envelope type. Its implementation comes
