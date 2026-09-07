@@ -158,6 +158,34 @@ The outer relay request ID is not authenticated and cannot replace this check.
 Retries must use fresh encryption nonces. Missing bindings and old bare responses
 fail closed. This decoder does not open a socket, pair a client or grant access.
 
+`connectBrowserImportRelay` now provides the internal socket transport for the
+metadata-only consent requests. It uses the existing `client_connect`,
+`client_request` and `client_response` frames and shared encryption. Its caller
+must supply an already authorized relay token, exact daemon ID, retained sender
+keypair and kernel public key obtained through trusted pairing. A key received
+in a handshake cannot establish trust. Production connections require `wss:`;
+unencrypted `ws:` is restricted to loopback development. URL credentials,
+query strings and fragments are rejected.
+
+The connector snapshots the sender identity and whitelists bounded selection
+metadata. It does not accept general kernel commands or cookie payloads. Replies
+must match the expected consent phase and identifier as well as the pinned kernel
+and encrypted request nonce. There are at most eight pending requests, bounded
+frames and send backlog, and deadlines of five seconds by default with a maximum
+of 30 seconds. Abort and close reject pending work and discard late results.
+The transport does not reconnect or retry a one-use consent request automatically.
+Errors contain a fixed message, never the original transport payload.
+
+Run `relay-connector.test.mjs` with `WS_MODULE` pointing to an already installed
+`ws` ESM module. The tests use disposable loopback servers and the real encryption,
+decoder and source-reader modules. They cover identity mismatch, replay, metadata
+filtering, mid-read revocation, deadlines, cancellation, disconnect, pending limits
+and malformed frames. Backpressure and a stalled handshake use socket doubles.
+The server and Chrome cookies API are fixtures, not a deployed relay/kernel or a
+real browser profile. No credentials or cookies from a user's account are read.
+This transport creates no enrollment UI, relay token issuer, extension endpoint
+or cookie-application route, and is not yet installed in a product connector.
+
 This fixture tests encrypted component composition, not delivery through a live
 relay, authenticated kernel pairing or destination admission. Its recipient key,
 consent callback and independent destination scope are controlled test inputs.
