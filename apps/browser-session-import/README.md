@@ -1,6 +1,6 @@
-# Browser session import conversion
+# Browser session import components
 
-This is the first import implementation step, not a usable importer. Nothing
+These are internal import components, not a usable importer. Nothing
 here is wired to a user's profile, kernel or product Environment. The source
 reader uses Chrome's extension APIs when called by a trusted connector. It does
 not request permissions, transmit cookies or register a web-accessible endpoint.
@@ -26,6 +26,11 @@ and partition site at a time. Chrome's domain filter may also return subdomains;
 the reader discards those unless separately queried under explicit approval.
 Partition queries preserve both cross-site-ancestor variants. No cookie write or
 delete API is used.
+
+The reader returns validated Chrome API records, not CDP CookieParams. The
+destination independently validates those source records against its trusted
+scope and converts them where they are applied. Returning CDP parameters from
+the source would bypass that format contract and fail destination validation.
 
 Cancellation and a maximum 30-second total deadline settle even if Chrome has not
 settled an API call. Chrome does not offer cancellation of the underlying cookie
@@ -73,6 +78,7 @@ Run dependency-free tests with:
 ```sh
 node --test apps/browser-session-import/chrome-cookie-batch.test.mjs
 node --test apps/browser-session-import/chrome-cookie-reader.test.mjs
+node --test apps/browser-session-import/cookie-import-flow.test.mjs
 ```
 
 For the browser test, set `PLAYWRIGHT_MODULE` to an existing Playwright ESM module
@@ -94,14 +100,33 @@ coexist in the destination. Their leading-dot distinction is part of Chromium's
 cookie identity, so the converter must not reject that pair as a duplicate.
 
 `chrome-cookie-reader.browser-test.mjs` runs the reader inside a real disposable
-MV3 extension. Use the same Playwright environment variable; optionally set
+MV3 extension. Use the same Playwright environment variable and set
+`TYPESCRIPT_MODULE` to an installed TypeScript module to compile the shared
+browser crypto into the disposable extension. Optionally set
 `CHARIOX_TEST_CHROMIUM` to an already installed Chromium/Chrome for Testing binary
 when its revision differs from Playwright's default. It never downloads a browser.
 The test extension has permission for the fixture host only. It checks actual
 HttpOnly and partitioned reads, selected-domain output and source preservation.
+The extension encrypts its output using the existing Chariox relay envelope.
+The native relay crypto decrypts it before the destination operation applies
+the cookies in a separate browser context. Reloading a controlled fixture page
+then proves the destination authenticates without exposing HttpOnly cookies to
+page scripts. Only ciphertext crosses the extension evaluation boundary.
 The generated extension and browser profile are removed in `finally`. These are
 fixture-only permissions and an injected authorization callback, not product
 consent, pairing, or a distributable connector.
+
+`@chariox/kernel-client/browser-relay-crypto` exposes the existing Cloud WebCrypto
+implementation using the shared relay envelope type. Its implementation comes
+from `chariox-cloud/apps/web/src/kernel/relay-crypto.ts` at Cloud commit
+`bb190be7bf62e10310b5c345d4a057f72167e96c`. Browser/native interoperability tests
+cover both directions, tampering and wrong recipient keys. No encryption scheme
+or wire shape changes here. Cloud still imports its original local copy; moving
+that caller to this package requires a separate Cloud dependency change.
+
+This fixture tests encrypted component composition, not delivery through a live
+relay, authenticated kernel pairing or destination admission. Its recipient key,
+consent callback and independent destination scope are controlled test inputs.
 
 ## Required before product integration
 
@@ -140,7 +165,7 @@ process death or browser restart during import remains unhandled. This must not
 be advertised as durable atomic import.
 
 Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
-for nine destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
+for ten destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
 `cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
 sign-in, cancellation rollback and an untouched partitioned control cookie.
 
