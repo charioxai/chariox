@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Kernel-owned migration verification. Report booleans and bounded counts, never page data.
-import { opendir, readlink } from "node:fs/promises";
+import { readlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,9 +89,9 @@ export async function namespaceLink(path, inspect = readlink) {
   }
 }
 
-async function processInfo(pid) {
+async function processInfo(pid, includeCommand = false) {
   const [status, command, pidNamespace, netNamespace] = await Promise.all([
-    boundedText(`/proc/${pid}/status`), boundedText(`/proc/${pid}/cmdline`),
+    boundedText(`/proc/${pid}/status`), includeCommand ? boundedText(`/proc/${pid}/cmdline`) : "",
     namespaceLink(`/proc/${pid}/ns/pid`), namespaceLink(`/proc/${pid}/ns/net`),
   ]);
   const number = name => Number(status.match(new RegExp(`^${name}:\\s+(\\d+)`, "m"))?.[1] ?? NaN);
@@ -126,29 +126,37 @@ export async function boundedResponseJson(response, limit = 16384) {
   }
 }
 
-async function inspectProcesses(profile) {
-  const processes = new Map();
-  let entries = 0;
-  for await (const entry of await opendir("/proc")) {
-    if (!/^\d+$/.test(entry.name)) continue;
-    requireCheck(++entries <= 8192, "process verification limit exceeded");
-    try { processes.set(Number(entry.name), await processInfo(Number(entry.name))); }
-    catch (error) { if (!["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error.code)) throw error; }
+export async function inspectProcesses(profile, processList, inspect = processInfo) {
+  requireCheck(Array.isArray(processList) && processList.length > 0 && processList.length <= 8192,
+    "invalid browser process inventory");
+  const seen = new Set();
+  for (const entry of processList) {
+    requireCheck(entry && typeof entry.type === "string" && entry.type.length <= 64
+      && Number.isSafeInteger(entry.id) && entry.id > 0 && !seen.has(entry.id),
+    "invalid browser process inventory");
+    seen.add(entry.id);
   }
-  const browsers = [...processes.values()].filter(p => p.command.includes(`--user-data-dir=${profile}`)
-    && p.command.includes("--remote-debugging-port=9222") && !p.command.some(arg => arg.startsWith("--type=")));
-  requireCheck(browsers.length === 1, "expected one kernel profile browser");
-  const browser = browsers[0];
-  requireCheck(browser.command.includes("--password-store=basic") && !browser.command.includes("--no-sandbox"), "unexpected browser storage or sandbox options");
-  const renderers = [...processes.values()].filter(p => {
-    if (!p.command.includes("--type=renderer")) return false;
-    let parent = p.parent;
-    for (let hop = 0; hop < 32 && parent; hop++) {
-      if (parent === browser.pid) return true;
-      parent = processes.get(parent)?.parent;
+  const browsers = processList.filter(entry => entry.type === "browser");
+  const rendererIds = processList.filter(entry => entry.type === "renderer").map(entry => entry.id);
+  requireCheck(browsers.length === 1 && rendererIds.length > 0, "browser process inventory lacks browser or renderers");
+  // The browser's CDP inventory identifies its renderers, without depending on
+  // readable renderer argv or intermediary zygote metadata. Every declared
+  // renderer must yield its own required kernel metadata; none is skipped.
+  const requiredProcess = async (pid, browser) => {
+    try { return await inspect(pid, browser); }
+    catch (error) {
+      if (error instanceof ProbeCheckError) throw error;
+      throw new ProbeCheckError(browser ? "required browser metadata read failed" : "required renderer metadata read failed");
     }
-    return false;
-  });
+  };
+  const browser = await requiredProcess(browsers[0].id, true);
+  requireCheck(browser.command.includes(`--user-data-dir=${profile}`)
+    && browser.command.includes("--remote-debugging-port=9222")
+    && !browser.command.some(arg => arg.startsWith("--type=")), "unexpected kernel profile browser");
+  requireCheck(browser.command.includes("--password-store=basic") && !browser.command.includes("--no-sandbox"),
+    "unexpected browser storage or sandbox options");
+  const renderers = [];
+  for (const pid of rendererIds) renderers.push(await requiredProcess(pid, false));
   return { browser, renderers };
 }
 
@@ -196,7 +204,8 @@ export async function withSandboxText(inspect) {
         // Keep the owned diagnostic renderer alive while inspecting its process
         // sandbox. An otherwise empty browser may discard its last renderer as
         // soon as this target closes.
-        return await inspect(text);
+        const { processInfo } = await send("SystemInfo.getProcessInfo");
+        return await inspect(text, processInfo);
       }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -214,8 +223,8 @@ export async function withSandboxText(inspect) {
 async function main() {
   requireCheck(process.getuid?.() > 0, "sandbox verification requires the slice user");
   const profile = process.env.CHARIOX_SLICE_CHROME_PROFILE || join(homedir(), ".config/chariox-slice-chromium");
-  const observation = await withSandboxText(async text => {
-    const { browser, renderers } = await inspectProcesses(profile);
+  const observation = await withSandboxText(async (text, processes) => {
+    const { browser, renderers } = await inspectProcesses(profile, processes);
     return validateSandboxReport(text, browser, renderers);
   });
   console.log(JSON.stringify({ chromiumSandboxVerified: true, profilePathVerified: true, basicPasswordStoreVerified: true, observation }));

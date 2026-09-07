@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundedResponseJson, formatProbeFailure, namespaceLink, validateSandboxReport, withSandboxText } from "./chromium-sandbox-probe.mjs";
+import { boundedResponseJson, formatProbeFailure, inspectProcesses, namespaceLink, validateSandboxReport, withSandboxText } from "./chromium-sandbox-probe.mjs";
 
 const text = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes\n";
 const browser = { pid: 40, namespacePids: [40], uid: 1000, uids: [1000, 1000, 1000, 1000], pidNamespace: "pid:[100]", netNamespace: "net:[100]", seccompFilters: 1 };
@@ -70,7 +70,8 @@ test("owned diagnostic target survives process inspection and closes on either o
       methods.push(method);
       const result = method === "Target.createTarget" ? { targetId: "owned-diagnostic" }
         : method === "Target.attachToTarget" ? { sessionId: "diagnostic-session" }
-        : method === "Runtime.evaluate" ? { result: { value: text } } : {};
+        : method === "Runtime.evaluate" ? { result: { value: text } }
+        : method === "SystemInfo.getProcessInfo" ? { processInfo: [{ type: "browser", id: 40 }, { type: "renderer", id: 50 }] } : {};
       queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ id, result }) })));
     }
     close() { this.readyState = 3; methods.push("socket.close"); this.dispatchEvent(new Event("close")); }
@@ -81,8 +82,9 @@ test("owned diagnostic target survives process inspection and closes on either o
   try {
     for (const fail of [false, true]) {
       methods.length = 0;
-      const inspect = async report => {
+      const inspect = async (report, processes) => {
         assert.equal(report, text);
+        assert.deepEqual(processes, [{ type: "browser", id: 40 }, { type: "renderer", id: 50 }]);
         assert.equal(methods.includes("Target.closeTarget"), false);
         assert.equal(methods.includes("socket.close"), false);
         await Promise.resolve();
@@ -115,4 +117,24 @@ test("ptrace-protected namespace links retain independent process sandbox checks
       { value: null, restricted: true });
   for (const code of ["ENOENT", "EIO"])
     await assert.rejects(namespaceLink("/fixture", async () => { throw Object.assign(new Error("private"), { code }); }), { code });
+});
+
+test("browser inventory avoids hidden zygotes and requires every reported renderer", async () => {
+  const inventory = [{ type: "browser", id: 40 }, { type: "renderer", id: 50 }, { type: "GPU", id: 70 }];
+  const inspected = [];
+  const inspect = async (pid, includeCommand) => {
+    inspected.push([pid, includeCommand]);
+    if (pid === 40) return { ...browser, command: ["--user-data-dir=/fixture", "--remote-debugging-port=9222", "--password-store=basic"] };
+    if (pid === 50) return { ...renderer, command: [] };
+    throw Object.assign(new Error("unavailable process"), { code: "EACCES" });
+  };
+  const observed = await inspectProcesses("/fixture", inventory, inspect);
+  assert.deepEqual(inspected, [[40, true], [50, false]]);
+  assert.equal(observed.renderers.length, 1);
+  assert.doesNotThrow(() => validateSandboxReport(text, observed.browser, observed.renderers));
+  await assert.rejects(inspectProcesses("/fixture", [...inventory, { type: "renderer", id: 60 }], inspect), /required renderer metadata read failed/);
+  for (const invalid of [[], inventory.slice(1), [...inventory, { type: "renderer", id: 50 }],
+    [...inventory, { type: "renderer", id: -1 }], [...inventory, { type: "renderer", id: 1.5 }]])
+    await assert.rejects(inspectProcesses("/fixture", invalid, inspect));
+  await assert.rejects(inspectProcesses("/other-profile", inventory, inspect));
 });

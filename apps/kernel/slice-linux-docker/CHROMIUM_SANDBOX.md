@@ -94,8 +94,9 @@ retains that operation guard even if the requesting future is cancelled.
    files are restored normally and are not hashed for this
    browser gate. The current launcher and verification helper must overlay
    successfully before the browser can start.
-5. Check the actual `chrome://sandbox` PID/network report and independent
-   renderer process metadata: non-root real/effective/saved/filesystem UIDs,
+5. Use the browser's [CDP process inventory](https://chromedevtools.github.io/devtools-protocol/tot/SystemInfo/#method-getProcessInfo)
+   to identify its browser and renderer PIDs. Check the actual `chrome://sandbox`
+   PID/network report and independent metadata for every reported renderer: non-root real/effective/saved/filesystem UIDs,
    nested `NSpid` hierarchy, no effective capabilities, no-new-privileges, and a
    seccomp filter beyond the browser's container baseline. Readable PID/network
    namespace inodes must also differ from the browser's. Linux
