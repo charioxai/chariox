@@ -117,6 +117,7 @@ const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_MCP_PORT",
   "CHARIOX_SLICE_RELAY_PORT",
   "CHARIOX_SLICE_NOVNC_PORT",
+  "CHARIOX_SLICE_VIEWER_BACKEND",
   "CHARIOX_SLICE_DISPLAY_MODE",
   "CHARIOX_SLICE_START_DESKTOP",
   "CHARIOX_SLICE_START_PROVIDER_SERVERS",
@@ -215,7 +216,34 @@ if [ "$found" -eq 0 ]; then
 fi
 `
 
+const SCREEN_ACTIONS = new Set(["start", "stop", "status", "prepare", "interact"])
+const VIEWER_BACKENDS = new Set(["novnc", "selkies"])
+
+function validateConfiguredScreenExec(args) {
+  if (
+    args.length !== 12 || args[3] !== "-e" || args[5] !== "-e" ||
+    args[7] !== "-u" || args[8] !== "slice" ||
+    args[10] !== "/opt/chariox-slice/slice-screen.sh" || !SCREEN_ACTIONS.has(args[11])
+  ) fail("Docker screen command shape is invalid")
+  const fields = ["CHARIOX_SLICE_VIEWER_BACKEND", "CHARIOX_SLICE_NOVNC_PORT", "CHARIOX_SLICE_DISPLAY_MODE"]
+  const values = fields.map((name, index) => {
+    const argument = args[2 + index * 2]
+    if (!argument.startsWith(`${name}=`)) fail("Docker screen environment field is invalid")
+    return argument.slice(name.length + 1)
+  })
+  const [backend, port, mode] = values
+  if (
+    !VIEWER_BACKENDS.has(backend) || !["headed", "headless"].includes(mode) ||
+    port.length < 1 || port.length > 5 || /[^0-9]/.test(port) || Number(port) > 65535
+  ) fail("Docker screen environment value is invalid")
+  validateSliceContainer(args[9], "Docker screen container")
+}
+
 function validateDockerExec(args) {
+  if (args[1] === "-e") {
+    validateConfiguredScreenExec(args)
+    return
+  }
   if (args[1] !== "-u" || !["slice", "root"].includes(args[2])) fail("Docker exec user is invalid")
   validateSliceContainer(args[3], "Docker exec container")
   const command = args.slice(4)
@@ -230,7 +258,7 @@ function validateDockerExec(args) {
     args[2] === "slice" &&
     command.length === 2 &&
     command[0] === "/opt/chariox-slice/slice-screen.sh" &&
-    new Set(["start", "stop", "status", "prepare", "interact"]).has(command[1])
+    SCREEN_ACTIONS.has(command[1])
   ) return
   if (
     args[2] === "root" &&
@@ -466,6 +494,9 @@ function validateProvisioner(action, environment, files) {
   }
   if (environment.CHARIOX_SLICE_BUILD_IMAGE && !["auto", "always", "never"].includes(environment.CHARIOX_SLICE_BUILD_IMAGE)) {
     fail("CHARIOX_SLICE_BUILD_IMAGE is invalid")
+  }
+  if (environment.CHARIOX_SLICE_VIEWER_BACKEND !== undefined && !VIEWER_BACKENDS.has(environment.CHARIOX_SLICE_VIEWER_BACKEND)) {
+    fail("CHARIOX_SLICE_VIEWER_BACKEND is invalid")
   }
   if (environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE && !["ro", "rw"].includes(environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE)) {
     fail("CHARIOX_SLICE_WORKSPACE_MOUNT_MODE is invalid")
