@@ -42,6 +42,7 @@ mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
+mod browser_import_consent;
 mod event_delivery_runtime_state;
 mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
@@ -56,7 +57,6 @@ mod room_computer_observation;
 mod room_display;
 mod room_environment_placement;
 mod room_environment_state;
-mod browser_import_consent;
 mod room_screenshot;
 
 #[derive(Clone)]
