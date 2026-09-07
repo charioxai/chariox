@@ -255,7 +255,87 @@ browser or terminal contract is changed by these components.
   Reviewer feedback at original head `c9341afb7` was addressed in `661989247`: P1.07
   explicitly covers Web/local/remote TUI viewers; native viewers remain P2.06.
 
-Next: connect verified package staging and the registry to the actual kernel
-installation owner, build the confined worker/bootstrap and broker, and expose
-versioned local/remote App commands. Preserve every row above until its entire
+## Implementation progress: 2026-09-08 packaging and durable staging
+
+Commits `bae04a5e8`, `f06acb832`, `e778695f2` and `58473cc87` add the next
+prerequisites. Full Phase 1 matrix rows and release gates remain unverified.
+
+- The installation registry now uses ordered barriers on the existing kernel
+  durable writer, with owner-filtered reads and atomic initial staging. All 32
+  durable-state tests passed locally, including five new App writer tests. The
+  guarded build peaked at 3.2 GiB RSS with one Cargo job.
+- Release staging preserves the signed archive, uses descriptor-relative private
+  filesystem operations, performs exclusive atomic publication, and validates
+  exact content before reuse. Reservation accounting includes allocation units;
+  the caller still must hold an aggregate reservation, and provisioned storage
+  quotas remain outstanding.
+- Upload storage has bounded owner-scoped request IDs, chunk retries, durable
+  offsets, original expiries and cancellation receipts. Anchored verifier leases
+  prevent abort/expiry from releasing storage still in use. Kernel upload request
+  routing, package trust enrollment and actual activation remain outstanding.
+- The developer package executable supports key generation, manifest generation,
+  deterministic packing, verification and explicitly untrusted inspection.
+  Public enrollment material never enrolls itself. Protected key files and
+  exclusive output publication reject symlink, hardlink and signing-file inclusion
+  attacks. Integration with the shipped `chariox app` developer workflow remains
+  outstanding.
+- The runtime build recipe pins Node 24.20.0, its source digest, four target plans
+  and compiler/resource requirements. Ten lightweight build-tool tests pass.
+  Outputs are explicitly unsigned. No native Node build, sandbox launcher,
+  signing/notarization or App execution is claimed by this recipe.
+- Independent PR review fixed the idle-channel timeout (`ec4c0346f`) and three
+  staging findings (`58473cc87`): macOS publication before root sealing, durable
+  parent sync before acknowledging reuse, and recovery-marker retention through
+  payload cleanup. macOS 14 initially failed staging at `bae04a5e8`; that result
+  was not waived. [The rerun on `58473cc87`](https://github.com/charioxai/chariox/actions/runs/34164893075)
+  passes on Linux and macOS 14: 90 Rust component tests, 26 SDK tests and ten
+  build-tool tests. These component checks do not certify the production sandbox.
+
+Additional local logs in the existing evidence directory are
+`developer-package-tests.log`, `release-upload-tests.log`,
+`runtime-build-tool-tests.log`, `kernel-durable-tests.log` and
+`kernel-build-resources.log`. Earlier failed attempts remain identifiable in that
+directory. Tests use bounded temporary data outside repositories; no provider
+credential payloads or App processes are part of these drills.
+
+Next: finish shared installation/upload commands and trust enrollment, then wire
+the confined worker/bootstrap and brokers. Account linking must explicitly handle
+previously unlinked local installation ownership; do not alias default local
+ownership to arbitrary relay users. Preserve every matrix row until its complete
 acceptance scenario has direct evidence. Continue all nineteen workstreams.
+
+## Implementation progress: shared App inspection and review follow-up
+
+The branch was rebased onto main `9f5ec7d6e`; App inspection now uses shared
+protocol 288 after main's protocol 287 changes. The inspection implementation is
+`23cd29b21`, and upload durability review recovery is `1862938e7`.
+
+- Kernel-owned App list/status/journal reads flow through the normal router with
+  bounded admission and authenticated ownership. Shared request builders, the
+  terminal command catalog, standalone CLI and TUI slash commands use this same
+  contract. Client projections omit approval handles, host paths and internal
+  ownership references, and preserve generations as decimal strings.
+- These three reads bypass the transport result cache: every replay rechecks its
+  caller and reads current durable state. The cache's existing sessionless
+  fingerprint does not identify the owner. A real relay-dispatch regression
+  exercises identical command IDs across owners and after installation changes.
+- PR review identified a failed upload metadata rename/sync boundary. Recovery
+  now synchronizes the held directory before accepting reloaded offsets; a failed
+  recovery keeps the instance unavailable for acknowledgments and cleanup. Two
+  new tests inject the failure after the actual rename and cover both possible
+  crash outcomes. All 15 upload tests passed locally.
+- Post-rebase validation passed 82 CLI/shared-client tests, full shared-client
+  TypeScript compilation and CLI typechecking across 766 files. No dependency
+  symlink or repository-local build output was required.
+- Before rebasing, the kernel test executable passed 100 tests selected by
+  `app_`, all 66 protocol snapshots and eight command-catalog tests. Those are
+  earlier-candidate results, not verification of the rebased candidate. Its
+  guarded kernel test build was stopped at 3,638,208 KiB process-group RSS while
+  the host still reported 45% free memory; no tests ran in that attempt. The
+  expanded hosted CI runs the current kernel routing, relay replay, durable
+  writer, protocol and catalog checks. Current-head results remain pending.
+
+Evidence: `post-rebase-cli-validation.json`, `post-rebase-cli-shared-tests.log`,
+`upload-durability-tests.log`, and `kernel-app-control-resources.log` in the
+existing evidence directory. This increment does not install or start App code.
+Full release-matrix rows retain their unverified status.
