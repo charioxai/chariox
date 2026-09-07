@@ -31,6 +31,7 @@ export async function createCdpCookieStore({browserCdp, pageCdp, timeoutMs = 500
     return operation(send);
   };
   let target;
+  let context = {};
   const check = async send => {
     const {targetInfo:current} = await send(browserCdp, 'Target.getTargetInfo', {targetId:target.targetId});
     if (current.targetId !== target.targetId || current.browserContextId !== target.browserContextId) {
@@ -39,9 +40,14 @@ export async function createCdpCookieStore({browserCdp, pageCdp, timeoutMs = 500
   };
   await execute(async send => {
     ({targetInfo:target} = await send(pageCdp, 'Target.getTargetInfo'));
+    if (target.browserContextId) {
+      const {browserContextIds,defaultBrowserContextId} = await send(browserCdp,'Target.getBrowserContexts');
+      if (!Array.isArray(browserContextIds)) fail('cookie_import_context_unsupported');
+      if (browserContextIds.includes(target.browserContextId)) context = {browserContextId:target.browserContextId};
+      else if (target.browserContextId !== defaultBrowserContextId) fail('cookie_import_context_unsupported');
+    }
     await check(send);
   });
-  const context = target.browserContextId ? {browserContextId:target.browserContextId} : {};
   return {
     read:() => execute(async send => {await check(send); return (await send(browserCdp, 'Storage.getCookies',context)).cookies;}),
     write:cookies => execute(async send => {await check(send); await send(browserCdp, 'Storage.setCookies',{...context,cookies},true);}),

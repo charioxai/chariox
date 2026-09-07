@@ -180,7 +180,30 @@ Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
 for ten destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
 `cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
 sign-in, cancellation rollback and an untouched partitioned control cookie.
-`cookie-import-cdp.test.mjs` covers six deadline and uncertain-transport cases.
+`cookie-import-cdp.test.mjs` covers seven deadline, context and uncertain-transport cases.
+
+`applyControllerCookieImport` is an internal bridge to the existing
+`BrowserCdpClient`. It uses the controller's registered target session and checks
+browser generation and live document identity before application and at each
+authorization checkpoint. It snapshots source records and scope before awaiting
+consent. The trusted consent callback receives frozen target/scope metadata, not
+cookie values. Missing consent/exclusion functions, denied consent and stale
+identities fail closed. The caller's exclusive operation covers target selection
+and the complete transaction.
+
+Persistent Chrome profiles can report a default context ID in target metadata
+that `Storage.getCookies` does not accept. The CDP adapter queries
+`Target.getBrowserContexts`: explicit contexts retain their ID; the confirmed
+default uses an omitted ID. Unknown IDs reject instead of falling back. Older
+Chrome versions that supply an ID but cannot identify their default are unsupported
+for that case. A real-controller fixture covers persistent-profile import and
+stale generation/document rejection; the existing fixtures cover explicit contexts.
+
+The bridge is not yet called by a kernel request or installed in the slice image.
+It does not implement kernel consent, writer quiescence or recovery. No new
+controller command or shared protocol shape is exposed by this step. Run its
+`controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
+disposable, sandboxed Chrome test with the real controller connection.
 
 Implement the MV3 connector and source-profile/site selection, kernel-owned
 consent and destination authorization, encrypted transport, bounded decoding,
