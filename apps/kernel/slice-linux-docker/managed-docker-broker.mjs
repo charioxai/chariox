@@ -438,6 +438,14 @@ function validateProvisioner(action, environment, files) {
   if (!/^[a-zA-Z0-9_.:-]{1,180}$/.test(environment.CHARIOX_SLICE_ID ?? "")) {
     fail("CHARIOX_SLICE_ID is invalid")
   }
+  if (provisionsContainer) {
+    for (const [name, value] of Object.entries(environment)) {
+      if (name === "CHARIOX_SLICE_WORKSPACE" || /^CHARIOX_SLICE_DEVELOPMENT_MOUNT_[0-9]+$/.test(name)) {
+        // Preflight must enforce the same ownership layout as persistent mount creation.
+        validatePersistentSource(resolve(value), environment.CHARIOX_SLICE_ID, name, SHARE_ROOT_INPUT)
+      }
+    }
+  }
   for (const name of ["CHARIOX_SLICE_OWNER_KERNEL_ID", "CHARIOX_SLICE_OWNER_MACHINE_ID"]) {
     if (environment[name] && !/^[a-zA-Z0-9_.:-]{1,180}$/.test(environment[name])) {
       fail(`${name} is invalid`)
@@ -916,8 +924,8 @@ function expectedHandle(container, slot) {
   return createHash("sha256").update(`${container}\0${slot}`).digest("hex")
 }
 
-function validatePersistentSource(source, sliceId, label) {
-  const publication = join(SHARE_ROOT, "slices", "development", sliceId, "development")
+function validatePersistentSource(source, sliceId, label, shareRoot = SHARE_ROOT) {
+  const publication = join(shareRoot, "slices", "development", sliceId, "development")
   if (dirname(source) !== publication || basename(source).startsWith(".")) {
     fail(`${label} must be a direct repository in the matching slice publication`)
   }

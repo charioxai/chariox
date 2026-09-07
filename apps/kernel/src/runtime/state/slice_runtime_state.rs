@@ -34,16 +34,10 @@ impl KernelRuntimeState {
             request.worktree_id.as_deref(),
         )?;
         let config = self.owned.config_projection.snapshot();
-        let development_storage_parent = matches!(
-            request.development.as_ref(),
-            Some(
-                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-                    ..
-                }
-            )
-        )
-        .then(|| self.prepare_slice_development_storage_parent(&config))
-        .transpose()?;
+        let development_storage_parent = (request.development.is_some()
+            && request.backend == crate::slice::SliceBackendKind::LocalDocker)
+            .then(|| self.prepare_slice_development_storage_parent(&config))
+            .transpose()?;
         let from_saved_state = match request.from_saved_state.as_deref() {
             Some(state_ref) => Some(self.owned.slice_store.saved_state(state_ref)?),
             None if request.base == Some(crate::local::SliceCreateBase::Clean) => None,
@@ -1551,6 +1545,151 @@ mod tests {
 
         assert_eq!(reconciled.session_ids, vec![session_id]);
         assert_eq!(reconciled.agent_ids, vec![agent_id]);
+    }
+
+    #[tokio::test]
+    async fn empty_slice_development_has_a_broker_safe_workspace_and_preserves_edits() {
+        use std::fs;
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        const ISOLATED: &str = "CHARIOX_TEST_EMPTY_SLICE_ISOLATED";
+        if std::env::var_os(ISOLATED).is_none() {
+            // Managed provider children inherit a slice root that takes precedence over
+            // config. Isolate this test without mutating the parallel test process.
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::state::slice_runtime_state::tests::empty_slice_development_has_a_broker_safe_workspace_and_preserves_edits",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(ISOLATED, "1")
+                .env_remove("CHARIOX_SLICE_ROOT")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "isolated regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "chariox-empty-slice-regression-{}",
+            rand::random::<u64>()
+        )));
+        fs::create_dir_all(&scratch.0).unwrap();
+        let root = fs::canonicalize(&scratch.0).unwrap();
+        let share = root.join("share");
+        let source = root.join("home/state/managed-context-empty-workspaces/context/workspace");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&share).unwrap();
+        fs::write(source.join("parent-only.txt"), "do not copy or modify").unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.slices.root = Some(share.join("slices").display().to_string());
+        assert_eq!(config.slice_root(), share.join("slices"));
+        config.local_socket_path = root.join("kernel.sock");
+        config = config.with_session_history_root(root.join("history"));
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+        let runtime = owned_runtime_state(&app).await;
+        let created = runtime
+            .create_slice(crate::local::CreateSliceRequest {
+                name: "empty-regression".into(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".into(),
+                display_mode: crate::slice::SliceDisplayMode::Headed,
+                display_backend: crate::slice::SliceDisplayBackend::Selkies,
+                workspace_id: Some(source.display().to_string()),
+                worktree_id: Some(source.display().to_string()),
+                workspace_mount: Some(source.display().to_string()),
+                development: Some(
+                    crate::managed_context::package::ManagedContextDevelopmentSelection::Empty,
+                ),
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                base: Some(crate::local::SliceCreateBase::Clean),
+            })
+            .await
+            .unwrap();
+        let materialized = runtime
+            .materialize_slice_development_context(&created)
+            .unwrap();
+        let workspace = std::path::Path::new(materialized.workspace_mount.as_ref().unwrap());
+        let owner = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [vec![4], vec![1; 64]].concat(),
+        );
+        let request = serde_json::json!({
+            "kind": "provisioner", "action": "provision", "files": [],
+            "environment": {
+                "CHARIOX_SLICE_NAME": format!("chariox-{}", created.id),
+                "CHARIOX_SLICE_ID": created.id,
+                "CHARIOX_SLICE_HOME_VOLUME": "chariox-slice-regression-home",
+                "CHARIOX_SLICE_OWNER_PUBLIC_KEY": owner,
+                "CHARIOX_SLICE_WORKSPACE": workspace,
+            }
+        });
+        let mut broker = Command::new("node")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/slice-linux-docker/managed-docker-broker.mjs"
+            ))
+            .arg("--validate-request")
+            .env("CHARIOX_SLICE_DOCKER_SHARE_ROOT", &share)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        broker
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.to_string().as_bytes())
+            .unwrap();
+        let result = broker.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(workspace.starts_with(&share));
+        assert!(!workspace.join("parent-only.txt").exists());
+        fs::write(workspace.join("edited.txt"), "keep after restart").unwrap();
+        let recovered = runtime
+            .materialize_slice_development_context(&materialized)
+            .unwrap();
+        assert_eq!(recovered.workspace_mount, materialized.workspace_mount);
+        assert_eq!(
+            fs::read_to_string(workspace.join("edited.txt")).unwrap(),
+            "keep after restart"
+        );
+        runtime
+            .cleanup_slice_development_context(&recovered)
+            .unwrap();
+        assert!(!workspace.exists());
+        assert_eq!(
+            fs::read_to_string(source.join("parent-only.txt")).unwrap(),
+            "do not copy or modify"
+        );
     }
 
     async fn slice_runtime() -> (

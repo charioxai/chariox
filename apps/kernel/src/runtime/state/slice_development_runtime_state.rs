@@ -14,6 +14,9 @@ use crate::managed_context::package::ManagedContextDevelopmentSelection;
 
 use super::KernelRuntimeState;
 
+#[path = "slice_empty_development.rs"]
+mod empty_development;
+
 const SLICE_DEVELOPMENT_PUBLICATION_ID: &str = "development";
 const SLICE_DEVELOPMENT_EXPORT_SCRATCH: &str = ".slice-development-export";
 const MANAGED_PUBLICATION_ACCESS_HELPER: &str = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh";
@@ -116,20 +119,27 @@ impl KernelRuntimeState {
         &self,
         slice: &crate::slice::SliceRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = slice.development.as_ref()
-        else {
+        if slice.development.is_none()
+            || slice.backend != crate::slice::SliceBackendKind::LocalDocker
+        {
             return Ok(slice.clone());
-        };
+        }
         let publication_parent = slice_development_storage_root(slice)?;
-        let publication = materialize_slice_development_publication(
-            &publication_parent,
-            project_id,
-            repositories,
-            slice.development_publication.as_ref(),
-        )?;
+        let publication = match slice.development.as_ref().expect("checked development") {
+            ManagedContextDevelopmentSelection::Empty => empty_development::materialize(
+                &publication_parent,
+                slice.development_publication.as_ref(),
+            )?,
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            } => materialize_slice_development_publication(
+                &publication_parent,
+                project_id,
+                repositories,
+                slice.development_publication.as_ref(),
+            )?,
+        };
         if slice
             .development_publication
             .as_ref()
@@ -152,6 +162,16 @@ impl KernelRuntimeState {
         &self,
         slice: &crate::slice::SliceRecord,
     ) -> Result<(), DaemonError> {
+        if matches!(
+            slice.development,
+            Some(ManagedContextDevelopmentSelection::Empty)
+        ) {
+            // Old Empty records never owned a publication. Never remove their parent workspace.
+            if slice.development_storage_root.is_none() {
+                return Ok(());
+            }
+            return empty_development::cleanup(&slice_development_storage_root(slice)?);
+        }
         let Some(ManagedContextDevelopmentSelection::SourceProject {
             project_id,
             repositories,
