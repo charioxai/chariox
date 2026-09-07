@@ -170,3 +170,48 @@ async fn writer_failure_wakes_an_already_blocked_reader() {
     assert!(matches!(sent, Err(WireError::Timeout)));
     assert!(matches!(received, Err(WireError::Closed)));
 }
+
+#[tokio::test(start_paused = true)]
+async fn healthy_idle_worker_can_exchange_frames_after_the_frame_budget() {
+    let (supervisor, worker) = duplex(4096);
+    let mut channel = Channel::new(supervisor, "generation-1".into(), Sender::Worker).unwrap();
+    let mut worker = Channel::new(worker, "generation-1".into(), Sender::Supervisor).unwrap();
+    let receiving = tokio::spawn(async move {
+        let message = channel.receive(Duration::from_millis(10)).await.unwrap();
+        channel
+            .send(&message, Duration::from_millis(10))
+            .await
+            .unwrap();
+        channel
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(60)).await;
+    assert!(!receiving.is_finished());
+    let message: Message = serde_json::from_value(request()).unwrap();
+    worker
+        .send(&message, Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.receive(Duration::from_millis(10)).await.unwrap(),
+        message
+    );
+    assert!(!receiving.await.unwrap().is_closed());
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_an_idle_read_preserves_the_next_frame() {
+    let (mut sender, receiver) = duplex(4096);
+    let mut channel = Channel::new(receiver, "generation-1".into(), Sender::Worker).unwrap();
+    assert!(tokio::time::timeout(
+        Duration::from_secs(1),
+        channel.receive(Duration::from_millis(10))
+    )
+    .await
+    .is_err());
+    assert!(!channel.is_closed());
+    let bytes = serde_json::to_vec(&request()).unwrap();
+    sender.write_u32(bytes.len() as u32).await.unwrap();
+    sender.write_all(&bytes).await.unwrap();
+    assert!(channel.receive(Duration::from_millis(10)).await.is_ok());
+}

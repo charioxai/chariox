@@ -335,16 +335,32 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Channel<T> {
 }
 
 impl<T: AsyncRead + Unpin> Reader<T> {
-    /// The budget covers the whole frame, including a peer that stops after its
-    /// header. Length is checked before allocating payload memory.
+    /// Idle waiting has no frame deadline. Once the first byte arrives, the
+    /// budget covers the rest of the header and body. Worker heartbeat policy
+    /// belongs to the supervisor, separately from partial-frame protection.
     pub async fn receive(&mut self, budget: Duration) -> Result<Message, WireError> {
         let mut closed = self.closed.subscribe();
         if *closed.borrow() {
             return Err(WireError::Closed);
         }
+        // A one-byte read cannot consume part of its result and remain pending.
+        // Cancelling this idle wait therefore leaves framing intact.
+        let first = tokio::select! {
+            biased;
+            _ = closed.changed() => return Err(WireError::Closed),
+            result = self.stream.read_u8() => match result {
+                Ok(first) => first,
+                Err(error) => {
+                    self.closed.send_replace(true);
+                    return Err(WireError::Io(error));
+                }
+            },
+        };
         let mut guard = IoGuard::new(self.closed.clone());
         let read = async {
-            let length = self.stream.read_u32().await? as usize;
+            let mut header = [first, 0, 0, 0];
+            self.stream.read_exact(&mut header[1..]).await?;
+            let length = u32::from_be_bytes(header) as usize;
             if length == 0 || length > MAX_FRAME_BYTES {
                 return Err(WireError::FrameLimit);
             }
