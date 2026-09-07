@@ -12,9 +12,19 @@ static NEXT_REPLACEMENT: AtomicU64 = AtomicU64::new(0);
 impl Dir {
     /// Replaces one private regular metadata file atomically, or creates it.
     /// Callers bound the payload and serialize their state transitions. An I/O
-    /// error after rename has an unknown durability outcome; recover by reading
-    /// and validating state rather than assuming the old value survived.
+    /// error after rename has an unknown durability outcome. Recovery must sync
+    /// the held parent before accepting reloaded state or deleting any payload.
     pub(crate) fn atomic_replace(&self, name: &OsStr, bytes: &[u8]) -> Result<()> {
+        self.atomic_replace_with_checkpoint(name, bytes, || Ok(()))
+    }
+
+    /// Trusted interruption seam after the actual rename, before directory sync.
+    pub(crate) fn atomic_replace_with_checkpoint(
+        &self,
+        name: &OsStr,
+        bytes: &[u8],
+        mut after_rename: impl FnMut() -> std::io::Result<()>,
+    ) -> Result<()> {
         let destination = cstring(name)?;
         if name == OsStr::new(".") || is_atomic_temporary(name) {
             return Err(FsError::UnsafeEntry);
@@ -40,6 +50,7 @@ impl Dir {
             )
         })?;
         temporary.committed = true;
+        after_rename()?;
         self.sync()
     }
 }

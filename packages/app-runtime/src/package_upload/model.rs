@@ -112,7 +112,11 @@ pub struct UploadStatus {
 pub enum UploadCheckpoint {
     ArchiveSynced,
     BeforeStateCommit,
+    /// Metadata rename is visible but its directory has not been synced yet.
+    StateRenamed,
     StateCommitted,
+    BeforeRecoverySync,
+    RecoverySynced,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

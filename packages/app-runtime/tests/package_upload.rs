@@ -639,3 +639,169 @@ fn abort_receipt_keeps_metadata_bound_but_releases_disk_reservation() {
         .begin("owner", "second", 4, &digest(b"next"), 100, 4)
         .unwrap();
 }
+
+#[test]
+fn rename_before_directory_sync_is_recovered_before_any_offset_is_acknowledged() {
+    let root = Root::new();
+    let store = root.open();
+    let request = request_id();
+    let upload = store
+        .begin("owner", &request, 4, &digest(b"test"), 100, 1)
+        .unwrap();
+    let mut points = Vec::new();
+    assert!(store
+        .chunk_with_checkpoint(
+            "owner",
+            &upload.handle,
+            0,
+            b"test",
+            &digest(b"test"),
+            2,
+            |point| {
+                points.push(point);
+                if point == UploadCheckpoint::StateRenamed {
+                    // This callback is inside atomic_replace, after renameat
+                    // and before its parent fsync, not after durable commit.
+                    let visible: serde_json::Value =
+                        serde_json::from_slice(&fs::read(root.path.join("uploads.json")).unwrap())
+                            .unwrap();
+                    assert_eq!(visible["uploads"][&upload.handle]["accepted_bytes"], 4);
+                    return Err(fault());
+                }
+                Ok(())
+            },
+        )
+        .is_err());
+    assert_eq!(
+        points,
+        [
+            UploadCheckpoint::ArchiveSynced,
+            UploadCheckpoint::BeforeStateCommit,
+            UploadCheckpoint::StateRenamed,
+            UploadCheckpoint::BeforeRecoverySync,
+            UploadCheckpoint::RecoverySynced,
+        ]
+    );
+    assert_eq!(
+        store
+            .status("owner", &upload.handle, 3)
+            .unwrap()
+            .accepted_bytes,
+        4
+    );
+    assert_eq!(
+        store
+            .begin("owner", &request, 4, &digest(b"test"), 100, 3)
+            .unwrap()
+            .accepted_bytes,
+        4
+    );
+    store
+        .chunk("owner", &upload.handle, 0, b"test", &digest(b"test"), 3)
+        .unwrap();
+    drop(store);
+    let reopened = root.open();
+    assert_eq!(
+        reopened
+            .status("owner", &upload.handle, 4)
+            .unwrap()
+            .accepted_bytes,
+        4
+    );
+    assert_eq!(fs::read(root.archive(&upload.handle)).unwrap(), b"test");
+}
+
+#[test]
+fn failed_recovery_sync_blocks_retries_and_cleanup_until_durable_reopen() {
+    // An unsynced rename may survive a crash or may revert. Neither outcome may
+    // cause an acknowledged chunk to be lost; the failed attempt stays unacked.
+    for rename_survives in [true, false] {
+        let root = Root::new();
+        let store = root.open();
+        let request = request_id();
+        let upload = store
+            .begin("owner", &request, 8, &digest(b"12345678"), 100, 1)
+            .unwrap();
+        store
+            .chunk("owner", &upload.handle, 0, b"1234", &digest(b"1234"), 2)
+            .unwrap();
+        let old_state = fs::read(root.path.join("uploads.json")).unwrap();
+        let mut saw_rename = false;
+        let mut saw_recovery_attempt = false;
+        assert!(store
+            .chunk_with_checkpoint(
+                "owner",
+                &upload.handle,
+                4,
+                b"5678",
+                &digest(b"5678"),
+                3,
+                |point| match point {
+                    UploadCheckpoint::StateRenamed => {
+                        saw_rename = true;
+                        Err(fault())
+                    }
+                    UploadCheckpoint::BeforeRecoverySync => {
+                        saw_recovery_attempt = true;
+                        Err(fault())
+                    }
+                    UploadCheckpoint::RecoverySynced => panic!("Recovery sync was denied"),
+                    _ => Ok(()),
+                },
+            )
+            .is_err());
+        assert!(saw_rename && saw_recovery_attempt);
+        assert!(matches!(
+            store.status("owner", &upload.handle, 4),
+            Err(UploadError::Unavailable)
+        ));
+        assert!(matches!(
+            store.begin("owner", &request, 8, &digest(b"12345678"), 100, 4),
+            Err(UploadError::Unavailable)
+        ));
+        assert!(matches!(
+            store.chunk("owner", &upload.handle, 4, b"5678", &digest(b"5678"), 4),
+            Err(UploadError::Unavailable)
+        ));
+        assert!(matches!(
+            store.abort("owner", &upload.handle, 4),
+            Err(UploadError::Unavailable)
+        ));
+        assert!(matches!(
+            store.finalize("owner", &upload.handle, 4),
+            Err(UploadError::Unavailable)
+        ));
+        assert!(matches!(
+            store.cleanup_expired(200),
+            Err(UploadError::Unavailable)
+        ));
+        assert_eq!(fs::read(root.archive(&upload.handle)).unwrap(), b"12345678");
+        drop(store);
+        if !rename_survives {
+            // Deterministically model the older metadata surviving a crash.
+            let mut metadata = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(root.path.join("uploads.json"))
+                .unwrap();
+            metadata.write_all(&old_state).unwrap();
+            metadata.sync_all().unwrap();
+        }
+        let reopened = root.open();
+        let expected = if rename_survives { 8 } else { 4 };
+        assert_eq!(
+            reopened
+                .status("owner", &upload.handle, 5)
+                .unwrap()
+                .accepted_bytes,
+            expected
+        );
+        assert_eq!(
+            fs::metadata(root.archive(&upload.handle)).unwrap().len(),
+            expected
+        );
+        assert!(fs::read(root.archive(&upload.handle))
+            .unwrap()
+            .starts_with(b"1234"));
+    }
+}

@@ -31,12 +31,27 @@ pub(super) fn read_state(root: &Dir, limits: UploadLimits) -> Result<Option<Dura
 }
 
 pub(super) fn write_state(root: &Dir, state: &DurableState) -> Result<()> {
+    root.atomic_replace(OsStr::new(STATE_FILE), &state_bytes(state)?)?;
+    Ok(())
+}
+
+pub(super) fn write_state_with_checkpoint(
+    root: &Dir,
+    state: &DurableState,
+    checkpoint: &mut impl FnMut(UploadCheckpoint) -> Result<()>,
+) -> Result<()> {
+    root.atomic_replace_with_checkpoint(OsStr::new(STATE_FILE), &state_bytes(state)?, || {
+        checkpoint(UploadCheckpoint::StateRenamed).map_err(std::io::Error::other)
+    })?;
+    Ok(())
+}
+
+fn state_bytes(state: &DurableState) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(state).map_err(|_| UploadError::CorruptState)?;
     if bytes.len() as u64 > MAX_STATE_BYTES {
         return Err(UploadError::Limit);
     }
-    root.atomic_replace(OsStr::new(STATE_FILE), &bytes)?;
-    Ok(())
+    Ok(bytes)
 }
 
 pub(super) fn initialize(root: &Dir, limits: UploadLimits) -> Result<DurableState> {

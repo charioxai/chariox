@@ -74,6 +74,9 @@ impl PackageUploadStore {
         if !root.try_lock()? {
             return Err(UploadError::Busy);
         }
+        // A prior instance may have renamed metadata and failed directory
+        // sync. Complete that durability boundary before reading or cleanup.
+        root.sync()?;
         let durable = storage::initialize(&root, limits)?;
         let store = Self {
             inner: Arc::new(Inner {
@@ -387,13 +390,20 @@ impl PackageUploadStore {
     ) -> Result<()> {
         let result = (|| {
             checkpoint(UploadCheckpoint::BeforeStateCommit)?;
-            storage::write_state(&self.inner.root, &next)?;
+            storage::write_state_with_checkpoint(&self.inner.root, &next, checkpoint)?;
             checkpoint(UploadCheckpoint::StateCommitted)
         })();
         if let Err(error) = result {
-            // rename may have committed even when fsync/reply failed. Reload
-            // the canonical record; never truncate using a stale cached offset.
-            match storage::read_state(&self.inner.root, self.inner.limits) {
+            // Visible replacement is not proof of durability. Complete the
+            // directory sync before accepting reloaded offsets or allowing any
+            // cleanup to act on a possibly uncommitted abort/expiry record.
+            let recovered = (|| {
+                checkpoint(UploadCheckpoint::BeforeRecoverySync)?;
+                self.inner.root.sync()?;
+                checkpoint(UploadCheckpoint::RecoverySynced)?;
+                storage::read_state(&self.inner.root, self.inner.limits)
+            })();
+            match recovered {
                 Ok(Some(durable)) => state.durable = durable,
                 _ => state.faulted = true,
             }
