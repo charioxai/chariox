@@ -13,7 +13,9 @@ permissions:
 
 concurrency:
   group: chromium-profile-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Keep admitted image/browser validation running while implementation pushes
+  # replace the one pending candidate.
+  cancel-in-progress: false
 
 jobs:
   chromium-linux:
