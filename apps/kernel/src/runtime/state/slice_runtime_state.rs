@@ -1640,8 +1640,8 @@ mod tests {
         let request = serde_json::json!({
             "kind": "provisioner", "action": "provision", "files": [],
             "environment": {
-                "CHARIOX_SLICE_NAME": "chariox-slice-regression",
-                "CHARIOX_SLICE_ID": "slice-regression",
+                "CHARIOX_SLICE_NAME": format!("chariox-{}", created.id),
+                "CHARIOX_SLICE_ID": created.id,
                 "CHARIOX_SLICE_HOME_VOLUME": "chariox-slice-regression-home",
                 "CHARIOX_SLICE_OWNER_PUBLIC_KEY": owner,
                 "CHARIOX_SLICE_WORKSPACE": workspace,
