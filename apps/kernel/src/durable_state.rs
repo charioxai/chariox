@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 
 mod owner;
+pub(crate) mod browser_import;
 pub(crate) mod workflow_runtime;
 
 #[derive(Debug, Clone)]
@@ -117,6 +118,7 @@ struct DurableWriteRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    BrowserImport(browser_import::ImportStateWrite),
     Event {
         event_id: String,
         kind: String,
@@ -1303,6 +1305,7 @@ fn commit_durable_write_batch(
     let mut failure = None;
     for request in &batch {
         let result = match &request.operation {
+            DurableWriteOperation::BrowserImport(write) => browser_import::apply(&transaction, write),
             DurableWriteOperation::Event {
                 event_id,
                 kind,
@@ -1562,6 +1565,14 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS durable_browser_import (
+    environment_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    room_id TEXT NOT NULL,
+    recovery_required INTEGER NOT NULL CHECK (recovery_required IN (0, 1))
+);
+
 CREATE TABLE IF NOT EXISTS durable_state_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
