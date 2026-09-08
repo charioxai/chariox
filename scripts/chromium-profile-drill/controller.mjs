@@ -86,12 +86,12 @@ export function build(scratch) {
   assert.ok(statSync(executable).isFile());
   const log = unit(`chariox-browser-unit-${owner.id}`, [`User=${uid}`, `Group=${gid}`, "MemoryMax=256M", "CPUQuota=100%", "TasksMax=32", "RuntimeMaxSec=30"],
     "/usr/bin/env", ["-i", "PATH=/usr/bin:/bin", executable, "--test-threads=1", "--nocapture"], 40000);
-  assert.match(log, /10 passed; 0 failed; 1 ignored/);
+  assert.match(log, /11 passed; 0 failed; 1 ignored/);
   writeFileSync(join(scratch, "evidence/controller-unit-tests.log"), log);
   const record = { revision: owner.revision, inputs, workspaceLockDigest: digest(lock),
     harnessLockDigest: digest(readFileSync(join(harness, "Cargo.lock"))),
     binaryDigest: binaryDigest(executable), executable,
-    toolchain: checked("rustc", ["--version"]), unitTests: 10, hostedTestExecuted: false };
+    toolchain: checked("rustc", ["--version"]), unitTests: 11, hostedTestExecuted: false };
   writeFileSync(join(harness, "build.json"), JSON.stringify(record));
   writeFileSync(join(scratch, "evidence/controller-inputs.json"), JSON.stringify(record, null, 2));
 }

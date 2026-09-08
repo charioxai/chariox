@@ -110,13 +110,63 @@ async fn http_bytes(method: &str, path: &str) -> Vec<u8> {
         assert!(path.len() < 8192 && !path.contains(['\r', '\n']));
         let mut stream = TcpStream::connect("127.0.0.1:9222").await.unwrap();
         stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:9222\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
-        let mut bytes = Vec::new();
-        stream.take(1024 * 1024 + 1).read_to_end(&mut bytes).await.unwrap();
-        assert!(bytes.len() <= 1024 * 1024);
-        let end = bytes.windows(4).position(|b| b == b"\r\n\r\n").unwrap();
-        assert!(std::str::from_utf8(&bytes[..end]).unwrap().starts_with("HTTP/1.1 200"));
-        bytes[end + 4..].to_vec()
-    }).await.unwrap()
+        http_body(&mut stream).await
+    }).await.unwrap_or_else(|_| panic!("fixture DevTools HTTP deadline: {method} {path}"))
+}
+
+// DevTools may keep its socket open even when the fixture requests close.
+// Read the declared body, not EOF. This deliberately accepts only the bounded
+// Content-Length response framing emitted by the owned DevTools HTTP server.
+async fn http_body(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let end = loop {
+        if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+            break end;
+        }
+        assert!(bytes.len() < 16384, "fixture HTTP header limit");
+        let mut next = [0; 1024];
+        let n = stream.read(&mut next).await.unwrap();
+        assert!(n > 0, "fixture HTTP truncated header");
+        bytes.extend_from_slice(&next[..n]);
+    };
+    assert!(end <= 16384);
+    let head = std::str::from_utf8(&bytes[..end]).unwrap();
+    assert!(
+        head.starts_with("HTTP/1.1 200"),
+        "fixture HTTP status: {head}"
+    );
+    let mut length = None;
+    for line in head.split("\r\n").skip(1) {
+        let (name, value) = line.split_once(':').unwrap();
+        assert!(!name.eq_ignore_ascii_case("transfer-encoding"));
+        if name.eq_ignore_ascii_case("content-length") {
+            assert!(length.is_none());
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+    }
+    let length = length.expect("fixture HTTP Content-Length required");
+    assert!(length <= 1024 * 1024);
+    let mut body = bytes.split_off(end + 4);
+    assert!(body.len() <= length);
+    let received = body.len();
+    body.resize(length, 0);
+    stream.read_exact(&mut body[received..]).await.unwrap();
+    body
+}
+
+#[tokio::test]
+async fn devtools_http_body_completes_without_socket_close() {
+    let (mut client, mut server) = tokio::io::duplex(1024);
+    server
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]")
+        .await
+        .unwrap();
+    let body = tokio::time::timeout(Duration::from_secs(1), http_body(&mut client))
+        .await
+        .unwrap();
+    assert_eq!(body, b"[]");
+    // Server remains open throughout; completion cannot depend on EOF.
+    server.write_all(b"still open").await.unwrap();
 }
 async fn page(id: &str) -> WebSocketStream<TcpStream> {
     let stream = TcpStream::connect("127.0.0.1:9222").await.unwrap();

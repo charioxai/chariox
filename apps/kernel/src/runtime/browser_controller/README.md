@@ -56,7 +56,7 @@ They do not establish live Chromium compatibility or browser containment.
 The ignored live test is run by the existing hosted Chromium profile drill:
 `scripts/chromium-profile-drill/controller.mjs` copies and hashes the exact Rust
 source into an external harness, compiles it under a 1,536-MiB/one-CPU/128-task/
-180-second systemd unit, and runs its ten ordinary tests. The live test runs
+180-second systemd unit, and runs its eleven ordinary tests. The live test runs
 under a separate 256-MiB/one-CPU/32-task/30-second unit. Only that fixture's
 network namespace is entered; UID/GID and supplemental groups are dropped before
 executing the test with a clean environment. No CDP port or proxy is exposed.

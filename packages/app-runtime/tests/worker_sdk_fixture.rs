@@ -48,6 +48,15 @@ impl Broker for ReadyDelegate {
 
 #[test]
 fn fixed_native_sdk_handshake_uses_the_real_peer_control_event_namespace() {
+    exercise("installed");
+}
+
+#[test]
+fn generated_first_install_identity_reaches_ready_on_the_real_native_peer() {
+    exercise("app_0123456789abcdef0123456789abcdef");
+}
+
+fn exercise(installation: &str) {
     let native = Fixture::compile().unwrap();
     let manifest: Manifest = serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.fixture","version":"1.0.0",
@@ -85,7 +94,10 @@ fn fixed_native_sdk_handshake_uses_the_real_peer_control_event_namespace() {
         ),
     )
     .unwrap();
-    let (mut process, observed) = native.spawn_blocking(Mode::Ready, &package).unwrap();
+    let (mut process, observed) = native
+        .spawn_for_installation_blocking(Mode::Ready, &package, installation)
+        .unwrap();
+    assert_eq!(process.installation_id(), installation);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

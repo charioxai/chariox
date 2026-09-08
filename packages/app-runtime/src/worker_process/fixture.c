@@ -27,6 +27,20 @@ static int send_all(int fd, const void* data, size_t size) {
 
 #include "fixture_sdk.h"
 
+/* The Rust test fixture supplies the real kernel-generated installation ID.
+ * This validates only the fixed fixture's launch-record field; no App bytes or
+ * caller-selected program are executed. Production identity checks are intact. */
+static int fixture_installation(const char* value) {
+  const size_t length = strlen(value);
+  if (!length || length > 128) return 0;
+  for (size_t index = 0; index < length; ++index) {
+    const unsigned char c = (unsigned char)value[index];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '_' || c == '-')) return 0;
+  }
+  return 1;
+}
+
 int main(int argc, char** argv) {
   if (argc != 2 || getsid(0) != getpid() || getpgrp() != getpid()) return 80;
   if (!getenv("LANG") || strcmp(getenv("LANG"), "C.UTF-8") ||
@@ -47,7 +61,9 @@ int main(int argc, char** argv) {
   if (result) return result;
   const char* installation = !strcmp(argv[1], "sdk_other_installation") ? "other_installed" :
       fixture_sdk_mode(argv[1]) ? "installed" : "installation_1";
-  if (strcmp(record.generation, fixture_sdk_mode(argv[1]) ? "1" : "7") || strcmp(record.installation, installation) ||
+  const int installation_matches = fixture_sdk_mode(argv[1]) && strcmp(argv[1], "sdk_other_installation") ?
+      fixture_installation(record.installation) : !strcmp(record.installation, installation);
+  if (strcmp(record.generation, fixture_sdk_mode(argv[1]) ? "1" : "7") || !installation_matches ||
       record.nofile != 128 || record.cpu_seconds != 30 || record.heap_mib != 64 ||
       record.v8_threads != 1 || record.max_file_bytes != 1048576 ||
       strcmp(record.bootstrap, "// trusted fixture bootstrap\n")) return 86;

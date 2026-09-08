@@ -1302,3 +1302,19 @@ The shared HTTP snapshot exercises actual Rust request decoders and response
 encoders. Its 23 kernel HTTP fixtures are selected for hosted execution and
 have not yet compiled or run; fixed libc/private-socket fixtures do not prove
 production TLS or signed Node execution.
+
+The first live Chromium controller drill on `26945345c` passes source compilation
+and ten unit tests, then times out in its HTTP fixture helper. The helper now
+reads bounded Content-Length framing instead of waiting for socket EOF. A real
+duplex regression with the server held open passes (3.40-second compile, under
+0.01-second test, sampled peak 252,864 KiB). The hosted live test is pending its
+rerun; its failure is retained as evidence.
+
+Both first-install health fixture failures share a native test identity mismatch:
+the Rust launcher supplies a generated installation ID while its fixed C peer
+accepted only `installed`. The test peer now validates bounded generated IDs,
+preserving its separate wrong-installation negative mode. Both actual native
+SDK peer tests pass (11.43-second compile, 1.62-second execution, sampled peak
+407,248 KiB), including the generated-ID regression. The full lifecycle health
+cases still require their hosted rerun. Review `5137907144` reports no actionable
+finding through the earlier UI asset/controller increment.
