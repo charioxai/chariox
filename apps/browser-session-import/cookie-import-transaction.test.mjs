@@ -112,6 +112,29 @@ test('revocation during journal preparation does not mutate the cookie store', a
   });
 });
 
+test('failed journal preparation prevents mutation and preserves recovery classification', async () => {
+  const {options,writes} = fixture();
+  await assert.rejects(applyCookieImport({...options,journal:{
+    read:async () => null,
+    prepare:async () => { throw Object.assign(Error('private storage details'),{recoveryRequired:true}); },
+  }}), {code:'cookie_import_failed',message:'cookie_import_failed',recoveryRequired:true});
+  assert.equal(writes(),0);
+});
+
+test('failed journal cleanup after verified application blocks subsequent imports', async () => {
+  await withJournal(async journal => {
+    const {options,store,writes} = fixture();
+    await assert.rejects(applyCookieImport({...options,journal:{...journal,
+      discard:async () => { throw Error('private filesystem details'); },
+    }}), {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),1);
+    assert.equal((await store.read())[0].value,'fixture-only');
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),1);
+  });
+});
+
 test('requires a fresh exclusive authorization and explicit overwrite before mutation', async () => {
   for (const mode of ['denied','missing-authorization','missing-exclusive','cancelled','conflict']) {
     const {options,writes} = fixture(mode === 'conflict' ? [stored({value:'existing'})] : []);
