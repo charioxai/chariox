@@ -17,12 +17,30 @@ test("prebuilt image validation is read-only and accepts exact source/protocol",
 test("automatic image mode does not inspect a nonexistent prebuilt image", async () => {
   assert.equal(await validatePrebuiltSliceImage(undefined, identity, () => { throw Error("must not inspect") }), null)
 })
-test("missing and mismatched images fail before runtime startup", async () => {
-  for (const records of [[], [{}], [{ ...record, Config: {} }], [{ ...record, Config: { Labels: {
-    ...record.Config.Labels, "io.chariox.relay-peer-protocol-version": "41",
-  } } }]]) {
-    await assert.rejects(validatePrebuiltSliceImage("image:tag", identity, async () => records))
+test("missing and mismatched images fail before runtime startup", async (t) => {
+  const cases = [
+    { name: "missing image", records: [], error: /exactly one/ },
+    { name: "ambiguous image", records: [record, record], error: /exactly one/ },
+    { name: "missing immutable identity", records: [{}], error: /identity is missing/ },
+    { name: "missing provenance", records: [{ ...record, Config: {} }], error: /exact current runtime source/ },
+    { name: "stale source with matching protocol", records: [{ ...record, Config: { Labels: {
+      ...record.Config.Labels, "io.chariox.runtime-source-revision": "revision-old",
+    } } }], error: /exact current runtime source/ },
+    { name: "matching source with stale protocol", records: [{ ...record, Config: { Labels: {
+      ...record.Config.Labels, "io.chariox.relay-peer-protocol-version": "41",
+    } } }], error: /relay protocol must match/ },
+  ]
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      await assert.rejects(validatePrebuiltSliceImage("image:tag", identity, async () => entry.records), entry.error)
+    })
   }
+})
+
+test("Docker inspection failure propagates without selecting an image", async () => {
+  const failure = new Error("Docker unavailable")
+  await assert.rejects(validatePrebuiltSliceImage("image:tag", identity, async () => { throw failure }),
+    error => error === failure)
 })
 
 test("room drill validates prebuilt identity before starting fixture or relay", async () => {
