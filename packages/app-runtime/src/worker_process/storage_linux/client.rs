@@ -57,7 +57,7 @@ impl Lease {
         };
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
-        let socket_root = files::root_directory(Path::new(SOCKET_ROOT))?;
+        let socket_root = files::search_root_directory(Path::new(SOCKET_ROOT))?;
         let socket_name = format!("u-{uid}.sock");
         let metadata = crate::private_fs::entry_metadata(&socket_root, OsStr::new(&socket_name))?;
         if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK
@@ -94,7 +94,7 @@ impl Lease {
             return Err(Error::Identity);
         }
         model::hex(&grant.lease, 32)?;
-        let parent = files::root_directory(&path)?;
+        let parent = files::search_root_directory(&path)?;
         let data = parent.child(OsStr::new("data"))?;
         let temporary = parent.child(OsStr::new("tmp"))?;
         verify(&data, grant.data_mount_id, DATA_BYTES, uid)?;

@@ -44,6 +44,17 @@ pub(super) fn require(parent: &Dir, name: &str, file: &File, expected: &Identity
 /// Installer-owned absolute path, with every ancestor opened without symlinks.
 /// Only root may change the namespace where our derived image paths are used.
 pub(super) fn root_directory(path: &Path) -> Result<Dir> {
+    walk_root_directory(path, false)
+}
+
+/// Client traversal through root-owned 0711 parents needs search permission,
+/// not directory enumeration. The resulting handle supports openat/fstatat;
+/// helper mutation and fsync paths keep using root_directory instead.
+pub(super) fn search_root_directory(path: &Path) -> Result<Dir> {
+    walk_root_directory(path, true)
+}
+
+fn walk_root_directory(path: &Path, search_only: bool) -> Result<Dir> {
     if !path.is_absolute() || path.as_os_str().as_encoded_bytes().len() > 700 {
         return Err(Error::Identity);
     }
@@ -52,7 +63,23 @@ pub(super) fn root_directory(path: &Path) -> Result<Dir> {
         match component {
             Component::RootDir => {}
             Component::Normal(name) => {
-                dir = dir.child(name)?;
+                dir = if search_only {
+                    let name =
+                        CString::new(name.as_encoded_bytes()).map_err(|_| Error::Identity)?;
+                    let fd = unsafe {
+                        libc::openat(
+                            dir.0.as_raw_fd(),
+                            name.as_ptr(),
+                            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if fd < 0 {
+                        return Err(Error::Io);
+                    }
+                    Dir(unsafe { File::from_raw_fd(fd) })
+                } else {
+                    dir.child(name)?
+                };
             }
             _ => return Err(Error::Identity),
         }
