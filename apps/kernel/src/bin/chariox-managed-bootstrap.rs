@@ -1,4 +1,8 @@
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("chariox-managed-bootstrap {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if let Ok(log_path) = chariox_kernel::logging::init_process_logger("managed-bootstrap") {
         chariox_kernel::logging::info_with_fields(
             "managed_bootstrap.start",
