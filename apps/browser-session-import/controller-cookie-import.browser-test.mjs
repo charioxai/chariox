@@ -19,10 +19,10 @@ test('controller imports into its registered target and rejects stale browser an
   const profile = await mkdtemp(path.join(tmpdir(),'chariox-controller-import-'));
   const journalDirectory = await mkdtemp(path.join(tmpdir(),'chariox-controller-journal-'));
   const key = randomBytes(32);
-  const journal = await openCookieImportJournal({directory:journalDirectory,key,
-    binding:{userId:'fixture',roomId:'fixture',environmentId:'fixture'}});
-  let context, controller;
+  let context, controller, journal;
   try {
+    journal = await openCookieImportJournal({directory:journalDirectory,key,
+      binding:{userId:'fixture',roomId:'fixture',environmentId:'fixture'}});
     context = await chromium.launchPersistentContext(profile,{channel:'chrome',headless:true,
       chromiumSandbox:true,args:['--remote-debugging-port=0']});
     const port = Number((await readFile(path.join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0]);
@@ -65,11 +65,13 @@ test('controller imports into its registered target and rejects stale browser an
       {code:'cookie_import_recovery_required',recoveryRequired:true});
     assert.equal((await context.cookies()).find(cookie => cookie.name === 'session').value,'fixture-controller');
   } finally {
-    await journal.close();
+    const closed = await Promise.allSettled([
+      journal?.close(), controller?.close(), context?.close(),
+    ]);
     key.fill(0);
-    await rm(journalDirectory,{recursive:true,force:true});
-    try {await controller?.close();} finally {
-      try {await context?.close();} finally {await rm(profile,{recursive:true,force:true});}
-    }
+    await Promise.all([rm(journalDirectory,{recursive:true,force:true}),
+      rm(profile,{recursive:true,force:true})]);
+    const failures = closed.filter(result => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason),'fixture cleanup failed');
   }
 });
