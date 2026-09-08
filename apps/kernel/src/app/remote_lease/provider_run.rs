@@ -142,6 +142,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         });
         if let Some(run) = existing.as_ref() {
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
+            let catalog_matches =
+                run.remote_extension_catalog_matches_launch(remote_extension_manifest);
             let reply_capability_matches =
                 run.workflow_event_reply_enabled() == event_reply_enabled;
             let context_capability_matches =
@@ -150,11 +152,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 run.workflow_event_actions_enabled() == event_actions_enabled;
             if existing_profile_matches
                 && mcp_matches
+                && catalog_matches
                 && reply_capability_matches
                 && context_capability_matches
                 && actions_capability_matches
             {
-                if !remote_extension_manifest.is_empty() {
+                if run.remote_extension_manifest() != remote_extension_manifest {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
                         remote_extension_manifest.clone(),
@@ -183,11 +186,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message: "the worker provider run differs from the selected profile and still has pending work; settle or cancel it before retrying".to_string(),
                 });
             }
+            if !catalog_matches && !run.client_interface().is_chariox() {
+                // The attached native terminal keeps this run identity. The
+                // existing metadata sync queues an in-place provider refresh;
+                // do not replace it with a managed run while refresh is pending.
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote runtime tool catalog reload",
+                    message: "native_runtime_catalog_refresh_pending: the native provider must fetch the updated catalog before this prompt is admitted".into(),
+                });
+            }
             if active && !mcp_matches {
                 return Err(DaemonError::LocalTransport {
                     operation: "remote MCP provider reload",
                     message: format!(
                         "remote worker provider run `{}` does not have the required MCP set and is currently busy; retry after the active turn completes",
+                        run.id()
+                    ),
+                });
+            }
+            if active && !catalog_matches {
+                // Queue advance does not repeat provider admission. Accepting
+                // this prompt on the old run would promise a catalog that its
+                // provider has never loaded. Keep the current turn intact; the
+                // existing home dispatch handshake can retry once it is idle.
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote runtime tool catalog reload",
+                    message: format!(
+                        "remote worker provider run `{}` has an active turn and a changed runtime tool catalog; retry after the active turn completes",
                         run.id()
                     ),
                 });

@@ -66,6 +66,7 @@ pub(crate) mod response_redaction;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;
 pub(crate) mod runtime_mcp_proxy_dispatcher;
+pub(crate) mod runtime_tool_catalog;
 pub(crate) mod semantic_recall_utility;
 pub mod session_actor;
 pub(crate) mod session_collaboration_executor;

@@ -45,11 +45,14 @@ impl KernelRuntimeState {
                         pending.remove(&agent_id)
                     };
                     if let Some(pending) = pending {
-                        match state.reload_agent_provider_if_idle_for_reason(
-                            &pending.session_id,
-                            &pending.agent_id,
-                            &pending.reason,
-                        ) {
+                        match state
+                            .reload_agent_provider_if_idle_for_reason(
+                                &pending.session_id,
+                                &pending.agent_id,
+                                &pending.reason,
+                            )
+                            .await
+                        {
                             Ok(ProviderReloadOutcome::Deferred) => state
                                 .remember_pending_provider_reload(
                                     &pending.session_id,

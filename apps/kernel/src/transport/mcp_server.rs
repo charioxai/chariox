@@ -18,7 +18,10 @@ use crate::runtime::router::CommandRouter;
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-03-26";
 const JSON_RPC_VERSION: &str = "2.0";
 
-type HttpBody = Full<Bytes>;
+mod catalog_stream;
+#[cfg(test)]
+mod catalog_stream_tests;
+type HttpBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>;
 
 pub(crate) async fn bind_mcp_http_server(
     router: &CommandRouter,
@@ -36,6 +39,9 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     router: Arc<CommandRouter>,
     listener: TcpListener,
 ) -> Result<(), DaemonError> {
+    // Dropping/aborting this server closes notification streams as well as the
+    // listener; streams never retain a strong CommandRouter indefinitely.
+    let (_lifetime, shutdown) = tokio::sync::watch::channel(());
     loop {
         let (stream, _) = listener
             .accept()
@@ -45,13 +51,24 @@ pub(crate) async fn run_mcp_http_server_on_listener(
                 message: error.to_string(),
             })?;
         let router = Arc::clone(&router);
+        let shutdown = shutdown.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
+            let mut stopped = shutdown.clone();
             let service = service_fn(move |request| {
                 let router = Arc::clone(&router);
-                async move { handle_http_request(router, request).await }
+                let shutdown = shutdown.clone();
+                async move { handle_http_request(router, request, shutdown).await }
             });
-            let _ = http1::Builder::new().serve_connection(io, service).await;
+            let connection = http1::Builder::new().serve_connection(io, service);
+            tokio::pin!(connection);
+            tokio::select! {
+                _ = &mut connection => {},
+                _ = stopped.changed() => {
+                    connection.as_mut().graceful_shutdown();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), connection).await;
+                }
+            }
         });
     }
 }
@@ -59,8 +76,9 @@ pub(crate) async fn run_mcp_http_server_on_listener(
 async fn handle_http_request(
     router: Arc<CommandRouter>,
     request: Request<Incoming>,
+    shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, Infallible> {
-    let response = match handle_http_request_inner(router, request).await {
+    let response = match handle_http_request_inner(router, request, shutdown).await {
         Ok(response) => response,
         Err(error) => text_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -73,17 +91,10 @@ async fn handle_http_request(
 async fn handle_http_request_inner(
     router: Arc<CommandRouter>,
     request: Request<Incoming>,
+    shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, DaemonError> {
-    if let Some(origin) = request
-        .headers()
-        .get(ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    {
-        if !origin.starts_with("http://127.0.0.1")
-            && !origin.starts_with("http://localhost")
-            && !origin.starts_with("https://127.0.0.1")
-            && !origin.starts_with("https://localhost")
-        {
+    if let Some(origin) = request.headers().get(ORIGIN) {
+        if !origin.to_str().ok().is_some_and(valid_runtime_origin) {
             return Ok(text_response(
                 StatusCode::FORBIDDEN,
                 "invalid origin".to_string(),
@@ -103,11 +114,23 @@ async fn handle_http_request_inner(
     }
 
     match *request.method() {
-        Method::GET => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
+        Method::GET => Ok(catalog_stream::open(router, request.headers(), shutdown)),
         Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
     }
+}
+
+fn valid_runtime_origin(origin: &str) -> bool {
+    url::Url::parse(origin).ok().is_some_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 async fn handle_proxy_json_rpc_request(
@@ -232,7 +255,7 @@ async fn handle_json_rpc_value(
                         "protocolVersion": protocol_version,
                         "capabilities": {
                             "tools": {
-                                "listChanged": false
+                                "listChanged": true
                             },
                             "resources": {
                                 "subscribe": false,
@@ -250,24 +273,44 @@ async fn handle_json_rpc_value(
                 }),
             ))
         }
-        "tools/list" => Ok(json_response(
-            StatusCode::OK,
-            serde_json::json!({
-                "jsonrpc": JSON_RPC_VERSION,
-                "id": id,
-                "result": {
-                    "tools": router
-                        .runtime_tool_specs_for_auth_token_async(auth_token.to_owned()).await?
-                        .into_iter()
-                        .map(|tool| serde_json::json!({
-                            "name": tool.name,
-                            "description": tool.description,
-                            "inputSchema": tool.input_schema,
-                        }))
-                        .collect::<Vec<_>>()
+        "tools/list" => {
+            let changes = router.runtime_mcp_catalog_changes();
+            let captured = router.runtime_mcp_catalog_run(auth_token).and_then(|run| {
+                changes
+                    .revision(run.id())
+                    .map(|revision| (run.id().to_owned(), revision))
+            });
+            let tools = router
+                .runtime_tool_specs_for_auth_token_async(auth_token.to_owned())
+                .await?;
+            // An invalidation during discovery cannot be acknowledged by an
+            // older list. Record only successful discovery for the same run.
+            if let Some((run_id, revision)) = captured {
+                if router
+                    .runtime_mcp_catalog_run(auth_token)
+                    .is_some_and(|run| run.id() == run_id)
+                {
+                    changes.observed(&run_id, revision);
                 }
-            }),
-        )),
+            }
+            Ok(json_response(
+                StatusCode::OK,
+                serde_json::json!({
+                    "jsonrpc": JSON_RPC_VERSION,
+                    "id": id,
+                    "result": {
+                        "tools": tools
+                            .into_iter()
+                            .map(|tool| serde_json::json!({
+                                "name": tool.name,
+                                "description": tool.description,
+                                "inputSchema": tool.input_schema,
+                            }))
+                            .collect::<Vec<_>>()
+                    }
+                }),
+            ))
+        }
         "resources/list" => Ok(json_response(
             StatusCode::OK,
             serde_json::json!({
@@ -345,16 +388,16 @@ fn parse_bearer_token(headers: &hyper::HeaderMap) -> Option<String> {
 fn empty_response(status: StatusCode) -> Response<HttpBody> {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::new()))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::new()).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).boxed_unsync()))
 }
 
 fn text_response(status: StatusCode, body: String) -> Response<HttpBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::from(body)).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).boxed_unsync()))
 }
 
 fn json_response(status: StatusCode, value: Value) -> Response<HttpBody> {
@@ -362,8 +405,8 @@ fn json_response(status: StatusCode, value: Value) -> Response<HttpBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::from(body)).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).boxed_unsync()))
 }
 
 fn json_rpc_error_response(id: Option<Value>, code: i64, message: &str) -> Response<HttpBody> {

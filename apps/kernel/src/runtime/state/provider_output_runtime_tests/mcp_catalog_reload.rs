@@ -44,7 +44,10 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
         .unwrap()
         .reason
         .clone();
-    assert_eq!(reason, ProviderReloadReason::RuntimeToolCatalog);
+    assert_eq!(
+        reason,
+        ProviderReloadReason::RuntimeToolCatalogAndLaunchInputs("permissions".into())
+    );
     assert!(runtime.owned.provider_store.list_runs().is_empty());
     runtime
         .owned

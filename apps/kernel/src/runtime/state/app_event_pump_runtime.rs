@@ -25,6 +25,18 @@ struct PassOutput {
     dispatches: WorkflowPromptDispatches,
 }
 impl KernelRuntimeState {
+    /// Executes the actual bounded pass without dispatching a provider process.
+    /// A fresh timer reservation keeps fixture retries deterministic; active
+    /// worker discovery and AppControl admission use their production paths.
+    #[cfg(test)]
+    pub(super) fn fixture_app_event_pass(&self) -> WorkflowPromptDispatches {
+        let pump = crate::runtime::app_event_pump::AppEventPump::new();
+        let pass = pump.try_begin().unwrap();
+        let _permit = self.app_control().try_admit().unwrap();
+        let leases = self.app_control().active_app_leases(None, PAGE);
+        self.owned.pump_app_event_pass(&pass, leases).dispatches
+    }
+
     /// Coordinator wiring only: admission and the one-pass reservation move into
     /// blocking ownership. Cancelling an awaiting task cannot release them early.
     pub(crate) fn schedule_app_event_pump(&self) {

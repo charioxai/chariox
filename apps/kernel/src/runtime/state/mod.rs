@@ -36,12 +36,13 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
-mod app_runtime_state;
 mod app_automation_owned_state;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
+mod app_runtime_state;
 mod config_runtime_state;
+mod native_catalog_refresh;
 mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;

@@ -940,3 +940,34 @@ The independent review at `dba7b42cd` found one actionable issue: a Linux librar
 tampering fixture changed the size while expecting a hash-error classification.
 It now tests a same-length byte flip and a separate size change. The prior Linux
 contract job failed at that assertion; the corrected hosted run is pending.
+
+
+### Executed Linux preparation and native catalog refresh (2026-09-08)
+
+Hosted Linux run `34183605009` at `bf229c102` passed 14 offline tests, actual root
+RuntimeInstaller setup, quota enforcement, propagated code views, complete
+PreparedWorker preparation, and helper/code-view crash recovery. Package/runtime
+mount flags were 4111/4103; package chmod returned EROFS. Final loop and owned
+mount inventories were empty, and all four journals cleared code/mount/loop
+ownership and recovery flags. The preparation test took 0.13 seconds; code-view
+verification 0.28 seconds. This is composition and recovery evidence using a
+signed text fixture, with no native execution claim.
+
+Native provider catalog refresh now uses the existing authenticated MCP endpoint
+and run identity. A bounded SSE stream sends standard tools/list_changed; Codex
+also uses its official config/mcpServer/reload hook with the documented absent
+params. One absolute deadline covers actual connection, handshake and frame I/O.
+Freshness is recorded only after a current-generation successful tools/list on
+the server; it does not prove the model consumed that response. Managed remote
+admission refreshes a changed catalog at its idle boundary; native admission
+waits for the same-run refresh through the existing bounded relay retry.
+
+Independent review corrected a possible unbounded handshake, and root review
+corrected premature release of global reservations for closed but still-owned
+SSE bodies/refreshes. Four actual catalog-registry tests pass in an isolated
+harness including the unchanged production source (4.93-second compile,
+peak 117,104 KiB). They cover stale observations, capacity, replacement and
+retained closed owners. The full kernel library check was stopped after
+26.3 seconds by the existing local RSS guard (peak 3,756,928 KiB); it did not
+complete. Real HTTP/SSE, Codex socket, remote admission and event-pump integration
+tests are selected for hosted CI. Installed-provider compatibility remains open.

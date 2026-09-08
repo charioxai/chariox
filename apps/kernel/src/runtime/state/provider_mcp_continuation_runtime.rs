@@ -137,11 +137,13 @@ impl KernelRuntimeState {
                     Some(run.id().to_string())
                 }
             });
-        let outcome = self.reload_agent_provider_if_idle_for_reason(
-            &continuation.session_id,
-            &continuation.agent_id,
-            &continuation.reload_reason,
-        )?;
+        let outcome = self
+            .reload_agent_provider_if_idle_for_reason(
+                &continuation.session_id,
+                &continuation.agent_id,
+                &continuation.reload_reason,
+            )
+            .await?;
         if outcome == ProviderReloadOutcome::Deferred {
             self.remember_mcp_continuation_with_reason(
                 &continuation.session_id,

@@ -47,6 +47,7 @@ chariox-app-runtime = { path = "../../packages/app-runtime" }
 chariox-app-package = { path = "../../packages/app-package" }
 
 [dev-dependencies]
+hyper = { version = "1.6.0", features = ["client"] }
 # Fixed unsandboxed ABI fixtures; excluded from production dependency graphs.
 chariox-app-runtime = { path = "../../packages/app-runtime", features = ["test-fixtures"] }
 

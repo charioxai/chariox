@@ -24,6 +24,7 @@ pub(crate) enum ProviderReloadTrigger {
 pub(crate) enum ProviderReloadOutcome {
     Unaffected,
     Reloaded,
+    ToolsRefreshed,
     Deferred,
 }
 
@@ -33,27 +34,43 @@ pub(crate) enum ProviderReloadOutcome {
 pub(super) enum ProviderReloadReason {
     LaunchInputs(String),
     RuntimeToolCatalog,
+    RuntimeToolCatalogAndLaunchInputs(String),
 }
 impl ProviderReloadReason {
     pub(super) fn label(&self) -> &str {
         match self {
-            Self::LaunchInputs(label) => label,
+            Self::LaunchInputs(label) | Self::RuntimeToolCatalogAndLaunchInputs(label) => label,
             Self::RuntimeToolCatalog => "runtime tool catalog",
         }
     }
     pub(super) fn merge(self, previous: &Self) -> Self {
-        if *previous == Self::RuntimeToolCatalog {
-            Self::RuntimeToolCatalog
-        } else {
-            self
+        match (self, previous) {
+            (Self::RuntimeToolCatalogAndLaunchInputs(label), _) => {
+                Self::RuntimeToolCatalogAndLaunchInputs(label)
+            }
+            (
+                Self::LaunchInputs(label),
+                Self::RuntimeToolCatalog | Self::RuntimeToolCatalogAndLaunchInputs(_),
+            ) => Self::RuntimeToolCatalogAndLaunchInputs(label),
+            (
+                Self::RuntimeToolCatalog,
+                Self::LaunchInputs(label) | Self::RuntimeToolCatalogAndLaunchInputs(label),
+            ) => Self::RuntimeToolCatalogAndLaunchInputs(label.clone()),
+            (reason, _) => reason,
         }
+    }
+    fn includes_catalog(&self) -> bool {
+        matches!(
+            self,
+            Self::RuntimeToolCatalog | Self::RuntimeToolCatalogAndLaunchInputs(_)
+        )
     }
     fn requires_reload(
         &self,
         current: &ProviderLaunchFingerprint,
         desired: &ProviderLaunchFingerprint,
     ) -> bool {
-        *self == Self::RuntimeToolCatalog || current != desired
+        self.includes_catalog() || current != desired
     }
 }
 
@@ -184,6 +201,16 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
+        if let Some(run) = self
+            .owned
+            .provider_run_projection
+            .get_for_agent(session_id, agent_id)
+        {
+            self.owned
+                .provider_run_projection
+                .catalog_changes()
+                .invalidate(run.id());
+        }
         self.reload_agent_provider_for_reason(
             session_id,
             agent_id,
@@ -198,7 +225,10 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: ProviderReloadReason,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
-        match self.reload_agent_provider_if_idle_for_reason(session_id, agent_id, &reason)? {
+        match self
+            .reload_agent_provider_if_idle_for_reason(session_id, agent_id, &reason)
+            .await?
+        {
             ProviderReloadOutcome::Deferred => {
                 self.remember_pending_provider_reload(session_id, agent_id, reason);
                 Ok(ProviderReloadOutcome::Deferred)
@@ -207,7 +237,7 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) fn reload_agent_provider_if_idle_for_reason(
+    pub(super) async fn reload_agent_provider_if_idle_for_reason(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -268,6 +298,15 @@ impl KernelRuntimeState {
             );
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
+            // An in-place tool refresh must not swallow a simultaneous launch
+            // configuration/permission change retained by the common queue.
+            if cause.includes_catalog()
+                && !run.client_interface().is_chariox()
+                && ProviderLaunchFingerprint::from_run(&run)
+                    == ProviderLaunchFingerprint::from_request(&launch_request)
+            {
+                return self.refresh_native_runtime_catalog(run).await;
+            }
             if !cause.requires_reload(
                 &ProviderLaunchFingerprint::from_run(&run),
                 &ProviderLaunchFingerprint::from_request(&launch_request),
@@ -386,8 +425,12 @@ mod tests {
         use super::ProviderReloadReason;
         let catalog = ProviderReloadReason::RuntimeToolCatalog;
         let config = ProviderReloadReason::LaunchInputs("new permissions".into());
-        assert_eq!(config.clone().merge(&catalog), catalog);
-        assert_eq!(catalog.clone().merge(&config), catalog);
+        let combined =
+            ProviderReloadReason::RuntimeToolCatalogAndLaunchInputs("new permissions".into());
+        assert_eq!(config.clone().merge(&catalog), combined);
+        assert_eq!(catalog.clone().merge(&config), combined);
+        assert_eq!(catalog.merge(&combined), combined);
+        assert_eq!(combined.clone().merge(&config), combined);
     }
 
     #[test]

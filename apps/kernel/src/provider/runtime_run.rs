@@ -74,6 +74,13 @@ pub struct RuntimeProviderRun {
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
     )]
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    /// Cache freshness at actual provider launch. Metadata synchronization must
+    /// not make a provider's already-cached tool list appear refreshed. This is
+    /// local runtime state, never a serialized capability or authorization.
+    #[serde(skip)]
+    launched_remote_extension_manifest_hash: Option<String>,
+    #[serde(skip)]
+    observed_remote_extension_manifest_hash: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     provider_config_overrides: BTreeMap<String, serde_json::Value>,
     #[serde(
@@ -146,6 +153,10 @@ impl RuntimeProviderRun {
             workflow_fresh_context_node_run_id: None,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
+            launched_remote_extension_manifest_hash: Some(
+                request.remote_extension_manifest.manifest_hash(),
+            ),
+            observed_remote_extension_manifest_hash: None,
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
@@ -210,6 +221,8 @@ impl RuntimeProviderRun {
             workflow_fresh_context_node_run_id: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+            launched_remote_extension_manifest_hash: None,
+            observed_remote_extension_manifest_hash: None,
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
@@ -344,6 +357,26 @@ impl RuntimeProviderRun {
 
     pub fn remote_extension_manifest(&self) -> &crate::extension::RemoteExtensionManifest {
         &self.remote_extension_manifest
+    }
+
+    pub(crate) fn remote_extension_catalog_matches_launch(
+        &self,
+        desired: &crate::extension::RemoteExtensionManifest,
+    ) -> bool {
+        self.observed_remote_extension_manifest_hash
+            .as_deref()
+            .or(self.launched_remote_extension_manifest_hash.as_deref())
+            == Some(desired.manifest_hash().as_str())
+    }
+
+    pub(super) fn observe_remote_extension_catalog(&mut self, expected_hash: &str) -> bool {
+        if self.state == ProviderRunState::Ended
+            || self.remote_extension_manifest.manifest_hash() != expected_hash
+        {
+            return false;
+        }
+        self.observed_remote_extension_manifest_hash = Some(expected_hash.into());
+        true
     }
 
     pub fn provider_config_overrides(&self) -> &BTreeMap<String, serde_json::Value> {
