@@ -24,11 +24,25 @@ impl Fixture {
 root=$(dirname "$0")
 printf '%s\n' "$*" >> "$root/calls"
 case "$1" in
-  inspect) test ! -f "$root/inspect-fails" || exit 1; cat "$root/status" ;;
+  info) printf '17179869184\n' ;;
+  inspect)
+    test ! -f "$root/inspect-fails" || exit 1
+    case "$3" in
+      *io.chariox.snapshot-helper*) test ! -f "$root/wrong-owner" || exit 1; printf '%s\n' "$4" ;;
+      *HostConfig.Memory*)
+        case "$4" in
+          *-disk-admission-*|*-home-archive-*) if test -f "$root/unbounded-helper"; then printf '0\n'; else printf '536870912\n'; fi ;;
+          *) printf '2147483648\n' ;;
+        esac ;;
+      *) cat "$root/status" ;;
+    esac ;;
   pause) printf 'true paused\n' > "$root/status" ;;
+  create) printf '%s\n' "$3" > "$root/helpers" ;;
+  start) ;;
   unpause) test ! -f "$root/unpause-fails" || exit 1; printf 'true running\n' > "$root/status" ;;
   exec) test ! -f "$root/desktop-fails" || exit 1 ;;
-  ps) test ! -f "$root/list-fails" || exit 1; test ! -f "$root/present" || printf 'chariox-slice-dev\n' ;;
+  ps) test ! -f "$root/list-fails" || exit 1; test ! -f "$root/present" || printf 'chariox-slice-dev\n'; test ! -f "$root/helpers" || cat "$root/helpers" ;;
+  rm) test ! -f "$root/remove-fails" || exit 1; rm -f "$root/helpers" ;;
   *) exit 2 ;;
 esac
 exit 0
@@ -65,7 +79,7 @@ exit 0
         std::fs::read_to_string(self.options.root.join("calls")).unwrap_or_default()
     }
     fn begin(&self) {
-        begin(&self.record, &self.options).unwrap();
+        begin(&self.record, &self.options, true).unwrap();
     }
     fn recover(&self) -> Result<(), DaemonError> {
         recover(&self.record, &self.options)
@@ -88,7 +102,7 @@ fn snapshot_resume_unpauses_then_restarts_desktop_and_retires_record() {
     let f = Fixture::new();
     f.begin();
     assert!(f.journal().exists());
-    assert!(begin(&f.record, &f.options).is_err());
+    assert!(begin(&f.record, &f.options, true).is_err());
     f.recover().unwrap();
     assert!(!f.journal().exists());
     let calls = f.calls();
@@ -183,6 +197,61 @@ fn snapshot_resume_rejects_corrupt_wrong_identity_and_symlink_records() {
     assert!(f.calls().is_empty());
 }
 
+#[test]
+fn snapshot_resume_removes_abandoned_helpers_before_resuming_the_slice() {
+    let _lock = crate::env_lock::lock();
+    let f = Fixture::new();
+    f.begin();
+    let helper = "chariox-slice-dev-disk-admission-0123456789abcdef";
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(f.journal()).unwrap()).unwrap();
+    record["helpers"] = serde_json::json!([helper]);
+    std::fs::write(f.journal(), serde_json::to_vec(&record).unwrap()).unwrap();
+    std::fs::write(f.options.root.join("helpers"), format!("{helper}\n")).unwrap();
+    f.flag("remove-fails");
+    assert!(f.recover().is_err());
+    assert!(f.journal().exists());
+    assert!(!f.calls().contains("unpause "));
+    f.clear("remove-fails");
+    f.recover().unwrap();
+    assert!(
+        !f.options.root.join("helpers").exists(),
+        "orphaned helper must be removed"
+    );
+    assert!(f.calls().rfind("rm -f ").unwrap() < f.calls().find("unpause ").unwrap());
+    assert!(!f.journal().exists());
+}
+
+#[test]
+fn snapshot_resume_cleans_stopped_snapshot_helpers_without_starting_the_slice() {
+    let _lock = crate::env_lock::lock();
+    let f = Fixture::new();
+    f.status("false exited");
+    begin(&f.record, &f.options, false).unwrap();
+    let helper = "chariox-slice-dev-home-archive-123";
+    register_helper(&f.record, &f.options, helper).unwrap();
+    assert!(register_helper(&f.record, &f.options, helper).is_err());
+    assert!(register_helper(
+        &f.record,
+        &f.options,
+        "chariox-slice-dev-home-archive-other-home-archive-123"
+    )
+    .is_err());
+    std::fs::write(f.options.root.join("helpers"), format!("{helper}\n")).unwrap();
+    f.flag("wrong-owner");
+    assert!(f.recover().is_err());
+    assert!(
+        !f.calls().contains("rm -f"),
+        "an unverified container must survive"
+    );
+    f.clear("wrong-owner");
+    f.recover().unwrap();
+    assert!(!f.options.root.join("helpers").exists());
+    assert!(!f.journal().exists());
+    assert!(!f.calls().contains("unpause "));
+    assert!(!f.calls().contains("exec "));
+}
+
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -199,9 +268,16 @@ fn snapshot_resume_survives_sigkill_between_pause_and_resume() {
         options.root = root.into();
         let mut record = super::super::tests::test_record();
         record.id = std::fs::read_to_string(options.root.join("slice-id")).unwrap();
-        begin(&record, &options).unwrap();
+        begin(&record, &options, true).unwrap();
         assert!(docker_command()
             .args(["pause", &local_docker_container_name(&record)])
+            .status()
+            .unwrap()
+            .success());
+        let helper = "chariox-slice-dev-disk-admission-0123456789abcdef";
+        create_helper(&record, &options, helper).unwrap();
+        assert!(docker_command()
+            .args(["start", helper])
             .status()
             .unwrap()
             .success());
@@ -237,6 +313,16 @@ fn snapshot_resume_survives_sigkill_between_pause_and_resume() {
     child.0.kill().unwrap();
     assert!(!child.0.wait().unwrap().success());
     assert!(f.journal().exists());
+    f.flag("unbounded-helper");
+    assert!(
+        super::super::memory_admission::admit_slice_start(
+            &f.record,
+            super::super::LocalDockerSliceAction::Provision,
+            &f.options,
+        )
+        .is_err(),
+        "a legacy unbounded helper must reproduce the admission failure"
+    );
     f.recover().unwrap();
     assert_eq!(
         std::fs::read_to_string(f.options.root.join("status"))
@@ -245,5 +331,17 @@ fn snapshot_resume_survives_sigkill_between_pause_and_resume() {
         "true running"
     );
     assert!(f.calls().contains("exec "));
+    assert!(
+        !f.options.root.join("helpers").exists(),
+        "startup must reclaim the killed process's helper"
+    );
     assert!(!f.journal().exists());
+    for action in [
+        super::super::LocalDockerSliceAction::Provision,
+        super::super::LocalDockerSliceAction::RestoreState,
+        super::super::LocalDockerSliceAction::Recover,
+    ] {
+        super::super::memory_admission::admit_slice_start(&f.record, action, &f.options)
+            .expect("helper cleanup must reopen slice admission");
+    }
 }

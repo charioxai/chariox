@@ -812,15 +812,16 @@ fn with_local_docker_slice_snapshot_quiesced<T>(
     operation: &'static str,
     snapshot: impl FnOnce() -> Result<T, DaemonError>,
 ) -> Result<T, DaemonError> {
-    let resume = match quiesce {
+    super::snapshot_pause::recover(record, options)?;
+    match quiesce {
         SliceSnapshotQuiesce::Container => {
             stop_local_docker_container_if_running(record)?;
-            SliceSnapshotResume::None
+            super::snapshot_pause::begin(record, options, false)?;
         }
         SliceSnapshotQuiesce::Desktop => stop_local_docker_slice_desktop_for_snapshot(record, options)?,
-    };
+    }
     let result = snapshot();
-    let resume_result = resume_after_local_docker_slice_snapshot(record, options, resume);
+    let resume_result = super::snapshot_pause::recover(record, options);
     match (result, resume_result) {
         (Ok(value), Ok(())) => Ok(value),
         (Ok(_), Err(error)) => Err(error),
@@ -836,24 +837,17 @@ fn with_local_docker_slice_snapshot_quiesced<T>(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SliceSnapshotResume {
-    None,
-    PausedContainer,
-}
-
 fn stop_local_docker_slice_desktop_for_snapshot(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
-) -> Result<SliceSnapshotResume, DaemonError> {
-    super::snapshot_pause::recover(record, options)?;
+) -> Result<(), DaemonError> {
     if !local_docker_container_is_running(record) {
-        return Ok(SliceSnapshotResume::None);
+        return super::snapshot_pause::begin(record, options, false);
     }
     let restart_desktop = record.display_mode == SliceDisplayMode::Headed;
     // Publish the resume obligation durably before stopping the desktop or
     // freezing the worker. Startup can finish it even after SIGKILL here.
-    super::snapshot_pause::begin(record, options)?;
+    super::snapshot_pause::begin(record, options, true)?;
     let paused = (|| {
         if restart_desktop {
             run_local_docker_slice_screen(record, "stop", "slice.screen.stop_for_snapshot")?;
@@ -878,18 +872,7 @@ fn stop_local_docker_slice_desktop_for_snapshot(
         let _ = super::snapshot_pause::recover(record, options);
         return Err(error);
     }
-    Ok(SliceSnapshotResume::PausedContainer)
-}
-
-fn resume_after_local_docker_slice_snapshot(
-    record: &SliceRecord,
-    options: &LocalDockerSliceOptions,
-    resume: SliceSnapshotResume,
-) -> Result<(), DaemonError> {
-    match resume {
-        SliceSnapshotResume::None => Ok(()),
-        SliceSnapshotResume::PausedContainer => super::snapshot_pause::recover(record, options),
-    }
+    Ok(())
 }
 
 fn docker_commit_container(
@@ -929,17 +912,12 @@ fn archive_local_docker_home_volume(
     let helper = format!(
         "{}-home-archive-{}",
         local_docker_container_name(record),
-        crate::session::unix_epoch_ms()
+        rand::random::<u64>()
     );
-    let _ = docker_command()
-        .args(["rm", "-f", &helper])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    super::snapshot_pause::create_helper(record, options, &helper)?;
     let result = archive_local_docker_home_volume_with_helper(
         &helper,
         &volume,
-        &options.docker_image,
         archive_path,
         archive_scope,
         archive_id,
@@ -967,36 +945,11 @@ fn archive_local_docker_home_volume(
 fn archive_local_docker_home_volume_with_helper(
     helper: &str,
     volume: &str,
-    image: &str,
     archive_path: &Path,
     archive_scope: &str,
     archive_id: &str,
     operation: &'static str,
 ) -> Result<(PathBuf, u64, String), DaemonError> {
-    let status = docker_command()
-        .args([
-            "create",
-            "--name",
-            helper,
-            "--user",
-            "root",
-            "-v",
-            &format!("{volume}:/home-src:ro"),
-            image,
-            "sleep",
-            "infinity",
-        ])
-        .status()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: format!("failed to create home archive helper `{helper}`: {error}"),
-        })?;
-    if !status.success() {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: format!("docker create home archive helper `{helper}` failed with {status}"),
-        });
-    }
     let status = docker_command()
         .args(["start", helper])
         .status()

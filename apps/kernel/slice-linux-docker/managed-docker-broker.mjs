@@ -323,7 +323,7 @@ function validateDocker(args) {
     || exactArguments(args, ["ps", "-a", "--format", "{{.Names}}"])
   ) return
   if (args[0] === "inspect" && args.length === 4 && args[1] === "--format") {
-    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}"].includes(args[2])) {
+    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}", '{{index .Config.Labels "io.chariox.snapshot-helper"}}'].includes(args[2])) {
       fail("Docker inspect format is invalid")
     }
     validateSliceContainer(args[3], "Docker container")
@@ -373,19 +373,24 @@ function validateDocker(args) {
   }
   if (
     args[0] === "create" &&
-    args.length === 10 &&
+    args.length === 20 &&
     args[1] === "--name" &&
-    args[3] === "--user" &&
-    args[4] === "root" &&
-    args[5] === "-v" &&
-    args[8] === "sleep" &&
-    args[9] === "infinity"
+    exactArguments(args.slice(3, 11), ["--memory", "512m", "--cpus", "1", "--pids-limit", "64", "--network", "none"]) &&
+    args[11] === "--label" && args[12] === `io.chariox.snapshot-helper=${args[2]}` &&
+    args[13] === "--user" &&
+    args[14] === "root" &&
+    args[15] === "-v" &&
+    args[18] === "sleep" &&
+    args[19] === "infinity"
   ) {
-    validateResource(args[2], "Docker helper container")
-    const [volume, target, extra] = args[6].split(":")
+    validateSliceContainer(args[2], "Docker helper container")
+    const suffix = /-(?:disk-admission-[a-f0-9]{16}|home-archive-[0-9]{1,20})$/.exec(args[2])
+    if (!suffix) fail("Docker helper identity is invalid")
+    const [volume, target, extra] = args[16].split(":")
     validateResource(volume, "Docker volume")
+    if (volume !== `${args[2].slice(0, suffix.index)}-home`) fail("Docker helper volume does not match its slice")
     if (target !== "/home-src" || extra !== "ro") fail("Docker helper volume target is invalid")
-    validateResource(args[7], "Docker image")
+    validateResource(args[17], "Docker image")
     return
   }
   if (args[0] === "cp" && args.length === 3) {

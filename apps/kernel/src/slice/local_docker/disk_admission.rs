@@ -212,26 +212,10 @@ fn measure_slice_storage_with_helper(
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceStorageMeasurement, DaemonError> {
     let container = local_docker_container_name(record);
-    let volume = format!("{container}-home");
     let helper = format!("{container}-disk-admission-{:016x}", rand::random::<u64>());
-    remove_helper_best_effort(&helper);
     let mut created = false;
     let result = (|| {
-        docker_success(
-            &[
-                "create",
-                "--name",
-                &helper,
-                "--user",
-                "root",
-                "-v",
-                &format!("{volume}:/home-src:ro"),
-                &options.docker_image,
-                "sleep",
-                "infinity",
-            ],
-            "create slice disk measurement helper",
-        )?;
+        super::snapshot_pause::create_helper(record, options, &helper)?;
         created = true;
         docker_success(&["start", &helper], "start slice disk measurement helper")?;
         let home_bytes = docker_numeric_field(
