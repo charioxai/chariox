@@ -167,7 +167,7 @@ pub(crate) fn apply_managed_provider_isolation(
 
         let resolver = managed_resolver_binding()?;
         let (mut args, mut created_directories) =
-            managed_namespace_args(resolver.as_deref(), Path::exists);
+            managed_namespace_args(resolver.as_deref(), Path::exists, None);
         append_directory(&mut args, Path::new(SANDBOX_HOME), &mut created_directories);
         append_bind(
             &mut args,
@@ -467,6 +467,7 @@ fn managed_resolver_binding() -> Result<Option<PathBuf>, DaemonError> {
 fn managed_namespace_args(
     resolver: Option<&Path>,
     path_exists: impl Fn(&Path) -> bool,
+    _prompt_attachment_root: Option<&Path>,
 ) -> (Vec<String>, BTreeSet<PathBuf>) {
     let mut args = vec![
         "--die-with-parent".to_string(),
@@ -745,7 +746,8 @@ mod tests {
     #[test]
     fn namespace_args_restore_the_resolver_after_masking_run() {
         let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
-        let (args, _) = managed_namespace_args(Some(resolver), |path| path == Path::new("/run"));
+        let (args, _) =
+            managed_namespace_args(Some(resolver), |path| path == Path::new("/run"), None);
 
         let mask = args
             .windows(2)
@@ -777,7 +779,7 @@ mod tests {
 
     #[test]
     fn namespace_args_do_not_bind_a_resolver_outside_masked_run() {
-        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"));
+        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"), None);
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 1);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
@@ -1029,6 +1031,53 @@ mod tests {
                 directory_text.as_str(),
                 directory_text.as_str(),
             ]
+        );
+    }
+
+    #[test]
+    fn managed_namespace_exposes_materialized_prompt_attachment_to_its_provider() {
+        use base64::Engine;
+
+        let attachment = crate::session::PromptAttachment::new(
+            "chariox-cloud://artifact/art-1",
+            "text/plain",
+            Some("remote-attachment-probe.txt".to_string()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode("attachment probe"));
+        let materialized = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(
+            "session/one",
+            "agent:two",
+            vec![attachment],
+        )
+        .expect("inline attachment should materialize before provider input");
+        let attachment_path = Path::new(
+            materialized[0]
+                .url()
+                .strip_prefix("file://")
+                .expect("materialized attachment should use a file URL"),
+        );
+        let attachment_root = crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
+            "session/one",
+            "agent:two",
+        );
+
+        let (args, _) = managed_namespace_args(
+            None,
+            |path| path == Path::new("/tmp"),
+            Some(&attachment_root),
+        );
+
+        assert!(attachment_path.starts_with(&attachment_root));
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--ro-bind"
+                && window[1] == attachment_root.to_string_lossy()
+                && window[2] == attachment_root.to_string_lossy()
+        }));
+        let _ = std::fs::remove_dir_all(
+            attachment_root
+                .ancestors()
+                .nth(2)
+                .expect("attachment root should have a session parent"),
         );
     }
 
