@@ -416,7 +416,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSplitPaneFocusRepaint,
   } = deps
 
-  return createCommandActionHandlers({
+  const openRoomViewer = async (target: { sessionId: string; agentId: string; sliceId: string }) => {
+    const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
+      ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
+    if (!apiUrl) return null
+    const url = buildHostedCloudViewUrl(apiUrl, target)
+    return { url, opened: await openExternalUrl(url) }
+  }
+  const handlers = createCommandActionHandlers({
     ...(resolveConfiguredCloudRelayApiUrl(preferencesState())
       ? { cloudRelayApiUrl: resolveConfiguredCloudRelayApiUrl(preferencesState()) }
       : {}),
@@ -450,13 +457,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       await client.restartKernelEventStream()
       return true
     },
-    openRoomViewer: async (target) => {
-      const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
-        ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
-      if (!apiUrl) return null
-      const url = buildHostedCloudViewUrl(apiUrl, target)
-      return { url, opened: await openExternalUrl(url) }
-    },
+    openRoomViewer,
     captureRoomScreenshot: async () => {
       const attachment = attachmentState()
       if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
@@ -953,4 +954,5 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSplitPaneFocusRepaint,
     formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
   })
+  return { ...handlers, openRoomViewer }
 }

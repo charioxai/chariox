@@ -10,6 +10,7 @@ import {
   createSliceRequest,
   deleteSliceRequest,
   getSliceDisplayEndpointRequest,
+  getRoomEnvironmentSliceRequest,
   getSliceLogsRequest,
   getSliceRequest,
   getSliceStateStatusRequest,
@@ -24,8 +25,10 @@ import {
   startSliceRequest,
   stopSliceRequest,
 } from "./ipc-requests.js"
+import type { RoomEnvironmentSliceResponse } from "./kernel-types.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
+import { scopedSliceViewerTarget } from "./slice-screen-viewer.js"
 import {
   formatSliceProviderAuth,
   formatSliceProviderAuthReadiness,
@@ -40,6 +43,7 @@ type ShellKernelClient = {
 
 export type ShellSliceCommandDeps = {
   client: ShellKernelClient
+  openRoomViewer?: (target: { sessionId: string; agentId: string; sliceId: string }) => Promise<{ url: string; opened: boolean } | null>
 }
 
 export async function executeSliceCommand(
@@ -225,6 +229,38 @@ export async function executeSliceCommand(
     }
     case "screen": {
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const sliceResponse = await deps.client.send(getSliceRequest(sliceRef))
+      const slice = expectVariant<{ slice: SliceRecord }>(sliceResponse, "Slice").slice
+      if (slice.display_endpoint?.kind === "selkies") {
+        if (!context.sessionId || !context.attachmentId || !context.agentId) {
+          return { ok: false, message: "Selkies slice screen requires an active Room session, attachment, and focused agent" }
+        }
+        const bindingResponse = await deps.client.send(getRoomEnvironmentSliceRequest(context.sessionId))
+        const binding = expectVariant<RoomEnvironmentSliceResponse["RoomEnvironmentSlice"]>(
+          bindingResponse,
+          "RoomEnvironmentSlice",
+        ).binding
+        const scoped = scopedSliceViewerTarget({
+          sessionId: context.sessionId,
+          attachmentId: context.attachmentId,
+          agentId: context.agentId,
+          sliceId: slice.id,
+          binding,
+        })
+        if (scoped.error) return { ok: false, message: scoped.error }
+        if (!deps.openRoomViewer) {
+          return { ok: false, message: "Chariox Cloud Web View is unavailable in this client" }
+        }
+        const opened = await deps.openRoomViewer(scoped.target)
+        if (!opened) {
+          return { ok: false, message: "Chariox Cloud Web View is not configured; run cloud link first" }
+        }
+        return {
+          ok: true,
+          message: opened.url,
+          data: { viewer: { url: opened.url, opened: opened.opened } },
+        }
+      }
       const response = await deps.client.send(getSliceDisplayEndpointRequest(sliceRef))
       const endpoint = expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
       return { ok: true, message: endpoint.url, data: { endpoint } }

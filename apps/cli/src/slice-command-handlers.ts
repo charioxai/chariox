@@ -5,6 +5,9 @@ import type {
   SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import { getRoomEnvironmentSliceRequest } from "@chariox/kernel-client/ipc-requests"
+import type { RoomEnvironmentSliceResponse } from "@chariox/kernel-client/kernel-types"
+import { scopedSliceViewerTarget } from "@chariox/kernel-client/slice-screen-viewer"
 import {
   formatSliceProviderAuthActionResult,
   formatSliceProviderLogin,
@@ -957,7 +960,58 @@ async function openSliceScreen(
     deps.flashFooter("slice screen is unavailable in this build", "error")
     return
   }
-  const endpoint = await deps.getSliceDisplayEndpoint(await explicitOrFocusedSliceRef(deps, sliceRef))
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
+  const slice = await deps.getSlice?.(resolvedRef)
+  if (slice?.display_endpoint?.kind === "selkies") {
+    if (!deps.isAttached?.()) {
+      deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
+      return
+    }
+    const agentId = deps.focusedAgentId()
+    const attachmentId = deps.attachmentId?.()
+    if (!agentId || !attachmentId) {
+      deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
+      return
+    }
+    if (!deps.sendRoomEnvironmentRequest) {
+      deps.flashFooter("Room slice binding is unavailable in this client", "error")
+      return
+    }
+    const sessionId = deps.sessionId?.()
+    if (!sessionId) {
+      deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
+      return
+    }
+    const response = await deps.sendRoomEnvironmentRequest<RoomEnvironmentSliceResponse>(
+      getRoomEnvironmentSliceRequest(sessionId),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentSlice" in response)) {
+      throw new Error("Room Environment slice response is malformed")
+    }
+    const scoped = scopedSliceViewerTarget({
+      sessionId,
+      attachmentId,
+      agentId,
+      sliceId: slice.id,
+      binding: response.RoomEnvironmentSlice.binding,
+    })
+    if (scoped.error) {
+      deps.flashFooter(scoped.error, "error")
+      return
+    }
+    const opened = await deps.openRoomViewer?.(scoped.target)
+    if (!opened) {
+      deps.flashFooter("Chariox Cloud Web View is not configured; run /cloud link first", "error")
+      return
+    }
+    deps.appendNotice([
+      "Opening slice screen in Chariox Cloud.",
+      `url=${opened.url}`,
+      opened.opened ? "browser=opened" : "browser=manual",
+    ].join("\n"))
+    return
+  }
+  const endpoint = await deps.getSliceDisplayEndpoint(resolvedRef)
   deps.appendNotice(endpoint.url)
   const opened = await deps.openExternalUrl?.(endpoint.url)
   deps.flashFooter(`${opened ? "opened" : "screen"} ${endpoint.url}`, "info")
