@@ -257,6 +257,67 @@ async fn concurrent_calls_correlate_reversed_replies_under_a_one_frame_writer_qu
 }
 
 #[tokio::test]
+async fn submit_enqueues_before_response_polling_and_preserves_correlation() {
+    let (host, stream) = tokio::io::duplex(4096);
+    let (peer, _events, task) = WorkerPeer::start(
+        Channel::new(host, "1".into(), Sender::Worker).unwrap(),
+        null_broker(),
+        PeerLimits::default(),
+    )
+    .unwrap();
+    let slot = peer.reserve(BUDGET).unwrap();
+    let mut message = request(slot.id(), "tools.invoke");
+    if let Message::Request { deadline_ms, .. } = &mut message {
+        *deadline_ms = slot.deadline_ms();
+    }
+    let response_future = slot.submit(message).unwrap();
+    // No spawn or poll of the response future occurs before the worker sees
+    // this request. A lifecycle guard can therefore end at successful submit.
+    let mut worker = worker(stream);
+    let sent = receive(&mut worker).await;
+    worker
+        .send(&response(&id(&sent), json!({"done":true})), BUDGET)
+        .await
+        .unwrap();
+    assert_eq!(
+        result(timeout(BUDGET, response_future).await.unwrap().unwrap()),
+        json!({"done":true})
+    );
+    peer.close();
+    timeout(BUDGET, task.join()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dropping_unpolled_submitted_response_cancels_the_owned_request() {
+    let (host, stream) = tokio::io::duplex(4096);
+    let (peer, _events, task) = WorkerPeer::start(
+        Channel::new(host, "1".into(), Sender::Worker).unwrap(),
+        null_broker(),
+        PeerLimits::default(),
+    )
+    .unwrap();
+    let slot = peer.reserve(BUDGET).unwrap();
+    let mut message = request(slot.id(), "tools.invoke");
+    if let Message::Request { deadline_ms, .. } = &mut message {
+        *deadline_ms = slot.deadline_ms();
+    }
+    let response_future = slot.submit(message).unwrap();
+    let mut worker = worker(stream);
+    let sent = receive(&mut worker).await;
+    drop(response_future);
+    assert!(
+        matches!(receive(&mut worker).await, Message::Cancel { id: cancelled, .. } if cancelled == id(&sent))
+    );
+    worker
+        .send(&response(&id(&sent), Value::Null), BUDGET)
+        .await
+        .unwrap();
+    assert!(!peer.is_closed());
+    peer.close();
+    timeout(BUDGET, task.join()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn timeout_and_caller_drop_send_cancel_and_late_unknown_replies_cannot_revive_calls() {
     let (host, stream) = tokio::io::duplex(4096);
     let (peer, _events, task) = WorkerPeer::start(

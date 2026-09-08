@@ -1,10 +1,32 @@
 use super::{Call, Message, PeerError, Result, WorkerPeer};
 use crate::wire::{Sender, WIRE_VERSION};
 use serde_json::Value;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::{
     sync::{oneshot, OwnedSemaphorePermit},
     time::Instant,
 };
+
+/// One already enqueued call. Dropping it closes the response receiver, which
+/// asks the owning actor to cancel; transport and execution admission are not
+/// evidence that an external effect stopped.
+pub struct CallResponse {
+    receive: oneshot::Receiver<Result<Message>>,
+}
+impl Future for CallResponse {
+    type Output = Result<Message>;
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.receive).poll(context).map(|result| {
+            result
+                .map_err(|_| PeerError::Closed)
+                .and_then(|result| result)
+        })
+    }
+}
 
 /// An opaque, single-use identity and admission reservation minted by this peer.
 /// Dropping an unsent slot releases it without sending anything to the worker.
@@ -64,6 +86,13 @@ impl RequestSlot {
     /// The actor owns response routing. A caller may cancel by dropping this
     /// future; the actor notices the closed reply and sends a Cancel message.
     pub async fn send(self, message: Message) -> Result<Message> {
+        self.submit(message)?.await
+    }
+
+    /// Enqueue while the kernel still holds its lifecycle/binding guard. After
+    /// this returns the guard may be released before awaiting App code. This
+    /// is bounded transport admission, never an operation authorization grant.
+    pub fn submit(self, message: Message) -> Result<CallResponse> {
         if self.peer.is_closed() {
             return Err(PeerError::Closed);
         }
@@ -99,6 +128,6 @@ impl RequestSlot {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => PeerError::Busy,
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => PeerError::Closed,
             })?;
-        receive.await.map_err(|_| PeerError::Closed)?
+        Ok(CallResponse { receive })
     }
 }

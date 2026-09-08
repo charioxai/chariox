@@ -16,6 +16,9 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+#[path = "app_catalog/readiness.rs"]
+mod readiness;
+
 struct Package {
     manifest: Manifest,
     files: BTreeMap<String, Vec<u8>>,

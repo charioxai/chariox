@@ -9,7 +9,7 @@ mod transport;
 mod validation;
 
 use crate::wire::{Channel, Message, RemoteError};
-pub use request::RequestSlot;
+pub use request::{CallResponse, RequestSlot};
 use std::{
     future::Future,
     pin::Pin,
