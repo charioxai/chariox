@@ -1,0 +1,90 @@
+name: App embedded runtime execution (historical unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_run:
+        description: 'Reviewed native build run (initial allowlist: 34167089795)'
+        required: true
+        default: '34167089795'
+  pull_request:
+    paths:
+      - 'apps/app-worker/tests/embedded-*'
+      - 'apps/app-worker/tests/embedded-app/**'
+      - 'apps/app-worker/tests/linux-embedded-fixture.mjs'
+      - 'apps/app-worker/src/**'
+      - 'apps/app-worker/bundle.lock.json'
+      - 'apps/app-worker/sandbox.lock.json'
+      - 'packages/app-sdk/**'
+      - 'scripts/app-runtime-embedded-*'
+      - 'scripts/app-runtime-extract-zip*'
+      - 'scripts/app-worker-embedded-fixture.sh'
+      - 'scripts/test-app-worker-embedded-ci.sh'
+      - 'scripts/package-app-runtime*.mjs'
+      - 'scripts/app-runtime-bundle*.mjs'
+      - '.github/workflows/app-runtime-embedded.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: app-runtime-embedded-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  embedded-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify artifact admission without executing native code
+        run: |
+          node --test --test-concurrency=1 scripts/app-runtime-embedded-artifact.test.mjs
+          python3 -B scripts/app-runtime-extract-zip.test.py
+      - name: Obtain exact successful historical native artifact and assemble runtime
+        id: artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NATIVE_RUN: ${{ inputs.native_run || '34167089795' }}
+        run: node scripts/app-runtime-embedded-artifact.mjs
+      - name: Install small launcher and bubblewrap build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc libc6-dev binutils meson ninja-build libcap-dev pkg-config apparmor
+      - name: Execute the actual embedded runtime after confinement
+        env:
+          EMBEDDED_SCRATCH: ${{ steps.artifact.outputs.scratch }}
+        run: |
+          set -o pipefail
+          bash scripts/test-app-worker-embedded-ci.sh 2>&1 | tee "$EMBEDDED_SCRATCH/evidence/execution.log"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.artifact.outputs.scratch != ''
+        with:
+          name: HISTORICAL-UNSIGNED-embedded-linux-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.artifact.outputs.evidence }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove only owned fixture resources
+        if: always() && steps.artifact.outputs.scratch != ''
+        env:
+          EMBEDDED_SCRATCH: ${{ steps.artifact.outputs.scratch }}
+        run: |
+          fixture_temp="$(realpath -e -- "$RUNNER_TEMP")"
+          case "$EMBEDDED_SCRATCH" in
+            "$fixture_temp"/chariox-embedded.*)
+              sudo systemctl stop "chariox-embedded-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service" >/dev/null 2>&1 || true
+              if [[ -f "$EMBEDDED_SCRATCH/chariox-embedded.apparmor" ]]; then
+                sudo apparmor_parser -R "$EMBEDDED_SCRATCH/chariox-embedded.apparmor" >/dev/null 2>&1 || true
+              fi
+              sudo rm -rf -- "$EMBEDDED_SCRATCH"
+              ;;
+            *) echo 'Refusing unexpected embedded fixture scratch.' >&2; exit 1 ;;
+          esac
