@@ -289,7 +289,7 @@ Rollback failure and unrelated-cookie loss also set it. The kernel must quaranti
 that Environment until recovery verifies it. Fixed error codes never include
 original transport errors or cookies. These recovery flags are not yet wired to
 kernel lifecycle state. Without the optional journal, snapshots remain in memory.
-Recovery replay after process death or browser restart remains unhandled. This must not
+Product recovery after process death or browser restart remains unhandled. This must not
 be advertised as durable atomic import.
 
 ### Internal recovery storage
@@ -306,6 +306,20 @@ It does not authorize import or establish a second credential vault.
 Successful browser readback is not a durable browser commit. The product executor
 still needs durable outcome/quarantine state and recovery replay before this
 adapter can safely serve real imports across browser or machine crashes.
+
+`recoverCookieImport({journal,store,runExclusive,authorize})` is an internal replay
+operation. The kernel must stop the previous executor and all cookie writers,
+provide a verified fresh store, and authorize recovery under exclusive ownership.
+Replay validates the record, removes attempted cookie identities, restores only
+their previous values and verifies the complete snapshot. Unrelated loss remains
+an error, not permission to rewrite another domain. Missing records, denial and
+verification failures keep recovery required. Expired snapshots are rejected
+conservatively; expiry-aware recovery is not implemented.
+
+Verified replay returns a receipt but retains the record. The kernel must durably
+record recovery before discarding it and lifting quarantine. This function does
+not implement that lifecycle, acquire exclusion itself, or prove browser disk
+durability. Its tests use synthetic stores, not managed-browser acceptance.
 
 The kernel must provide a private, local-filesystem Environment directory under
 its own state root, with trusted ancestors, owned by the current Unix user and

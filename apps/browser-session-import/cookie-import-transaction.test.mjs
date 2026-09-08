@@ -7,7 +7,7 @@ import {randomBytes} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {openCookieImportJournal} from './cookie-import-journal.mjs';
-import { applyCookieImport } from './cookie-import-transaction.mjs';
+import { applyCookieImport, recoverCookieImport } from './cookie-import-transaction.mjs';
 
 const source = [{name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, hostOnly:true, session:true, sameSite:'lax', storeId:'source'}];
@@ -60,6 +60,72 @@ async function withJournal(operation) {
 }
 const stored = (changes = {}) => ({name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, session:true, expires:-1, sameSite:'Lax', ...changes});
+
+test('recovery restores replaced cookies and retains the journal for durable kernel acknowledgement', async () => {
+  await withJournal(async journal => {
+    const original = stored({value:'original'});
+    const {options,store} = fixture([original]);
+    await assert.rejects(applyCookieImport({...options,overwrite:true,journal:{...journal,
+      discard:async () => { throw Error('simulated cleanup interruption'); },
+    }}), {recoveryRequired:true});
+    const result = await recoverCookieImport({...options,journal});
+    assert.equal(result.recovered,true);
+    assert.equal((await store.read())[0].value,'original');
+    const pending = await journal.read();
+    assert.equal(pending.receipt,result.receipt);
+    pending.bytes.fill(0);
+  });
+});
+
+test('recovery with no journal record never implies a safe Environment', async () => {
+  await withJournal(async journal => {
+    const {options,writes} = fixture();
+    await assert.rejects(recoverCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_missing',recoveryRequired:true});
+    assert.equal(writes(),0);
+  });
+});
+
+test('malformed recovery cookie identities are rejected before store mutation', async () => {
+  await withJournal(async journal => {
+    await journal.prepare(Buffer.from(JSON.stringify({schema:1,before:[],
+      imported:[{url:'https://example.test/',path:'/',value:'fixture',secure:true,httpOnly:true}]})));
+    const {options,store} = fixture();
+    let removals = 0;
+    store.remove = async () => { removals++; };
+    await assert.rejects(recoverCookieImport({...options,journal}),{recoveryRequired:true});
+    assert.equal(removals,0);
+  });
+});
+
+test('denied recovery retains the record and never touches the store', async () => {
+  await withJournal(async journal => {
+    await journal.prepare(Buffer.from('pending'));
+    const {options,store} = fixture();
+    store.remove = store.read = store.write = async () => assert.fail('unauthorized store access');
+    await assert.rejects(recoverCookieImport({...options,journal,authorize:async()=>false}),
+      {code:'cookie_import_denied',recoveryRequired:true});
+    const pending = await journal.read();
+    assert.ok(pending);
+    pending.bytes.fill(0);
+  });
+});
+
+test('recovery reports unrelated cookie loss without rewriting that domain', async () => {
+  await withJournal(async journal => {
+    const unrelated = stored({domain:'other.test',value:'control'});
+    await journal.prepare(Buffer.from(JSON.stringify({schema:1,before:[unrelated],
+      imported:[{name:'session',value:'fixture-only',url:'https://example.test/',
+        path:'/',secure:true,httpOnly:true,sameSite:'Lax'}]})));
+    const {options,writes} = fixture([stored()]);
+    await assert.rejects(recoverCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_verification_failed',recoveryRequired:true});
+    assert.equal(writes(),0);
+    const pending = await journal.read();
+    assert.ok(pending);
+    pending.bytes.fill(0);
+  });
+});
 function fixture(initial = []) {
   let jar = structuredClone(initial);
   let writes = 0;

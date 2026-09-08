@@ -129,6 +129,51 @@ export async function applyCookieImport({source, scope, store, runExclusive, aut
   }
 }
 
+// The caller must stop the old executor and cookie writers, then provide a fresh
+// store under kernel exclusion. Verification does not clear durable quarantine.
+export async function recoverCookieImport({journal,store,runExclusive,authorize}) {
+  if (!journal || typeof runExclusive !== 'function' || typeof authorize !== 'function') {
+    fail('cookie_import_denied',true);
+  }
+  const check = async () => {
+    if (await authorize() !== true) fail('cookie_import_denied',true);
+  };
+  try { return await runExclusive(async () => {
+    await check();
+    const pending = await journal.read();
+    if (!pending) fail('cookie_import_recovery_missing',true);
+    let record;
+    try { record = JSON.parse(pending.bytes.toString()); }
+    finally { pending.bytes.fill(0); }
+    if (record?.schema !== 1 || Object.keys(record).sort().join(',') !== 'before,imported,schema'
+        || !Array.isArray(record.imported) || !record.imported.length || record.imported.length > 512) {
+      fail('cookie_import_recovery_invalid',true);
+    }
+    validateSnapshot(record.before);
+    const imported = record.imported.map(cookie => {
+      const {url,...rest} = cookie;
+      return {...rest,domain:cookie.domain ?? new URL(url).hostname,
+        session:cookie.expires === undefined,expires:cookie.expires ?? -1};
+    });
+    validateSnapshot(imported);
+    const keys = new Set(imported.map(identity));
+    const replaced = record.before.filter(cookie => keys.has(identity(cookie)));
+    await check();
+    await store.remove(imported);
+    await check();
+    if (replaced.length) await store.write(replaced.map(restoreParams));
+    await check();
+    if (fingerprint(await store.read()) !== fingerprint(record.before)) {
+      fail('cookie_import_recovery_verification_failed',true);
+    }
+    await check();
+    // Keep the record until the kernel has durably recorded the recovered outcome.
+    return {recovered:true,receipt:pending.receipt};
+  }); } catch (error) {
+    fail(error instanceof CookieImportError ? error.code : 'cookie_import_recovery_failed',true);
+  }
+}
+
 function identity(cookie) {
   return JSON.stringify([cookie.name, cookie.domain ?? new URL(cookie.url).hostname,
     cookie.path, cookie.partitionKey?.topLevelSite ?? null,
@@ -140,6 +185,13 @@ function validateSnapshot(cookies) {
       || new TextEncoder().encode(JSON.stringify(cookies)).byteLength > 4 * 1024 * 1024) fail('cookie_import_snapshot_too_large');
   const keys = new Set();
   for (const cookie of cookies) {
+    if (!cookie || typeof cookie !== 'object'
+        || typeof cookie.name !== 'string' || typeof cookie.value !== 'string'
+        || typeof cookie.domain !== 'string' || !cookie.domain
+        || typeof cookie.path !== 'string' || !cookie.path.startsWith('/')
+        || typeof cookie.secure !== 'boolean' || typeof cookie.httpOnly !== 'boolean') {
+      fail('cookie_import_snapshot_unsupported');
+    }
     if (typeof cookie.session !== 'boolean' || (cookie.session ? cookie.expires !== -1
         : !Number.isFinite(cookie.expires) || cookie.expires <= Date.now() / 1000)) {
       fail('cookie_import_snapshot_unsupported');
