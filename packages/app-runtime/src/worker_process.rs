@@ -16,6 +16,8 @@ mod record;
 mod spawn;
 #[cfg(target_os = "macos")]
 mod storage_macos;
+#[cfg(target_os = "linux")]
+mod storage_linux;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub mod test_fixture;
@@ -285,3 +287,9 @@ impl Drop for WorkerProcess {
 
 #[cfg(test)]
 mod tests;
+
+/// Installed root-only Linux storage helper entry. It does not accept App RPCs.
+#[cfg(target_os = "linux")]
+pub fn run_app_storage_helper(arguments: Vec<String>) -> Result<(), String> {
+    storage_linux::run(arguments).map_err(|error| error.to_string())
+}

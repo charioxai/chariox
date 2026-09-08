@@ -10,6 +10,8 @@ const EXPECTED_ARTIFACTS = new Map([
   ["chariox-kernel", { path: "/usr/local/bin/chariox-kernel", type: "file" }],
   ["chariox-managed-bootstrap", { path: "/usr/local/bin/chariox-managed-bootstrap", type: "file" }],
   ["chariox-app-package", { path: "/usr/local/bin/chariox-app-package", type: "file" }],
+  ["chariox-app-storage", { path: "/usr/libexec/chariox-app-storage", type: "file" }],
+  ["chariox-app-storage.service", { path: "/etc/systemd/system/chariox-app-storage.service", type: "file" }],
   [
     "chariox-managed-bootstrap.service",
     { path: "/etc/systemd/system/chariox-managed-bootstrap.service", type: "file" },

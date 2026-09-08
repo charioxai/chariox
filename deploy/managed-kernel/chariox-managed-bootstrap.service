@@ -1,8 +1,8 @@
 [Unit]
 Description=Chariox managed independent kernel supervisor
 After=network-online.target
-Wants=network-online.target chariox-rootless-docker.service
-After=chariox-rootless-docker.service
+Wants=network-online.target chariox-rootless-docker.service chariox-app-storage.service
+After=chariox-rootless-docker.service chariox-app-storage.service
 ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
 StartLimitIntervalSec=0
 
@@ -11,6 +11,7 @@ Type=simple
 User=chariox
 Group=chariox
 SupplementaryGroups=chariox-slice
+Environment=CHARIOX_APP_CGROUP_ROOT=/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps
 Environment=CHARIOX_HOME=/var/lib/chariox/home
 Environment=HOME=/var/lib/chariox/home
 Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/var/lib/chariox/home/managed-context/kernel
@@ -26,6 +27,7 @@ Environment=CHARIOX_MANAGED_KERNEL_BINARY=/usr/local/bin/chariox-kernel
 Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service
+ExecStartPre=+/usr/libexec/chariox-app-storage --prepare-managed-domain
 ExecStart=/usr/local/bin/chariox-managed-bootstrap
 Restart=always
 RestartSec=2s
@@ -40,12 +42,16 @@ ProtectHome=true
 # The unprivileged service user still cannot write host kernel tunables.
 ProtectKernelTunables=false
 ProtectKernelModules=true
-ProtectControlGroups=true
+# Kernel and its Apps own only this systemd-delegated subtree. Docker retains
+# its separate unit/delegation and broker ownership. Requires systemd >=254.
+ProtectControlGroups=false
+Delegate=cpu memory pids
+DelegateSubgroup=supervisor
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 StateDirectory=chariox
 StateDirectoryMode=0700
-ReadWritePaths=/var/lib/chariox /var/lib/chariox-slice-share
+ReadWritePaths=/var/lib/chariox /var/lib/chariox-slice-share /var/lib/chariox-app-storage
 UMask=0007
 
 [Install]

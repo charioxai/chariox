@@ -12,6 +12,7 @@ const REQUIRED_OPTIONS = [
   "supervisor",
   "relay",
   "app-package",
+  "app-storage",
   "builder-attestation",
   "builder-attestation-signature",
   "trusted-builder-public-key",
@@ -38,7 +39,7 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
 ]
 
 function usage() {
-  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
+  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-storage <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
 }
 
 function parseOptions(argv) {
@@ -230,6 +231,7 @@ async function normalizeTree(root, timestamp) {
         path.endsWith("/usr/local/bin/chariox-kernel") ||
         path.endsWith("/usr/local/bin/chariox-managed-bootstrap") ||
         path.endsWith("/usr/local/bin/chariox-app-package") ||
+        path.endsWith("/usr/libexec/chariox-app-storage") ||
         path.endsWith("/slice-linux-docker/prebuilt/chariox-kernel") ||
         path.endsWith("/slice-linux-docker/prebuilt/chariox-relay") ||
         path.endsWith("/enter-rootless-docker-namespace.sh") ||
@@ -299,7 +301,7 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
     attestation.sourceTree !== sourceIdentity.tree ||
     attestation.target !== BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== 4
+    attestation.artifacts.length !== 5
   ) {
     throw new Error("builder attestation identity or target does not match the release")
   }
@@ -308,6 +310,7 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
     ["chariox-managed-bootstrap", artifactDigests.supervisor],
     ["chariox-relay", artifactDigests.relay],
     ["chariox-app-package", artifactDigests.appPackage],
+    ["chariox-app-storage", artifactDigests.appStorage],
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {
     validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")
@@ -342,6 +345,7 @@ async function packageRelease(options) {
   await requireRegularFile(options.supervisor, "bootstrap supervisor")
   await requireRegularFile(options.relay, "relay binary")
   await requireRegularFile(options["app-package"], "App package developer binary")
+  await requireRegularFile(options["app-storage"], "App storage privileged helper")
   await requireRegularFile(options["builder-attestation"], "builder attestation", 64 * 1024)
   await requireRegularFile(options["builder-attestation-signature"], "builder attestation signature", 1024)
   await requireRegularFile(options["trusted-builder-public-key"], "trusted builder public key", 1024)
@@ -360,6 +364,8 @@ async function packageRelease(options) {
   const kernelDestination = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisorDestination = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
   const appPackageDestination = join(rootfs, "usr/local/bin/chariox-app-package")
+  const appStorageDestination = join(rootfs, "usr/libexec/chariox-app-storage")
+  const appStorageServiceDestination = join(rootfs, "etc/systemd/system/chariox-app-storage.service")
   const releaseDirectory = join(rootfs, "usr/lib/chariox")
   const sliceBuildContext = join(rootfs, SLICE_BUILD_CONTEXT_PATH.slice(1))
   const slicePrebuiltRoot = join(
@@ -380,6 +386,8 @@ async function packageRelease(options) {
     rootfs,
     "etc/systemd/system/chariox-slice-broker.service",
   )
+  const appStorageServiceBytes = gitBlob(repositoryRoot, sourceIdentity.commit,
+    "deploy/managed-kernel/chariox-app-storage.service", "App storage service cannot be read from source commit")
   const serviceBytes = gitBlob(
     repositoryRoot,
     sourceIdentity.commit,
@@ -399,6 +407,7 @@ async function packageRelease(options) {
     "slice Docker broker service cannot be read from source commit",
   )
   if (
+    appStorageServiceBytes.length > 64 * 1024 ||
     serviceBytes.length > 64 * 1024 ||
     rootlessDockerServiceBytes.length > 64 * 1024 ||
     sliceBrokerServiceBytes.length > 64 * 1024
@@ -409,6 +418,8 @@ async function packageRelease(options) {
   await installFile(options.kernel, kernelDestination, 0o755)
   await installFile(options.supervisor, supervisorDestination, 0o755)
   await installFile(options["app-package"], appPackageDestination, 0o755)
+  await installFile(options["app-storage"], appStorageDestination, 0o755)
+  await installBytes(appStorageServiceBytes, appStorageServiceDestination, 0o644)
   await installBytes(serviceBytes, serviceDestination, 0o644)
   await installBytes(rootlessDockerServiceBytes, rootlessDockerServiceDestination, 0o644)
   await installBytes(sliceBrokerServiceBytes, sliceBrokerServiceDestination, 0o644)
@@ -440,6 +451,14 @@ async function packageRelease(options) {
   if (sourceAppPackageDigest !== packagedAppPackageDigest) {
     throw new Error("App package developer binary changed while the release was packaged")
   }
+  const packagedAppStorageDigest = await sha256File(appStorageDestination)
+  if (await sha256File(options["app-storage"]) !== packagedAppStorageDigest) {
+    throw new Error("App storage helper changed while the release was packaged")
+  }
+  const packagedAppStorageServiceDigest = await sha256File(appStorageServiceDestination)
+  if (`sha256:${createHash("sha256").update(appStorageServiceBytes).digest("hex")}` !== packagedAppStorageServiceDigest) {
+    throw new Error("App storage service changed while the release was packaged")
+  }
   const sourceRelayDigest = await sha256File(options.relay)
   const packagedSliceRelayDigest = await sha256File(sliceRelayDestination)
   if (sourceRelayDigest !== packagedSliceRelayDigest) {
@@ -463,6 +482,7 @@ async function packageRelease(options) {
     supervisor: packagedSupervisorDigest,
     relay: packagedSliceRelayDigest,
     appPackage: packagedAppPackageDigest,
+    appStorage: packagedAppStorageDigest,
   })
   const signingKeyMetadata = await requireRegularFile(
     options["signing-key"],
@@ -512,6 +532,16 @@ async function packageRelease(options) {
           name: "chariox-app-package",
           path: "/usr/local/bin/chariox-app-package",
           sha256: packagedAppPackageDigest,
+        },
+        {
+          name: "chariox-app-storage",
+          path: "/usr/libexec/chariox-app-storage",
+          sha256: packagedAppStorageDigest,
+        },
+        {
+          name: "chariox-app-storage.service",
+          path: "/etc/systemd/system/chariox-app-storage.service",
+          sha256: packagedAppStorageServiceDigest,
         },
         {
           name: "chariox-managed-bootstrap.service",
