@@ -58,6 +58,12 @@ test('controller imports into its registered target and rejects stale browser an
     assert.equal(await page.textContent('body'),'SIGNED_IN');
     await assert.rejects(applyControllerCookieImport({...selection,overwrite:true},authority),
       {code:'cookie_import_target_stale'});
+    const refreshed = await controller.reconcile(viewport);
+    const current = refreshed.tabs.find(tab => tab.url === 'https://example.test/');
+    await assert.rejects(applyControllerCookieImport({...selection,overwrite:true,
+      browserGeneration:refreshed.browser_generation,documentId:current.document_id},authority),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal((await context.cookies()).find(cookie => cookie.name === 'session').value,'fixture-controller');
   } finally {
     await journal.close();
     key.fill(0);
