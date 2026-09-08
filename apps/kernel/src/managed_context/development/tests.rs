@@ -4,6 +4,27 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn exports_plain_workspace_without_creating_git_metadata() {
+    let root = test_root("plain-workspace");
+    let workspace = root.join("office");
+    fs::create_dir_all(&workspace).expect("create plain workspace");
+    fs::write(workspace.join("notes.txt"), "office notes\n").expect("write plain file");
+    let result = export_development_context(DevelopmentContextExportRequest {
+        project_id: "plain-project".to_string(),
+        repositories: vec![DevelopmentRepositorySelection {
+            workspace_id: workspace.display().to_string(),
+            worktree_id: None,
+            worktree_path: workspace.clone(),
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        archive_path: root.join("plain.tar.gz"),
+    });
+    assert!(!workspace.join(".git").exists());
+    fs::remove_dir_all(&root).expect("clean plain workspace fixture");
+    assert!(result.is_ok(), "plain workspace export failed: {result:?}");
+}
+
+#[test]
 fn exports_two_repositories_with_unpushed_commits_and_exact_dirty_states() {
     let root = test_root("two-repositories");
     let primary = root.join("chariox");
