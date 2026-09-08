@@ -16,7 +16,7 @@ impl Fixture {
         permission: crate::provider::AgentPermissionLevel,
     ) -> (Arc<Mutex<DaemonApp>>, CommandRouter, String, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
-        crate::durable_state::app_state::fixture_catalog(app.durable_state_store());
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
         let session = app
             .sessions_mut()
             .create_session(
