@@ -23,6 +23,13 @@ pub(super) fn identity(file: &File) -> Result<Identity> {
         inode: metadata.ino(),
     })
 }
+pub(super) fn mount_flags(file: &File) -> Result<libc::c_ulong> {
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    if unsafe { libc::fstatvfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(Error::Io);
+    }
+    Ok(unsafe { stat.assume_init() }.f_flag)
+}
 pub(super) fn require(parent: &Dir, name: &str, file: &File, expected: &Identity) -> Result<()> {
     let named = entry_metadata(parent, OsStr::new(name))?;
     if identity(file)? != *expected

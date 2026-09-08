@@ -13,7 +13,6 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, VecDeque},
     ffi::OsStr,
-    fs::File,
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
 };

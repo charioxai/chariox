@@ -3,14 +3,11 @@
 use super::{files, model, Error, Result, DATA_BYTES, TMP_BYTES};
 use crate::worker_process::spawn;
 use std::{
-    ffi::{CString, OsStr},
+    ffi::CString,
     fs::File,
     io,
     mem::MaybeUninit,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
+    os::{fd::FromRawFd, unix::fs::MetadataExt},
     path::Path,
     time::{Duration, Instant},
 };
@@ -162,8 +159,8 @@ pub(super) fn child(arguments: &[String]) -> Result<()> {
         libc::execveat(
             4,
             c"".as_ptr(),
-            argv.as_ptr(),
-            env.as_ptr(),
+            argv.as_ptr().cast(),
+            env.as_ptr().cast(),
             libc::AT_EMPTY_PATH,
         );
     }

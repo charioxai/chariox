@@ -3,7 +3,7 @@
 use super::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{Read, Write},
+    io::Write,
     os::{fd::AsRawFd, unix::net::UnixStream},
     time::{Duration, Instant},
 };

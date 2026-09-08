@@ -108,10 +108,11 @@ pub(super) fn observe(
         return Err(Error::Io);
     }
     let fs = unsafe { fs.assume_init() };
-    let flags = (libc::ST_NOEXEC | libc::ST_NODEV | libc::ST_NOSUID) as libc::c_long;
+    let observed_flags = files::mount_flags(&dir.0)?;
+    let flags = libc::ST_NOEXEC | libc::ST_NODEV | libc::ST_NOSUID;
     if fs.f_type != 0xef53
-        || fs.f_flags & flags != flags
-        || (writable && fs.f_flags & libc::ST_RDONLY as libc::c_long != 0)
+        || observed_flags & flags != flags
+        || (writable && observed_flags & libc::ST_RDONLY != 0)
         || fs.f_blocks.saturating_mul(fs.f_bsize as u64) > image.capacity
     {
         return Err(Error::Identity);
