@@ -1,9 +1,11 @@
 const entryKinds = ["user_prompt", "provider_output", "provider_reasoning", "provider_tool", "provider_error", "provider_status", "notice"]
 const actionStates = ["queued", "running", "completed", "failed", "cancelled"]
+const actionKinds = ["pointer_click", "pointer_move", "pointer_drag", "pointer_scroll", "keyboard_key", "keyboard_text", "clipboard_write", "navigate", "open_url", "find", "click", "fill", "submit", "upload", "text", "screenshot"]
 const diagnosticTools = new Set([
   "list_mcp_resources", "list_mcp_resource_templates", "list_slices", "tool_search",
   "slice_screen_status", "slice_screenshot", "slice_mouse", "slice_keyboard",
   "slice_browser_find", "slice_browser_click", "slice_browser_fill", "slice_browser_submit",
+  "slice_open_url", "slice_browser_upload", "slice_browser_text",
 ])
 // Presence signals narrow an otherwise unclassified failure. They are not a
 // diagnosis, and are taken only from provider errors, never the user's prompt.
@@ -52,7 +54,7 @@ export async function captureRoomProviderDiagnostic(input) {
     agentState: "unknown", activityStatus: "unknown", promptStatus: "unknown", activeTurnPhase: "unknown",
     turns: [], entryCounts: counters([...entryKinds, "unknown"]),
     blobCounts: counters([...entryKinds, "unknown"]), actionCounts: counters([...actionStates, "unknown"]),
-    computerToolMentioned: false, observedTools: [], browserFindResults: [], truncated: false, codes: [], providerErrorSignals: [],
+    computerToolMentioned: false, observedTools: [], browserFindResults: [], failedActions: [], truncated: false, codes: [], providerErrorSignals: [],
   }
   const codes = new Set()
   const observedTools = new Set()
@@ -131,7 +133,16 @@ export async function captureRoomProviderDiagnostic(input) {
   await section("actions_unavailable", async () => {
     const history = await request(requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 100), "RoomEnvironmentActionHistoryListed")
     for (const action of (history.page?.actions ?? []).slice(0, 100)) {
-      if (action.actor_id === `agent:${agentId}`) result.actionCounts[known(action.state, actionStates)] += 1
+      if (action.actor_id !== `agent:${agentId}`) continue
+      result.actionCounts[known(action.state, actionStates)] += 1
+      if (action.state === "failed") {
+        if (result.failedActions.length >= 16) { result.truncated = true; continue }
+        result.failedActions.push({
+          kind: known(action.kind, actionKinds),
+          mode: known(action.mode, ["browser", "computer"]),
+          code: known(action.outcome?.code, ["controller_failure", "process_lost"]),
+        })
+      }
     }
   })
   await section("history_unavailable", async () => {

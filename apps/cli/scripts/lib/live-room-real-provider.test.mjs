@@ -422,6 +422,20 @@ test("diagnostics identify only allowlisted tool names from actual tool records"
   assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
 })
 
+test("mail failure diagnostics retain bounded action enums without payloads", async () => {
+  const run = fixture({ turns: [{ lifecycle: "open", entries: [], blobs: [] }], actions: [
+    { actor_id: "agent:agent-2", kind: "upload", mode: "browser", state: "failed", outcome: { status: "failed", code: "controller_failure", message: secret }, arguments: secret },
+    { actor_id: "agent:agent-2", kind: secret, mode: secret, state: "failed", outcome: { status: "failed", code: secret } },
+    { actor_id: "agent:other", kind: "submit", mode: "browser", state: "failed" },
+  ] })
+  await assert.rejects(runRoomRealProvider(run.input))
+  assert.deepEqual(run.checkpoints.at(-1).diagnostic.failedActions, [
+    { kind: "upload", mode: "browser", code: "controller_failure" },
+    { kind: "unknown", mode: "unknown", code: "unknown" },
+  ])
+  assert.equal(JSON.stringify(run.checkpoints).includes(secret), false)
+})
+
 test("diagnostics classify Browser discovery outcomes without retaining queries or results", async () => {
   const discovery = (query, matches, index) => entry("provider_tool", JSON.stringify({
     tool: "mcp__chariox__slice_browser_find", status: "completed", input: { query },
