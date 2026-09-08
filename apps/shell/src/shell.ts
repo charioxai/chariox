@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import { createDefaultShellContext, type ShellContext } from "@chariox/kernel-client/shell-core"
 import { executeShellLine, executeShellScript, executeShellScriptLines } from "@chariox/kernel-client/shell-script"
+import { createShellViewer } from "./shell-viewer.js"
 
 export { executeShellLine, executeShellScript, executeShellScriptLines }
 
@@ -167,6 +168,7 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
         {
           client,
           clientId,
+          openRoomViewer: createShellViewer(client),
           readSecret: async (prompt) => {
             readline.pause()
             try {
@@ -269,7 +271,7 @@ export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
   const clientId = `chariox-shell-script-${process.pid}-${Date.now()}`
   try {
     const source = await readFile(options.scriptPath, "utf8")
-    const result = await executeShellScript(source.split(/\r?\n/), context, { client, clientId }, (line) => io.output.write(line), {
+    const result = await executeShellScript(source.split(/\r?\n/), context, { client, clientId, openRoomViewer: createShellViewer(client) }, (line) => io.output.write(line), {
       continueOnError: options.continueOnError,
     })
     return result.code
