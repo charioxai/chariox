@@ -316,6 +316,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Channel<T> {
         *self.reader.closed.borrow()
     }
 
+    /// Immutable supervisor-supplied channel identity. A peer derives its
+    /// generation here rather than accepting a second potentially stale value.
+    pub fn generation(&self) -> &str {
+        &self.reader.generation
+    }
+
     pub fn split(
         self,
     ) -> (
