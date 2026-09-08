@@ -1,8 +1,7 @@
 //! Blocking ownership of a native App worker and its existing SDK channel.
 //!
-//! This lifecycle component has **no public preparation constructor**. The
-//! enrolled runtime verifier and platform provisioner must supply the held,
-//! pinned objects and resource domain; that production integration is pending.
+//! Linux preparation consumes installed-runtime and verified-package leases,
+//! then provisions fixed storage, code views and the owned cgroup domain.
 //! A private type or a native identity reply does not establish confinement.
 //!
 //! Spawn, wait, shutdown and Drop are blocking. The kernel must own this handle
@@ -49,6 +48,20 @@ pub struct PreparedWorker {
     // lifecycle join, including broker drain after actual process/domain reap.
     _objects: Vec<File>,
     domain: Box<dyn ResourceDomain>,
+}
+
+impl PreparedWorker {
+    /// Physical preparation only: the kernel must fence the current binding
+    /// and approval before this call and complete its readiness/activation path
+    /// after spawn. Paths, bootstrap source and limits are not caller arguments.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_linux(
+        runtime: crate::runtime_enrollment::EnrolledRuntime,
+        release: crate::release_store::VerifiedReleaseLease,
+        binding: &crate::installation::StageTrustBinding,
+    ) -> Result<Self, WorkerError> {
+        platform_linux::prepare(runtime, release, binding)
+    }
 }
 
 /// To be implemented by the enrolled platform provisioner, not by callers of

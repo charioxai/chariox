@@ -103,6 +103,9 @@ fn hosted_native_worker_uses_production_cgroup_and_observer() {
         setup,
         _roots: roots,
         _libraries: libraries,
+        storage: None,
+        _runtime: None,
+        _release: None,
     };
     let prepared = PreparedWorker {
         program: CString::new(

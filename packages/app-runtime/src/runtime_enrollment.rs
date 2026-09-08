@@ -3,14 +3,17 @@
 //! This verifies bytes and retains installer leases; it does not establish the
 //! process sandbox or replace macOS code-signature/notarization verification.
 mod filesystem;
+mod graph;
+#[cfg(any(target_os = "linux", test))]
+pub mod installer;
 mod manifest;
 #[cfg(test)]
 mod tests;
 
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use filesystem::Directory;
-use manifest::Inventory;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -20,6 +23,7 @@ use std::{
 
 const MAX_MANIFEST: u64 = 262_144;
 const MAX_BUNDLE: u64 = 536_870_912;
+pub(crate) const MAX_INVENTORY_FILES: usize = 40;
 const INVENTORY: &str = "runtime-inventory.json";
 const SIGNATURE: &str = "runtime-inventory.sig";
 const LEASE: &str = ".runtime-lease";
@@ -41,7 +45,7 @@ pub enum EnrollmentError {
 }
 type Result<T> = std::result::Result<T, EnrollmentError>;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Enrollment {
     schema: String,
@@ -99,46 +103,13 @@ impl EnrolledRuntime {
         let key = VerifyingKey::from_bytes(&decode_hex::<32>(&enrollment.public_key_hex)?)
             .map_err(|_| EnrollmentError::Signature)?;
         let root = Directory::open(&enrollment.runtime_root, trusted_uid)?;
-        let lease = root.file(LEASE, Some(0o444))?;
-        filesystem::shared_lease(&lease)?;
-        let mut inventory_file = root.file(INVENTORY, Some(0o444))?;
-        let mut signature_file = root.file(SIGNATURE, Some(0o444))?;
-        let inventory_bytes = filesystem::small(&mut inventory_file, MAX_MANIFEST)?;
-        if format!("{:x}", Sha256::digest(&inventory_bytes)) != enrollment.inventory_sha256 {
-            return Err(EnrollmentError::Identity);
-        }
-        let signature_bytes = filesystem::small(&mut signature_file, 128)?;
-        let signature = Signature::from_bytes(&decode_hex::<64>(
-            std::str::from_utf8(&signature_bytes).map_err(|_| EnrollmentError::Signature)?,
-        )?);
-        key.verify_strict(&inventory_bytes, &signature)
-            .map_err(|_| EnrollmentError::Signature)?;
-        let inventory: Inventory =
-            serde_json::from_slice(&inventory_bytes).map_err(|_| EnrollmentError::Contract)?;
-        inventory.validate(&enrollment.target)?;
-        let expected: Vec<_> = inventory
-            .files
-            .iter()
-            .map(|entry| entry.path.clone())
-            .chain([INVENTORY.into(), SIGNATURE.into(), LEASE.into()])
-            .collect();
-        root.require_inventory(&expected)?;
-        let mut files = BTreeMap::new();
-        let mut total = inventory_bytes.len() as u64;
-        for entry in inventory.files {
-            total = total
-                .checked_add(entry.size)
-                .ok_or(EnrollmentError::Limit)?;
-            if total > MAX_BUNDLE {
-                return Err(EnrollmentError::Limit);
-            }
-            let mut file = root.file(
-                &entry.path,
-                Some(if entry.executable { 0o555 } else { 0o444 }),
-            )?;
-            filesystem::verify_file(&mut file, entry.size, &entry.sha256)?;
-            files.insert(entry.path, file);
-        }
+        let graph = graph::VerifiedGraph::open(
+            root,
+            &key,
+            &enrollment.inventory_sha256,
+            &enrollment.target,
+            graph::Modes::Installed,
+        )?;
         // Re-read held trust input after bounded hashing. The installer's change
         // protocol retains exclusive ownership of this generation's lease; it
         // publishes a new generation/enrollment instead of mutating old bytes.
@@ -146,12 +117,12 @@ impl EnrolledRuntime {
             return Err(EnrollmentError::Identity);
         }
         Ok(Self {
-            root,
-            _lease: lease,
-            files,
+            root: graph.root,
+            _lease: graph.lease,
+            files: graph.files,
             _enrollment_file: enrollment_file,
-            _inventory_file: inventory_file,
-            _signature_file: signature_file,
+            _inventory_file: graph.inventory_file,
+            _signature_file: graph.signature_file,
             inventory_digest: enrollment.inventory_sha256,
             revision: enrollment.revision,
             target: enrollment.target,

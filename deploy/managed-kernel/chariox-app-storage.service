@@ -28,7 +28,11 @@ CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_SE
 RestrictAddressFamilies=AF_UNIX
 RestrictSUIDSGID=true
 LockPersonality=true
-LimitNOFILE=1024
+# 64 leases x (40 graph files + 12 retained roots/metadata/cgroup handles),
+# plus <=64 clients, 16 listeners and 128 reserved global/transient handles.
+# Budget3536 is conservative headroom, not a measured peak.
+# This bound is checked with the runtime inventory cap in the helper tests.
+LimitNOFILE=4096
 LimitCORE=0
 MemoryMax=256M
 MemorySwapMax=0

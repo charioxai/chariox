@@ -7,6 +7,7 @@ use super::{
     Error, Result, DATA_BYTES, ROOT, SOCKET_ROOT, TMP_BYTES,
 };
 use crate::private_fs::Dir;
+use crate::{release_store::VerifiedReleaseLease, runtime_enrollment::EnrolledRuntime};
 use serde::Serialize;
 use std::{
     ffi::OsStr,
@@ -17,11 +18,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) struct Lease {
+pub(in crate::worker_process) struct Lease {
     stream: UnixStream,
     grant: Grant,
     pub data: Option<Dir>,
     pub temporary: Option<Dir>,
+    pub package: Option<Dir>,
+    pub runtime: Option<Dir>,
     path: PathBuf,
     local_mount_ids: [u64; 2],
     released: bool,
@@ -37,6 +40,12 @@ enum Operation<'a> {
     },
     Release {
         lease: &'a str,
+    },
+    AttachCode {
+        lease: &'a str,
+        package_digest: &'a str,
+        runtime_digest: &'a str,
+        runtime_revision: u64,
     },
 }
 impl Lease {
@@ -82,7 +91,7 @@ impl Lease {
             },
         )?;
         let reply: Reply = wire::receive(&stream, 150)?;
-        if reply.status != "acquired" {
+        if reply.status != "acquired" || reply.code.is_some() {
             return Err(Error::RecoveryRequired);
         }
         let grant = reply.grant.ok_or(Error::Identity)?;
@@ -115,6 +124,8 @@ impl Lease {
             grant,
             data: Some(data),
             temporary: Some(temporary),
+            package: None,
+            runtime: None,
             path,
             local_mount_ids,
             released: false,
@@ -125,6 +136,56 @@ impl Lease {
     }
     pub fn temporary_path(&self) -> PathBuf {
         self.path.join("tmp")
+    }
+    pub fn code_paths(&self) -> [PathBuf; 2] {
+        [self.path.join("package"), self.path.join("runtime")]
+    }
+    pub fn attach_code(
+        &mut self,
+        package: &VerifiedReleaseLease,
+        runtime: &EnrolledRuntime,
+    ) -> Result<()> {
+        if self.released || self.package.is_some() || self.runtime.is_some() {
+            return Err(Error::Invalid);
+        }
+        wire::send(
+            &mut self.stream,
+            &Operation::AttachCode {
+                lease: &self.grant.lease,
+                package_digest: package.package_digest(),
+                runtime_digest: runtime.inventory_digest(),
+                runtime_revision: runtime.revision(),
+            },
+        )?;
+        let reply: Reply = wire::receive(&self.stream, 150)?;
+        if reply.status != "code_attached" || reply.grant.is_some() {
+            return Err(Error::RecoveryRequired);
+        }
+        let code = reply.code.ok_or(Error::Identity)?;
+        if code.package_digest != package.package_digest()
+            || code.runtime_digest != runtime.inventory_digest()
+            || code.runtime_revision != runtime.revision()
+            || code.package_root != files::identity(package.payload())?
+            || code.runtime_root != files::identity(runtime.root())?
+        {
+            return Err(Error::Identity);
+        }
+        let parent = files::search_root_directory(&self.path)?;
+        let package_view = parent.child(OsStr::new("package"))?;
+        let runtime_view = parent.child(OsStr::new("runtime"))?;
+        super::code_mounts::observe(
+            &package_view,
+            super::code_model::Kind::Package,
+            &code.package_root,
+        )?;
+        super::code_mounts::observe(
+            &runtime_view,
+            super::code_model::Kind::Runtime,
+            &code.runtime_root,
+        )?;
+        self.package = Some(package_view);
+        self.runtime = Some(runtime_view);
+        Ok(())
     }
     #[cfg(test)]
     pub fn mount_observations(&self) -> [(u64, u64); 2] {
@@ -142,6 +203,8 @@ impl Lease {
         }
         self.data.take();
         self.temporary.take();
+        self.package.take();
+        self.runtime.take();
         wire::send(
             &mut self.stream,
             &Operation::Release {
@@ -149,7 +212,7 @@ impl Lease {
             },
         )?;
         let reply: Reply = wire::receive(&self.stream, 10)?;
-        if reply.status != "released" || reply.grant.is_some() {
+        if reply.status != "released" || reply.grant.is_some() || reply.code.is_some() {
             return Err(Error::RecoveryRequired);
         }
         self.released = true;

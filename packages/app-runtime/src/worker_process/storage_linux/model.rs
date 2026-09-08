@@ -1,7 +1,7 @@
 use super::{Error, Result, DATA_BYTES, TMP_BYTES};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 /// Root-installed configuration. None of these fields are accepted over the
 /// kernel connection; in particular a caller cannot choose another OS UID.
@@ -17,6 +17,8 @@ pub(super) struct Owner {
     pub uid: u32,
     pub gid: u32,
     pub cgroup_root: String,
+    #[serde(default)]
+    pub kernel_database_paths: Vec<PathBuf>,
 }
 impl Enrollment {
     pub fn validate(&self) -> Result<()> {
@@ -35,6 +37,27 @@ impl Enrollment {
                 || !ids.insert(owner.uid)
             {
                 return Err(Error::Invalid);
+            }
+            if owner.kernel_database_paths.len() > 16 {
+                return Err(Error::Invalid);
+            }
+            let mut databases = std::collections::BTreeSet::new();
+            for database in &owner.kernel_database_paths {
+                let path = database.to_str().ok_or(Error::Invalid)?;
+                if !database.is_absolute()
+                    || database.file_name().is_none()
+                    || path.len() > 1024
+                    || path.ends_with('/')
+                    || path.contains("//")
+                    || path.split('/').any(|part| matches!(part, "." | ".."))
+                    || path.bytes().any(|byte| byte.is_ascii_control())
+                    || database
+                        .components()
+                        .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+                    || !databases.insert(database)
+                {
+                    return Err(Error::Invalid);
+                }
             }
             let path = Path::new(&owner.cgroup_root);
             if !path.starts_with("/sys/fs/cgroup")
@@ -66,6 +89,12 @@ pub(super) enum Request {
     Release {
         lease: String,
     },
+    AttachCode {
+        lease: String,
+        package_digest: String,
+        runtime_digest: String,
+        runtime_revision: u64,
+    },
 }
 impl Request {
     pub fn validate(&self) -> Result<()> {
@@ -84,6 +113,15 @@ impl Request {
                 hex(cgroup_leaf.strip_prefix("app-").ok_or(Error::Invalid)?, 32)
             }
             Self::Release { lease } => hex(lease, 32),
+            Self::AttachCode {
+                lease,
+                package_digest,
+                runtime_digest,
+                runtime_revision,
+            } => {
+                hex(lease, 32)?;
+                super::code_model::validate_pins(package_digest, runtime_digest, *runtime_revision)
+            }
         }
     }
 }
@@ -154,6 +192,8 @@ pub(super) struct Journal {
     pub boot_id: String,
     pub pending_recovery: bool,
     pub images: [Image; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<super::code_model::Record>,
 }
 impl Journal {
     pub fn validate(&self, uid: u32, name: &str) -> Result<()> {
@@ -196,6 +236,9 @@ impl Journal {
                 return Err(Error::Identity);
             }
             uuid(&image.uuid)?;
+        }
+        if let Some(code) = &self.code {
+            code.validate()?;
         }
         Ok(())
     }
@@ -279,5 +322,76 @@ mod tests {
             installation_name("ab", "c").unwrap()
         );
         assert_eq!(installation_name("../owner", "/app").unwrap().len(), 66);
+    }
+}
+
+#[cfg(test)]
+mod enrollment_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn installed_database_sources_are_bounded_canonical_and_never_socket_arguments() {
+        let base = json!({"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":1000,"gid":1000,"cgroup_root":"/sys/fs/cgroup/service/apps","kernel_database_paths":["/var/lib/chariox/home/state/kernel.db"]}]});
+        let check = |value| {
+            serde_json::from_value::<Enrollment>(value)
+                .unwrap()
+                .validate()
+        };
+        assert!(check(base.clone()).is_ok());
+        for paths in [
+            json!(["relative.db"]),
+            json!(["/state/../kernel.db"]),
+            json!(["/state/./kernel.db"]),
+            json!(["/state//kernel.db"]),
+            json!(["/state/kernel.db/"]),
+            json!(["/state/kernel.db", "/state/kernel.db"]),
+            json!(vec!["/state/kernel.db"; 17]),
+        ] {
+            let mut value = base.clone();
+            value["owners"][0]["kernel_database_paths"] = paths;
+            assert!(check(value).is_err());
+        }
+        let request = json!({"operation":"attach_code","lease":"a".repeat(32),"package_digest":format!("sha256:{}","b".repeat(64)),"runtime_digest":"c".repeat(64),"runtime_revision":1});
+        serde_json::from_value::<Request>(request.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        for field in [
+            "path",
+            "kernel_database_path",
+            "runtime_root",
+            "uid",
+            "command",
+        ] {
+            let mut value = request.clone();
+            value[field] = json!("/foreign");
+            assert!(serde_json::from_value::<Request>(value).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    #[test]
+    fn installed_fd_limit_covers_all_bounded_graph_leases_and_transient_work() {
+        // Each live lease:40 signed graph files, runtime5 metadata/root/lease,
+        // release2 roots, installation1 directory, and bound cgroup4 files.
+        // The helper serializes operations. The128 transient/global descriptors
+        // are reserved headroom for a <=24-level walk, new graph, formatter
+        // and daemon root, not an assertion of a measured peak.
+        let maximum = super::super::MAX_INSTALLATIONS
+            * (crate::runtime_enrollment::MAX_INVENTORY_FILES + 12)
+            + 64
+            + 16
+            + 128;
+        let unit = include_str!("../../../../../deploy/managed-kernel/chariox-app-storage.service");
+        let ceiling = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("LimitNOFILE="))
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(ceiling, 4096);
+        assert!(maximum <= ceiling);
     }
 }

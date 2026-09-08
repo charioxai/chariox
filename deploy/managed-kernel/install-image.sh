@@ -160,7 +160,7 @@ if [ -L "$app_storage_config" ] || { [ -e "$app_storage_config" ] && [ ! -f "$ap
   echo "managed App storage enrollment is obstructed" >&2; exit 1
 fi
 app_storage_pending=$(mktemp "$install_root/etc/chariox/.app-storage.XXXXXXXX")
-printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps"}]}\n' "$app_storage_uid" "$app_storage_gid" > "$app_storage_pending"
+printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps","kernel_database_paths":["/var/lib/chariox/home/state/kernel.db"]}]}\n' "$app_storage_uid" "$app_storage_gid" > "$app_storage_pending"
 chmod 0644 "$app_storage_pending"
 chown root:root "$app_storage_pending"
 if [ -e "$app_storage_config" ] && ! cmp -s "$app_storage_config" "$app_storage_pending"; then

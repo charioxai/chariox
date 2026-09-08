@@ -98,6 +98,22 @@ pub(super) fn root_owned(file: &File, directory: bool) -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn root_file(parent: &Dir, name: &OsStr) -> Result<File> {
+    let name = crate::private_fs::cstring(name)?;
+    let fd = unsafe {
+        libc::openat(
+            parent.0.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(Error::Io);
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    root_owned(&file, false)?;
+    Ok(file)
+}
 pub(super) fn child(parent: &Dir, name: &str, mode: u32) -> Result<Dir> {
     if ![0o700, 0o711].contains(&mode) {
         return Err(Error::Invalid);

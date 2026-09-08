@@ -208,6 +208,7 @@ impl Client {
                         &Reply {
                             status: "acquired".into(),
                             grant: Some(grant),
+                            code: None,
                         },
                     )?;
                 }
@@ -231,17 +232,46 @@ impl Client {
                     }
                 }
             }
+            (
+                Some(expected),
+                Request::AttachCode {
+                    lease,
+                    package_digest,
+                    runtime_digest,
+                    runtime_revision,
+                },
+            ) if *expected == lease => {
+                match store.attach_code(
+                    self.uid,
+                    &lease,
+                    &package_digest,
+                    &runtime_digest,
+                    runtime_revision,
+                ) {
+                    Ok(code) => wire::send(
+                        &mut self.stream,
+                        &Reply {
+                            status: "code_attached".into(),
+                            grant: None,
+                            code: Some(code),
+                        },
+                    )?,
+                    Err(error) => {
+                        let _ = wire::send(&mut self.stream, &Reply::failed(error));
+                        return Err(error); // EOF retains the entire lease in recovery
+                    }
+                }
+            }
             _ => return Err(Error::Identity),
         }
         Ok(())
     }
 }
 
-fn configuration() -> Result<Enrollment> {
+pub(super) fn configuration() -> Result<Enrollment> {
     let config_path = Path::new(CONFIG);
     let config_parent = files::root_directory(config_path.parent().unwrap())?;
-    let mut config_file = config_parent.read_file(config_path.file_name().unwrap(), false)?;
-    files::root_owned(&config_file, false)?;
+    let mut config_file = files::root_file(&config_parent, config_path.file_name().unwrap())?;
     if config_file.metadata()?.len() > 16384 {
         return Err(Error::Invalid);
     }

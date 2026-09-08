@@ -990,7 +990,7 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(await readFile(join(harness.installRoot, "usr/libexec/chariox-app-storage"), "utf8"), "app storage fixture\n")
   assert.equal((await stat(join(harness.installRoot, "usr/libexec/chariox-app-storage"))).mode & 0o777, 0o755)
   assert.deepEqual(JSON.parse(await readFile(join(harness.installRoot, "etc/chariox/app-storage.json"), "utf8")), {
-    schema: "chariox.app-storage-enrollment.v1", owners: [{uid:998,gid:998,cgroup_root:"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps"}],
+    schema: "chariox.app-storage-enrollment.v1", owners: [{uid:998,gid:998,cgroup_root:"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps",kernel_database_paths:["/var/lib/chariox/home/state/kernel.db"]}],
   })
   assert.equal((await stat(join(harness.installRoot, "usr/lib/chariox/release-manifest.json"))).mode & 0o777, 0o644)
   const installedProvisioner = join(

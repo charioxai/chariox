@@ -912,3 +912,31 @@ lease ownership, archive/payload tampering and symlink substitution (3.73-second
 compile, 0.09-second execution, peak 472,464 KiB). Installer enrollment, complete
 platform factory assembly and production signed artifacts remain integration
 work. Evidence is under the existing task evidence root; no evidence is in Git.
+
+
+### Root enrollment and Linux worker preparation (2026-09-08)
+
+The Linux installer now accepts an externally selected release key and exact
+inventory digest, copies and re-verifies the signed graph, publishes immutable
+generations, and fsyncs the enrollment before acknowledging it. Retries preserve
+revision identity; old readers hold leases through cleanup. Seven filesystem
+and crash-recovery tests pass (2.64-second compile, 4.04-second execution,
+peak 482,480 KiB), plus the strict installer CLI parser test (2.21-second
+compile, peak 477,600 KiB). These use private ordinary-user test roots on macOS;
+they do not install a privileged runtime on this machine. Key rotation requires
+a new inventory digest because the generation's signature is immutable.
+
+Linux preparation now composes the enrolled runtime and verified package lease
+with the existing cgroup, storage, namespace and launch-record contracts. The
+root helper clones detached code mounts, applies read-only/nodev/nosuid and
+package no-execute flags before publication, and retains exact source identities
+through recovery. Its fixed descriptor ceiling covers the declared lease and
+inventory bounds. Hosted tests now prepare the real factory and check code views
+from the kernel namespace using a tiny signed fixture graph; the fixture's text
+executables are never run. This source still needs hosted compilation and the
+full signed Node execution drill before it can certify App startup.
+
+The independent review at `dba7b42cd` found one actionable issue: a Linux library
+tampering fixture changed the size while expecting a hash-error classification.
+It now tests a same-length byte flip and a separate size change. The prior Linux
+contract job failed at that assertion; the corrected hosted run is pending.

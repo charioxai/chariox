@@ -1,9 +1,13 @@
-//! Private Linux provisioning components. Real image/storage and runtime
-//! enrollment must supply sealed leases before a public factory is connected.
+//! Linux preparation composes enrolled runtime, verified release, helper-owned
+//! storage/code views and delegated cgroups before the native launch handshake.
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(target_os = "linux")]
 mod domain;
+#[cfg(target_os = "linux")]
+mod factory;
+#[cfg(target_os = "linux")]
+pub(super) use factory::prepare;
 #[cfg(target_os = "linux")]
 mod inspection;
 #[cfg(target_os = "linux")]

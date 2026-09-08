@@ -15,6 +15,29 @@ pub(super) struct Directory {
     uid: u32,
 }
 impl Directory {
+    pub(super) fn from_file(file: File, uid: u32) -> Self {
+        Self { file, uid }
+    }
+
+    /// An installer input is not trusted because of its owner. Anchor every
+    /// component without following links; signatures/digests supply authority.
+    /// Leaf ownership only keeps the graph within this one input directory.
+    pub(super) fn source(path: &Path) -> Result<Self> {
+        if !path.is_absolute() || path.as_os_str().len() > 1024 {
+            return Err(EnrollmentError::Identity);
+        }
+        let mut dir = Dir::absolute_root().map_err(fs_error)?;
+        for component in path.components() {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => dir = dir.child(name).map_err(fs_error)?,
+                _ => return Err(EnrollmentError::Identity),
+            }
+        }
+        let uid = dir.0.metadata()?.uid();
+        Ok(Self { file: dir.0, uid })
+    }
+
     pub(super) fn open(path: &Path, uid: u32) -> Result<Self> {
         if !path.is_absolute() || path.as_os_str().len() > 1024 {
             return Err(EnrollmentError::Identity);

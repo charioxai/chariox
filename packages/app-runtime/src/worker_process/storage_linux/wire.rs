@@ -168,18 +168,22 @@ pub(super) struct Reply {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grant: Option<super::store::Grant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<super::code_model::Grant>,
 }
 impl Reply {
     pub fn failed(error: Error) -> Self {
         Self {
             status: error.to_string(),
             grant: None,
+            code: None,
         }
     }
     pub fn released() -> Self {
         Self {
             status: "released".into(),
             grant: None,
+            code: None,
         }
     }
 }

@@ -1,18 +1,25 @@
-//! The same resource owner is retained from pre-exec admission through an empty
-//! cgroup. Its private inputs must eventually come from enrolled artifact and
-//! storage leases; the hosted fixture is not a production enrollment factory.
+//! The same resource owner remains alive through native reap and broker drain.
+//! Field drop order closes view handles before releasing the helper lease, and
+//! removes the empty cgroup only after helper reclamation has been requested.
 use super::{cgroup, inspection, plan, Result};
 use crate::worker_process::ResourceDomain;
+use crate::{
+    release_store::VerifiedReleaseLease, runtime_enrollment::EnrolledRuntime,
+    worker_process::storage_linux,
+};
 use std::{fs::File, time::Instant};
 
 pub(super) struct Domain {
-    pub leaf: cgroup::Lease,
-    pub observer: inspection::Observer,
+    pub _roots: [plan::Binding; 4],
+    pub _libraries: Vec<(String, plan::Binding)>,
     /// FD5 is cgroup.procs; FD6 is the pinned bubblewrap executable. The native
     /// entry joins the cgroup before exec/fork, then closes both setup channels.
     pub setup: [File; 2],
-    pub _roots: [plan::Binding; 4],
-    pub _libraries: Vec<(String, plan::Binding)>,
+    pub observer: inspection::Observer,
+    pub storage: Option<storage_linux::Lease>,
+    pub _runtime: Option<EnrolledRuntime>,
+    pub _release: Option<VerifiedReleaseLease>,
+    pub leaf: cgroup::Lease,
 }
 
 impl ResourceDomain for Domain {

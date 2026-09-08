@@ -2,6 +2,9 @@
 //! production core; actual mount/formatter acceptance runs on a dedicated host.
 mod cgroup;
 mod client;
+mod code_model;
+mod code_mounts;
+mod code_sources;
 mod files;
 mod formatter;
 #[cfg(test)]
@@ -13,6 +16,23 @@ mod provision;
 mod server;
 mod store;
 mod wire;
+
+pub(super) use client::Lease;
+
+pub(super) fn cgroup_path() -> Result<std::path::PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let gid = unsafe { libc::getegid() };
+    if uid == 0 {
+        return Err(Error::Identity);
+    }
+    let config = server::configuration()?;
+    let owner = config
+        .owners
+        .into_iter()
+        .find(|owner| owner.uid == uid && owner.gid == gid)
+        .ok_or(Error::Identity)?;
+    Ok(owner.cgroup_root.into())
+}
 
 use std::result::Result as StdResult;
 

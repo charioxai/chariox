@@ -24,7 +24,7 @@ install -o root -g root -m 555 "$storage_helper" /usr/libexec/chariox-app-storag
 install -o root -g root -m 555 "$storage_tests" /usr/libexec/chariox-app-storage-tests
 install -m 644 "$storage_repo/deploy/managed-kernel/chariox-app-storage.service" /etc/systemd/system/chariox-app-storage.service
 install -m 644 "$storage_repo/deploy/managed-kernel/chariox-managed-bootstrap.service" /etc/systemd/system/chariox-managed-bootstrap.service
-printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps"}]}\n' "$storage_uid" "$storage_gid" > /etc/chariox/app-storage.json
+printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps","kernel_database_paths":["/var/lib/chariox/home/state/kernel.db"]}]}\n' "$storage_uid" "$storage_gid" > /etc/chariox/app-storage.json
 chmod 644 /etc/chariox/app-storage.json
 cat > /etc/systemd/system/chariox-managed-bootstrap.service.d/fixture.conf <<'UNIT'
 [Unit]
@@ -55,6 +55,11 @@ cleanup() {
   chown -R "$(stat -c %u "$storage_scratch"):$(stat -c %g "$storage_scratch")" "$storage_scratch/evidence"
 }
 trap cleanup EXIT
+/usr/bin/env -i GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_REPOSITORY=charioxai/chariox \
+  CHARIOX_STORAGE_HOSTED=fixed-production-helper \
+  /usr/libexec/chariox-app-storage-tests \
+  runtime_enrollment::installer::tests::hosted_install_signed_graph_for_storage_views \
+  --exact --ignored --nocapture --test-threads=1
 systemctl daemon-reload
 systemctl start chariox-app-storage.service chariox-managed-bootstrap.service
 storage_kernel="$(systemctl show -p MainPID --value chariox-managed-bootstrap.service)"
@@ -75,6 +80,8 @@ run_test() {
     /usr/libexec/chariox-app-storage-tests "$storage_filter" --ignored --nocapture --test-threads=1
 }
 run_test chariox-storage-actual hosted_private_capacity_persistence_tmp_reset_and_noexec
+run_test chariox-storage-actual hosted_readonly_code_views_match_verified_roots_in_kernel_namespace
+run_test chariox-storage-actual hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain
 run_test chariox-storage-crash hosted_crash_fixture_holds_lease_until_owner_is_killed > "$storage_scratch/evidence/crash-holder.log" 2>&1 &
 storage_waiter=$!
 for storage_attempt in $(seq 1 300); do

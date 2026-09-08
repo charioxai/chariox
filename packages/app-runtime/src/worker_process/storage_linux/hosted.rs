@@ -1,5 +1,6 @@
 //! These ignored tests use the installed production helper on a dedicated host.
 //! No disk image, mount or privileged helper is created by an ordinary test run.
+mod code;
 use super::{client::Lease, model::Enrollment, CONFIG, DATA_BYTES, TMP_BYTES};
 use std::{
     fs::{self, File},
@@ -120,7 +121,9 @@ fn hosted_private_capacity_persistence_tmp_reset_and_noexec() {
 #[ignore = "requires dedicated hosted Linux root helper and owned process cancellation"]
 fn hosted_crash_fixture_holds_lease_until_owner_is_killed() {
     let context = Context::open("22222222222222222222222222222222");
-    let lease = context.lease("crash", 1);
+    let (package, runtime, _binding) = code::proofs();
+    let mut lease = context.lease("crash", 1);
+    lease.attach_code(&package, &runtime).unwrap();
     let mut file = File::create(lease.data_path().join("crash-sentinel")).unwrap();
     file.write_all(b"saved before abrupt helper failure")
         .unwrap();
@@ -136,7 +139,9 @@ fn hosted_crash_fixture_holds_lease_until_owner_is_killed() {
 #[ignore = "requires dedicated hosted Linux helper restart after abrupt cancellation"]
 fn hosted_recovery_preserves_data_after_abrupt_helper_exit() {
     let context = Context::open("33333333333333333333333333333333");
+    let (package, runtime, _binding) = code::proofs();
     let mut lease = context.lease("crash", 2);
+    lease.attach_code(&package, &runtime).unwrap();
     assert_eq!(
         fs::read(lease.data_path().join("crash-sentinel")).unwrap(),
         b"saved before abrupt helper failure"

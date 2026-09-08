@@ -279,8 +279,12 @@ fn signed_platform_library_bytes_and_exact_graph_are_verified_before_admission()
     let path = "platform/libc.so.6";
     assert!(fixture.open().unwrap().file(path).is_some());
     let original = fs::read(fixture.runtime.join(path)).unwrap();
-    fixture.write(path, b"substituted host library", 0o444);
+    let mut changed = original.clone();
+    changed[0] ^= 1;
+    fixture.write(path, &changed, 0o444);
     assert!(matches!(fixture.open(), Err(EnrollmentError::Identity)));
+    fixture.write(path, b"substituted host library", 0o444);
+    assert!(matches!(fixture.open(), Err(EnrollmentError::Limit)));
     fixture.write(path, &original, 0o444);
     let mut inventory = fixture.inventory();
     inventory["files"]

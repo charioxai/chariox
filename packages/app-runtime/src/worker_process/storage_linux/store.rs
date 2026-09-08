@@ -1,5 +1,6 @@
 //! Durable image/mount state. The helper owns this store and its exclusive root
 //! lock until every client lease has been released or journaled for recovery.
+mod code;
 use super::{
     cgroup::{self, Bound},
     files, formatter,
@@ -28,6 +29,7 @@ struct Live {
     path: PathBuf,
     journal: Journal,
     bound: Bound,
+    code_sources: Option<super::code_sources::Sources>,
 }
 #[derive(Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +142,7 @@ impl Store {
                 boot_id: cgroup::boot_id()?,
                 pending_recovery: true,
                 images: images.try_into().map_err(|_| Error::Identity)?,
+                code: None,
             }
         };
         if journal.gid != principal.gid {
@@ -182,6 +185,7 @@ impl Store {
                 path,
                 journal,
                 bound,
+                code_sources: None,
             },
         );
         prepared
@@ -374,6 +378,7 @@ impl Drop for Store {
 }
 
 fn cleanup(directory: &Dir, path: &Path, journal: &mut Journal, owner: &Owner) -> Result<()> {
+    code::cleanup(directory, path, journal)?;
     for index in 0..2 {
         let image = &journal.images[index];
         let file = files::open_image(directory, image.role.image())?;

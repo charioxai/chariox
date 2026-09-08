@@ -1,4 +1,4 @@
-use super::{EnrollmentError, Result, MAX_BUNDLE};
+use super::{EnrollmentError, Result, MAX_BUNDLE, MAX_INVENTORY_FILES};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
@@ -33,7 +33,7 @@ impl Inventory {
             || self.node_module_abi != 137
             || self.sdk_version != chariox_app_package::SUPPORTED_SDK_VERSION
             || !hex(&self.source_commit, 40)
-            || self.files.len() > 40
+            || self.files.len() > MAX_INVENTORY_FILES
         {
             return Err(EnrollmentError::Contract);
         }
