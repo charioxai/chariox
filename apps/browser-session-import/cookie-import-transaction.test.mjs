@@ -91,7 +91,7 @@ test('publishes a verified import while leaving unrelated cookies untouched', as
   assert.equal(after.find(c => c.domain === 'example.test').httpOnly, true);
 });
 
-test('encrypted recovery record is durable before the first cookie write and cleared after verification', async () => {
+test('encrypted recovery record is durable before the first cookie write and retained after verification', async () => {
   await withJournal(async journal => {
     const {options,store} = fixture();
     const write = store.write;
@@ -107,7 +107,9 @@ test('encrypted recovery record is durable before the first cookie write and cle
       await write(cookies);
     };
     await applyCookieImport({...options,journal});
-    assert.equal(await journal.read(),null);
+    const pending = await journal.read();
+    assert.ok(pending);
+    pending.bytes.fill(0);
   });
 });
 
@@ -161,12 +163,12 @@ test('failed journal preparation prevents mutation and preserves recovery classi
   assert.equal(writes(),0);
 });
 
-test('failed journal cleanup after verified application blocks subsequent imports', async () => {
+test('verified application does not clear recovery state or permit subsequent imports', async () => {
   await withJournal(async journal => {
     const {options,store,writes} = fixture();
-    await assert.rejects(applyCookieImport({...options,journal:{...journal,
-      discard:async () => { throw Error('private filesystem details'); },
-    }}), {code:'cookie_import_recovery_required',recoveryRequired:true});
+    await applyCookieImport({...options,journal:{...journal,
+      discard:async () => assert.fail('readback cannot authorize journal deletion'),
+    }});
     assert.equal(writes(),1);
     assert.equal((await store.read())[0].value,'fixture-only');
     await assert.rejects(applyCookieImport({...options,journal}),
