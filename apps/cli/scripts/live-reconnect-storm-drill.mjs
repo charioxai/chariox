@@ -194,6 +194,7 @@ try {
   const pressureBaselineHealth = await relayHealthSnapshot()
   assert.equal(pressureBaselineHealth.subscription_count, clientCount)
   slowClient.eventWebsocket._socket.pause()
+  const healthyResumeBaseline = resumeCounts.slice(1)
   const payload = "s".repeat(8 * 1024)
   const pressureQueueDepth = 4
   let slowEventsSubmitted = 0
@@ -375,7 +376,21 @@ try {
     slowSubscriptionClosedAtMs = Date.now()
     return true
   }, timeoutMs, "relay to close only the slow subscription")
-  assertOnlySlowSubscriptionClosed(relayHealth, clientCount)
+  resourcePhase = "post-close-healthy-delivery"
+  const postCloseMarker = `RECONNECT_STORM_POST_CLOSE_${Date.now()}`
+  await Promise.all(contexts.slice(1).map((context) => withDeadline(
+    appendMarker(context, postCloseMarker, pressureControl),
+    timeoutMs,
+    `post-close provider output for ${context.sessionId}`,
+  )))
+  await waitFor(
+    () => seen.slice(1).every((markers) => markers.has(postCloseMarker)),
+    timeoutMs,
+    "every healthy subscriber to receive output after slow isolation",
+  )
+  relayHealth = await relayHealthSnapshot()
+  assertOnlySlowSubscriptionClosed(relayHealth, clientCount, seen.slice(1), postCloseMarker)
+  assert.deepEqual(resumeCounts.slice(1), healthyResumeBaseline, "healthy subscriptions reconnected during isolation")
   const healthyCompletedAtMs = healthyStartedAt + healthyTrafficLatencyMs
   assert.ok(slowSubscriptionClosedAtMs > healthyCompletedAtMs, "slow subscription closed before healthy traffic completed")
   const metrics = processMetrics(children)
@@ -392,6 +407,7 @@ try {
     reconnectLatenciesMs,
     reconnectP95Ms: percentile([...reconnectLatenciesMs].sort((left, right) => left - right), 0.95),
     healthySubscribers: clientCount - 1,
+    healthySubscribersVerifiedAfterClose: clientCount - 1,
     healthyTrafficLatencyMs,
     pressureObservedAtMs,
     pressureQueueDepth,
