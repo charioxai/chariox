@@ -44,6 +44,14 @@ impl AppControlService {
         self.uploads.schedule_maintenance(&self.admission);
     }
 
+    pub(crate) fn try_admit(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, AppRequestErrorCode> {
+        Arc::clone(&self.admission)
+            .try_acquire_owned()
+            .map_err(|_| AppRequestErrorCode::Busy)
+    }
+
     pub(crate) async fn execute(
         &self,
         command: &KernelCommand,

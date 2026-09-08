@@ -65,7 +65,7 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/provider processes \[n\]\s+list daemon-tracked provider processes/)
   assert.match(output, /\/provider processes teardown <n>\s+tear down safe daemon-tracked provider processes/)
   assert.match(output, /\/extension import\s+import provider MCPs and skills into Chariox/)
-  assert.match(output, /\/extension grant\s+grant mcp, skill, script, or connector capabilities to an agent/)
+  assert.match(output, /\/extension grant\s+grant mcp, skill, script, connector, or app capabilities to an agent/)
   assert.match(output, /\/extension revoke\s+revoke an extension from an agent/)
   assert.match(output, /\/extension grants\s+show worker-local, home-proxy, and skill snapshot grants/)
   assert.match(output, /\/extension sync-status\s+show home-proxy manifest sync and recovery for an agent/)

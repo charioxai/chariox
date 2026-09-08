@@ -43,6 +43,8 @@ pub struct ToolDeclaration {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventDeclaration {
     pub name: String,
+    /// Publisher-signed payload schema version, matched by every occurrence.
+    pub schema_version: u32,
     pub payload_schema: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_schema: Option<Value>,
@@ -191,6 +193,9 @@ impl Declarations {
             }
         }
         for event in &self.events {
+            if event.schema_version == 0 || manifest.min_kernel_protocol < 290 {
+                return invalid("versioned events require a positive schemaVersion and kernel protocol 290");
+            }
             validate_schema(&event.payload_schema, true, limits)?;
             if let Some(filter) = &event.filter_schema {
                 validate_schema(filter, true, limits)?;

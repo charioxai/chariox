@@ -99,7 +99,7 @@ fn archive(signing_byte: u8) -> Vec<u8> {
     let manifest: Manifest = serde_json::from_value(json!({
         "schema":"chariox.app.v1", "appId":"com.example.prepared", "version":"1.0.0",
         "publisher":{"id":"com.example","keyId":"developer-1","name":"Developer"},
-        "sdkVersion":"0.1.0", "appContractVersion":1,
+        "sdkVersion":"0.2.0", "appContractVersion":1,
         "minKernelProtocol":crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         "resourcePolicy":"chariox.app.resources.v1",
         "runtime":{"engine":"node","entry":"runtime/main.js"},

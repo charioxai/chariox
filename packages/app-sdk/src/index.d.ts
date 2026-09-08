@@ -26,6 +26,10 @@ export interface EventOccurrence {
   automationId: string;
   occurrenceId: string;
   eventVersion: number;
+  /** Original occurrence time, preserved when replaying a durable outbox. */
+  occurredAtMs: number;
+  /** Required for scheduled occurrences; persist it with the schedule. */
+  scheduleRevision?: string;
   payload: Json;
 }
 export interface EventReceipt {

@@ -1006,6 +1006,17 @@ Workflow trigger and deployment direction:
   `AppPackageUploadStatus` response exposes bounded progress and phase, with
   stable `AppRequestFailed` codes. Uploaded bytes are untrusted; this transport
   does not enroll a publisher, approve capabilities, activate or run App code.
+- protocol 290 adds `app` to the existing agent extension grant/revoke and
+  serialized binding contracts. Its name is an installation ID; environment,
+  credential and max-safety overrides are invalid. A binding selects App tools
+  and does not cache permission or assert that a worker is running. Explicit
+  user grants and permitted agent self-grants use the same binding mutation;
+  agent requests use the existing Ask/YOLO policy and RuntimeInteraction path.
+  SDK 0.2 event declarations include a signed positive `schemaVersion` and
+  require a kernel protocol floor of 290. Occurrences include `occurredAtMs`
+  and, for scheduled bindings, `scheduleRevision`, preserved on retries. The
+  worker frame remains v1; the SDK payload and binding snapshots are versioned
+  together. These contracts do not yet assert App workflow delivery readiness.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

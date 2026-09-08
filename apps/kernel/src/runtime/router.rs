@@ -193,6 +193,7 @@ mod tests {
     }
 
     mod agent_messaging;
+    mod app_bindings;
     mod agent_prompt_schedules;
     mod credential_enrollment;
     mod interactive_command_admission;

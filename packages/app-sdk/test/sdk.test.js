@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { AppError, createAppSdk } from '../src/index.js';
 import { deferred, envelope, fakeTransport, flush, generation, request, response } from './helpers.js';
 
@@ -83,13 +84,49 @@ test('state transaction forwards state and occurrence together without local per
     schemaVersion: 1,
     checks: [{ key: 'issue', version: 3 }],
     writes: [{ key: 'issue', value: { state: 'done' } }],
-    occurrences: [{ automationId: 'auto-1', occurrenceId: 'issue-revision-4', eventVersion: 1, payload: {} }],
+    occurrences: [{ automationId: 'auto-1', occurrenceId: 'issue-revision-4', eventVersion: 1, occurredAtMs: 1000, payload: {} }],
   };
   const pending = sdk.state.transaction(transaction);
   assert.deepEqual(transport.sent[0].params, transaction);
   assert.equal(transport.sent[0].method, 'state.transaction');
   transport.receive(response(transport.sent[0].id, { revision: 4, receipts: [] }));
   assert.deepEqual(await pending, { revision: 4, receipts: [] });
+  sdk.close();
+});
+
+test('versioned occurrences preserve replay time and schedule revision and reject incomplete envelopes', async () => {
+  const { transport, sdk } = setup();
+  const event = { automationId: 'auto-1', occurrenceId: 'due-1', eventVersion: 2,
+    occurredAtMs: 123456, scheduleRevision: 'schedule-7', payload: { id: 'todo-1' } };
+  for (const patch of [{ eventVersion: 0 }, { eventVersion: 1.5 }, { eventVersion: 0x100000000 },
+    { occurredAtMs: undefined }, { occurredAtMs: -1 }, { occurredAtMs: Number.MAX_SAFE_INTEGER + 1 },
+    { scheduleRevision: 'bad revision' }, { owner: 'forged' }]) {
+    const invalid = { ...event, ...patch };
+    assert.throws(() => sdk.events.emit(invalid), { code: 'INVALID_ARGUMENT' });
+    assert.throws(() => sdk.state.transaction({ schemaVersion: 1, checks: [], writes: [], occurrences: [invalid] }),
+      { code: 'INVALID_ARGUMENT' });
+  }
+  assert.equal(transport.sent.length, 0);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const pending = sdk.events.emit(event);
+    const sent = transport.sent.at(-1);
+    assert.deepEqual(sent.params, event);
+    transport.receive(response(sent.id, { receiptId: 'receipt-1', state: 'accepted' }));
+    assert.deepEqual(await pending, { receiptId: 'receipt-1', state: 'accepted' });
+  }
+  sdk.close();
+});
+
+test('SDK emission matches the shared Rust event payload snapshot', async () => {
+  const fixture = JSON.parse(readFileSync(new URL('./event-contract.json', import.meta.url), 'utf8'));
+  const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(metadata.version, fixture.sdkVersion);
+  assert.equal(fixture.minimumKernelProtocol, 290);
+  const { transport, sdk } = setup();
+  const pending = sdk.events.emit(fixture.occurrence);
+  assert.deepEqual(transport.sent[0].params, fixture.occurrence);
+  transport.receive(response(transport.sent[0].id, { receiptId: 'receipt-1', state: 'accepted' }));
+  await pending;
   sdk.close();
 });
 

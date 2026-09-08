@@ -1,0 +1,30 @@
+{
+  "minimumKernelProtocol": 290,
+  "sdkVersion": "0.2.0",
+  "declaration": {
+    "name": "todo_due",
+    "schemaVersion": 2,
+    "payloadSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "occurrence": {
+    "automationId": "automation-1",
+    "occurrenceId": "todo-due-1",
+    "eventVersion": 2,
+    "occurredAtMs": 1788828000000,
+    "scheduleRevision": "revision-7",
+    "payload": {
+      "id": "todo-1"
+    }
+  }
+}

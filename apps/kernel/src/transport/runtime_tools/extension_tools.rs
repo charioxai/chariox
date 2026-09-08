@@ -79,7 +79,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "connector", "all"]
+                        "enum": ["mcp", "skill", "script", "connector", "app", "all"]
                     }
                 },
                 "additionalProperties": false
@@ -94,7 +94,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "connector"]
+                        "enum": ["mcp", "skill", "script", "connector", "app"]
                     },
                     "name": {"type": "string"},
                     "reason": {"type": "string"},

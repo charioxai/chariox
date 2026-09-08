@@ -215,7 +215,7 @@ number is illustrative; the selected SDK/runtime must supply its actual floor):
   "appId": "com.example.todo",
   "version": "1.0.0",
   "publisher": {"id": "com.example", "keyId": "developer-1", "name": "Local Developer"},
-  "sdkVersion": "0.1.0",
+  "sdkVersion": "0.2.0",
   "appContractVersion": 1,
   "minKernelProtocol": 500,
   "resourcePolicy": "chariox.app.resources.v1",
@@ -230,15 +230,20 @@ canonical serialization fills defaults. The verifier signs/checks the original
 canonical manifest object so optional defaults cannot change signed meaning.
 SDK compatibility, App contract version, kernel protocol floor, and resource
 policy support are separate kernel-supplied checks. The default SDK requirement
-is exactly `0.1.0`; it is not a claim of compatibility with future SDK releases.
+is exactly `0.2.0`; it is not a claim of compatibility with future SDK releases.
 
 Optional `tools`, `events`, `actions`, and `informationSets` properties refer to
 JSON files within `schemas/`. These files contain respectively:
 
 - `{"tools": [{"name", "description"?, "inputSchema", "outputSchema"?, "action"?}]}`
-- `{"events": [{"name", "payloadSchema", "filterSchema"?}]}`
+- `{"events": [{"name", "schemaVersion", "payloadSchema", "filterSchema"?}]}`
 - `{"actions": [{"name", "inputSchema", "criticalValidation"?, "effectRoutes"?}]}`
 - `{"informationSets": [{"name", "purpose", "sourceScope", "schemaVersion", "delivery", "fieldsSchema", "validator"?}]}`
+
+Event `schemaVersion` is a positive unsigned 32-bit integer signed with the
+declaration; emitted `eventVersion` must match it. Packages declaring events
+require `minKernelProtocol` of at least 290. The kernel rejects older event
+packages rather than inferring a publisher's missing schema version.
 
 The compact shapes above denote fields, not literal JSON examples. Local
 function names are lowercase letters/digits/underscores, start with a letter,

@@ -236,7 +236,7 @@ function printUsage() {
     "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
     "  /agent cycle          cycle to the next agent (or use Tab)",
     "  /extension import     import provider MCPs and skills into Chariox",
-    "  /extension grant      grant mcp, skill, script, or connector capabilities to an agent",
+    "  /extension grant      grant mcp, skill, script, connector, or app capabilities to an agent",
     "  /extension revoke     revoke an extension from an agent",
     "  /extension grants     show worker-local, home-proxy, and skill snapshot grants",
     "  /extension sync-status show home-proxy manifest sync and recovery for an agent",

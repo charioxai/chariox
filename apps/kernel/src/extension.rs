@@ -11,6 +11,7 @@ pub enum ExtensionKind {
     Skill,
     Script,
     Connector,
+    App,
 }
 
 impl ExtensionKind {
@@ -20,6 +21,7 @@ impl ExtensionKind {
             Self::Skill => "skill",
             Self::Script => "script",
             Self::Connector => "connector",
+            Self::App => "app",
         }
     }
 }
@@ -395,6 +397,31 @@ mod tests {
 }
 
 impl ExtensionGrant {
+    /// Bind an existing installation. This does not install or activate it.
+    pub fn app(installation_id: impl Into<String>) -> Self {
+        Self::new(ExtensionKind::App, installation_id)
+    }
+
+    pub(crate) fn validate_app_binding(&self) -> Result<(), crate::error::DaemonError> {
+        if self.kind != ExtensionKind::App
+            || self.name.is_empty()
+            || self.name.len() > 128
+            || self
+                .name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            || self.environment.is_some()
+            || self.credential.is_some()
+            || self.max_safety.is_some()
+        {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: "App bindings require only an installation ID; environment, credential and safety overrides are not accepted".into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
         Self {
             kind,

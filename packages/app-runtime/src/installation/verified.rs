@@ -301,6 +301,42 @@ impl InstallationRegistry<'_> {
     ) -> Result<StageTrustBinding> {
         load_binding(self.connection, trusted_owner, token)
     }
+
+    /// Resolve retained provenance for the active release, including after its
+    /// update journal was pruned. Call require_active in the admission transaction.
+    pub fn active_trust(
+        &self,
+        trusted_owner: &str,
+        installation_id: &str,
+    ) -> Result<StageTrustBinding> {
+        identifier(trusted_owner)?;
+        let installation = load_installation(self.connection, installation_id)?;
+        if installation.owner_id != trusted_owner {
+            return Err(InstallationError::NotFound.into());
+        }
+        let active = installation.active.ok_or(InstallationError::NotFound)?;
+        let base_generation: i64 = self
+            .connection
+            .query_row(
+                "SELECT base_generation FROM app_installation_stage_trust
+             WHERE installation_id=?1 AND generation=?2 AND owner_id=?3",
+                params![
+                    installation_id,
+                    sql_generation(active.generation)?,
+                    trusted_owner
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(InstallationError::NotFound)?;
+        let token = StageToken {
+            installation_id: installation_id.into(),
+            base_generation: u64::try_from(base_generation)
+                .map_err(|_| InstallationError::Conflict)?,
+            generation: active.generation,
+        };
+        load_binding(self.connection, trusted_owner, &token)
+    }
 }
 
 fn save_binding(

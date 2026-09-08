@@ -16,6 +16,23 @@ function record(value, label) {
   return value;
 }
 
+// Persist the complete envelope before emission. Retry must preserve original
+// time and schedule revision; the kernel owns replay-window and target checks.
+function validateOccurrence(value) {
+  record(value, 'event occurrence');
+  const fields = ['automationId', 'occurrenceId', 'eventVersion', 'occurredAtMs', 'scheduleRevision', 'payload'];
+  if (Object.keys(value).some(key => !fields.includes(key))
+    || !Number.isSafeInteger(value.eventVersion) || value.eventVersion < 1 || value.eventVersion > 0xffffffff
+    || !Number.isSafeInteger(value.occurredAtMs) || value.occurredAtMs < 0
+    || !Object.hasOwn(value, 'payload')) {
+    throw new AppError('INVALID_ARGUMENT', 'Invalid versioned event occurrence');
+  }
+  name(value.automationId, 'automation identity');
+  name(value.occurrenceId, 'occurrence identity');
+  if (value.scheduleRevision !== undefined) name(value.scheduleRevision, 'schedule revision');
+  return value;
+}
+
 function relativePath(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length > 4096
     || value.includes('\\') || value.startsWith('/') || /^[a-z]:/iu.test(value)
@@ -103,10 +120,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
     events: Object.freeze({
       register: events.register,
       emit(occurrence, options) {
-        record(occurrence, 'event occurrence');
-        name(occurrence.automationId, 'automation identity');
-        name(occurrence.occurrenceId, 'occurrence identity');
-        return call('events.emit', occurrence, options);
+        return call('events.emit', validateOccurrence(occurrence), options);
       },
       status: (receiptId, options) => call('events.status', { receiptId: name(receiptId, 'receipt identity') }, options),
       retry: (receiptId, options) => call('events.retry', { receiptId: name(receiptId, 'receipt identity') }, options),
@@ -114,7 +128,16 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
     lifecycle: Object.freeze({ on: lifecycle.register }),
     state: Object.freeze({
       get: (key, options) => call('state.get', { key: name(key, 'state key') }, options),
-      transaction: (transaction, options) => call('state.transaction', record(transaction, 'state transaction'), options),
+      transaction(transaction, options) {
+        record(transaction, 'state transaction');
+        if (transaction.occurrences !== undefined) {
+          if (!Array.isArray(transaction.occurrences) || transaction.occurrences.length > 16) {
+            throw new AppError('INVALID_ARGUMENT', 'Expected at most 16 event occurrences');
+          }
+          transaction.occurrences.forEach(validateOccurrence);
+        }
+        return call('state.transaction', transaction, options);
+      },
     }),
     files: Object.freeze({
       atomicReplace: (path, contents, options) => call('files.atomic_replace', { path: relativePath(path), contentsBase64: bytes(contents) }, options),

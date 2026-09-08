@@ -1,6 +1,6 @@
 {
   "schema": "chariox.app-runtime-bundle-contract.v1",
-  "sdk": { "name": "@chariox/app-sdk", "version": "0.1.0", "appContractVersion": 1, "wireVersion": 1 },
+  "sdk": { "name": "@chariox/app-sdk", "version": "0.2.0", "appContractVersion": 1, "wireVersion": 1 },
   "bootstrap": ["bootstrap.cjs", "bootstrap-config.cjs"],
   "sdkFiles": [
     "package.json",

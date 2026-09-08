@@ -6,9 +6,11 @@ use crate::local::{
 };
 
 mod apps;
+mod app_events;
 mod core;
 mod credential_enrollment;
 mod event_publication;
+mod extension_apps;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;

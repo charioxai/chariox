@@ -641,6 +641,28 @@ impl CommandRouter {
                     &agents,
                 )
             }
+            "extension" | "extensions"
+                if matches!(tokens.get(1).map(String::as_str), Some("grant" | "revoke"))
+                    && tokens.get(2).map(String::as_str) == Some("app") =>
+            {
+                let agents = self.runtime_state.session_agents(session.id());
+                let request = meta_app_binding_request(session, metaagent, &tokens[1..], &agents)?;
+                if let LocalDaemonRequest::GrantAgentExtension(grant) = &request {
+                    if !self
+                        .runtime_state
+                        .authorize_agent_app_binding(
+                            session.id(),
+                            metaagent.id(),
+                            &grant.agent_ref,
+                            &grant.name,
+                        )
+                        .await?
+                    {
+                        return Err(meta_command_error("App binding was not approved"));
+                    }
+                }
+                Ok(request)
+            }
             "extension" | "extensions" => meta_extension_import_request(session, &tokens[1..]),
             "credential" | "credentials" => {
                 meta_credential_request(session, metaagent, &tokens[1..])

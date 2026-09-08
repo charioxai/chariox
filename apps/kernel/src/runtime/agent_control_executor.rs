@@ -54,6 +54,20 @@ pub(crate) async fn execute_grant_agent_extension_request(
     request: GrantAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request.kind {
+        ExtensionKind::App => {
+            let grant = crate::extension::ExtensionGrant {
+                kind: crate::extension::ExtensionKind::App,
+                name: request.name,
+                environment: request.environment,
+                credential: request.credential,
+                max_safety: request.max_safety,
+            };
+            grant.validate_app_binding()?;
+            let agent = runtime_state
+                .grant_agent_extension(&request.agent_ref, grant, caller_user_id)
+                .await?;
+            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
+        }
         ExtensionKind::Mcp => {
             ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
             let agent = runtime_state
@@ -136,6 +150,16 @@ pub(crate) async fn execute_revoke_agent_extension_request(
     request: RevokeAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let agent = match request.kind {
+        ExtensionKind::App => {
+            runtime_state
+                .revoke_agent_extension(
+                    &request.agent_ref,
+                    crate::extension::ExtensionKind::App,
+                    &request.name,
+                    caller_user_id,
+                )
+                .await?
+        }
         ExtensionKind::Mcp => {
             runtime_state
                 .revoke_agent_mcp(&request.agent_ref, &request.name, caller_user_id)

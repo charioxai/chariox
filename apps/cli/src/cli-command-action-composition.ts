@@ -6,6 +6,7 @@ import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
+import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
@@ -639,6 +640,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
     removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
     grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
+    revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
     listCredentials: () => listCredentials(client),
     getCredential: (id) => getCredential(client, id),

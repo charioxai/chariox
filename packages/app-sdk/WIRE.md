@@ -6,6 +6,14 @@ App supervisor supplies the installation generation and binds the channel to one
 worker. A worker-supplied generation is checked for equality, not trusted as an
 authorization claim.
 
+SDK 0.2 event payloads require kernel protocol 290. `eventVersion` must match
+the publisher-signed event `schemaVersion`. An outgoing occurrence contains
+`automationId`, `occurrenceId`, `eventVersion`, `occurredAtMs`, `payload`, and
+`scheduleRevision` for a scheduled automation. Preserve the original timestamp
+and revision in the App's durable outbox; a retry must not mint a newer envelope.
+The kernel derives installation, owner and current automation target itself.
+The shared payload fixture is `test/event-contract.json`. Framing remains v1.
+
 Each frame contains an unsigned four-byte big-endian body length followed by
 exactly that many UTF-8 JSON bytes. Length excludes the header. Zero-length and
 bodies larger than 1,048,576 bytes are rejected before allocation. Invalid UTF-8,

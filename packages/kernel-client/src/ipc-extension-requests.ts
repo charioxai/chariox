@@ -122,7 +122,7 @@ export function importSkillsRequest(workspaceId: string | null, provider: string
 export function grantAgentExtensionRequest(
   workspaceId: string | null,
   agentRef: string,
-  kind: "mcp" | "skill" | "script" | "connector",
+  kind: "mcp" | "skill" | "script" | "connector" | "app",
   name: string,
   environment?: string | null,
   options?: { credential?: string | null; maxSafety?: string | null } | null,
@@ -140,7 +140,7 @@ export function grantAgentExtensionRequest(
   }
 }
 
-export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script" | "connector", name: string) {
+export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script" | "connector" | "app", name: string) {
   return {
     RevokeAgentExtension: {
       agent_ref: agentRef,

@@ -108,6 +108,16 @@ infinite JavaScript loop cannot be contained by JavaScript timers.
 
 ## Validation
 
+SDK 0.2 adds required original occurrence timestamps and publisher-signed event
+schema versions (kernel protocol 290). Persist `occurredAtMs` with the occurrence
+ID; scheduled occurrences also persist `scheduleRevision`. Replays preserve all
+three. The kernel validates the signed schema, current automation and target.
+The current outbox component accepts new occurrences up to 30 days old with at
+most five minutes of future clock skew. Already retained exact duplicates return
+their existing receipt; changed content conflicts. Receipt tombstones currently
+remain retained with bounded backpressure; rolling cleanup and the production
+workflow delivery path remain integration work.
+
 Run `node --test --test-concurrency=1 packages/app-sdk/test/*.test.js` from the
 repository root. Tests use fake trusted transports and small in-process streams;
 they do not launch Apps, providers, browsers or privileged helpers.

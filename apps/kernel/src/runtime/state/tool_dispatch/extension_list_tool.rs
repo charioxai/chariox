@@ -30,12 +30,15 @@ impl KernelRuntimeState {
         let remote_home_proxy = agent.remote_execution().is_some();
         let active_execution_location = if remote_home_proxy { "home" } else { "worker" };
         let active_definition_origin = if remote_home_proxy { "home" } else { "worker" };
-        if !matches!(kind, "all" | "mcp" | "skill" | "script" | "connector") {
+        if !matches!(
+            kind,
+            "all" | "mcp" | "skill" | "script" | "connector" | "app"
+        ) {
             return Ok((
                 crate::transport::runtime_tools::RuntimeToolResult {
                     ok: false,
                     payload: serde_json::json!({
-                        "error": "kind must be one of: all, mcp, skill, script, connector"
+                        "error": "kind must be one of: all, mcp, skill, script, connector, app"
                     }),
                 },
                 None,
@@ -171,6 +174,29 @@ impl KernelRuntimeState {
             Vec::new()
         };
 
+        let (apps, apps_next_cursor) = if matches!(kind, "all" | "app") {
+            let page = self
+                .owned
+                .durable_state_store
+                .list_app_installations(agent.owner_user_id(), None, 100)
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime_tool_list_extensions",
+                    message: "App installation inventory is unavailable".into(),
+                })?;
+            let apps = page.installations.into_iter().map(|installation| serde_json::json!({
+                "kind": "app", "name": installation.installation_id,
+                "app_id": installation.app_id,
+                "granted": agent.has_extension_grant(crate::extension::ExtensionKind::App, &installation.installation_id),
+                "active_release": installation.active.is_some(),
+                "tools_available": false,
+                "ready_state": "activation_unavailable",
+                "effective_when_requested": "binding_saved"
+            })).collect::<Vec<_>>();
+            (apps, page.next_cursor)
+        } else {
+            (Vec::new(), None)
+        };
+
         Ok((
             crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
@@ -180,7 +206,9 @@ impl KernelRuntimeState {
                         "mcps": mcps,
                         "skills": skills,
                         "scripts": scripts,
-                        "connectors": connectors
+                        "connectors": connectors,
+                        "apps": apps,
+                        "apps_next_cursor": apps_next_cursor
                     }
                 }),
             },

@@ -198,6 +198,10 @@ impl AppCatalog {
         &self.release.catalog_digest
     }
 
+    pub fn package_digest(&self) -> &str {
+        &self.release.package_digest
+    }
+
     /// Discovery data only. Call require_current before publication and then
     /// again at invocation: provider catalogs can remain visible after revoke.
     pub fn tools(&self) -> impl Iterator<Item = &ToolSpec> {

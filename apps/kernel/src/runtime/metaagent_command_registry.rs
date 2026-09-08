@@ -327,8 +327,9 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             tokens.get(2).map(String::as_str),
         ) {
             (Some("import"), Some("providers")) => Some(MetaCommandExecutionPolicy::Routed),
+            (Some("grant" | "revoke"), Some("app")) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `extension import providers` is routed for metaagent extension command execution yet".to_string(),
+                message: "routed extension commands: `extension import providers` and `extension grant|revoke app <owned-agent-ref> <installation-id>`".to_string(),
             }),
         },
         "slice" => match tokens.get(1).map(String::as_str) {

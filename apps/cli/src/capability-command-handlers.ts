@@ -34,6 +34,8 @@ export type CapabilityCommandHandlerDeps = {
   importMcpServers?: (provider: string, name?: string | null) => Promise<McpImportOutcome>
   getMcpServer?: (name: string) => Promise<CharioxMcpServerConfig>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
+  revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   listSkills?: () => Promise<CharioxSkillMetadata[]>
   installSkill?: (sourcePath: string) => Promise<CharioxSkillMetadata>
@@ -670,19 +672,29 @@ export async function handleExtensionSlashCommand(
     return
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref> | /extension sync-status|sync-retry|audit <agent-ref>", "error")
+    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref> | /extension sync-status|sync-retry|audit <agent-ref>", "error")
     return
   }
-  if (kind !== "mcp" && kind !== "skill" && kind !== "script" && kind !== "connector") return deps.flashFooter("extension kind must be mcp, skill, script, or connector", "error")
+  if (kind !== "mcp" && kind !== "skill" && kind !== "script" && kind !== "connector" && kind !== "app") return deps.flashFooter("extension kind must be mcp, skill, script, connector, or app", "error")
   if (action === "grants") {
-    const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script|connector> <agent-ref>")
+    const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script|connector|app> <agent-ref>")
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, kind))
     deps.flashFooter(`showing ${kind} grants for ${agent.agent_ref}`, "info")
     return
   }
   const environment = readOption(command.args, "--env")
-  if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>]`, "error")
+  if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>]`, "error")
+  if (kind === "app") {
+    if (command.args.some((arg) => ["--env", "--credential", "--allow"].includes(arg))) {
+      return deps.flashFooter("App bindings take only an installation ID", "error")
+    }
+    const handler = action === "grant" ? deps.grantAgentApp : deps.revokeAgentApp
+    if (!handler) return deps.flashFooter(`App ${action} is not available`, "error")
+    const agent = await handler(agentRef, name)
+    deps.flashFooter(`${action === "grant" ? "bound" : "unbound"} App ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    return
+  }
   if (kind === "mcp") {
     const handler = action === "grant" ? deps.grantAgentMcp : deps.revokeAgentMcp
     if (!handler) return deps.flashFooter(`MCP ${action} is not available`, "error")

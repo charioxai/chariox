@@ -608,3 +608,85 @@ failure. The exact failed preparation log is retained in
 `embedded-pending-34172250902/workflow-failed.log`. The artifact remains
 historical unsigned evidence; production signing, installer provisioning and
 the full runtime/resource acceptance matrix remain required.
+
+## Hosted component gates and macOS worker resource accounting
+
+[App component run 34172680883](https://github.com/charioxai/chariox/actions/runs/34172680883)
+passed both Ubuntu and macOS 14 jobs on
+`890be0f607701ad9018ca95e1325eb7d44bde832`. Both executed package/persistence/wire
+tests, SDK and build-tooling tests, kernel App routing and durable-writer tests,
+Chromium migration/checkpoint tests, and shared protocol/catalog checks. This
+provides execution evidence for the state-writer tests previously recorded as
+source-only. It applies to that exact earlier commit; subsequent SDK/protocol
+changes require their own gate. The job metadata is retained in
+`app-components-34172680883/run.json` under the existing evidence directory.
+
+Commit `b06238105` adds mandatory macOS worker accounting before Continue and
+running checks every 100ms. Its private candidate policy caps observed maximum
+physical footprint/RSS at 512MiB, threads at 64, and sustained CPU at one core
+with 250ms burst credit. Mach CPU counters are converted using the machine's
+timebase. Separate memory/thread/CPU/telemetry failures use the same blocking
+termination and reap owner, retaining reservations through cleanup. These are
+monitored thresholds; signed Node workloads, total broker/browser accounting,
+aggregate pressure and production overshoot remain release validation work.
+
+All seven focused worker tests passed locally: existing ABI/lifecycle tests,
+pure accounting boundaries and conversion tests, injected running failures/panic,
+and a real macOS fixture committing only 8MiB under a test-only baseline-plus-2MiB
+limit. The real growth was detected at 107ms, with 624 microseconds from detection
+to actual reap. These observations are fixture measurements, not a guaranteed
+production response deadline. Compilation took 4.23 seconds and tests 2.51
+seconds; sampled process-group RSS peaked at 272,144KiB while reported host free
+memory stayed at 37–48% and free disk near 26.74GB. Fixture scratch was removed.
+Evidence: `worker-resource-tests.log` and `worker-resource-tests-resources.log`.
+
+
+### SDK 0.2 events, transactional outbox and shared App bindings
+
+The current development contract uses shared kernel protocol **290** and SDK
+**0.2.0**. The Rust/client constants, publication image defaults and protocol
+snapshots move together. Web minimum protocol is unchanged because its App UI
+is not yet implemented. Publisher-signed events require a positive schemaVersion;
+occurrences preserve occurredAtMs and scheduled revisions. The shared Rust/SDK
+payload snapshot has SHA-256
+`701fe4d94637769bfac28b845183d86063d10627e9dafef662848bded85f976d`.
+Worker framing remains version 1; the unsigned bundle SDK pin changes, while the
+long-running native compiler inputs remain unchanged.
+
+The outbox uses the existing SQLite transaction, bounded payloads, stable receipt
+identities, canonical content digests, current publisher/catalog admission and
+CAS transitions. Original generation is an audit field: pending backlog may
+continue under a new current generation only while its automation binding still
+matches. New admission permits a 30-day age and five-minute future skew. Known
+exact duplicates retain their receipt; timestamp or content changes conflict.
+Scheduled bindings require a revision, and explicit JSON null is rejected just
+like the SDK. Tombstones remain retained with bounded backpressure. Automation
+management, actual workflow queue insertion/pump, uninstall classification and
+safe rolling retention remain separate requirements.
+
+The existing extension grant/revoke path now represents App installation
+bindings. Writer checks require current verified publisher provenance, explicit
+user grants retain the existing ownership path, and agent requests use existing
+YOLO/Ask policy and RuntimeInteraction. The common eight-operation admission
+stays owned through a cancelled writer check. Binding an offline App does not
+advertise runnable tools. Provider catalog publication, worker activation,
+remote App tool dispatch and App-dependent workflow publication remain open.
+
+Local checks for this batch: 29 package tests, 28 SDK tests, 14 outbox SQLite
+tests (including 16MiB retention, 512KiB/16-item batches, retry exhaustion and
+backlog continuity), and 30 selected shared-client/CLI tests pass. Shared-client
+and CLI TypeScript checks pass. Kernel production library typecheck passes in
+35.20s with peak observed RSS 2,210,112KiB. The new binding/router and protocol
+Rust tests are selected in hosted CI; they were not executed locally. Evidence
+files include `package-sdk02-tests.log`, `sdk02-event-contract-tests.log`,
+`app-outbox-contract-limits-tests.log`, `app-bindings-*-types.log`,
+`app-bindings-cli-tests.log`, and
+`kernel-app-bindings-events-library-typecheck.log` under the task evidence root.
+
+Separately, Linux App component run **34173791782** at **e0a7d90d3** passed the
+8 SDK state-broker tests and all 5 state-writer tests, including actual duplex
+requests, publisher revocation, SQLite contention, deadline expiry and retained
+admission after cancellation. Its full durable-writer filter passed 42 tests.
+The exact job log is `components-linux-e0a7d90d3.log`; this is ancestor evidence,
+not execution of the new protocol290/binding/outbox batch. All full Phase1
+release matrix rows remain governed by their complete release requirements.

@@ -2,6 +2,28 @@ use super::super::{MetaCommandDoc, MetaCommandPolicy};
 
 pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
+        name: "extension grant app",
+        aliases: &["extension grant app", "extensions grant app"],
+        usage: "extension grant app <owned-agent-ref> <installation-id>",
+        examples: &["extension grant app agent-1 installed-app"],
+        tags: &["extension", "app", "binding"],
+        intents: &["bind an installed App"],
+        scope: "session", mutates: true, policy: MetaCommandPolicy::Allow,
+        authority: "self or owned regular agents", routed: true,
+        description: "Save an installed App binding under the existing permission mode. This does not activate or publish App tools.",
+    },
+    MetaCommandDoc {
+        name: "extension revoke app",
+        aliases: &["extension revoke app", "extensions revoke app"],
+        usage: "extension revoke app <owned-agent-ref> <installation-id>",
+        examples: &["extension revoke app agent-1 installed-app"],
+        tags: &["extension", "app", "binding"],
+        intents: &["remove an App binding"],
+        scope: "session", mutates: true, policy: MetaCommandPolicy::Allow,
+        authority: "self or owned regular agents", routed: true,
+        description: "Remove an App binding, including after uninstall or publisher revocation.",
+    },
+    MetaCommandDoc {
         name: "mcp list",
         aliases: &["mcp", "mcp list", "mcp ls"],
         usage: "mcp list",
