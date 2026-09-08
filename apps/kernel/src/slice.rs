@@ -6,6 +6,7 @@ mod store;
 
 pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
+    recover_local_docker_snapshot_pause,
     cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
     SliceBackupRestoreResolution,

@@ -354,6 +354,7 @@ impl DaemonApp {
         let options = crate::slice::LocalDockerSliceOptions::from_config(&self.config);
         for transaction in transactions {
             let slice = self.slices.resolve(&transaction.source_slice_id)?;
+            crate::slice::recover_local_docker_snapshot_pause(&slice, &options)?;
             let generation = crate::slice::recover_pending_local_docker_slice_backup_restore(
                 &slice,
                 &options,
@@ -993,9 +994,19 @@ impl DaemonApp {
         if reconciled_runtime_state || repaired_session_focus_count > 0 {
             self.save_durable_state_snapshot()?;
         }
+        let slice_options = crate::slice::LocalDockerSliceOptions::from_config(&self.config);
         let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(
             crate::session::unix_epoch_ms(),
-            crate::slice::inspect_local_docker_slice_host_runtime,
+            |slice| {
+                if let Err(error) = crate::slice::recover_local_docker_snapshot_pause(slice, &slice_options) {
+                    crate::logging::warn_with_fields(
+                        "durable_state.restore", "snapshot resume remains pending",
+                        serde_json::json!({"slice_id": slice.id, "error": error.to_string()}),
+                    );
+                    return crate::slice::SliceHostRuntimeState::Unknown;
+                }
+                crate::slice::inspect_local_docker_slice_host_runtime(slice)
+            },
         );
         for slice in reconciled_slices {
             self.durable_state.append_event(

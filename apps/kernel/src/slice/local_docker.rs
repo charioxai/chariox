@@ -27,12 +27,14 @@ mod broker;
 mod disk_admission;
 mod memory_admission;
 mod provider_inputs;
+mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
 
 use broker::docker_command;
 use provider_inputs::home_provider_credential_sources;
+pub(crate) use snapshot_pause::recover as recover_local_docker_snapshot_pause;
 pub(crate) use state::{
     cleanup_replaced_saved_state_generation, recover_pending_local_docker_slice_backup_restore,
     remove_local_docker_slice_backup_best_effort, restore_local_docker_slice_backup,
@@ -835,6 +837,7 @@ pub fn inspect_local_docker_slice_host_runtime(
     let text = String::from_utf8_lossy(&output.stdout);
     let mut fields = text.split_whitespace();
     match (fields.next(), fields.next()) {
+        (Some("true"), Some("paused")) => super::SliceHostRuntimeState::Unknown,
         (Some("true"), _) => super::SliceHostRuntimeState::Running,
         (Some("false"), Some("exited" | "created" | "dead" | "paused")) => {
             super::SliceHostRuntimeState::Stopped

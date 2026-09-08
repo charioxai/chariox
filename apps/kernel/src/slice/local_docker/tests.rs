@@ -85,7 +85,7 @@ fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-fn test_record() -> SliceRecord {
+pub(super) fn test_record() -> SliceRecord {
     let store = SliceStore::default();
     store
         .create(
@@ -172,7 +172,7 @@ fn local_docker_provisioning_preserves_an_existing_valid_hostname() {
     assert_eq!(configured_hostname, "chariox-slice-dev");
 }
 
-fn test_options() -> LocalDockerSliceOptions {
+pub(super) fn test_options() -> LocalDockerSliceOptions {
     LocalDockerSliceOptions {
         root: std::env::temp_dir(),
         home_public_key: DaemonConfig::for_tests().relay_public_key,
@@ -217,6 +217,7 @@ fn disk_pressure_admission_fault_probe() {
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   "ps --format {{.Names}}") printf 'chariox-slice-dev\n' ;;
+  "inspect --format {{.State.Running}} {{.State.Status}} chariox-slice-dev") printf 'true paused\n' ;;
   "info --format {{.DockerRootDir}}") printf '/tmp\n' ;;
   "inspect --size --format {{.SizeRw}} chariox-slice-dev") printf '1048576\n' ;;
   *" du -sb /home-src") printf '1048576 /home-src\n' ;;
