@@ -298,7 +298,8 @@ be advertised as durable atomic import.
 storage for the future Environment executor. `applyCookieImport` accepts it as an
 optional `journal` dependency: pending records block another import, the encrypted
 snapshot and intended cookies are synced before mutation, and uncertain failures
-retain the record. Verified application or rollback clears the record. Revocation
+retain the record. Verified application retains it for durable kernel completion;
+verified rollback clears it. Revocation
 during preparation clears it without touching the browser. This is internal
 transaction integration only, not kernel lifecycle, connector or transport wiring.
 It does not authorize import or establish a second credential vault.
@@ -376,7 +377,7 @@ recovery payload validation, executor serialization, durable quarantine and
 product transaction integration remain required before real sign-in import.
 
 Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
-for ten destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
+for the destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
 `cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
 sign-in, cancellation rollback and an untouched partitioned control cookie.
 `cookie-import-cdp.test.mjs` covers seven deadline, context and uncertain-transport cases.
