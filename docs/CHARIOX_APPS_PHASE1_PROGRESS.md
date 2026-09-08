@@ -1146,3 +1146,16 @@ applying limits, and resolution cannot cross kernels even with equal restored
 session IDs. Dead kernel-operation owners are pruned without changing ordinary
 agent responder cleanup. Three new cross-kernel regressions join the three
 expiry, abandoned-response and failed-projection tests in hosted validation.
+
+### Serialize deferred stops with foreground lifecycle changes (2026-09-08)
+
+Review `5137448914` is addressed by acquiring the existing installation operation
+guard before a deferred manual-stop retry and revalidating the retained Entry
+identity. The guard remains held through both durable writes. Two deterministic
+regressions cover replacement after stale candidate selection and foreground
+start/stop contention after retry validation. The replacement uses an actual
+fixed native worker and must remain desired-running. Test checkpoints compile
+out of production; hosted execution is pending.
+
+The macOS `d91e60833` component run also passed all seven private-file tests and
+eight of nine worker tests; its same receiver-lifetime failure is already fixed.

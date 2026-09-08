@@ -436,3 +436,157 @@ fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
     assert_eq!(status.phase, WorkerPhase::Stopped);
     assert!(!status.desired_running);
 }
+
+#[test]
+fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    store
+        .claim_active_app_start(
+            "alice",
+            "installed",
+            "old_finished",
+            false,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    let old = Arc::new(Control::new());
+    old.cancel(true);
+    old.complete();
+    service.0.entries.lock().unwrap().insert(
+        ("alice".into(), "installed".into()),
+        Arc::new(Entry {
+            attempt: "old_finished".into(),
+            control: old.clone(),
+            thread: Mutex::new(None),
+        }),
+    );
+    let (selected, selection) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let retry = scope.spawn(move || {
+            service.fixture_persist_pending_manual_stops(|validated| {
+                if !validated {
+                    selected.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(6)).unwrap();
+                }
+            })
+        });
+        selection.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The retry retained the old candidate. A complete foreground stop and
+        // new real worker now win before the retry can acquire its operation.
+        service.stop_blocking("alice", "installed").unwrap();
+        service
+            .start_active_blocking("alice", "installed", runtime.handle().clone())
+            .unwrap();
+        wait(|| control.active_app_lease("alice", "installed").is_some());
+        let replacement = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_ne!(replacement.attempt, "old_finished");
+        resume.send(()).unwrap();
+        retry.join().unwrap();
+        assert_eq!(
+            store
+                .app_worker_status("alice", "installed")
+                .unwrap()
+                .unwrap(),
+            replacement
+        );
+        assert!(replacement.desired_running);
+        assert!(control.active_app_lease("alice", "installed").is_some());
+    });
+    service.stop_blocking("alice", "installed").unwrap();
+    service.shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
+
+#[test]
+fn validated_manual_stop_retry_holds_foreground_gate_until_durable_completion() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    store
+        .claim_active_app_start(
+            "alice",
+            "installed",
+            "old_finished",
+            false,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    let old = Arc::new(Control::new());
+    old.cancel(true);
+    old.complete();
+    service.0.entries.lock().unwrap().insert(
+        ("alice".into(), "installed".into()),
+        Arc::new(Entry {
+            attempt: "old_finished".into(),
+            control: old.clone(),
+            thread: Mutex::new(None),
+        }),
+    );
+    let (selected, selection) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let retry = scope.spawn(move || {
+            service.fixture_persist_pending_manual_stops(|validated| {
+                if validated {
+                    selected.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(6)).unwrap();
+                }
+            })
+        });
+        selection.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Retry passed its pending/identity checks with the same operation
+        // guard held. Neither foreground stop nor start may replace that owner
+        // before these already-admitted stop writes finish.
+        assert!(matches!(
+            service.stop_blocking("alice", "installed"),
+            Err(LifecycleError::Busy)
+        ));
+        assert!(matches!(
+            service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+            Err(LifecycleError::Busy)
+        ));
+        resume.send(()).unwrap();
+        retry.join().unwrap();
+        let stopped = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.phase, WorkerPhase::Stopped);
+        assert!(!stopped.desired_running);
+        service
+            .start_active_blocking("alice", "installed", runtime.handle().clone())
+            .unwrap();
+        wait(|| control.active_app_lease("alice", "installed").is_some());
+        let replacement = store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap();
+        assert_ne!(replacement.attempt, "old_finished");
+        assert_eq!(
+            store
+                .app_worker_status("alice", "installed")
+                .unwrap()
+                .unwrap(),
+            replacement
+        );
+        assert!(replacement.desired_running);
+        assert!(control.active_app_lease("alice", "installed").is_some());
+    });
+    service.stop_blocking("alice", "installed").unwrap();
+    service.shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}
