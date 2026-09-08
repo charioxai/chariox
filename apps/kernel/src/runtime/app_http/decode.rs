@@ -166,10 +166,9 @@ mod tests {
             "/../../packages/app-sdk/test/http-contract.json"
         )))
         .unwrap();
-        assert_eq!(
-            fixture["minimumKernelProtocol"],
-            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
-        );
+        // This SDK wire contract remains supported by later terminal protocols.
+        assert_eq!(fixture["minimumKernelProtocol"], 294);
+        assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 294);
         assert_eq!(
             fixture["sdkVersion"],
             chariox_app_package::SUPPORTED_SDK_VERSION

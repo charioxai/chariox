@@ -6,6 +6,7 @@ use rusqlite::{params, TransactionBehavior};
 
 pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Reply> {
     match command {
+        Command::Public(command) => super::public_ops::apply(connection, command),
         Command::Replay {
             owner,
             request_id,
@@ -41,13 +42,15 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             ) {
                 return Ok(Reply::Operation(current));
             }
-            let binding = StageTrustBinding::staged_in(&tx, &owner, &current.token)
-                .map_err(|_| InstallOperationError::Stale)?;
             let time = now()?;
-            binding
-                .abort_first_in(&tx, &owner, "app_install_cancelled", time as u64)
-                .map_err(|_| InstallOperationError::Conflict)?;
-            sql(tx.execute("UPDATE app_installation_operations SET phase='cancelled',failure='app_install_cancelled',cleanup_pending=1,updated_ms=?1
+            if current.phase != InstallPhase::Preparing {
+                let binding = StageTrustBinding::staged_in(&tx, &owner, &current.token)
+                    .map_err(|_| InstallOperationError::Stale)?;
+                binding
+                    .abort_first_in(&tx, &owner, "app_install_cancelled", time as u64)
+                    .map_err(|_| InstallOperationError::Conflict)?;
+            }
+            sql(tx.execute("UPDATE app_installation_operations SET phase='cancelled',failure='app_install_cancelled',interaction_id=NULL,cleanup_pending=1,updated_ms=?1
                 WHERE owner_id=?2 AND request_id=?3",params![time,owner,request_id]))?;
             let result = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             limit(&budget)?;

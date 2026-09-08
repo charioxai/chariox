@@ -222,6 +222,7 @@ mod pending_runtime_state;
 mod remote_agent_profile_runtime;
 mod remote_profile_account_runtime;
 use pending_runtime_state::*;
+pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod metaagent_event_owned_state;

@@ -40,6 +40,7 @@ type Result<T> = std::result::Result<T, VerifiedStageError>;
 pub struct VerifiedInstallCandidate {
     release: ReleaseMetadata,
     trust: TrustedPublisherSnapshot,
+    review: serde_json::Value,
 }
 impl VerifiedInstallCandidate {
     pub fn from_verified(
@@ -95,10 +96,26 @@ impl VerifiedInstallCandidate {
             view_digest,
         };
         validate_release(&release)?;
+        let review = json!({
+            "appId": release.app_id, "version": release.version,
+            "publisherId": signer.publisher_id, "keyId": signer.key_id,
+            "keyFingerprint": digest(signer.public_key.as_bytes()), "trustRevision": trust.revision().to_string(),
+            "packageDigest": release.package_digest, "capabilitiesDigest": release.capabilities_digest,
+            "capabilities": manifest.capabilities,
+            "actions": declarations.actions.iter().map(|a| json!({"name":a.name,"criticalValidation":a.critical_validation,"effectRoutes":a.effect_routes})).collect::<Vec<_>>(),
+            "declaredInformationSets": declarations.information_sets.iter().map(|i| json!({"name":i.name,"purpose":i.purpose,"sourceScope":i.source_scope})).collect::<Vec<_>>(),
+            "informationSetConsent": "not_granted"
+        });
         Ok(Self {
             release,
             trust: trust.clone(),
+            review,
         })
+    }
+    /// Human review data derived from the exact verified package. Descriptions
+    /// are display data; declared information sets are explicitly not consent.
+    pub fn review_metadata(&self) -> &serde_json::Value {
+        &self.review
     }
     pub fn release_metadata(&self) -> &ReleaseMetadata {
         &self.release

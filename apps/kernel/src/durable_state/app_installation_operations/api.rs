@@ -21,7 +21,7 @@ impl DurableKernelStateStore {
             _ => Err(InstallOperationError::Storage),
         }
     }
-    fn first_install(&self, command: Command) -> Result<Reply> {
+    pub(super) fn first_install(&self, command: Command) -> Result<Reply> {
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppInstallationOperation(Box::new(

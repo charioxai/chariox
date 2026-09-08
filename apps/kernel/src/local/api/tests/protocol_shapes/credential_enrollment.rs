@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_credential_enrollment_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
 
     let arm_request = LocalDaemonRequest::ArmDeploymentCredentialEnrollment(
         crate::local::ArmDeploymentCredentialEnrollmentRequest {

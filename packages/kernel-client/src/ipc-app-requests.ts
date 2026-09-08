@@ -25,3 +25,16 @@ export function getAppPackageUploadRequest(handle: string) {
 export function abortAppPackageUploadRequest(handle: string) {
   return { AbortAppPackageUpload: { handle } }
 }
+
+/** The upload is owner-bound by the kernel; this request supplies no trust key or approval. */
+export function beginAppInstallRequest(options: { sessionId: string; requestId: string; uploadHandle: string; expectedPackageDigest: string }) {
+  return { BeginAppInstall: { session_id: options.sessionId, request_id: options.requestId, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
+}
+
+export function getAppInstallOperationRequest(requestId: string) {
+  return { GetAppInstallOperation: { request_id: requestId } }
+}
+
+export function cancelAppInstallOperationRequest(requestId: string) {
+  return { CancelAppInstallOperation: { request_id: requestId } }
+}

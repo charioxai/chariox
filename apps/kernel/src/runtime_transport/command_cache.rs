@@ -107,6 +107,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
         request,
         LocalDaemonRequest::ListAppInstallations(_)
             | LocalDaemonRequest::GetAppInstallation(_)
+            | LocalDaemonRequest::BeginAppInstall(_)
+            | LocalDaemonRequest::GetAppInstallOperation(_)
+            | LocalDaemonRequest::CancelAppInstallOperation(_)
             | LocalDaemonRequest::GetAppInstallationJournal(_)
             | LocalDaemonRequest::BeginAppPackageUpload(_)
             | LocalDaemonRequest::PutAppPackageUploadChunk(_)

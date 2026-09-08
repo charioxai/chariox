@@ -324,36 +324,10 @@ impl<'a> InstallationRegistry<'a> {
         decision: CapabilityDecision,
         now_ms: u64,
     ) -> Result<UpdateRecord> {
-        match &decision {
-            CapabilityDecision::Approved { approval } => {
-                identifier(&approval.decision_id)?;
-                identifier(&approval.authority_ref)?;
-            }
-            CapabilityDecision::Declined {
-                decision_id,
-                authority_ref,
-            } => {
-                identifier(decision_id)?;
-                identifier(authority_ref)?;
-            }
-            CapabilityDecision::Pending => return Err(InstallationError::InvalidTransition),
-        }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut record = current_update(&transaction, token)?;
-        if record.phase != UpdatePhase::Staged || record.decision != CapabilityDecision::Pending {
-            return Err(InstallationError::InvalidTransition);
-        }
-        record.decision = decision;
-        record.updated_at_ms = now_ms;
-        if matches!(record.decision, CapabilityDecision::Declined { .. }) {
-            record.phase = UpdatePhase::Aborted;
-            record.abort_reason = Some("capabilities declined".into());
-            clear_pending(&transaction, token)?;
-        }
-        save_update(&transaction, &record)?;
-        prune_journal(&transaction, &token.installation_id)?;
+        let record = decide_generation(&transaction, token, decision, now_ms)?;
         transaction.commit()?;
         Ok(record)
     }
@@ -656,6 +630,42 @@ fn load_update(connection: &Connection, id: &str, generation: u64) -> Result<Upd
         params![id, sql_generation(generation)?], |row| row.get(0),
     ).optional()?.ok_or(InstallationError::NotFound)?;
     Ok(serde_json::from_str(&json)?)
+}
+
+fn decide_generation(
+    connection: &Connection,
+    token: &StageToken,
+    decision: CapabilityDecision,
+    now_ms: u64,
+) -> Result<UpdateRecord> {
+    match &decision {
+        CapabilityDecision::Approved { approval } => {
+            identifier(&approval.decision_id)?;
+            identifier(&approval.authority_ref)?;
+        }
+        CapabilityDecision::Declined {
+            decision_id,
+            authority_ref,
+        } => {
+            identifier(decision_id)?;
+            identifier(authority_ref)?;
+        }
+        CapabilityDecision::Pending => return Err(InstallationError::InvalidTransition),
+    }
+    let mut record = current_update(connection, token)?;
+    if record.phase != UpdatePhase::Staged || record.decision != CapabilityDecision::Pending {
+        return Err(InstallationError::InvalidTransition);
+    }
+    record.decision = decision;
+    record.updated_at_ms = now_ms;
+    if matches!(record.decision, CapabilityDecision::Declined { .. }) {
+        record.phase = UpdatePhase::Aborted;
+        record.abort_reason = Some("capabilities declined".into());
+        clear_pending(connection, token)?;
+    }
+    save_update(connection, &record)?;
+    prune_journal(connection, &token.installation_id)?;
+    Ok(record)
 }
 
 fn current_update(connection: &Connection, token: &StageToken) -> Result<UpdateRecord> {

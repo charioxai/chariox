@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },
     AppInstallationsListed { installations: Vec<AppInstallationSummary>, next_cursor: Option<String>, },
     AppInstallation { installation: AppInstallationSummary, },

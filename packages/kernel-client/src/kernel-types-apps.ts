@@ -35,3 +35,14 @@ export type AppPackageUploadSummary = {
   sha256: string
   expires_at_ms: number
 }
+
+export type AppInstallOperationSummary = {
+  request_id: string
+  phase: "preparing" | "awaiting_approval" | "starting" | "committed" | "cancelled" | "failed"
+  installation_id: string | null
+  /** Opaque decimal generation. Present only after verified staging. */
+  generation: string | null
+  package_digest: string
+  interaction_id: string | null
+  failure: string | null
+}

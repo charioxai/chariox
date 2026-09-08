@@ -1346,3 +1346,27 @@ now explicitly use blocking mode with their existing strict I/O deadlines;
 production provider behavior and close/deadline assertions are unchanged. The
 macOS rerun of this fixture correction is pending. Review `5137998384` reports
 no actionable findings through the workflow fixture increment.
+
+### Public installation operation and protocol 295 (2026-09-08)
+
+Authenticated terminals can begin, inspect and cancel an install using its
+uploaded package handle and stable request ID. The writer acknowledges a durable
+Preparing receipt before slow verification. The retained controller publishes
+the exact verified package review through the existing kernel-operation human
+interaction, then drives the established health/activation lifecycle. Signed
+information-set declarations are shown for review without granting their consent.
+
+Background work and disconnected terminal requests have bounded, separately
+retained task sets sharing existing App admission. Shutdown joins both sets;
+admitted cancellation keeps its original deadline and records the negative
+durable decision before teardown. Round-robin scheduling and a reserved recovery
+scan slot prevent a busy prefix from starving later operations. New regressions
+cover real upload/SQLite preparation and decline, owner isolation, saturated
+cancellation, fair selection, and disconnection/shutdown while SQLite is locked.
+These Rust regressions are source-reviewed and selected for hosted execution;
+they have not yet compiled or passed. The shared client TypeScript check passes.
+
+Protocol constants and shape assertions move together to 295. SDK 0.6 retains
+its actual minimum protocol 294 because this increment changes terminal install
+control, not the worker contract. The normal file-install terminal flow and
+publisher enrollment interface remain follow-on integration work.

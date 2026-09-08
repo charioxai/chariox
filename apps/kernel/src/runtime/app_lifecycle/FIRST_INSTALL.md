@@ -66,6 +66,7 @@ Fixed libc tests exercise actual FD registration, denied precommit SDK access,
 postcommit startup file writes, publication and reap; they do not establish real
 Node execution, macOS signing, App views or complete Phase 1 acceptance.
 
-Public Begin/Get/Cancel installation requests and kernel-operation
-`RuntimeInteraction` creation/resolution remain the next control adapter. They
-must reuse these operations and the same owner-bound human approval surface.
+The protocol 295 control adapter is documented in
+[`app_install_control/README.md`](../app_install_control/README.md). It adds a
+durable `Preparing` receipt before upload verification, then reuses the same
+stage and lifecycle authority described here.

@@ -72,6 +72,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::BeginAppInstall(request) => {
+            LocalRequestMetadata::new("app.install.begin", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
@@ -423,6 +428,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ListAppInstallations(_) => "app.list",
+        LocalDaemonRequest::BeginAppInstall(_) => "app.install.begin",
+        LocalDaemonRequest::GetAppInstallOperation(_) => "app.install.status",
+        LocalDaemonRequest::CancelAppInstallOperation(_) => "app.install.cancel",
         LocalDaemonRequest::BeginAppPackageUpload(_) => "app.package_upload.begin",
         LocalDaemonRequest::PutAppPackageUploadChunk(_) => "app.package_upload.chunk",
         LocalDaemonRequest::GetAppPackageUpload(_) => "app.package_upload.status",

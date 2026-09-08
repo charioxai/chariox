@@ -37,6 +37,8 @@ pub(crate) struct AppControlService {
     workers: workers::ActiveWorkers,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     lifecycle: super::app_lifecycle::AppLifecycleService,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    installs: super::app_install_control::AppInstallControl,
 }
 
 impl AppControlService {
@@ -54,11 +56,21 @@ impl AppControlService {
             admission.clone(),
             AppWorkerPublisher::new(workers.clone(), event_pump.clone()),
         );
+        let preparation = super::app_package_preparation::AppPackagePreparation::new(
+            store.clone(),
+            uploads.clone(),
+        );
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let installs = super::app_install_control::AppInstallControl::new(
+            store.clone(),
+            preparation.clone(),
+            admission.clone(),
+            lifecycle.clone(),
+        );
         Self {
-            preparation: super::app_package_preparation::AppPackagePreparation::new(
-                store.clone(),
-                uploads.clone(),
-            ),
+            preparation,
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            installs,
             uploads,
             store,
             admission,
@@ -73,6 +85,11 @@ impl AppControlService {
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     pub(crate) fn lifecycle(&self) -> &super::app_lifecycle::AppLifecycleService {
         &self.lifecycle
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    pub(crate) fn installs(&self) -> &super::app_install_control::AppInstallControl {
+        &self.installs
     }
 
     pub(crate) fn schedule_maintenance(&self) {
@@ -143,7 +160,7 @@ impl AppControlService {
     }
 }
 
-fn owner(command: &KernelCommand) -> Result<String, AppRequestErrorCode> {
+pub(super) fn owner(command: &KernelCommand) -> Result<String, AppRequestErrorCode> {
     let caller = &command.caller;
     if matches!(caller.caller_kind, KernelCallerKind::HostedService) {
         return Err(AppRequestErrorCode::Unauthorized);

@@ -20,14 +20,31 @@ pub(super) fn limit(value: &AppOperationBudget) -> Result<()> {
     value.check().map_err(|_| InstallOperationError::Stopped)
 }
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS app_installation_operations (
+    let schema = "CREATE TABLE IF NOT EXISTS app_installation_operations (
         owner_id TEXT NOT NULL, request_id TEXT NOT NULL, installation_id TEXT NOT NULL UNIQUE,
-        package_digest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('approval','starting','committed','cancelled','failed')),
+        package_digest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('preparing','approval','starting','committed','cancelled','failed')),
         attempt TEXT, approval_json TEXT, failure TEXT,
         cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0,1)),
         created_ms INTEGER NOT NULL CHECK(created_ms>=0), updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
-        PRIMARY KEY(owner_id,request_id));")
+        session_id TEXT, upload_handle TEXT, review_json TEXT, interaction_id TEXT,
+        PRIMARY KEY(owner_id,request_id));";
+    let existing: Option<String> = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='app_installation_operations'", [], |r|r.get(0)).optional()?;
+    if existing.is_some_and(|sql| !sql.contains("'preparing'")) {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE app_installation_operations RENAME TO app_installation_operations_v1;",
+        )?;
+        tx.execute_batch(schema)?;
+        tx.execute_batch("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms)
+        SELECT owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms FROM app_installation_operations_v1;
+        DROP TABLE app_installation_operations_v1;")?;
+        tx.commit()?;
+    } else {
+        connection.execute_batch(schema)?;
+    }
+    Ok(())
 }
+
 pub(super) fn load(
     connection: &Connection,
     owner: &str,
@@ -35,10 +52,21 @@ pub(super) fn load(
 ) -> Result<Option<InstallOperation>> {
     identity(owner)?;
     identity(request)?;
-    type Row = (String, String, String, Option<String>, Option<String>, bool);
+    type Row = (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let row: Option<Row> = sql(connection
         .query_row(
-            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending
+            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending,session_id,upload_handle,review_json,interaction_id
          FROM app_installation_operations WHERE owner_id=?1 AND request_id=?2",
             params![owner, request],
             |r| {
@@ -48,14 +76,39 @@ pub(super) fn load(
                     r.get(2)?,
                     r.get(3)?,
                     r.get(4)?,
-                    r.get(5)?,
+                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
                 ))
             },
         )
         .optional())?;
     row.map(
-        |(installation, package_digest, phase, attempt, failure, cleanup_pending)| {
+        |(
+            installation,
+            package_digest,
+            phase,
+            attempt,
+            failure,
+            cleanup_pending,
+            session,
+            upload,
+            review,
+            interaction_id,
+        )| {
+            let input = match (session, upload) {
+                (Some(session_id), Some(upload_handle)) => Some(InstallInput {
+                    session_id,
+                    upload_handle,
+                }),
+                (None, None) => None,
+                _ => return Err(InstallOperationError::Storage),
+            };
+            let review = review
+                .map(|json| serde_json::from_str(&json).map_err(|_| InstallOperationError::Storage))
+                .transpose()?;
             Ok(InstallOperation {
+                input,
+                review,
+                interaction_id,
                 request_id: request.into(),
                 token: StageToken {
                     installation_id: installation,
@@ -64,6 +117,7 @@ pub(super) fn load(
                 },
                 package_digest,
                 phase: match phase.as_str() {
+                    "preparing" => InstallPhase::Preparing,
                     "approval" => InstallPhase::AwaitingApproval,
                     "starting" => InstallPhase::Starting,
                     "committed" => InstallPhase::Committed,
@@ -122,8 +176,8 @@ pub(super) fn admit(tx: &Transaction<'_>, owner: &str) -> Result<()> {
     // cancelled install on delayed replay. Retain identities and backpressure.
     let (total, owned, pending, owned_pending): (i64, i64, i64, i64) = sql(tx.query_row(
         "SELECT count(*),coalesce(sum(owner_id=?1),0),
-         coalesce(sum(phase IN ('approval','starting')),0),
-         coalesce(sum(owner_id=?1 AND phase IN ('approval','starting')),0)
+         coalesce(sum(phase IN ('preparing','approval','starting')),0),
+         coalesce(sum(owner_id=?1 AND phase IN ('preparing','approval','starting')),0)
          FROM app_installation_operations",
         [owner],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -139,7 +193,7 @@ pub(super) fn candidates(
 ) -> Result<Vec<(String, String)>> {
     let mut statement = sql(connection.prepare("SELECT o.owner_id,o.request_id FROM app_installation_operations o
         JOIN app_installation_updates u ON u.installation_id=o.installation_id AND u.generation=1
-        WHERE o.phase IN ('approval','starting') AND json_extract(u.record_json,'$.decision.status')='approved'
+        WHERE o.phase IN ('preparing','approval','starting') AND json_extract(u.record_json,'$.decision.status')='approved'
         AND (?1 IS NULL OR (o.owner_id,o.request_id)>(?1,?2)) ORDER BY o.owner_id,o.request_id LIMIT 8"))?;
     let rows = sql(
         statement.query_map(params![after.map(|v| v.0), after.map(|v| v.1)], |r| {

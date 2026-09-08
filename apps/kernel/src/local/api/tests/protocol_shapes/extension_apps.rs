@@ -6,7 +6,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
     use crate::transport::runtime_tools::{
         extension_runtime_tool_specs, ListExtensionsArgs, LIST_EXTENSIONS_TOOL,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
     let args = ListExtensionsArgs {
         kind: Some("app".into()),
         apps_cursor: Some("app-099".into()),
@@ -36,7 +36,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
 
 #[test]
 fn app_bindings_use_the_shared_extension_request_contract() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
     let grant = LocalDaemonRequest::GrantAgentExtension(GrantAgentExtensionRequest {
         workspace_id: None,
         agent_ref: "agent-1".into(),

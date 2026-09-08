@@ -5,6 +5,8 @@ pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
 pub(crate) mod app_control;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_install_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_lifecycle;
 pub(crate) mod app_event_pump;
 pub(crate) mod app_lock;

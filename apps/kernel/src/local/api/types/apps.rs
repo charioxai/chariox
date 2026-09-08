@@ -2,6 +2,41 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BeginAppInstallRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub upload_handle: String,
+    pub expected_package_digest: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppInstallOperationRequest {
+    pub request_id: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppInstallOperationPhase {
+    Preparing,
+    AwaitingApproval,
+    Starting,
+    Committed,
+    Cancelled,
+    Failed,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppInstallOperationSummary {
+    pub request_id: String,
+    pub phase: AppInstallOperationPhase,
+    pub installation_id: Option<String>,
+    pub generation: Option<String>,
+    /// Expected upload digest while preparing; authority requires verification.
+    pub package_digest: String,
+    pub interaction_id: Option<String>,
+    pub failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListAppInstallationsRequest {
     pub after: Option<String>,
     pub limit: Option<u32>,

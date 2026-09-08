@@ -35,6 +35,32 @@ impl StageTrustBinding {
         load_binding(tx, owner, token)
     }
 
+    pub fn review_first_in(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &str,
+        trust: &TrustedPublisherSnapshot,
+    ) -> Result<UpdateRecord> {
+        if self.token.base_generation != 0 || self.token.generation != 1 {
+            return Err(InstallationError::InvalidTransition.into());
+        }
+        self.require_current(tx, owner, trust)?;
+        current_update(tx, &self.token).map_err(Into::into)
+    }
+    /// Trusted kernel decision, fenced inside its original committing transaction.
+    pub fn decide_first_in(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &str,
+        trust: &TrustedPublisherSnapshot,
+        decision: CapabilityDecision,
+        now_ms: u64,
+    ) -> Result<UpdateRecord> {
+        self.review_first_in(tx, owner, trust)?;
+        crate::installation::decide_generation(tx, &self.token, decision, now_ms)
+            .map_err(Into::into)
+    }
+
     /// Reads the existing approval; no caller can supply an approval boolean.
     /// The caller passes an enrollment snapshot, which is rechecked in this tx.
     pub fn require_first_approved_in(

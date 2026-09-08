@@ -13,6 +13,7 @@ impl AppLifecycleService {
     ) -> Result<StartDisposition> {
         let operation = self.0.store.first_app_install_status(owner, request_id)?;
         match operation.phase {
+            InstallPhase::Preparing => Err(LifecycleError::Busy),
             InstallPhase::Committed => {
                 self.start(owner, &operation.token.installation_id, true, runtime)
             }

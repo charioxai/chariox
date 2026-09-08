@@ -50,6 +50,8 @@ impl KernelRuntimeState {
         }
         self.owned.sweep_kernel_operation_interactions(false);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control().installs().pump(self).await;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .lifecycle()
             .schedule_recovery(tokio::runtime::Handle::current());
@@ -374,6 +376,17 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let installs = self.app_control().installs().clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || installs.shutdown_blocking(runtime))
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_install_shutdown",
+                    message: "App installation tasks did not drain".into(),
+                })?;
+        }
         self.owned.sweep_kernel_operation_interactions(true);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {

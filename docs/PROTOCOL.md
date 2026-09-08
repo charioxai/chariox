@@ -1040,6 +1040,18 @@ Workflow trigger and deployment direction:
   implicitly. Buffered SDK requests compose the stream operations under one
   original deadline and size bound. Cancellation and failed response publication
   dispose of the exact stream; a lost body chunk cannot be silently retried.
+- protocol 295 adds `BeginAppInstall`, `GetAppInstallOperation` and
+  `CancelAppInstallOperation` on the existing authenticated terminal path.
+  Begin durably binds a retry ID, session, opaque upload and package digest
+  before slow verification, returning operation status promptly. Retained kernel
+  work verifies the package against already enrolled trust and presents its
+  signed metadata/capabilities through the existing human interaction. The App
+  and terminal request cannot supply an owner, key enrollment, approval or host
+  path. Restart issues a fresh pending decision; it does not restore consent
+  from an unanswered interaction. Status preserves historical operation identity,
+  and cancellation fences preparation/activation on the same durable writer.
+  Generations remain opaque strings. Information-set declarations are review
+  material here; installation confirmation does not grant their data access.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -2,10 +2,12 @@
 //! client assertion of trust, approval, containment or worker health.
 mod api;
 mod commit;
+mod public_ops;
 mod store;
 #[cfg(test)]
 mod tests;
 mod transitions;
+pub(crate) use public_ops::{InstallApprovalChallenge, InstallReviewDisposition};
 
 use super::{
     app_activation::CommittedAppActivation, app_worker_lifecycle::ActiveStartAdmission,
@@ -46,6 +48,7 @@ pub(crate) enum InstallOperationError {
 type Result<T> = std::result::Result<T, InstallOperationError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallPhase {
+    Preparing,
     AwaitingApproval,
     Starting,
     Committed,
@@ -54,6 +57,9 @@ pub(crate) enum InstallPhase {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstallOperation {
+    pub(crate) input: Option<InstallInput>,
+    pub(crate) review: Option<serde_json::Value>,
+    pub(crate) interaction_id: Option<String>,
     pub(crate) request_id: String,
     pub(crate) token: StageToken,
     pub(crate) package_digest: String,
@@ -62,6 +68,12 @@ pub(crate) struct InstallOperation {
     pub(crate) failure: Option<String>,
     pub(crate) cleanup_pending: bool,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallInput {
+    pub(crate) session_id: String,
+    pub(crate) upload_handle: String,
+}
+
 /// Minted only after reading the existing exact staged capability approval and
 /// current enrolled signer on the writer. Not serializable or caller-created.
 pub(crate) struct ApprovedFirstInstall {
@@ -104,6 +116,7 @@ impl std::fmt::Debug for AppInstallationOperationRequest {
     }
 }
 enum Command {
+    Public(public_ops::PublicCommand),
     Replay {
         owner: String,
         request_id: String,
@@ -146,6 +159,7 @@ enum Command {
     },
 }
 enum Reply {
+    Review(InstallReviewDisposition),
     Operation(InstallOperation),
     Approved(ApprovedFirstInstall),
     Committed(FirstInstallCommitted),
