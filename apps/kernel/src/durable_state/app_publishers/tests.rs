@@ -147,6 +147,7 @@ fn publisher_conflict_preserves_adjacent_ordinary_writer_events() {
             AppPublisherRequest {
                 owner_id: "alice".into(),
                 mutation: revoke("stale", 0),
+                budget: AppOperationBudget::from_supervisor(|| false),
                 response: conflict_tx,
             },
         )))
@@ -164,5 +165,68 @@ fn publisher_conflict_preserves_adjacent_ordinary_writer_events() {
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[test]
+fn cancelled_publisher_write_cannot_commit_after_waiting_for_sqlite() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+    use std::time::Duration;
+    let database = Database::new();
+    let store = database.open();
+    assert!(matches!(
+        store.mutate_app_publisher_with_budget(
+            "alice",
+            enroll("expired", 0),
+            AppOperationBudget::fixture(tokio::time::Instant::now(), || false)
+        ),
+        Err(AppPublisherError::Trust(PublisherTrustError::Stopped))
+    ));
+    let mut blocker = Connection::open(store.path()).unwrap();
+    let held = blocker
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let observed = cancelled.clone();
+    let (entered, received) = mpsc::channel();
+    let entered = Mutex::new(Some(entered));
+    let budget = AppOperationBudget::from_supervisor(move || observed.load(Ordering::Acquire))
+        .fixture_observe_checks(Arc::new(move || {
+            if let Some(sender) = entered.lock().unwrap().take() {
+                sender.send(()).unwrap();
+            }
+        }));
+    let (response, result) = mpsc::channel();
+    store
+        .writer
+        .enqueue(DurableWriterRequest::AppPublisher(Box::new(
+            AppPublisherRequest {
+                owner_id: "alice".into(),
+                mutation: enroll("cancelled", 0),
+                budget,
+                response,
+            },
+        )))
+        .unwrap();
+    // The writer sampled cancellation=false before attempting its real BEGIN.
+    // Cancellation while waiting must still be observed inside that transaction.
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    cancelled.store(true, Ordering::Release);
+    drop(held);
+    assert!(matches!(
+        result.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Err(PublisherTrustError::Stopped)
+    ));
+    assert!(store.list_app_publishers("alice").unwrap().is_empty());
+    // Rejecting one admission must leave the shared writer available.
+    assert_eq!(
+        store
+            .mutate_app_publisher("alice", enroll("fresh", 0))
+            .unwrap()
+            .revision,
+        1
     );
 }

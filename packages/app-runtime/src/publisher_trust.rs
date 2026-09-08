@@ -33,6 +33,8 @@ pub enum PublisherTrustError {
     Limit,
     #[error("app_publisher_trust_corrupt")]
     Corrupt,
+    #[error("app_publisher_trust_stopped")]
+    Stopped,
 }
 type Result<T> = std::result::Result<T, PublisherTrustError>;
 
@@ -144,6 +146,29 @@ impl<'a> PublisherTrustRegistry<'a> {
         decision: &TrustDecision,
         now_ms: u64,
     ) -> Result<TrustDecisionReceipt> {
+        self.enroll_guarded(
+            trusted_owner,
+            publisher,
+            expected_revision,
+            decision,
+            now_ms,
+            || Ok(()),
+        )
+    }
+
+    /// The trusted kernel checks its original cancellation/deadline before
+    /// waiting for SQLite and again inside the transaction before commit.
+    /// This callback validates continued admission; it cannot grant consent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn enroll_guarded(
+        &mut self,
+        trusted_owner: &str,
+        publisher: &TrustedPublisher,
+        expected_revision: u64,
+        decision: &TrustDecision,
+        now_ms: u64,
+        check: impl FnMut() -> Result<()>,
+    ) -> Result<TrustDecisionReceipt> {
         if publisher.public_key.is_weak() {
             return Err(PublisherTrustError::Invalid);
         }
@@ -155,6 +180,7 @@ impl<'a> PublisherTrustRegistry<'a> {
             expected_revision,
             decision,
             now_ms,
+            check,
         )
     }
 
@@ -167,6 +193,28 @@ impl<'a> PublisherTrustRegistry<'a> {
         decision: &TrustDecision,
         now_ms: u64,
     ) -> Result<TrustDecisionReceipt> {
+        self.revoke_guarded(
+            trusted_owner,
+            publisher_id,
+            key_id,
+            expected_revision,
+            decision,
+            now_ms,
+            || Ok(()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn revoke_guarded(
+        &mut self,
+        trusted_owner: &str,
+        publisher_id: &str,
+        key_id: &str,
+        expected_revision: u64,
+        decision: &TrustDecision,
+        now_ms: u64,
+        check: impl FnMut() -> Result<()>,
+    ) -> Result<TrustDecisionReceipt> {
         self.decide(
             trusted_owner,
             publisher_id,
@@ -175,6 +223,7 @@ impl<'a> PublisherTrustRegistry<'a> {
             expected_revision,
             decision,
             now_ms,
+            check,
         )
     }
 
@@ -188,6 +237,7 @@ impl<'a> PublisherTrustRegistry<'a> {
         expected: u64,
         decision: &TrustDecision,
         now_ms: u64,
+        mut check: impl FnMut() -> Result<()>,
     ) -> Result<TrustDecisionReceipt> {
         valid_owner(owner)?;
         valid_identifier(publisher_id)?;
@@ -196,9 +246,11 @@ impl<'a> PublisherTrustRegistry<'a> {
         valid_text(&decision.authority_ref, 512)?;
         checked_integer(expected)?;
         checked_integer(now_ms)?;
+        check()?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check()?;
         let receipt = store::decide(
             &transaction,
             owner,
@@ -209,6 +261,7 @@ impl<'a> PublisherTrustRegistry<'a> {
             decision,
             now_ms,
         )?;
+        check()?;
         transaction.commit()?;
         Ok(receipt)
     }

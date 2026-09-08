@@ -13,6 +13,7 @@ use rusqlite::Connection;
 
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
+use crate::runtime::app_operation_budget::AppOperationBudget;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppPublisherError {
@@ -40,11 +41,17 @@ pub(crate) enum AppPublisherMutation {
     },
 }
 
-#[derive(Debug)]
 pub(super) struct AppPublisherRequest {
     pub(super) owner_id: String,
     pub(super) mutation: AppPublisherMutation,
+    pub(super) budget: AppOperationBudget,
     pub(super) response: mpsc::Sender<Result<TrustDecisionReceipt, PublisherTrustError>>,
+}
+impl std::fmt::Debug for AppPublisherRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppPublisherRequest")
+            .finish_non_exhaustive()
+    }
 }
 
 impl DurableKernelStateStore {
@@ -55,13 +62,30 @@ impl DurableKernelStateStore {
         trusted_owner: &str,
         mutation: AppPublisherMutation,
     ) -> Result<TrustDecisionReceipt, AppPublisherError> {
+        self.mutate_app_publisher_with_budget(
+            trusted_owner,
+            mutation,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+    }
+
+    /// The retained operation supplies its original cancellation and deadline.
+    /// Writer queueing cannot extend that admission or invent a new decision.
+    pub(crate) fn mutate_app_publisher_with_budget(
+        &self,
+        trusted_owner: &str,
+        mutation: AppPublisherMutation,
+        budget: AppOperationBudget,
+    ) -> Result<TrustDecisionReceipt, AppPublisherError> {
         validate_owner(trusted_owner)?;
+        budget.check().map_err(|_| PublisherTrustError::Stopped)?;
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppPublisher(Box::new(
                 AppPublisherRequest {
                     owner_id: trusted_owner.to_owned(),
                     mutation,
+                    budget,
                     response,
                 },
             )))?;
@@ -115,19 +139,27 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
 pub(super) fn execute(connection: &mut Connection, request: AppPublisherRequest) {
     // Run between ordinary batches. Conflicts roll back only this decision;
     // earlier unrelated writes have already completed their normal transaction.
+    let AppPublisherRequest {
+        owner_id,
+        mutation,
+        budget,
+        response,
+    } = request;
     let mut registry = PublisherTrustRegistry::new(connection);
-    let result = match request.mutation {
+    let check = || budget.check().map_err(|_| PublisherTrustError::Stopped);
+    let result = match mutation {
         AppPublisherMutation::Enroll {
             publisher,
             expected_revision,
             decision,
             now_ms,
-        } => registry.enroll(
-            &request.owner_id,
+        } => registry.enroll_guarded(
+            &owner_id,
             &publisher,
             expected_revision,
             &decision,
             now_ms,
+            check,
         ),
         AppPublisherMutation::Revoke {
             publisher_id,
@@ -135,16 +167,17 @@ pub(super) fn execute(connection: &mut Connection, request: AppPublisherRequest)
             expected_revision,
             decision,
             now_ms,
-        } => registry.revoke(
-            &request.owner_id,
+        } => registry.revoke_guarded(
+            &owner_id,
             &publisher_id,
             &key_id,
             expected_revision,
             &decision,
             now_ms,
+            check,
         ),
     };
-    let _ = request.response.send(result);
+    let _ = response.send(result);
 }
 
 fn validate_owner(owner: &str) -> Result<(), PublisherTrustError> {

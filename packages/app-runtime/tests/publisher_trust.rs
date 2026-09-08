@@ -561,3 +561,67 @@ fn invalid_keys_identifiers_and_revision_exhaustion_never_become_trust() {
         Err(Error::Corrupt)
     ));
 }
+
+#[test]
+fn guarded_publisher_decisions_roll_back_when_admission_stops_before_commit() {
+    let mut connection = memory();
+    let public = publisher(7);
+    let mut checks = 0;
+    let stopped = Registry::new(&mut connection).enroll_guarded(
+        "alice",
+        &public,
+        0,
+        &decision("guarded_enroll"),
+        10,
+        || {
+            checks += 1;
+            if checks == 3 {
+                Err(Error::Stopped)
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(stopped, Err(Error::Stopped)));
+    assert!(Registry::new(&mut connection)
+        .list("alice")
+        .unwrap()
+        .is_empty());
+    let receipts: i64 = connection
+        .query_row("SELECT count(*) FROM app_publisher_decisions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(receipts, 0);
+    Registry::new(&mut connection)
+        .enroll("alice", &public, 0, &decision("fresh_enroll"), 11)
+        .unwrap();
+    let mut checks = 0;
+    let stopped = Registry::new(&mut connection).revoke_guarded(
+        "alice",
+        &public.publisher_id,
+        &public.key_id,
+        1,
+        &decision("guarded_revoke"),
+        12,
+        || {
+            checks += 1;
+            if checks == 3 {
+                Err(Error::Stopped)
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(stopped, Err(Error::Stopped)));
+    let current = Registry::new(&mut connection)
+        .trusted_publisher("alice", &public.publisher_id, &public.key_id)
+        .unwrap();
+    assert_eq!(current.revision(), 1);
+    let receipts: i64 = connection
+        .query_row("SELECT count(*) FROM app_publisher_decisions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(receipts, 1);
+}

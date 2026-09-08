@@ -92,11 +92,18 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
             "fixture-worktree",
         ))
         .unwrap();
+    let source = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "catalog-refresh-requester",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
     app.prompt_owner_submit_prepared_prompt(
         session.id(),
         crate::session::PromptQueueItem::new(
             "catalog-refresh-fixture",
-            "fixture-source",
+            source.id(),
             agent.id(),
             "active turn",
             crate::session::PromptStatus::Queued,
@@ -154,7 +161,7 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
     runtime.remember_pending_runtime_tools_continuation(
         session.id(),
         agent.id(),
-        "fixture-source",
+        source.id(),
         "active turn",
     );
     let mut pending = runtime.owned.pending_mcp_continuations.write();

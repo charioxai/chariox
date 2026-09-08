@@ -1182,3 +1182,24 @@ strict C syntax and source review pass; these new tests are not yet recorded as
 executed. Public installation requests and approval creation remain the next
 adapter. macOS factory integration and exclusive private-data cleanup also
 remain open, as documented in `runtime/app_lifecycle/FIRST_INSTALL.md`.
+
+### Publisher admission and hosted fixture follow-up (2026-09-08)
+
+Publisher enrollment/revocation now carry the original App operation budget on
+the existing writer. Guarded registry transactions check admission before SQLite
+contention, inside the acquired transaction and immediately before commit. The
+actual registry test proves stopped enrollment and revocation roll back both key
+and decision rows (4.64-second compile, test under 0.01 seconds, observed peak
+178,848 KiB). A new kernel regression queues cancellation against an actual
+SQLite writer lock and verifies the shared writer remains usable; hosted
+execution is pending. These checks do not provide human consent themselves.
+
+Both `99bb7c933` component jobs now pass all seven file, nine worker and five
+lifecycle tests, including the earlier stop-persistence regressions. The next
+filter failed because its provider-catalog fixture submitted a prompt from an
+unregistered attachment. That fixture now creates a real full-terminal session
+attachment and carries its ID into the prompt and continuation. Production
+attachment authorization remains unchanged.
+
+Cloud review `5137480142` of `4ad7cb1c0` reports no actionable finding. It did
+not execute the locally recorded tests or browser validation.
