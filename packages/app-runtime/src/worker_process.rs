@@ -16,6 +16,9 @@ mod record;
 mod spawn;
 #[cfg(target_os = "macos")]
 mod storage_macos;
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
+pub mod test_fixture;
 #[cfg(any(target_os = "macos", test))]
 mod worker_platform;
 
@@ -28,7 +31,7 @@ use std::{
     os::unix::net::UnixStream,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -40,7 +43,8 @@ pub struct PreparedWorker {
     program: CString,
     arguments: Vec<CString>,
     record: LaunchRecord,
-    // Open objects AND the domain's pinning lease survive through wait/reap.
+    // Open objects AND the domain's pinning lease survive through the caller's
+    // lifecycle join, including broker drain after actual process/domain reap.
     _objects: Vec<File>,
     domain: Box<dyn ResourceDomain>,
 }
@@ -70,7 +74,9 @@ trait ResourceDomain: Send {
     }
     fn terminate(&mut self, launcher_pid: libc::pid_t);
     /// Must await an empty owned domain after the direct child is reaped,
-    /// retaining all resource/pinning reservations until then.
+    /// retaining all resource/pinning reservations until then. This may stop and
+    /// observe processes, but must leave artifact/storage leases in this object;
+    /// its Drop runs only after WorkerProcess joins and the caller drains brokers.
     fn reap_domain_blocking(&mut self);
 }
 
@@ -167,6 +173,9 @@ pub struct WorkerProcess {
     sdk: Option<UnixStream>,
     cancellation: WorkerCancellation,
     monitor: Option<JoinHandle<WorkerExit>>,
+    // The monitor may finish or unwind before the kernel has drained callbacks.
+    // Its wait owner shares this preparation; dropping Child must not drop pins.
+    _preparation: Arc<Mutex<PreparedWorker>>,
 }
 
 impl WorkerProcess {
@@ -200,7 +209,8 @@ impl WorkerProcess {
         files.extend(prepared.domain.setup_descriptors());
         let pid = spawn::launch(&prepared.program, &prepared.arguments, &files)
             .map_err(|_| WorkerError::Spawn)?;
-        let child = monitor::Child::new(pid, prepared);
+        let prepared = Arc::new(Mutex::new(prepared));
+        let child = monitor::Child::new(pid, prepared.clone());
         drop((input, stdout_file, stderr_file, sdk_file, control_file));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let cancelled = cancellation.cancelled.clone();
@@ -218,6 +228,7 @@ impl WorkerProcess {
             sdk: Some(sdk),
             cancellation,
             monitor: Some(monitor),
+            _preparation: prepared,
         };
         match started_rx.recv_timeout(limits.startup_timeout + Duration::from_secs(1)) {
             Ok(Ok(())) => Ok(worker),

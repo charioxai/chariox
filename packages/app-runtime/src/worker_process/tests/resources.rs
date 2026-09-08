@@ -154,6 +154,39 @@ fn running_resource_failures_retain_admission_through_actual_reap() {
     assert_sample_and_reap_times(&checks, "running monitor panic");
 }
 
+#[test]
+fn reaped_or_panicked_monitor_retains_preparation_until_lifecycle_join() {
+    let fixture = Fixture::compile();
+    for panic_monitor in [false, true] {
+        let (prepared, observed, _) =
+            fixture.prepare(if panic_monitor { "hang" } else { "normal" }, false, false);
+        let held_directory = prepared._objects[0].as_raw_fd();
+        let prepared = if panic_monitor {
+            checked(prepared, Check::Panic).0
+        } else {
+            prepared
+        };
+        let worker = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.monitor.as_ref().unwrap().is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        // A finished monitor has already reaped its native process. Its caller
+        // can still be draining actual SDK broker work before it joins the owner.
+        assert!(worker.monitor.as_ref().unwrap().is_finished());
+        assert!(observed.reaped.load(Ordering::SeqCst));
+        assert!(!observed.dropped.load(Ordering::SeqCst));
+        assert_ne!(unsafe { libc::fcntl(held_directory, libc::F_GETFD) }, -1);
+        let result = worker.wait_blocking();
+        if panic_monitor {
+            assert!(matches!(result, Err(WorkerError::Supervisor)));
+        } else {
+            assert_eq!(result.unwrap().code, Some(0));
+        }
+        assert_released(&observed);
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_libproc_detects_tiny_private_memory_growth_after_continue() {

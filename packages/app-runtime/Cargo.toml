@@ -5,6 +5,10 @@ edition = "2021"
 description = "Kernel-owned Chariox App worker transport and lifecycle services"
 license = "MIT"
 
+[features]
+# Fixed, unsandboxed native test fixture only. Release builds reject this feature.
+test-fixtures = []
+
 [dependencies]
 chariox-app-package = { path = "../app-package" }
 ed25519-dalek = "2.1.1"

@@ -46,6 +46,10 @@ chariox-event-protocol = { path = "../../packages/event-protocol" }
 chariox-app-runtime = { path = "../../packages/app-runtime" }
 chariox-app-package = { path = "../../packages/app-package" }
 
+[dev-dependencies]
+# Fixed unsandboxed ABI fixtures; excluded from production dependency graphs.
+chariox-app-runtime = { path = "../../packages/app-runtime", features = ["test-fixtures"] }
+
 [lib]
 name = "chariox_kernel"
 path = "src/lib.rs"

@@ -25,6 +25,8 @@ static int send_all(int fd, const void* data, size_t size) {
   return 0;
 }
 
+#include "fixture_sdk.h"
+
 int main(int argc, char** argv) {
   if (argc != 2 || getsid(0) != getpid() || getpgrp() != getpid()) return 80;
   if (!getenv("LANG") || strcmp(getenv("LANG"), "C.UTF-8") ||
@@ -43,7 +45,7 @@ int main(int argc, char** argv) {
   int64_t deadline = cx_monotonic_ms() + 5000;
   int result = cx_read_record(&record, deadline);
   if (result) return result;
-  if (strcmp(record.generation, "7") || strcmp(record.installation, "installation_1") ||
+  if (strcmp(record.generation, fixture_sdk_mode(argv[1]) ? "1" : "7") || strcmp(record.installation, "installation_1") ||
       record.nofile != 128 || record.cpu_seconds != 30 || record.heap_mib != 64 ||
       record.v8_threads != 1 || record.max_file_bytes != 1048576 ||
       strcmp(record.bootstrap, "// trusted fixture bootstrap\n")) return 86;
@@ -57,6 +59,11 @@ int main(int argc, char** argv) {
   int file = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (file < 0) return 88;
   close(file);
+  if (fixture_sdk_mode(argv[1])) {
+    result = fixture_sdk_run(&record, argv[1]);
+    free(record.bootstrap);
+    return result;
+  }
   if (!strcmp(argv[1], "grow")) {
     /* Tiny test-only allocation after Continue; never allocate the production
      * ceiling on the developer's machine. Volatile stores commit each page. */

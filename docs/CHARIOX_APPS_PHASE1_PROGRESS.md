@@ -794,3 +794,44 @@ misaligned capacities and checks both exact command variants. Seven offline test
 pass (2.59s compile/0.05s execution; peak442,384KiB). Corrected hosted verification
 remains pending; no claim is made that a per-process limit constrains an external
 DiskImages service. These results do not advance the complete storage release gate.
+
+
+### Executed storage/domain checks and installed-runtime trust (2026-09-08)
+
+The corrected APFS drill passed on hosted macOS at `27c2472d3`, run
+`34177801710`, and again at `980ca9357`. Each fixed image occupied67,108,864bytes;
+noexec/quota checks, persisted data, reset temporary storage, restart,
+process-crash recovery and final cleanup passed. This does not claim safety of an
+in-flight DiskImages service operation or a complete signed App factory.
+
+Hosted Linux run `34178280623` at `980ca9357` passed the actual pre-exec cgroup
+entry and production namespace/mount observer tests. The native fixture exercised
+28 I/O/denial cases with no root observer fallback. This is libc/native fixture
+evidence; the pinned Node build remains running and embedded execution remains
+unverified. The independent review at `980ca9357` resolved both prior findings
+and reported no new actionable findings across113 changed paths.
+
+A shutdown ownership defect was fixed: the completed/panicked monitor previously
+dropped `PreparedWorker` before the kernel could drain admitted broker callbacks.
+The process owner now retains a private shared preparation until lifecycle join;
+the monitor still reaps the real child/domain promptly, including during unwind.
+Sixteen focused native/resource tests passed (three hosted storage tests ignored),
+including actual reap and descriptor/lease retention on ordinary exit and panic;
+peak local process-group RSS was369,248KiB. A dev-dependency-only fixed libc SDK
+fixture permits actual-channel kernel tests and rejects release builds. Its
+subsequent fixed tool-echo mode passed C syntax checking; kernel integration tests
+are still pending hosted execution.
+
+`runtime_enrollment` now verifies an installed runtime against a separate fixed
+root-owned enrollment file, exact signed manifest digest, Ed25519 public key,
+compiled ABI/SDK/source graph, safe file modes and actual content hashes. It
+retains shared installer leases and exact open descriptors. Three focused tests
+passed in0.03s (peak465,760KiB including compilation), covering trust substitution,
+content tampering, links/modes/extra entries and cleanup exclusion. These tests
+use text fixtures. Release assembly/enrollment, actual macOS Developer ID and
+notarization checks, and the concrete sandbox factory remain integration work.
+
+Hosted App contracts at `980ca9357` reached kernel tests on both platforms, then
+found two preparation tests pinned to SDK0.2. Their fixtures now reference the
+supported SDK constant so they track the package verifier. The full hosted suite
+must rerun; this source correction is not a claim that later tests have passed.

@@ -8,7 +8,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::SyncSender,
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -18,14 +18,14 @@ pub(super) const RESOURCE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 /// Owns both waitpid authority and reservations, including while unwinding.
 pub(super) struct Child {
     pid: libc::pid_t,
-    prepared: PreparedWorker,
+    prepared: Arc<Mutex<PreparedWorker>>,
     reaped: bool,
     lost_wait_authority: bool,
     #[cfg(target_os = "macos")]
     resources: Option<super::worker_platform::MacResourceMonitor>,
 }
 impl Child {
-    pub fn new(pid: libc::pid_t, prepared: PreparedWorker) -> Self {
+    pub fn new(pid: libc::pid_t, prepared: Arc<Mutex<PreparedWorker>>) -> Self {
         Self {
             pid,
             prepared,
@@ -36,7 +36,11 @@ impl Child {
         }
     }
     fn verify_resources(&mut self) -> Result<(), WorkerError> {
-        self.prepared.domain.verify_before_continue(self.pid)?;
+        self.prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .domain
+            .verify_before_continue(self.pid)?;
         #[cfg(target_os = "macos")]
         {
             self.resources = Some(super::worker_platform::MacResourceMonitor::attach(
@@ -47,7 +51,11 @@ impl Child {
         Ok(())
     }
     fn check_resources(&mut self, now: Instant) -> Result<(), WorkerError> {
-        self.prepared.domain.check_running(self.pid, now)?;
+        self.prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .domain
+            .check_running(self.pid, now)?;
         #[cfg(target_os = "macos")]
         self.resources
             .as_mut()
@@ -92,7 +100,13 @@ impl Child {
     fn reap(&mut self) -> io::Result<i32> {
         // The unreaped direct child still owns this PID/PGID, avoiding PID reuse
         // races. Domain termination also reaches bubblewrap's nested session.
-        self.prepared.domain.terminate(self.pid);
+        // A panicking check may poison the preparation. Cleanup still owns the
+        // child and must run; domain cleanup methods are required nonpanicking.
+        let mut prepared = self
+            .prepared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prepared.domain.terminate(self.pid);
         if !self.lost_wait_authority {
             unsafe {
                 libc::kill(-self.pid, libc::SIGKILL);
@@ -112,7 +126,7 @@ impl Child {
         };
         // The platform implementation cannot release the aggregate reservation
         // until all owned descendants are gone, even if direct wait failed.
-        self.prepared.domain.reap_domain_blocking();
+        prepared.domain.reap_domain_blocking();
         self.reaped = true;
         result
     }
