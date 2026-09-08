@@ -197,6 +197,15 @@ impl ProviderProcessServiceStore {
             .update_run_remote_extension_manifest(run_id, manifest)
     }
 
+    pub(crate) fn observe_runtime_tool_catalog(
+        &self,
+        run_id: &str,
+        expected_hash: &str,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        self.write()
+            .observe_runtime_tool_catalog(run_id, expected_hash)
+    }
+
     pub(crate) fn enable_workflow_tools(
         &self,
         run_id: &str,

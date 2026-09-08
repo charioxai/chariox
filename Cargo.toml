@@ -5,7 +5,9 @@ members = [
     "apps/relay",
     "apps/aegs-dummy",
     "packages/aegs-sdk",
+    "packages/app-package",
     "packages/event-protocol",
+    "packages/app-runtime",
     "adapters/rust",
 ]
 # Vendored upstreams and scratch worktrees carry their own Cargo manifests;

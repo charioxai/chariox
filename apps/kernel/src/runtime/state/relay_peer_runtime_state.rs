@@ -249,13 +249,38 @@ impl KernelRuntimeState {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_agent_remote_extension_manifest(
-                &leased_agent_id,
-                remote_extension_manifest,
-            )
-        })
-        .await
+        let native = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).update_leased_agent_remote_extension_manifest(
+                    &leased_agent_id,
+                    remote_extension_manifest,
+                )?;
+                let run_id =
+                    RemoteLeaseRuntime::new(app).leased_agent_provider_run_id(&leased_agent_id)?;
+                Ok::<_, DaemonError>(
+                    run_id
+                        .and_then(|id| app.providers().get_run(&id).ok())
+                        .filter(|run| {
+                            !run.client_interface().is_chariox()
+                                && !run.remote_extension_catalog_matches_launch(
+                                    run.remote_extension_manifest(),
+                                )
+                        }),
+                )
+            })
+            .await?;
+        if let Some(run) = native {
+            if let Some(agent_id) = run.agent_instance_id() {
+                // A manifest may be granted during its own active turn. Reuse
+                // the idle queue so the metadata ACK cannot deadlock that turn.
+                self.remember_pending_provider_reload(
+                    run.session_id(),
+                    agent_id,
+                    ProviderReloadReason::RuntimeToolCatalog,
+                );
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -379,6 +404,8 @@ impl KernelRuntimeState {
         {
             return Ok(replayed);
         }
+        let refresh_lease = leased_agent_id.clone();
+        let refresh_manifest = remote_extension_manifest.clone();
         let prepared = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
@@ -393,7 +420,18 @@ impl KernelRuntimeState {
                     remote_extension_manifest,
                 )
             })
-            .await?;
+            .await;
+        let prepared = match prepared {
+            Err(error @ DaemonError::LocalTransport { operation: "remote runtime tool catalog reload", .. })
+                if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport(&error) => {
+                // Prompt admission also repairs a missed manifest-sync message.
+                // The preceding preparation validated the lease and collisions;
+                // this only queues the same idle refresh, never the prompt.
+                self.update_relay_leased_agent_remote_extension_manifest(&refresh_lease, refresh_manifest).await?;
+                return Err(error);
+            }
+            result => result?,
+        };
         let provider_run_id = match &prepared.provider_run {
             crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
                 provider_run_id.clone()

@@ -499,6 +499,11 @@ impl KernelRuntimeOwnedState {
     }
 
     fn workflow_reconcile_live_orphans(&self, session_id: &str) {
+        // A durable Ready entry is work awaiting admission, not an orphan. On a
+        // storage failure preserve it until authoritative recovery can decide.
+        if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+            return;
+        }
         let reconciled = self
             .session_store
             .write()
@@ -768,7 +773,7 @@ impl KernelRuntimeOwnedState {
             .cloned())
     }
 
-    fn workflow_schedule_queued_prompt_run(
+    pub(super) fn workflow_schedule_queued_prompt_run(
         &self,
         session_id: &str,
         queued_prompt: crate::session::WorkflowQueuedPrompt,
@@ -790,12 +795,18 @@ impl KernelRuntimeOwnedState {
                 workflow_run.id(),
             );
         }
-        let dispatches = match self
-            .workflow_validate_agents(session_id, &workflow)
+        let validation = self.workflow_validate_agents(session_id, &workflow);
+        let valid_agents = validation.is_ok();
+        let dispatches = match validation
             .and_then(|()| self.workflow_schedule_entry_node(session_id, &workflow_run))
         {
             Ok(dispatches) => dispatches,
             Err(error) => {
+                if valid_agents
+                    && self.workflow_preserve_entry_after_failure(session_id, workflow_run.id())
+                {
+                    return Err(error);
+                }
                 let failed_node_run_id = workflow_run
                     .node_runs()
                     .first()
@@ -830,9 +841,30 @@ impl KernelRuntimeOwnedState {
                     .session_store
                     .write()
                     .release_workflow_runtime_instance_for_run(session_id, workflow_run.id());
+                if self
+                    .persist_workflow_runtime_session(
+                        session_id,
+                        "workflow_entry_validation_failed",
+                    )
+                    .is_err()
+                {
+                    let _ = self.durable_state_store.fence_writer();
+                }
                 return Err(error);
             }
         };
+        let still_blocked = !dispatches.admitted_workflow_prompt
+            && workflow_run.node_runs().first().is_some_and(|node| {
+                node.status() == crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+            });
+        if !still_blocked {
+            if let Err(error) =
+                self.persist_workflow_runtime_session(session_id, "workflow_entry_scheduled")
+            {
+                self.workflow_preserve_entry_after_failure(session_id, workflow_run.id());
+                return Err(error);
+            }
+        }
         let workflow_run = self
             .session_store
             .read()
@@ -860,16 +892,36 @@ impl KernelRuntimeOwnedState {
         if !self.publication_activation.is_active() {
             return Ok((None, WorkflowPromptDispatches::default()));
         }
+        self.durable_state_store.require_writer_healthy()?;
         self.workflow_reconcile_live_orphans(session_id);
         let mut accumulated = WorkflowPromptDispatches::default();
         loop {
-            self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
-            let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
-                .session_store
-                .write()
-                .dequeue_next_workflow_prompt_and_create_run(session_id)?
-            else {
+            let next = match self.workflow_recover_pending_entry(session_id)? {
+                Some(next) => Some(next),
+                None => {
+                    self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
+                    self.workflow_dequeue_durably(session_id)?
+                }
+            };
+            let Some((queued_prompt, workflow_run, workflow, endpoint)) = next else {
                 return Ok((None, accumulated));
+            };
+            let Some(_claim) = self
+                .workflow_entry_claims
+                .try_claim(session_id, workflow_run.id())
+            else {
+                // Another caller owns this entry dispatch, but the run already
+                // exists durably. Preserve Started attribution for its queue item.
+                return Ok((
+                    Some(
+                        crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                            workflow_run: Box::new(workflow_run),
+                            workflow,
+                            endpoint,
+                        },
+                    ),
+                    accumulated,
+                ));
             };
             match self.workflow_schedule_queued_prompt_run(
                 session_id,
@@ -884,6 +936,11 @@ impl KernelRuntimeOwnedState {
                     return Ok((Some(outcome), accumulated));
                 }
                 Err(error) => {
+                    // A durable entry remains pending, or the writer is fenced
+                    // after prompt admission. Never spin or mark it failed here.
+                    if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+                        return Err(error);
+                    }
                     self.record_queued_workflow_prompt_launch_failure(
                         session_id,
                         &queued_prompt,
@@ -901,24 +958,21 @@ impl KernelRuntimeOwnedState {
         if !self.publication_activation.is_active() {
             return WorkflowPromptDispatches::default();
         }
+        if self.durable_state_store.require_writer_healthy().is_err() {
+            return WorkflowPromptDispatches::default();
+        }
         self.workflow_reconcile_live_orphans(session_id);
         let mut accumulated = WorkflowPromptDispatches::default();
         loop {
-            if let Err(error) = self.workflow_ensure_dispatchable_runtime_instance(session_id) {
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachment_store
-                        .list_session_attachment_ids(session_id),
-                    format!("Failed to provision workflow instance: {error}"),
-                );
-                return accumulated;
-            }
-            let next_workflow = {
-                self.session_store
-                    .write()
-                    .dequeue_next_workflow_prompt_and_create_run(session_id)
-            };
+            let next_workflow =
+                self.workflow_recover_pending_entry(session_id)
+                    .and_then(|pending| {
+                        if pending.is_some() {
+                            return Ok(pending);
+                        }
+                        self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
+                        self.workflow_dequeue_durably(session_id)
+                    });
             let (queued_prompt, workflow_run, workflow, endpoint) = match next_workflow {
                 Ok(Some(claimed)) => claimed,
                 Ok(None) => {
@@ -972,6 +1026,12 @@ impl KernelRuntimeOwnedState {
                     return accumulated;
                 }
             };
+            let Some(_claim) = self
+                .workflow_entry_claims
+                .try_claim(session_id, workflow_run.id())
+            else {
+                return accumulated;
+            };
             match self.workflow_schedule_queued_prompt_run(
                 session_id,
                 queued_prompt.clone(),
@@ -1001,9 +1061,15 @@ impl KernelRuntimeOwnedState {
                         ),
                     );
                     accumulated.extend(dispatches);
+                    if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+                        return accumulated;
+                    }
                 }
                 Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
                 Err(error) => {
+                    if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+                        return accumulated;
+                    }
                     self.record_queued_workflow_prompt_launch_failure(
                         session_id,
                         &queued_prompt,

@@ -6,6 +6,8 @@
 use super::*;
 
 mod agent_messaging;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app;
 mod capability_registry;
 mod connector;
 mod credential;
@@ -53,6 +55,61 @@ impl KernelRuntimeState {
         &self,
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        let mut specs = self.runtime_tool_specs_without_apps_for_auth_token(auth_token);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        // Legacy synchronous callers have a Vec-only interface. Production HTTP
+        // discovery uses the Result-returning async path below so a failed App
+        // projection is never cached as a successful incomplete catalog.
+        specs.extend(
+            self.app_runtime_tool_specs_for_auth_token(auth_token, &specs, None)
+                .unwrap_or_default(),
+        );
+        specs
+    }
+
+    /// HTTP discovery can touch current App trust in SQLite. Reserve admission
+    /// before submitting blocking work and keep the async coordinator free.
+    pub(crate) async fn runtime_tool_specs_for_auth_token_async(
+        &self,
+        auth_token: String,
+    ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let needs_apps = self.has_active_apps_for_auth_token(&auth_token);
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        let needs_apps = false;
+        if !needs_apps {
+            return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
+        }
+        let permit = self
+            .app_control()
+            .try_admit()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "runtime_tools.list",
+                message: "App tool discovery is busy".into(),
+            })?;
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut specs = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            specs.extend(state.app_runtime_tool_specs_for_auth_token(
+                &auth_token,
+                &specs,
+                Some(&permit),
+            )?);
+            drop(permit);
+            Ok(specs)
+        })
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "runtime_tools.list",
+            message: "App tool discovery did not complete".into(),
+        })?
+    }
+
+    fn runtime_tool_specs_without_apps_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         let provider_runs = self
             .owned
             .provider_store
@@ -69,6 +126,26 @@ impl KernelRuntimeState {
                     }),
             );
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            specs.extend(
+                provider_runs
+                    .iter()
+                    .filter(|_| provider_runs.len() == 1)
+                    .flat_map(|run| {
+                        run.remote_extension_manifest()
+                            .tools
+                            .iter()
+                            .filter(|tool| {
+                                tool.kind == crate::extension::ExtensionKind::App
+                                    && tool.execution_location
+                                        == crate::extension::ExtensionExecutionLocation::Home
+                            })
+                            .map(|tool| crate::transport::runtime_tools::RuntimeToolSpec {
+                                name: tool.tool_name.clone(),
+                                description: tool.description.clone(),
+                                input_schema: tool.input_schema.clone(),
+                            })
+                    }),
+            );
             if self.slice_kernel_id().is_some() {
                 specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
             }
@@ -171,6 +248,41 @@ impl KernelRuntimeState {
             }
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
+            // Apps share the current binding and operation dispatcher in every
+            // agent mode. Their exact known tools are checked before the Meta
+            // fixed-tool allowlist, with the same unique provider-run identity.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if canonical_tool_name.starts_with("app_") {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                if run
+                    .remote_extension_manifest()
+                    .home_proxy_tool(canonical_tool_name)
+                    .is_some_and(|tool| tool.kind == crate::extension::ExtensionKind::App)
+                {
+                    if let Some(result) = self
+                        .try_dispatch_remote_home_extension_runtime_tool_call(
+                            run,
+                            canonical_tool_name,
+                            arguments.clone(),
+                        )
+                        .await?
+                    {
+                        return Ok(result);
+                    }
+                }
+                if let Some(result) = self
+                    .try_dispatch_app_runtime_tool_call(
+                        run,
+                        auth_token,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
+            }
             let is_meta_tool =
                 crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
             let is_metaagent_allowed_direct_tool = is_metaagent_direct_runtime_tool_allowed(

@@ -2933,6 +2933,16 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
+        if self
+            .owned
+            .durable_state_store
+            .require_writer_healthy()
+            .is_err()
+        {
+            // Accepted prompts and their entry receipts remain for authoritative
+            // restart. A failed writer cannot authorize new provider dispatch.
+            return;
+        }
         for task in dispatches.starting_metaagent_tasks {
             let state = self.clone();
             tokio::spawn(async move {

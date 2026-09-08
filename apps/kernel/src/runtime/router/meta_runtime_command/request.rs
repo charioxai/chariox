@@ -951,3 +951,5 @@ pub(super) fn meta_kernel_command_without_request(
 pub(super) fn metaagent_command_client_id(metaagent_id: &str) -> String {
     format!("metaagent:{metaagent_id}:commands")
 }
+mod app_binding;
+pub(super) use app_binding::meta_app_binding_request;

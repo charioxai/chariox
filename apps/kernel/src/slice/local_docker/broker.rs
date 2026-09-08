@@ -4,6 +4,9 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(unix)]
+mod bounded_output;
+
+#[cfg(unix)]
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::io::{BufReader, Read};
@@ -440,6 +443,13 @@ pub(super) struct DockerCommand {
 }
 
 impl DockerCommand {
+    pub(super) fn output_with_timeout(&mut self, duration: std::time::Duration) -> io::Result<Output> {
+        if broker_is_configured() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "local migration cannot bypass the managed broker"));
+        }
+        bounded_local_output(&mut self.local_command(), duration)
+    }
+
     pub(super) fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
         self.args.push(arg.as_ref().to_os_string());
         self
@@ -511,6 +521,18 @@ impl DockerCommand {
             command.stderr(Stdio::null());
         }
         command
+    }
+}
+
+pub(super) fn bounded_local_output(command: &mut Command, duration: std::time::Duration) -> io::Result<Output> {
+    #[cfg(unix)]
+    {
+        bounded_output::run(command, duration)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (command, duration);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "bounded migration subprocesses require Unix wait ownership"))
     }
 }
 

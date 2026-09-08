@@ -2,6 +2,24 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 
 impl CommandRouter {
+    /// Notification delivery cannot broaden token scope. A stream belongs to
+    /// exactly one still-live run; normal tool authorization remains unchanged.
+    pub(crate) fn runtime_mcp_catalog_run(
+        &self,
+        token: &str,
+    ) -> Option<crate::provider::RuntimeProviderRun> {
+        let runs = self
+            .provider_run_projection
+            .active_runs_by_runtime_mcp_auth_token(token);
+        (runs.len() == 1).then(|| runs[0].clone())
+    }
+
+    pub(crate) fn runtime_mcp_catalog_changes(
+        &self,
+    ) -> crate::runtime::runtime_tool_catalog::RuntimeToolCatalogChanges {
+        self.provider_run_projection.catalog_changes().clone()
+    }
+
     pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.runtime_mcp_host, config.runtime_mcp_port)
@@ -45,6 +63,15 @@ impl CommandRouter {
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         self.runtime_state
             .runtime_tool_specs_for_auth_token(auth_token)
+    }
+
+    pub(crate) async fn runtime_tool_specs_for_auth_token_async(
+        &self,
+        auth_token: String,
+    ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
+        self.runtime_state
+            .runtime_tool_specs_for_auth_token_async(auth_token)
+            .await
     }
 
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(

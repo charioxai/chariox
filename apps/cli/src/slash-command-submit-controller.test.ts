@@ -64,6 +64,17 @@ test("slash command submit dispatches agent wait commands", async () => {
   assert.equal(harness.clearPromptCount(), 1)
 })
 
+test("App slash commands work while no session is attached", async () => {
+  const harness = createHarness()
+  harness.deps.handleAppCommand = command => { harness.calls().push(`app:${command.args.join(" ")}`) }
+  const controller = createSlashCommandSubmitController(harness.deps)
+  const command = await controller.submit("/app journal install-1", { allowSlashCommandSubmission: true })
+  assert.equal(command?.kind, "app")
+  assert.deepEqual(harness.calls(), ["app:journal install-1"])
+  assert.deepEqual(harness.recordedHistory(), [])
+  assert.equal(harness.commandCenterClearCount(), 1)
+})
+
 test("slash command submit delegates catalog-only kernel commands to shared shell", async () => {
   const harness = createHarness({
     attached: true,

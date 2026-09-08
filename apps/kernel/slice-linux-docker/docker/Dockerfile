@@ -20,6 +20,9 @@ COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
+COPY packages/app-package packages/app-package
+COPY packages/app-runtime packages/app-runtime
+COPY packages/app-sdk packages/app-sdk
 COPY packages/event-protocol packages/event-protocol
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 ARG CHARIOX_PREBUILT_RUNTIME=0
@@ -31,7 +34,9 @@ RUN if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
       && install -m 0755 /opt/chariox-prebuilt/chariox-relay target/release/chariox-relay; \
     else \
       CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
-      && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay; \
+      && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
+      && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-package --bin chariox-app-package \
+      && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-runtime --bin chariox-app-storage; \
     fi
 
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
@@ -98,6 +103,7 @@ RUN groupadd --gid 1001 slice \
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.mjs /opt/chariox-slice/chromium-sandbox-probe.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
@@ -106,7 +112,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.s
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh
 
-RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
+RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/chromium-sandbox-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
 
 ARG CHARIOX_RELAY_PEER_PROTOCOL_VERSION=unknown
 ARG CHARIOX_RUNTIME_SOURCE_REVISION=unknown

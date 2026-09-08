@@ -73,6 +73,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/kernel-client
 
+  packages/app-sdk: {}
+
   packages/domain: {}
 
   packages/kernel-client:

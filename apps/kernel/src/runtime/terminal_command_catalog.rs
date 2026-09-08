@@ -32,6 +32,10 @@ const CATALOG_JSON_FRAGMENTS: &[(&str, &str)] = &[
         "provider",
         include_str!("terminal_command_catalog/catalog/provider.json"),
     ),
+    (
+        "apps",
+        include_str!("terminal_command_catalog/catalog/apps.json"),
+    ),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -618,6 +622,10 @@ mod tests {
                 "view-split",
                 "exit",
                 "waiting",
+                "app",
+                "app-list",
+                "app-status",
+                "app-journal",
             ]
         );
     }

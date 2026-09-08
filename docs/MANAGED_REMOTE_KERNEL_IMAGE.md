@@ -8,7 +8,7 @@ manager; it does not provision managed machines or build their images.
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
-and `chariox-relay` for `x86_64-unknown-linux-gnu` from an exact pushed
+`chariox-relay`, `chariox-app-package`, and `chariox-app-storage` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
 outside the repository with mode `0600`. Its build command archives the Git
 object into a new temporary directory, runs a locked one-job release build, and
@@ -32,6 +32,8 @@ node scripts/package-managed-kernel-release.mjs \
   --kernel <build-output>/chariox-kernel \
   --supervisor <build-output>/chariox-managed-bootstrap \
   --relay <build-output>/chariox-relay \
+  --app-package <build-output>/chariox-app-package \
+  --app-storage <build-output>/chariox-app-storage \
   --builder-attestation <build-output>/build-attestation.json \
   --builder-attestation-signature <build-output>/build-attestation.sig \
   --trusted-builder-public-key <openship-builder-public-key> \
@@ -44,11 +46,22 @@ node scripts/package-managed-kernel-release.mjs \
 Record the printed `sha256:` release digest. Keep both private keys private.
 Copy only the generated root filesystem and a separate copy of its release
 public key to the image builder. The packager verifies the detached builder
-signature, exact commit and tree IDs, target, and all three staged binary digests
+signature, exact commit and tree IDs, target, and all five staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and
 untracked files cannot enter the release.
+
+The signed release includes the privileged App storage helper and its service.
+The installer derives its enrollment from the actual `chariox` OS UID/GID; it
+never imports an App-supplied mount path, device, quota or command. The managed
+kernel receives its own cgroup-v2 subtree with systemd `DelegateSubgroup`; the
+rootless Docker subtree and broker remain separate. Storage uses the installed
+helper and fixed ext4 images, so the image includes e2fsprogs. The helper shares
+the host mount namespace and the kernel receives those mounts through its
+existing service namespace. The dedicated Ubuntu24.04 storage drill covers
+that seam; its first execution and the Ubuntu26.04 full image gate remain
+required validation.
 
 ## Disposable Hetzner builder
 

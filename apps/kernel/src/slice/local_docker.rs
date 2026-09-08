@@ -20,6 +20,7 @@ use super::model::{
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod broker;
+pub(crate) mod chromium_migration;
 mod provider_inputs;
 mod state;
 #[cfg(test)]
@@ -142,6 +143,18 @@ pub fn run_local_docker_slice_action(
     provider_account: Option<&LocalDockerProviderAccount>,
     options: &LocalDockerSliceOptions,
 ) -> Result<(), DaemonError> {
+    run_local_docker_slice_action_with_migration(record, action, relay, provider, provider_account, options, None)
+}
+
+fn run_local_docker_slice_action_with_migration(
+    record: &SliceRecord,
+    action: LocalDockerSliceAction,
+    relay: Option<LocalDockerSliceRelay>,
+    provider: Option<&str>,
+    provider_account: Option<&LocalDockerProviderAccount>,
+    options: &LocalDockerSliceOptions,
+    migration_id: Option<&str>,
+) -> Result<(), DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
         return Err(DaemonError::LocalTransport {
             operation: "slice.local_docker",
@@ -178,6 +191,9 @@ pub fn run_local_docker_slice_action(
         options,
         action == LocalDockerSliceAction::Provision,
     )?;
+    if let Some(id) = migration_id {
+        command.env("CHARIOX_SLICE_CHROMIUM_MIGRATION_ID", id);
+    }
     let mut broker_inputs = Vec::new();
     if let (true, true, Some(home)) = (
         broker::configured(),

@@ -74,7 +74,7 @@ export type CharioxCredentialConfig = {
   injection: Record<string, unknown>
 }
 
-export type ExtensionKind = "mcp" | "skill" | "script" | "connector"
+export type ExtensionKind = "mcp" | "skill" | "script" | "connector" | "app"
 
 export type ExtensionGrant = {
   kind: ExtensionKind

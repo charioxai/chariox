@@ -441,6 +441,18 @@ Current pushed event contract:
 - `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
 - `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
 - `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts
+  - protocol 293 gives each interaction exactly one subject: existing `agent_id`
+    or `kernel_operation_id`. Kernel decisions work in sessions with zero agents;
+    they neither focus an agent nor create another prompt area.
+  - both subjects use the existing `RespondToInteraction` request and terminal
+    projection. Only the authenticated terminal user who owns a kernel operation
+    may answer its decision. Provider, agent-tool and remote-kernel paths cannot
+    approve it; the subject is assigned by the kernel, not accepted from an App.
+  - kernel decisions have explicit choices, no custom reply and no automatic
+    choice. Timeout, abandoned operation and shutdown cancel the pending decision.
+    The same monotonic deadline applies when resolving after a queued session lock.
+    Decisions are single-use and bounded to eight per owner and 32 per kernel.
+    Terminal presentation remains outside App content and App-controlled input.
 - `waiting_room_inventory_changed` carries only `inventory_version` and requires clients to refetch the full waiting-room snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
 - `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
 - `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog
@@ -982,6 +994,78 @@ Workflow trigger and deployment direction:
 - protocol 284 adds `ImportNativeProviderAccountProfile`. The authority owner
   can explicitly register the kernel host's provider-native scope without a
   client-supplied path, changing an existing profile, or copying credentials.
+- protocol 288 adds `ListAppInstallations`, `GetAppInstallation` and
+  `GetAppInstallationJournal` on the same local/relay terminal path. The kernel
+  derives ownership from the authenticated caller; requests cannot name an owner
+  or host path. Local IPC uses the existing linked-user identity bridge, with the
+  local identity used for an unlinked kernel. Unverified relay callers cannot
+  inherit that local identity. Lists use an exclusive `after` installation ID
+  and a `limit` of 1–100 (default 50); journals retain at most 64 completed updates
+  plus the pending update. Generations are opaque decimal strings in client
+  projections. Approval handles, authority references and host paths remain
+  private. `AppRequestFailed` returns stable bounded error codes. These inspection
+  requests do not stage, approve, activate or execute an App; installed metadata
+  does not assert worker health or sandbox verification.
+- protocol 289 adds `BeginAppPackageUpload`, `PutAppPackageUploadChunk`,
+  `GetAppPackageUpload` and `AbortAppPackageUpload`. Every terminal uses the same
+  authenticated kernel path and opaque owner-bound upload handle; clients cannot
+  provide an owner, host path or expiry. Begin binds a client retry ID to an exact
+  size and SHA-256. Chunks are at most 512 KiB decoded and acknowledge only durable
+  offsets. Repeated begin/status/chunk requests consult the upload ledger rather
+  than the transport result cache. Abort retains its receipt until the original
+  30-minute expiry and cannot resurrect through a delayed begin retry. Package
+  bytes are omitted from command/audit payloads and Debug output. The
+  `AppPackageUploadStatus` response exposes bounded progress and phase, with
+  stable `AppRequestFailed` codes. Uploaded bytes are untrusted; this transport
+  does not enroll a publisher, approve capabilities, activate or run App code.
+- protocol 290 adds `app` to the existing agent extension grant/revoke and
+  serialized binding contracts. Its name is an installation ID; environment,
+  credential and max-safety overrides are invalid. A binding selects App tools
+  and does not cache permission or assert that a worker is running. Explicit
+  user grants and permitted agent self-grants use the same binding mutation;
+  agent requests use the existing Ask/YOLO policy and RuntimeInteraction path.
+  SDK 0.2 event declarations include a signed positive `schemaVersion` and
+  require a kernel protocol floor of 290. Occurrences include `occurredAtMs`
+  and, for scheduled bindings, `scheduleRevision`, preserved on retries. The
+  worker frame remains v1; the SDK payload and binding snapshots are versioned
+  together. These contracts do not yet assert App workflow delivery readiness.
+- protocol 294 pairs SDK 0.6 with the worker's bounded HTTP stream contract:
+  `http.open`, `http.write`, `http.headers`, `http.read` and `http.cancel`.
+  The worker frame remains v1. Stream IDs are opaque and scoped to one worker;
+  each operation rechecks the installation's current signed network authority
+  on the kernel writer. DNS resolution, peer-address checks and TLS happen in
+  the kernel. This slice supports anonymous HTTPS to declared origins/methods;
+  credentials and critical-operation receipts are not yet connected, so routes
+  requiring them return explicit errors. Neither redirects nor retries occur
+  implicitly. Buffered SDK requests compose the stream operations under one
+  original deadline and size bound. Cancellation and failed response publication
+  dispose of the exact stream; a lost body chunk cannot be silently retried.
+- protocol 297 adds `BeginAppPublisherEnrollment`, `GetAppPublisherEnrollment`
+  and `CancelAppPublisherEnrollment` with `AppPublisherEnrollmentStatus`.
+  Begin carries a public Ed25519 key, publisher/key identities, an exact decimal
+  expected revision and the session for human review. The transport derives the
+  owner; it cannot supply a trust decision or approval authority. Only the
+  kernel's private RuntimeInteraction challenge can enroll the key. Status
+  reports a historical approved revision, which later revocation may supersede.
+  Stable request IDs use the owner's durable ledger across local/relay/browser
+  requests; responses bypass the older caller-independent transport cache.
+- protocol 296 pairs SDK 0.7 with worker-global `fetch` and `chariox.http.fetch`.
+  Native Web value objects and body streams use the existing five kernel HTTP
+  operations; each redirect opens a newly authorized destination under the
+  original lifetime. The shared Fetch fixture pins response behavior and limits.
+  Raw HTTP and event wire fixtures retain their unchanged protocol-294 floor.
+- protocol 295 adds `BeginAppInstall`, `GetAppInstallOperation` and
+  `CancelAppInstallOperation` on the existing authenticated terminal path.
+  Begin durably binds a retry ID, session, opaque upload and package digest
+  before slow verification, returning operation status promptly. Retained kernel
+  work verifies the package against already enrolled trust and presents its
+  signed metadata/capabilities through the existing human interaction. The App
+  and terminal request cannot supply an owner, key enrollment, approval or host
+  path. Restart issues a fresh pending decision; it does not restore consent
+  from an unanswered interaction. Status preserves historical operation identity,
+  and cancellation fences preparation/activation on the same durable writer.
+  Generations remain opaque strings. Information-set declarations are review
+  material here; installation confirmation does not grant their data access.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

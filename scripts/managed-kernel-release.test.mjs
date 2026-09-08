@@ -86,6 +86,8 @@ function packagerArguments({
   kernel,
   supervisor,
   relay,
+  appPackage,
+  appStorage,
   builderAttestation,
   builderAttestationSignature,
   trustedBuilderPublicKey,
@@ -99,6 +101,8 @@ function packagerArguments({
     "--kernel", kernel,
     "--supervisor", supervisor,
     "--relay", relay,
+    "--app-package", appPackage,
+    "--app-storage", appStorage,
     "--builder-attestation", builderAttestation,
     "--builder-attestation-signature", builderAttestationSignature,
     "--trusted-builder-public-key", trustedBuilderPublicKey,
@@ -165,6 +169,8 @@ async function makeFixture(root, variant = "") {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
   const relay = join(root, "chariox-relay")
+  const appPackage = join(root, "chariox-app-package")
+  const appStorage = join(root, "chariox-app-storage")
   const signingKey = join(root, "release-key.pem")
   const trustedPublicKey = join(root, "trusted-release-public-key")
   const kernelContents = variant ? `kernel fixture ${variant}\n` : "kernel fixture\n"
@@ -172,6 +178,8 @@ async function makeFixture(root, variant = "") {
   await writeFile(kernel, kernelContents, { mode: 0o755 })
   await writeFile(supervisor, "supervisor fixture\n", { mode: 0o755 })
   await writeFile(relay, relayContents, { mode: 0o755 })
+  await writeFile(appPackage, "app package fixture\n", { mode: 0o755 })
+  await writeFile(appStorage, "app storage fixture\n", { mode: 0o755 })
   const { privateKey, publicKey } = generateKeyPairSync("ed25519")
   await writeFile(signingKey, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 })
   await writeFile(trustedPublicKey, rawPublicKey(publicKey).toString("base64"), { mode: 0o600 })
@@ -195,10 +203,14 @@ async function makeFixture(root, variant = "") {
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
     ["deploy/managed-kernel/chariox-managed-bootstrap.service", await readFile(service)],
+    ["deploy/managed-kernel/chariox-app-storage.service", await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"))],
     ["deploy/managed-kernel/chariox-rootless-docker.service", await readFile(rootlessDockerService)],
     ["deploy/managed-kernel/chariox-slice-broker.service", await readFile(sliceBrokerService)],
     ["examples/workflow-code/example.md", "workflow fixture\n"],
     ["packages/aegs-sdk/Cargo.toml", "[package]\nname = \"sdk-fixture\"\n"],
+    ["packages/app-package/Cargo.toml", "[package]\nname = \"app-package-fixture\"\n"],
+    ["packages/app-runtime/Cargo.toml", "[package]\nname = \"app-runtime-fixture\"\n"],
+    ["packages/app-sdk/package.json", '{"name":"@chariox/app-sdk"}\n'],
     ["packages/event-protocol/Cargo.toml", "[package]\nname = \"event-fixture\"\n"],
   ])
   if (variant) sourceFiles.set("release-variant.txt", `${variant}\n`)
@@ -242,6 +254,8 @@ async function makeFixture(root, variant = "") {
       { name: "chariox-kernel", sha256: binaryDigest(kernelContents) },
       { name: "chariox-managed-bootstrap", sha256: binaryDigest("supervisor fixture\n") },
       { name: "chariox-relay", sha256: binaryDigest(relayContents) },
+      { name: "chariox-app-package", sha256: binaryDigest("app package fixture\n") },
+      { name: "chariox-app-storage", sha256: binaryDigest("app storage fixture\n") },
     ],
   }))
   await writeFile(builderAttestation, attestationBytes, { mode: 0o644 })
@@ -259,6 +273,8 @@ async function makeFixture(root, variant = "") {
     supervisor,
     relay,
     relayContents,
+    appPackage,
+    appStorage,
     signingKey,
     trustedPublicKey,
     builderAttestation,
@@ -270,6 +286,7 @@ async function makeFixture(root, variant = "") {
     sourceRepository,
     sourceCommit,
     sourceTree,
+    appStorageServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-app-storage.service"),
     serviceBytes: sourceFiles.get("deploy/managed-kernel/chariox-managed-bootstrap.service"),
     rootlessDockerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-rootless-docker.service"),
     sliceBrokerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-slice-broker.service"),
@@ -323,8 +340,14 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/src/transport/relay_peer.rs",
     "usr/lib/chariox/slice-build-context/apps/relay/Cargo.toml",
     "usr/lib/chariox/slice-build-context/packages/event-protocol/Cargo.toml",
+    "usr/lib/chariox/slice-build-context/packages/app-package/Cargo.toml",
+    "usr/lib/chariox/slice-build-context/packages/app-runtime/Cargo.toml",
+    "usr/lib/chariox/slice-build-context/packages/app-sdk/package.json",
     "usr/local/bin/chariox-kernel",
     "usr/local/bin/chariox-managed-bootstrap",
+    "usr/local/bin/chariox-app-package",
+    "usr/libexec/chariox-app-storage",
+    "etc/systemd/system/chariox-app-storage.service",
   ]) {
     assert.ok(packagedPaths.includes(requiredPath), `missing packaged path ${requiredPath}`)
   }
@@ -339,6 +362,9 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     artifacts: [
       { name: "chariox-kernel", path: "/usr/local/bin/chariox-kernel", sha256: digest("kernel fixture\n") },
       { name: "chariox-managed-bootstrap", path: "/usr/local/bin/chariox-managed-bootstrap", sha256: digest("supervisor fixture\n") },
+      { name: "chariox-app-package", path: "/usr/local/bin/chariox-app-package", sha256: digest("app package fixture\n") },
+      { name: "chariox-app-storage", path: "/usr/libexec/chariox-app-storage", sha256: digest("app storage fixture\n") },
+      { name: "chariox-app-storage.service", path: "/etc/systemd/system/chariox-app-storage.service", sha256: digest(fixture.appStorageServiceBytes) },
       {
         name: "chariox-managed-bootstrap.service",
         path: "/etc/systemd/system/chariox-managed-bootstrap.service",
@@ -411,6 +437,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   )
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-kernel").mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-managed-bootstrap").mode, 0o755)
+  assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-app-package").mode, 0o755)
   assert.equal(
     snapshot.find((entry) => entry.path.endsWith("/enter-rootless-docker-namespace.sh")).mode,
     0o755,
@@ -430,6 +457,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
       .filter((entry) =>
         entry.type === "file" &&
         !entry.path.startsWith("usr/local/bin/") &&
+        entry.path !== "usr/libexec/chariox-app-storage" &&
         !entry.path.endsWith("/enter-rootless-docker-namespace.sh") &&
         !entry.path.endsWith("/provision-linux-docker-slice.sh") &&
         !entry.path.endsWith("/managed-publication-access.sh") &&
@@ -672,6 +700,14 @@ case "$1" in
         [ -f '${extractionState}' ]
         printf 'supervisor from archived commit\n'
         ;;
+      *chariox-app-storage)
+        [ -f '${extractionState}' ]
+        printf 'app storage from archived commit\n'
+        ;;
+      *chariox-app-package)
+        [ -f '${extractionState}' ]
+        printf 'app package from archived commit\n'
+        ;;
       *chariox-relay)
         [ -f '${extractionState}' ]
         printf 'relay from archived commit\n'
@@ -726,7 +762,7 @@ esac
   assert.equal(attestation.target, "x86_64-unknown-linux-gnu")
   assert.deepEqual(
     attestation.artifacts.map((artifact) => artifact.name),
-    ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"],
+    ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay", "chariox-app-package", "chariox-app-storage"],
   )
   const signature = Buffer.from(await readFile(join(output, "build-attestation.sig"), "utf8"), "base64")
   assert.equal(verify(null, attestationBytes, fixture.publicKey, signature), true)
@@ -768,7 +804,7 @@ test("managed kernel release requires a matching trusted builder attestation", a
 
   await writeAttestation({
     ...original,
-    artifacts: [original.artifacts[1], original.artifacts[0], original.artifacts[2]],
+    artifacts: [original.artifacts[1], original.artifacts[0], original.artifacts[2], original.artifacts[3], original.artifacts[4]],
   })
   const wrongArtifacts = runPackager({ ...fixture, output: join(root, "wrong-artifacts") })
   assert.equal(wrongArtifacts.status, 1)
@@ -787,6 +823,7 @@ async function createInstallerHarness(root) {
   await mkdir(bin, { recursive: true })
   await mkdir(state, { recursive: true })
   await writeHarnessCommand(join(bin, "id"), `#!/bin/sh
+if [ "\${2:-}" = "chariox" ] && { [ "\${1:-}" = "-u" ] || [ "\${1:-}" = "-g" ]; }; then echo 998; exit 0; fi
 if [ "\${1:-}" = "-u" ]; then echo 0; exit 0; fi
 if [ "\${1:-}" = "-gn" ]; then
   [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ] && echo chariox && exit 0
@@ -805,6 +842,7 @@ exit 2
 `)
   await writeHarnessCommand(join(bin, "groupadd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/group-$name\"\n")
   await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
+  await writeHarnessCommand(join(bin, "chown"), "#!/bin/sh\nexit 0\n")
   await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nexit 0\n")
   await writeHarnessCommand(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n")
   await writeHarnessCommand(join(bin, "systemctl"), `#!/bin/sh
@@ -947,6 +985,13 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal((await lstat(currentLink)).ino, firstCurrentInode)
   assert.equal(await readFile(join(harness.installRoot, "usr/local/bin/chariox-kernel"), "utf8"), "kernel fixture\n")
   assert.equal((await stat(join(harness.installRoot, "usr/local/bin/chariox-kernel"))).mode & 0o777, 0o755)
+  assert.equal(await readFile(join(harness.installRoot, "usr/local/bin/chariox-app-package"), "utf8"), "app package fixture\n")
+  assert.equal((await stat(join(harness.installRoot, "usr/local/bin/chariox-app-package"))).mode & 0o777, 0o755)
+  assert.equal(await readFile(join(harness.installRoot, "usr/libexec/chariox-app-storage"), "utf8"), "app storage fixture\n")
+  assert.equal((await stat(join(harness.installRoot, "usr/libexec/chariox-app-storage"))).mode & 0o777, 0o755)
+  assert.deepEqual(JSON.parse(await readFile(join(harness.installRoot, "etc/chariox/app-storage.json"), "utf8")), {
+    schema: "chariox.app-storage-enrollment.v1", owners: [{uid:998,gid:998,cgroup_root:"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps",kernel_database_paths:["/var/lib/chariox/home/state/kernel.db"]}],
+  })
   assert.equal((await stat(join(harness.installRoot, "usr/lib/chariox/release-manifest.json"))).mode & 0o777, 0o644)
   const installedProvisioner = join(
     harness.installRoot,
@@ -973,15 +1018,19 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.deepEqual(systemctl, [
     "daemon-reload",
     "enable chariox-rootless-docker.service",
+    "enable chariox-app-storage.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
     "enable chariox-rootless-docker.service",
+    "enable chariox-app-storage.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
     "enable chariox-rootless-docker.service",
+    "enable chariox-app-storage.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
     "enable chariox-rootless-docker.service",
+    "enable chariox-app-storage.service",
     "enable chariox-managed-bootstrap.service",
   ])
 
@@ -1147,4 +1196,40 @@ test("managed image installer has no runtime start or network path", async () =>
   assert.doesNotMatch(contents, /\bmv\s+-T/)
   assert.match(contents, /renameSync\(source, destination\)/)
   assert.doesNotMatch(contents, /\.arroba/)
+})
+
+
+test("App developer helper is bound to builder attestation and signed installed release", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-release-app-helper-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  await writeFile(join(output, "rootfs/usr/local/bin/chariox-app-package"), "substituted helper\n")
+  assert.notEqual(runVerifier(join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey).status, 0)
+  await writeFile(fixture.appPackage, "substituted builder input\n")
+  const mismatch = runPackager({ ...fixture, output: join(root, "mismatch") })
+  assert.equal(mismatch.status, 1)
+  assert.match(mismatch.stderr, /artifacts do not match/)
+})
+
+
+test("App storage helper and unit remain bound to signed release provenance", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-storage-release-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  await writeFile(fixture.appStorage, "unattested privileged helper\n")
+  const untrusted = runPackager({ ...fixture, output: join(root, "untrusted") })
+  assert.equal(untrusted.status, 1)
+  assert.match(untrusted.stderr, /artifacts do not match/)
+  await writeFile(fixture.appStorage, "app storage fixture\n")
+  const output = join(root, "signed")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const rootfs = join(output, "rootfs")
+  await writeFile(join(rootfs, "etc/systemd/system/chariox-app-storage.service"), "changed privilege policy\n")
+  const tampered = runVerifier(rootfs, packaged.stdout.trim(), fixture.trustedPublicKey)
+  assert.equal(tampered.status, 1)
+  assert.match(tampered.stderr, /chariox-app-storage.service is corrupted/)
 })

@@ -3,7 +3,27 @@ pub mod agent_actor;
 pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
+pub(crate) mod app_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_install_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_lifecycle;
+pub(crate) mod app_event_pump;
 pub(crate) mod app_lock;
+pub(crate) mod app_operation_budget;
+mod app_package_preparation;
+mod app_package_upload_control;
+pub(crate) mod app_publisher_control;
+mod app_state_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_backend_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_files_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_http;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_worker;
+mod browser_controller;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
 pub(crate) mod cloud_api_client;
@@ -58,6 +78,7 @@ pub(crate) mod response_redaction;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;
 pub(crate) mod runtime_mcp_proxy_dispatcher;
+pub(crate) mod runtime_tool_catalog;
 pub(crate) mod semantic_recall_utility;
 pub mod session_actor;
 pub(crate) mod session_collaboration_executor;

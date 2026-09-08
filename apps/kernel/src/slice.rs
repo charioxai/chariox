@@ -4,6 +4,7 @@ mod ports;
 mod store;
 
 pub(crate) use local_docker::managed_docker_broker_configured;
+pub(crate) use local_docker::chromium_migration;
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
     create_local_docker_slice_backup_live, default_local_docker_saved_state,

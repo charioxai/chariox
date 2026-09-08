@@ -12,10 +12,9 @@ NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
 CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.config/chariox-slice-chromium}"
 CHROME_TRUSTED_INSECURE_ORIGINS="${CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
+CHROME_PROFILE_PATTERN="$(printf '%s' "$CHROME_PROFILE" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
 
 export DISPLAY="$DISPLAY_ID"
-
-mkdir -p "$LOGS" "$CHROME_PROFILE"
 
 log() {
   printf '[slice-screen] %s\n' "$*" >&2
@@ -157,7 +156,7 @@ screen_missing_components() {
   if ! novnc_running; then
     missing+=("novnc")
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
     missing+=("chromium")
   fi
   printf '%s\n' "${missing[@]}"
@@ -171,7 +170,7 @@ tool_blocking_missing_components() {
   if ! process_running "Xvfb $DISPLAY_ID"; then
     missing+=("xvfb")
   fi
-  if ! process_running "chromium.*$CHROME_PROFILE"; then
+  if ! process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
     missing+=("chromium")
   fi
   printf '%s\n' "${missing[@]}"
@@ -192,15 +191,62 @@ require_screen_available() {
   return 1
 }
 
-start_desktop() {
+require_chromium_user() {
+  if [[ "$(id -u)" == "0" ]]; then
+    log "Chromium requires the non-root slice user; the renderer sandbox must remain enabled"
+    return 1
+  fi
+}
+
+chromium_has_restorable_session() {
+  local default_profile="$CHROME_PROFILE/Default"
+  if [[ -d "$default_profile/Sessions" ]] && find "$default_profile/Sessions" \
+    -maxdepth 1 -type f -name 'Session_*' -size +0c -print -quit | grep -q .; then
+    return 0
+  fi
+  [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
+}
+
+launch_chromium() {
+  require_chromium_user || return 1
   local -a chrome_secure_context_args=()
+  local -a chrome_startup_target_args=()
   if [[ -n "$CHROME_TRUSTED_INSECURE_ORIGINS" ]]; then
     chrome_secure_context_args+=(
       "--unsafely-treat-insecure-origin-as-secure=$CHROME_TRUSTED_INSECURE_ORIGINS"
     )
   fi
+  if ! process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
+    clear_chromium_profile_locks
+    configure_chromium_profile_preferences
+    if chromium_has_restorable_session; then
+      chrome_startup_target_args+=(--restore-last-session)
+    fi
+  fi
+  if [[ "$#" -gt 0 ]]; then
+    chrome_startup_target_args+=(--new-window -- "$@")
+  elif [[ "${#chrome_startup_target_args[@]}" -eq 0 ]]; then
+    chrome_startup_target_args=(-- "$CHROME_URL")
+  fi
 
-  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+  nohup chromium \
+    --user-data-dir="$CHROME_PROFILE" \
+    --password-store=basic \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-sync \
+    --disable-dev-shm-usage \
+    --disable-gpu \
+    --remote-debugging-address=127.0.0.1 \
+    --remote-debugging-port=9222 \
+    ${chrome_secure_context_args[@]+"${chrome_secure_context_args[@]}"} \
+    "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
+}
+
+start_desktop() {
+  # Check before stopping processes or changing an existing profile.
+  require_chromium_user || return 1
+  if process_running "chromium.*$CHROME_PROFILE_PATTERN" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
     stop_desktop || true
   fi
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
@@ -208,11 +254,9 @@ start_desktop() {
   stop_process_pattern "x11vnc.*$DISPLAY_ID"
   stop_process_pattern "x11vnc.*$VNC_PORT"
   stop_process_pattern "openbox"
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
+  stop_process_pattern "chromium.*$CHROME_PROFILE_PATTERN"
   stop_process_pattern "/usr/lib/chromium/chromium"
   stop_process_pattern "Xvfb $DISPLAY_ID"
-  clear_chromium_profile_locks
-  configure_chromium_profile_preferences
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
   nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/xvfb.log" 2>&1 &
@@ -222,25 +266,13 @@ start_desktop() {
   nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
   nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
 
-  nohup chromium \
-    --user-data-dir="$CHROME_PROFILE" \
-    --no-sandbox \
-    --password-store=basic \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-sync \
-    --disable-dev-shm-usage \
-    --disable-gpu \
-    --remote-debugging-address=127.0.0.1 \
-    --remote-debugging-port=9222 \
-    "${chrome_secure_context_args[@]}" \
-    "$CHROME_URL" >"$LOGS/chromium-gui.log" 2>&1 &
+  launch_chromium
 
   sleep 2
   require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
   require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
   require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
-  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "chromium.*$CHROME_PROFILE_PATTERN" "Chromium" "$LOGS/chromium-gui.log"
   status
 }
 
@@ -259,7 +291,7 @@ status() {
       viewer_port="$discovered_port"
     fi
     printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$viewer_port" "$viewer_port"
-    pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
+    pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE_PATTERN" | grep -v defunct || true
     return 0
   fi
   local missing_csv
@@ -271,24 +303,24 @@ status() {
 }
 
 stop_desktop() {
-  if process_running "chromium.*$CHROME_PROFILE"; then
-    node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
+  if process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
+    timeout --kill-after=2s 10s node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
   fi
   local attempt
   for attempt in $(seq 1 80); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
+    if ! process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
       break
     fi
     sleep 0.1
   done
-  pkill -TERM -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
+  pkill -TERM -f "chromium.*$CHROME_PROFILE_PATTERN" >/dev/null 2>&1 || true
   for attempt in $(seq 1 30); do
-    if ! process_running "chromium.*$CHROME_PROFILE"; then
+    if ! process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
       break
     fi
     sleep 0.1
   done
-  stop_process_pattern "chromium.*$CHROME_PROFILE"
+  stop_process_pattern "chromium.*$CHROME_PROFILE_PATTERN"
   stop_process_pattern "/usr/lib/chromium/chromium"
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
@@ -583,17 +615,47 @@ sys.exit(1)
 PY
 }
 
+wait_for_chromium() {
+  local attempt
+  for attempt in $(seq 1 20); do
+    if process_running "chromium.*$CHROME_PROFILE_PATTERN" && \
+      curl --fail --silent --max-time 1 http://127.0.0.1:9222/json/version >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  log "Chromium did not become ready with its sandbox enabled"
+  return 1
+}
+
 open_url() {
-  require_screen_available
-  if node "$ROOT/browser-cdp.mjs" navigate "$1" >/dev/null 2>&1; then
+  require_chromium_user || return 1
+  # A browser crash can be recovered without restarting the desktop services.
+  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1 || ! process_running "Xvfb $DISPLAY_ID"; then
+    status
+    return 1
+  fi
+  local browser_was_running=0
+  if process_running "chromium.*$CHROME_PROFILE_PATTERN"; then
+    browser_was_running=1
+  fi
+  if timeout --kill-after=2s 10s node "$ROOT/browser-cdp.mjs" navigate "$1" >/dev/null 2>&1; then
     sleep 1
     focus_chromium
     return 0
   fi
-  chromium --user-data-dir="$CHROME_PROFILE" --no-sandbox --password-store=basic --new-window "$1" >/dev/null 2>&1 &
+  launch_chromium "$1"
+  if [[ "$browser_was_running" == 0 ]]; then
+    wait_for_chromium || return 1
+  fi
   sleep 1
   focus_chromium
 }
+
+case "${1:-status}" in
+  start|open-url|open_url) require_chromium_user || exit 1 ;;
+esac
+mkdir -p "$LOGS" "$CHROME_PROFILE"
 
 case "${1:-status}" in
   start) start_desktop ;;

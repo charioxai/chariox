@@ -167,7 +167,10 @@ export async function respondToInteraction(
   const response = await client.send<Record<string, unknown>>(
     respondToInteractionRequest(sessionId, interactionId, choiceId, customReply),
   )
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "InteractionResponded")
+  const payload = expectVariant<{ interaction_id: string; session: RuntimeSession }>(response, "InteractionResponded")
+  if (payload.interaction_id !== interactionId || payload.session?.id !== sessionId) {
+    throw new Error("interaction response identity mismatch")
+  }
   return normalizeRuntimeSession(payload.session)
 }
 

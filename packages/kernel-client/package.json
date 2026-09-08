@@ -73,6 +73,7 @@
     "./shell-session-footer": "./dist/shell-session-footer.js",
     "./shell-remote-format": "./dist/shell-remote-format.js",
     "./shell-core": "./dist/shell-core.js",
+    "./shell-app-command": "./dist/shell-app-command.js",
     "./shell-executor": "./dist/shell-executor.js",
     "./shell-script": "./dist/shell-script.js",
     "./shell-workspace-format": "./dist/shell-workspace-format.js",

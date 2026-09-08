@@ -13,6 +13,7 @@ use super::model::{
 use super::ports::{self, LocalDockerSlicePorts};
 
 mod invariants;
+mod saved_state;
 
 use invariants::{
     reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
@@ -290,31 +291,7 @@ impl SliceStore {
         saved_state: SliceSavedStateRecord,
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
-        let resolved = self.resolve(slice_ref)?;
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .saved_states
-            .insert(saved_state.id.clone(), saved_state.clone());
-        let record =
-            state
-                .records
-                .get_mut(&resolved.id)
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "slice.state.save",
-                    message: format!("unknown slice `{slice_ref}`"),
-                })?;
-        record.saved_state_ref = Some(saved_state.id);
-        record.saved_state_status = Some(SliceSavedStateStatus::Saved);
-        record.saved_state_updated_at_ms = Some(now_ms);
-        record.last_operation = Some("state.save".to_string());
-        record.last_operation_status = Some(SliceOperationStatus::Completed);
-        record.last_error = None;
-        record.last_operation_at_ms = Some(now_ms);
-        record.updated_at_ms = now_ms;
-        Ok(record.clone())
+        self.upsert_saved_state_after_commit(slice_ref, saved_state, now_ms, |_, _| Ok(()))
     }
 
     pub fn mark_saved_state_failed(

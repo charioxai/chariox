@@ -446,6 +446,17 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(super) fn observe_runtime_tool_catalog(
+        &mut self,
+        run_id: &str,
+        expected_hash: &str,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        Ok(run
+            .observe_remote_extension_catalog(expected_hash)
+            .then(|| run.clone()))
+    }
+
     pub(super) fn enable_workflow_tools(
         &mut self,
         run_id: &str,

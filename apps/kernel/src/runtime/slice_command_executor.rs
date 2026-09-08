@@ -1,4 +1,5 @@
 mod display_endpoint;
+mod chromium_migration;
 mod lifecycle;
 mod provider_auth;
 mod worker_discovery;

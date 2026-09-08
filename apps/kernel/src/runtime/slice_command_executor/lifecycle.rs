@@ -335,7 +335,7 @@ pub(super) async fn execute_start_slice_request(
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
+    let operation = Arc::new(runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?);
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
@@ -372,18 +372,21 @@ pub(super) async fn execute_start_slice_request(
     if let Some(state) = runtime_state.active_saved_state_for_slice(&initial_slice.id)? {
         docker_options = docker_options.with_saved_state(&state);
     }
+    let migration_runtime = runtime_state.clone();
+    let supervisor_operation = Arc::clone(&operation);
     let discovery_config = match provision_and_prepare_worker_discovery(
         runtime_state,
         config_projection,
         &relay,
         &initial_slice.worker_kernel_ref,
         Box::new(move || {
-            crate::slice::run_local_docker_slice_action(
+            // Cancellation of the requesting future cannot release lifecycle
+            // exclusion while its blocking migration is still mutating Docker.
+            let _operation = supervisor_operation;
+            super::chromium_migration::provision(
+                &migration_runtime,
                 &supervisor_slice,
-                crate::slice::LocalDockerSliceAction::Provision,
                 supervisor_relay,
-                None,
-                None,
                 &docker_options,
             )
         }),

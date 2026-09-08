@@ -204,7 +204,7 @@ impl PromptStateOwner {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .submission_for_durable_operation(session.id(), operation_id, fingerprint)
+            .submission_for_durable_operation(session.id(), operation_id, fingerprint, prompt)
     }
 
     pub(crate) fn active_prompt_for_agent(
@@ -331,9 +331,12 @@ impl PromptStateOwner {
             prompt.durable_operation_id(),
             prompt.durable_operation_fingerprint(),
         ) {
-            if let Some(outcome) =
-                owner.submission_for_durable_operation(session.id(), operation_id, fingerprint)?
-            {
+            if let Some(outcome) = owner.submission_for_durable_operation(
+                session.id(),
+                operation_id,
+                fingerprint,
+                &prompt,
+            )? {
                 return Ok(outcome);
             }
         }
@@ -1063,6 +1066,7 @@ impl PromptStateOwnerState {
         session_id: &str,
         operation_id: &str,
         fingerprint: &str,
+        requested: &PromptQueueItem,
     ) -> Result<Option<PromptSubmissionOutcome>, DaemonError> {
         let prompt = self
             .states
@@ -1074,7 +1078,14 @@ impl PromptStateOwnerState {
                     .iter()
                     .chain(state.queued_prompts.iter())
             })
-            .find(|prompt| prompt.durable_operation_id() == Some(operation_id));
+            .find(|prompt| {
+                prompt.durable_operation_id() == Some(operation_id)
+                    && (!operation_id.starts_with(
+                        crate::durable_state::workflow_dispatch_intents::OPERATION_PREFIX,
+                    ) || (prompt.workflow_run_id() == requested.workflow_run_id()
+                        && prompt.workflow_node_run_id() == requested.workflow_node_run_id()
+                        && prompt.target_agent_id() == requested.target_agent_id()))
+            });
         let Some(prompt) = prompt else {
             return Ok(None);
         };
@@ -1962,3 +1973,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "prompt_state/dispatch_intent_tests.rs"]
+mod dispatch_intent_tests;

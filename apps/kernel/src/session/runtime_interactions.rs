@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use super::types::unix_epoch_ms;
 
+mod subject;
+pub use subject::RuntimeInteractionSubject;
+
+#[cfg(test)]
+mod subject_tests;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeInteractionKind {
@@ -163,7 +169,8 @@ fn runtime_interaction_input_kind_is_text(kind: &RuntimeInteractionInputKind) ->
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
     id: String,
-    agent_id: String,
+    #[serde(flatten)]
+    subject: RuntimeInteractionSubject,
     kind: RuntimeInteractionKind,
     level: RuntimeInteractionLevel,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,7 +202,9 @@ impl RuntimeInteraction {
     ) -> Self {
         Self {
             id: id.into(),
-            agent_id: agent_id.into(),
+            subject: RuntimeInteractionSubject::Agent {
+                agent_id: agent_id.into(),
+            },
             kind,
             level,
             title,
@@ -212,8 +221,46 @@ impl RuntimeInteraction {
         &self.id
     }
 
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
+    pub fn agent_id(&self) -> Option<&str> {
+        self.subject.agent_id()
+    }
+
+    pub fn kernel_operation_id(&self) -> Option<&str> {
+        self.subject.kernel_operation_id()
+    }
+
+    pub fn subject(&self) -> &RuntimeInteractionSubject {
+        &self.subject
+    }
+
+    pub(crate) fn valid_subject(&self) -> bool {
+        self.subject.valid()
+    }
+
+    /// A kernel-owned decision, projected without creating an agent or prompt.
+    /// Only the dedicated registration path binds its authenticated owner.
+    pub(crate) fn for_kernel_operation(
+        id: impl Into<String>,
+        operation_id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        choices: Vec<RuntimeInteractionChoice>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            subject: RuntimeInteractionSubject::KernelOperation {
+                kernel_operation_id: operation_id.into(),
+            },
+            kind: RuntimeInteractionKind::Permission,
+            level: RuntimeInteractionLevel::Warning,
+            title: Some(title.into()),
+            message: message.into(),
+            choices,
+            custom_choice: None,
+            timeout_sec: Some(300),
+            default_on_timeout: None,
+            requested_at_ms: unix_epoch_ms(),
+        }
     }
 
     pub fn kind(&self) -> RuntimeInteractionKind {
@@ -257,7 +304,9 @@ impl RuntimeInteraction {
     }
 
     pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
-        self.agent_id = agent_id.into();
+        self.subject = RuntimeInteractionSubject::Agent {
+            agent_id: agent_id.into(),
+        };
         self
     }
 }

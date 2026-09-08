@@ -13,6 +13,7 @@ mod catalog;
 mod health;
 mod json_rpc;
 mod json_rpc_transport;
+mod mcp_reload;
 mod notifications;
 mod permission;
 mod runtime_mcp;

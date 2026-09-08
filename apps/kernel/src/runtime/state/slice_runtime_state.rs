@@ -1,5 +1,7 @@
 use super::*;
 
+mod saved_state_persistence;
+
 #[derive(Debug, Clone)]
 pub(crate) struct SliceAgentRelaunchManifest {
     pub(crate) session_id: String,
@@ -774,17 +776,13 @@ impl KernelRuntimeState {
         slice_ref: &str,
         state: crate::slice::SliceSavedStateRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let slice = self.owned.slice_store.upsert_saved_state(
+        let slice = saved_state_persistence::publish(
+            &self.owned.slice_store,
+            &self.owned.durable_state_store,
             slice_ref,
-            state.clone(),
-            crate::session::unix_epoch_ms(),
+            state,
         )?;
-        self.append_slice_durable_event("slice.updated", &slice)?;
-        self.owned.durable_state_store.append_event(
-            "slice.state.saved",
-            Some(state.id.clone()),
-            serde_json::json!({ "state": state }),
-        )?;
+        self.owned.runtime_projection_changes.record_change();
         Ok(slice)
     }
 

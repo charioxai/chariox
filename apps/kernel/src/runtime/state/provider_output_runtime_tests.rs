@@ -149,6 +149,7 @@ mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
+mod mcp_catalog_reload;
 mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;

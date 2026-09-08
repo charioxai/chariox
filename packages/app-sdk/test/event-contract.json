@@ -1,0 +1,43 @@
+{
+  "minimumKernelProtocol": 294,
+  "sdkVersion": "0.7.0",
+  "declaration": {
+    "name": "todo_due",
+    "schemaVersion": 2,
+    "payloadSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "direction": "outgoing"
+  },
+  "occurrence": {
+    "automationId": "automation-1",
+    "occurrenceId": "evt1.1788828000000.314d8baae71fdef16895c5adc8901d1ee347915faabb85daf4cc37816c17b4cd",
+    "eventVersion": 2,
+    "occurredAtMs": 1788828000000,
+    "scheduleRevision": "revision-7",
+    "payload": {
+      "id": "todo-1"
+    },
+    "invocation": {
+      "prompt": "Review the due todo and act through its declared tools.",
+      "artifacts": [
+        {
+          "name": "Todo context",
+          "mediaType": "application/json",
+          "reference": "https://example.test/todos/todo-1",
+          "sizeBytes": 128,
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  }
+}

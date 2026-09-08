@@ -453,6 +453,13 @@ pub(super) fn write_workflow_runtime_transition(
         ],
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
+    super::app_event_maintenance::record_queue_removals_in(
+        transaction,
+        write.owner_id,
+        write.session_id,
+        write.hot_entities,
+        write.workflow_runs,
+    )?;
     write_workflow_hot_entities(
         transaction,
         write.owner_id,
@@ -474,6 +481,13 @@ pub(super) fn write_workflow_runtime_transition(
         write.timestamp_ms,
         write.delivery_receipts,
         true,
+    )?;
+    super::app_event_maintenance::record_workflow_transition_in(
+        transaction,
+        write.owner_id,
+        write.session_id,
+        write.hot_entities,
+        write.workflow_runs,
     )?;
     delete_missing_active_workflow_runs(
         transaction,
@@ -506,6 +520,13 @@ pub(super) fn write_workflow_runtime_sessions_transition(
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
     for session in sessions {
+        super::app_event_maintenance::record_queue_removals_in(
+            transaction,
+            owner_id,
+            &session.session_id,
+            &session.hot_entities,
+            &session.workflow_runs,
+        )?;
         write_workflow_hot_entities(
             transaction,
             owner_id,
@@ -527,6 +548,13 @@ pub(super) fn write_workflow_runtime_sessions_transition(
             timestamp_ms,
             &session.delivery_receipts,
             true,
+        )?;
+        super::app_event_maintenance::record_workflow_transition_in(
+            transaction,
+            owner_id,
+            &session.session_id,
+            &session.hot_entities,
+            &session.workflow_runs,
         )?;
         delete_missing_active_workflow_runs(
             transaction,
@@ -854,7 +882,7 @@ fn delete_missing_delivery_receipts(
     Ok(())
 }
 
-fn encode_workflow_session(
+pub(super) fn encode_workflow_session(
     session: &RuntimeSession,
 ) -> Result<DurableWorkflowSessionWrite, DaemonError> {
     Ok(DurableWorkflowSessionWrite {
@@ -1782,4 +1810,28 @@ mod tests {
         drop(store);
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// Compares a provisional workflow transition with the actual normalized hot
+/// snapshot on the committing writer connection.
+pub(super) fn hot_state_matches(
+    tx: &Transaction<'_>,
+    owner: &str,
+    expected: &DurableWorkflowSessionWrite,
+) -> rusqlite::Result<bool> {
+    let count: i64 = tx.query_row(
+        "SELECT count(*) FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2",
+        params![owner, expected.session_id],
+        |row| row.get(0),
+    )?;
+    if usize::try_from(count).ok() != Some(expected.hot_entities.len()) {
+        return Ok(false);
+    }
+    for entity in &expected.hot_entities {
+        let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",params![owner,expected.session_id,entity.entity_kind,entity.entity_id],|row|row.get(0)).optional()?;
+        if current.as_deref() != Some(entity.payload_json.as_str()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

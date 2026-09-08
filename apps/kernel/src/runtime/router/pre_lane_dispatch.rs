@@ -35,6 +35,33 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .publishers()
+            .execute(&self.runtime_state, command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .installs()
+            .execute(&self.runtime_state, command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .execute(command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
         if let Some(response) = projected_session_read_response(
             &self.runtime_state,
             &self.session_projection,

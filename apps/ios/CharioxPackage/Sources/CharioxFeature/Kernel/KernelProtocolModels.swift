@@ -168,39 +168,6 @@ public struct AgentPromptState: Equatable, Sendable, Decodable {
     }
 }
 
-public struct RuntimeInteraction: Identifiable, Equatable, Sendable, Decodable {
-    public let id: String
-    public let agentID: String
-    public let kind: String
-    public let level: String
-    public let title: String?
-    public let message: String
-    public let choices: [RuntimeInteractionChoice]
-    public let timeoutSeconds: Int?
-    public let defaultOnTimeout: String?
-    public let requestedAtMs: Int64
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case agentID = "agent_id"
-        case kind
-        case level
-        case title
-        case message
-        case choices
-        case timeoutSeconds = "timeout_sec"
-        case defaultOnTimeout = "default_on_timeout"
-        case requestedAtMs = "requested_at_ms"
-    }
-}
-
-public struct RuntimeInteractionChoice: Identifiable, Equatable, Sendable, Decodable {
-    public let id: String
-    public let label: String
-    public let reply: String
-    public let style: String?
-}
-
 public struct WorkspaceLiveSyncStatus: Equatable, Sendable, Decodable {
     public let sessionID: String
     public let mode: String

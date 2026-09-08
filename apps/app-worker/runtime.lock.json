@@ -1,0 +1,58 @@
+{
+  "schema": "chariox.app-runtime-build.v1",
+  "runtimeVersion": "0.1.0",
+  "workerAbi": 1,
+  "node": {
+    "version": "24.20.0",
+    "moduleAbi": 137,
+    "archive": "node-v24.20.0.tar.xz",
+    "url": "https://nodejs.org/download/release/v24.20.0/node-v24.20.0.tar.xz",
+    "sha256": "2732fc3f588dd335cd6779c06864f7cd424bb1b5ff9a1743059a66c54f9ca4a1",
+    "checksumSource": "https://nodejs.org/download/release/latest-v24.x/SHASUMS256.txt",
+    "checksumObservedAt": "2026-09-07",
+    "configure": ["--shared", "--without-inspector", "--without-node-options", "--disable-single-executable-application"]
+  },
+  "build": {
+    "sourceDateEpoch": 0,
+    "maxJobs": 2,
+    "minTotalMemoryBytes": 17179869184,
+    "minFreeMemoryBytes": 8589934592,
+    "minFreeDiskBytes": 34359738368,
+    "maxSourceArchiveBytes": 83886080,
+    "minimumRemainingMemoryBytes": 2147483648,
+    "minimumRemainingDiskBytes": 4294967296
+  },
+  "dedicatedCi": {
+    "name": "github-linux",
+    "builderImage": "node:24.20.0-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b",
+    "resourceBounds": {
+      "maxJobs": 2,
+      "minTotalMemoryBytes": 7516192768,
+      "minFreeMemoryBytes": 3221225472,
+      "minFreeDiskBytes": 25769803776,
+      "minimumRemainingMemoryBytes": 805306368,
+      "minimumRemainingDiskBytes": 4294967296
+    },
+    "containerMemoryBytes": 6442450944,
+    "maxCpus": 2,
+    "maxPids": 256,
+    "maxArtifactBytes": 536870912
+  },
+  "toolchains": {
+    "linux-gcc12": {"cc": "gcc", "cxx": "g++", "compilerVersion": "12.2.0", "pythonVersion": "3.11.2", "makeVersion": "4.3"},
+    "macos-xcode16": {"cc": "clang", "cxx": "clang++", "compilerVersion": "17.0.0", "xcodeVersion": "16.4", "pythonVersion": "3.11.9", "makeVersion": "3.81"}
+  },
+  "targets": {
+    "darwin-arm64": {"platform": "darwin", "arch": "arm64", "toolchain": "macos-xcode16", "deploymentTarget": "13.5", "nodeLibrary": "libnode.137.dylib", "runtimeLibrary": "libchariox-app-runtime.dylib"},
+    "darwin-x64": {"platform": "darwin", "arch": "x64", "toolchain": "macos-xcode16", "deploymentTarget": "13.5", "nodeLibrary": "libnode.137.dylib", "runtimeLibrary": "libchariox-app-runtime.dylib"},
+    "linux-x64": {"platform": "linux", "arch": "x64", "toolchain": "linux-gcc12", "nodeLibrary": "libnode.so.137", "runtimeLibrary": "libchariox-app-runtime.so"},
+    "linux-arm64": {"platform": "linux", "arch": "arm64", "toolchain": "linux-gcc12", "nodeLibrary": "libnode.so.137", "runtimeLibrary": "libchariox-app-runtime.so"}
+  },
+  "loading": {
+    "mode": "sandbox-before-dlopen",
+    "entryPoint": "chariox_app_runtime_run",
+    "versionEntryPoint": "chariox_app_runtime_node_version",
+    "launcherLinksNode": false,
+    "requiredIntegration": ["native-sandbox-loader", "resource-limits", "authenticated-launch-channel", "trusted-sdk-bootstrap", "node-permission-arguments", "runtime-signing", "macos-notarization", "native-containment-validation"]
+  }
+}

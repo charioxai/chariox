@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock, Weak};
 
 use tokio::sync::oneshot;
+mod pollers;
+use pollers::PendingPollers;
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingMcpContinuation {
@@ -10,11 +12,13 @@ pub(super) struct PendingMcpContinuation {
     pub(super) source_attachment_id: String,
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
+    pub(super) reload_reason: super::ProviderReloadReason,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingMcpContinuationStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
+    pub(super) pollers: PendingPollers,
 }
 
 impl PendingMcpContinuationStore {
@@ -36,12 +40,13 @@ impl PendingMcpContinuationStore {
 pub(super) struct PendingProviderReload {
     pub(super) session_id: String,
     pub(super) agent_id: String,
-    pub(super) reason: String,
+    pub(super) reason: super::ProviderReloadReason,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingProviderReloadStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingProviderReload>>>,
+    pub(super) pollers: PendingPollers,
 }
 
 impl PendingProviderReloadStore {
@@ -55,7 +60,16 @@ impl PendingProviderReloadStore {
 #[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
     pub(super) session_id: String,
+    pub(super) session_store_identity: Weak<()>,
+    pub(super) kernel_operation_owner: Option<String>,
+    pub(super) kernel_operation_deadline: Option<std::time::Instant>,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
+}
+
+impl PendingInteraction {
+    pub(super) fn belongs_to(&self, sessions: &crate::session::SessionStateStore) -> bool {
+        sessions.matches_identity(&self.session_store_identity)
+    }
 }
 
 #[derive(Clone)]
@@ -79,6 +93,7 @@ impl std::fmt::Debug for PendingInteractionResolution {
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingInteractionStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
+    pub(super) mutation: Arc<StdMutex<()>>,
 }
 
 impl PendingInteractionStore {
@@ -91,5 +106,24 @@ impl PendingInteractionStore {
         self.inner
             .lock()
             .expect("pending interaction mutex poisoned")
+    }
+
+    /// Called while the shared mutation guard is held. A dead weak identity
+    /// cannot be revived, so dropping these senders cannot consume a decision
+    /// from a live kernel. Ordinary agent interactions keep their old lifetime.
+    pub(super) fn prune_abandoned_kernel_owners(&self) {
+        let mut pending = self.write();
+        let abandoned = pending
+            .iter()
+            .filter(|(_, entry)| {
+                entry.kernel_operation_owner.is_some()
+                    && entry.session_store_identity.strong_count() == 0
+            })
+            .take(32)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in abandoned {
+            pending.remove(&id);
+        }
     }
 }

@@ -271,6 +271,7 @@ test("Hetzner image preparation installs the hosted-drill tools", async () => {
   const script = await readFile(scriptUrl, "utf8")
   for (const dependency of [
     "acl",
+    "e2fsprogs",
     "bubblewrap",
     "build-essential",
     "ca-certificates",

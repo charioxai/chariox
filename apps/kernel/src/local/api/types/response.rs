@@ -3,6 +3,13 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
+    AppInstallOperationStatus { operation: AppInstallOperationSummary, },
+    AppPackageUploadStatus { upload: AppPackageUploadSummary, },
+    AppInstallationsListed { installations: Vec<AppInstallationSummary>, next_cursor: Option<String>, },
+    AppInstallation { installation: AppInstallationSummary, },
+    AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
+    AppRequestFailed { code: AppRequestErrorCode, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
     SessionDetached { attachment: RuntimeAttachment, },

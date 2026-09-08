@@ -42,9 +42,20 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        self.app_control().schedule_maintenance();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.schedule_app_event_pump();
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        self.owned.sweep_kernel_operation_interactions(false);
+        self.app_control().publishers().pump(self).await;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control().installs().pump(self).await;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control()
+            .lifecycle()
+            .schedule_recovery(tokio::runtime::Handle::current());
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
@@ -366,6 +377,45 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        {
+            let publishers = self.app_control().publishers().clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || publishers.shutdown_blocking(runtime))
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_publisher_shutdown",
+                    message: "App publisher tasks did not drain".into(),
+                })?;
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let installs = self.app_control().installs().clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || installs.shutdown_blocking(runtime))
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_install_shutdown",
+                    message: "App installation tasks did not drain".into(),
+                })?;
+        }
+        self.owned.sweep_kernel_operation_interactions(true);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let lifecycle = self.app_control().lifecycle().clone();
+            // The blocking owner survives cancellation of this await and keeps
+            // every worker/broker lease until actual shutdown finishes.
+            tokio::task::spawn_blocking(move || lifecycle.shutdown_blocking())
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_worker_shutdown",
+                    message: "App worker shutdown did not complete".into(),
+                })?
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_worker_stop_persistence",
+                    message: "App workers were reaped but a requested stop could not be persisted"
+                        .into(),
+                })?;
+        }
         self.with_app_side_effect(|app| app.shutdown_cleanup())
             .await
     }

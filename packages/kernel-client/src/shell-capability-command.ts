@@ -498,10 +498,10 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatHomeExtensionAuditEvents(events), data: { events } }
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
+    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
   }
   if (!isExtensionKind(kind)) {
-    return { ok: false, message: "extension kind must be mcp, skill, script, or connector" }
+    return { ok: false, message: "extension kind must be mcp, skill, script, connector, or app" }
   }
   if (action === "grants") {
     const agent = await resolveShellAgent(context, deps, agentRef)
@@ -509,7 +509,7 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatAgentExtensionGrants(agent.agent, kind), data: { agent: agent.agent } }
   }
   if (!agentRef || !name) {
-    return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>]` }
+    return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>]` }
   }
   const environment = readOption(parsed.args, "--env")
   if (action === "grant" && kind === "script" && !environment) {
@@ -640,7 +640,7 @@ async function confirmActiveHomeProxyGrant(
   agentRef: string,
   name: string,
 ): Promise<ShellCommandResult | null> {
-  if (action !== "grant" || kind === "skill") {
+  if (action !== "grant" || kind === "skill" || kind === "app") {
     return null
   }
   const agent = await resolveShellAgent(context, deps, agentRef)
@@ -674,7 +674,7 @@ function readNumberOption(args: string[], flag: string): number | null {
 }
 
 function isExtensionKind(value: string | undefined): value is ExtensionKind {
-  return value === "mcp" || value === "skill" || value === "script" || value === "connector"
+  return value === "mcp" || value === "skill" || value === "script" || value === "connector" || value === "app"
 }
 
 function formatConnectorSummary(connector: CharioxConnectorDefinition): string {

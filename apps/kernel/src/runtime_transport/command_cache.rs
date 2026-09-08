@@ -98,10 +98,27 @@ pub(crate) enum CommandReservation {
     Conflict,
 }
 
-pub(crate) fn request_is_cacheable(_request: &LocalDaemonRequest) -> bool {
-    // Every command needs in-memory deduplication so a transport replay cannot execute it twice.
-    // Sensitive interaction results are excluded from disk persistence separately below.
-    true
+pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    // App reads and upload retries must reach owner authorization and current
+    // durable state. Uploads deduplicate in their own owner-scoped ledger with
+    // original expiries and abort receipts. This older transport fingerprint
+    // does not carry the caller, and cached results could outlive the upload.
+    !matches!(
+        request,
+        LocalDaemonRequest::ListAppInstallations(_)
+            | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
+            | LocalDaemonRequest::GetAppPublisherEnrollment(_)
+            | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
+            | LocalDaemonRequest::GetAppInstallation(_)
+            | LocalDaemonRequest::BeginAppInstall(_)
+            | LocalDaemonRequest::GetAppInstallOperation(_)
+            | LocalDaemonRequest::CancelAppInstallOperation(_)
+            | LocalDaemonRequest::GetAppInstallationJournal(_)
+            | LocalDaemonRequest::BeginAppPackageUpload(_)
+            | LocalDaemonRequest::PutAppPackageUploadChunk(_)
+            | LocalDaemonRequest::GetAppPackageUpload(_)
+            | LocalDaemonRequest::AbortAppPackageUpload(_)
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

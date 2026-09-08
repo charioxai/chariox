@@ -1,0 +1,207 @@
+name: App components
+
+on:
+  pull_request:
+    paths:
+      - 'packages/app-package/**'
+      - 'packages/app-runtime/**'
+      - 'packages/app-sdk/**'
+      - 'apps/app-worker/**'
+      - 'apps/kernel/**'
+      - 'packages/kernel-client/**'
+      - 'packages/tool-display/**'
+      - 'apps/cli/src/app-*.ts'
+      - 'apps/cli/src/app-install-file/**'
+      - 'apps/cli/src/cli-app-root.tsx'
+      - 'apps/cli/src/cli-command-action-composition.ts'
+      - 'apps/cli/src/cli-session-lifecycle-composition.ts'
+      - 'apps/cli/src/cli-exit-controller*.ts'
+      - 'apps/cli/src/commands*.ts'
+      - 'apps/cli/src/prompt-input-history-controller*.ts'
+      - 'apps/cli/src/cli-options.ts'
+      - 'apps/cli/src/cli-types.ts'
+      - 'apps/cli/src/ipc.ts'
+      - 'apps/cli/src/preferences.ts'
+      - 'apps/cli/src/runtime.ts'
+      - 'apps/cli/package.json'
+      - 'apps/cli/tsconfig.json'
+      - 'deploy/managed-kernel/**'
+      - 'scripts/*managed-kernel-release*'
+      - 'scripts/build-app-runtime*'
+      - 'scripts/test-app-fetch-clients.mjs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.github/workflows/apps-components.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-components-${{ github.event.pull_request.number || github.ref }}
+  # Finish an admitted compilation while newer source waits in the one pending
+  # slot. Frequent implementation pushes must not starve macOS verification.
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    name: App contracts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUST_TEST_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test package, persistence and Rust/Node wire contract
+        run: cargo test --locked -p chariox-app-package -p chariox-app-runtime -- --test-threads=1
+      - name: Test actual native SDK fixture through the worker peer
+        run: cargo test --locked -p chariox-app-runtime --features test-fixtures --test worker_sdk_fixture -- --test-threads=1
+      - name: Test Node SDK
+        run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
+      - name: Test pinned Fetch clients through the broker adapter
+        run: node scripts/test-app-fetch-clients.mjs
+      - name: Test runtime build planning and resource guards
+        run: node --test scripts/build-app-runtime.test.mjs
+      - name: Test signed managed release helper packaging
+        run: node --test --test-concurrency=1 scripts/managed-kernel-release.test.mjs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - name: Install only developer command dependencies without lifecycle scripts
+        run: >-
+          pnpm install --frozen-lockfile --ignore-scripts
+          --filter @chariox/cli... --filter chariox
+          --child-concurrency 1 --network-concurrency 4
+      - name: Build shared command contracts
+        run: pnpm build:kernel-client
+      - name: Typecheck and test App developer and terminal installation commands
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.cwd();
+          writeFileSync(join(process.env.RUNNER_TEMP, 'app-developer-tsconfig.json'), JSON.stringify({
+            extends: join(root, 'apps/cli/tsconfig.json'),
+            compilerOptions: {
+              declaration: false, declarationMap: false, sourceMap: false,
+              typeRoots: [join(root, 'node_modules/@types'), join(root, 'apps/cli/node_modules/@types')],
+            },
+            include: ['app-developer.ts', 'app-developer.test.ts', 'app-command.ts', 'app-command.test.ts',
+              'app-install-file.test.ts', 'app-command-handler.test.ts', 'commands.test.ts',
+              'cli-exit-controller.test.ts', 'prompt-input-history-controller.test.ts']
+              .map(name => join(root, 'apps/cli/src', name)),
+          }));
+          NODE
+          # Emit only this dependency graph to the normal package output so ESM
+          # resolves the installed workspace dependencies without custom links.
+          pnpm exec tsc -p "$RUNNER_TEMP/app-developer-tsconfig.json"
+          node --test --test-concurrency=1 \
+            apps/cli/dist/app-developer.test.js apps/cli/dist/app-command.test.js \
+            apps/cli/dist/app-install-file.test.js apps/cli/dist/app-command-handler.test.js \
+            apps/cli/dist/commands.test.js apps/cli/dist/cli-exit-controller.test.js \
+            apps/cli/dist/prompt-input-history-controller.test.js
+      - name: Remove developer command build output
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          rmSync('apps/cli/dist', { recursive: true, force: true });
+          rmSync(join(process.env.RUNNER_TEMP, 'app-developer-tsconfig.json'), { force: true });
+          NODE
+      - name: Test Chromium launch, sandbox probing and restore control
+        run: >-
+          node --test --test-concurrency=1
+          apps/kernel/slice-linux-docker/chromium-sandbox.test.mjs
+          apps/kernel/slice-linux-docker/chromium-restore.test.mjs
+          apps/kernel/slice-linux-docker/docker/chromium-sandbox-probe.test.mjs
+      - name: Test kernel App routing and durable writer
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          # Compile once. A compile failure stops immediately; independent
+          # fixture failures must not hide the other selected kernel results.
+          cargo test --locked -p chariox-kernel --lib --no-run
+          app_kernel_failures=0
+          for app_kernel_filter in \
+            runtime::app_control:: \
+            runtime::app_publisher_control:: \
+            runtime::app_install_control:: \
+            app_relay_ \
+            runtime::app_package_upload_control:: \
+            runtime::app_package_preparation:: \
+            runtime::app_state_broker:: \
+            runtime::app_files_broker::tests:: \
+            runtime::app_http:: \
+            runtime::app_worker:: \
+            runtime::app_lifecycle:: \
+            runtime::router::tests::session_actor_projection::kernel_operation_interactions:: \
+            runtime::router::tests::session_actor_projection::runtime_interactions:: \
+            runtime::native_interaction_bridge::tests:: \
+            runtime::state::runtime_interaction_owned_state:: \
+            session::runtime_interactions::subject_tests:: \
+            runtime::router::tests::app_tools:: \
+            runtime::state::provider_reload::tests:: \
+            runtime::state::provider_output_runtime_tests::mcp_catalog_reload:: \
+            runtime::state::pending_runtime_state::pollers::tests:: \
+            app::remote_lease::tests::catalog_admission:: \
+            runtime::runtime_tool_catalog::tests:: \
+            transport::mcp_server::catalog_stream_tests:: \
+            provider::codex_client::mcp_reload::tests:: \
+            runtime::state::remote_prompt_worker_submission_runtime::tests::native_refresh_pending_retries_only_the_exact_pre_admission_relay_error \
+            runtime::app_operation_budget:: \
+            runtime::app_event_pump:: \
+            app_event_pump_runtime:: \
+            runtime::prompt_state::dispatch_intent_tests \
+            dispatch_recovery_tests:: \
+            pump_integration_tests:: \
+            concurrent_owned_workflow_launches_preserve_single_run_admission \
+            failed_owned_queue_launch_releases_its_workspace_claim \
+            app_bindings:: \
+            app_binding_parser_preserves_meta_self_access \
+            app_upload_maximum_chunk \
+            durable_state:: \
+            queued_event_prompt_derives_reply_and_context_capabilities_independently \
+          ; do
+            if ! cargo test --locked -p chariox-kernel --lib "$app_kernel_filter" -- --test-threads=1; then
+              app_kernel_failures=1
+            fi
+          done
+          exit "$app_kernel_failures"
+      - name: Test native CLI developer dispatch
+        run: >-
+          cargo test --locked -p chariox-kernel --bin chariox-cli app_developer::tests:: -- --test-threads=1
+      - name: Test Chromium migration and atomic checkpoint recovery
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          cargo test --locked -p chariox-kernel --lib chromium_migration:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib saved_state_persistence:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib bounded_output::tests:: -- --test-threads=1
+      - name: Check shared protocol snapshots and terminal catalog
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
+          cargo test --locked -p chariox-kernel --lib protocol_shapes -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib terminal_command_catalog::tests:: -- --test-threads=1
+      # Component checks do not certify a signed worker or an OS sandbox. Those
+      # remain separate Phase 1 artifact and hostile-package release gates.
