@@ -7,6 +7,7 @@ import {randomBytes} from 'node:crypto';
 import {openCookieImportJournal} from './cookie-import-journal.mjs';
 import {BrowserCdpClient} from '../kernel/slice-linux-docker/docker/browser-controller-cdp.mjs';
 import {applyControllerCookieImport} from './controller-cookie-import.mjs';
+import {createCdpCookieStore,recoverCookieImport} from './cookie-import-transaction.mjs';
 
 assert.ok(process.env.PLAYWRIGHT_MODULE,'PLAYWRIGHT_MODULE must name the installed dependency');
 const {chromium} = await import(process.env.PLAYWRIGHT_MODULE);
@@ -64,6 +65,25 @@ test('controller imports into its registered target and rejects stale browser an
       browserGeneration:refreshed.browser_generation,documentId:current.document_id},authority),
       {code:'cookie_import_recovery_required',recoveryRequired:true});
     assert.equal((await context.cookies()).find(cookie => cookie.name === 'session').value,'fixture-controller');
+    // Replace the executor connection before replay. The fixture has no active
+    // page scripts or network cookie writers; product quiescence is separate.
+    await controller.close();
+    controller = new BrowserCdpClient({debuggerEndpoint:`http://127.0.0.1:${port}`});
+    const recoveredState = await controller.reconcile(viewport);
+    const recoveredTab = recoveredState.tabs.find(tab => tab.url === 'https://example.test/');
+    const {connection,sessionId} = await controller.resolvePageTarget(recoveredTab.target_id);
+    const store = await createCdpCookieStore({
+      browserCdp:{send:(method,params)=>connection.send(method,params)},
+      pageCdp:{send:(method,params)=>connection.send(method,params,sessionId)},
+    });
+    const recovery = await recoverCookieImport({...authority,store});
+    assert.equal(recovery.recovered,true);
+    assert.deepEqual(await context.cookies(),[]);
+    await page.reload();
+    assert.equal(await page.textContent('body'),'SIGNED_OUT');
+    const retained = await journal.read();
+    assert.equal(retained.receipt,recovery.receipt);
+    retained.bytes.fill(0);
   } finally {
     const closed = await Promise.allSettled([
       journal?.close(), controller?.close(), context?.close(),
