@@ -18,6 +18,7 @@ pub(crate) mod app_backend_broker;
 mod app_files_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_worker;
+mod browser_controller;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
 pub(crate) mod cloud_api_client;

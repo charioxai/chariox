@@ -4,8 +4,18 @@ import test from "node:test";
 import { fixtureServer } from "./fixture-server.mjs";
 import { verifyInputs } from "./prepare.mjs";
 import { cleanupResources } from "./resources.mjs";
+import { manifestFromLock } from "./controller.mjs";
 
 test("browser fixture consumes the exact production base, snapshot, CA and packaged launcher inputs", verifyInputs);
+
+test("controller harness rejects missing or ambiguous dependency pins", () => {
+  const pins = ["tokio", "tokio-tungstenite", "futures-util", "serde_json", "base64"];
+  const lock = pins.map(name => `[[package]]\nname = "${name}"\nversion = "1.2.3"\n`).join("");
+  const manifest = manifestFromLock(lock);
+  assert.match(manifest, /tokio = \{ version = "=1.2.3", features/);
+  assert.throws(() => manifestFromLock(lock.replace('name = "tokio"', 'name = "missing"')));
+  assert.throws(() => manifestFromLock(lock + '[[package]]\nname = "tokio"\nversion = "1.2.4"\n'));
+});
 
 test("fixture authentication requires its cookie and server revocation independently invalidates it", async () => {
   const server = fixtureServer();

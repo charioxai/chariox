@@ -1238,3 +1238,23 @@ substitution after verification. Compilation took 5.34 seconds, the tests 0.10
 seconds, and sampled task RSS peaked at 391,120 KiB. No full kernel compilation
 or local Chromium launch ran. Review `5137783049` also reports no actionable
 finding in the preceding approval-cleanup compile fix.
+
+### Exact-target Chromium controller (2026-09-08)
+
+The private kernel controller connects to the managed owner's explicit page
+target and retains its execution lease. It bounds accessibility snapshots,
+latest-frame streaming and typed input; it keeps the Room action reservation
+through transmitted input even if the caller disconnects. Runtime, document and
+controller epochs reject stale references, including reconnect to the same Tab.
+Lost completion or navigation during input reports an uncertain outcome without
+automatic retry. No viewer endpoint or alternative browser owner is added.
+
+Ten tests of the copied, hash-recorded production source pass in the isolated
+harness (0.02 seconds; sampled peak 42,192 KiB). One compiled test of actual
+Chromium is deliberately ignored locally and wired into the existing hosted
+profile drill. That test uses two owned targets in the production launcher,
+checks exact-target input/accessibility/frames, and closes only its own targets.
+Its separate process has hard memory, CPU and lifetime limits; it enters only
+the owned browser's network namespace and drops privilege before execution.
+Hosted browser execution, Room integration and released-terminal acceptance
+remain required and are not inferred from the unit harness.

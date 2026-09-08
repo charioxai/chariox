@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, readFileSync, statSync, writeFileSync } from
 import { join } from "node:path";
 import { checked, cleanup, docker, loadOwner } from "./resources.mjs";
 import { source } from "./prepare.mjs";
+import { runController } from "./controller.mjs";
 
 const [mode, scratch] = process.argv.slice(2);
 const owner = loadOwner(scratch);
@@ -50,6 +51,7 @@ try {
   const firstVolume = volume("source");
   const first = create("source", firstVolume);
   startBrowser(first, "initial-sandbox");
+  record("exact-target-controller", runController(scratch, first));
   writeFileSync(join(evidence, "versions.txt"), execute(first, ["bash", "-lc", "node --version; chromium --version; dpkg-query -W chromium chromium-sandbox; uname -r"]));
   profile(first, "seed", "seed");
   profile(first, "verify", "initial-storage");
