@@ -1216,3 +1216,10 @@ existing filter groups even if one fixture fails. It still fails the gate if any
 filter fails, and stops immediately on a compile error. The filter inventory is
 unchanged; Bash syntax validation passes. This avoids repeated hosted rebuild
 cycles merely to discover the next independent fixture failure.
+
+Review `5137722297` reports no actionable findings through `0959f2da2` and
+confirms the deferred-stop race is addressed. The `4ce881e90` hosted jobs reach
+kernel compilation on both platforms and identify one type error in failed
+approval-projection cleanup: the session getter already returns an owned value.
+The unnecessary `.cloned()` is removed; full kernel compilation and the new
+regressions remain pending the hosted rerun.

@@ -117,7 +117,7 @@ impl KernelRuntimeOwnedState {
             // durable writer is fenced). Remove only this failed registration,
             // under the same session authority; preserve intervening changes.
             let mut sessions = self.session_store.write();
-            if let Ok(mut session) = sessions.get_session(session_id).cloned() {
+            if let Ok(mut session) = sessions.get_session(session_id) {
                 if session
                     .active_interactions()
                     .iter()
