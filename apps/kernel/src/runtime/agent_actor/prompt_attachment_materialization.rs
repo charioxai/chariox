@@ -8,6 +8,10 @@ use base64::Engine;
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 
+#[cfg(unix)]
+#[path = "prompt_attachment_directory.rs"]
+mod private_directory;
+
 pub(crate) const INLINE_PROMPT_ATTACHMENT_DIR: &str = "chariox-terminal-prompt-attachments";
 static NEXT_ATTACHMENT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -34,48 +38,14 @@ pub(crate) fn materialize_inline_prompt_attachments(
                 .map(sanitize_attachment_filename)
                 .unwrap_or_else(|| format!("attachment-{index}"));
             let root = inline_prompt_attachment_root(session_id, agent_id);
-            let mut directory = fs::DirBuilder::new();
-            directory.recursive(true);
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                directory.mode(0o700);
-            }
-            directory
-                .create(&root)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "create inline prompt attachment directory",
-                    message: error.to_string(),
-                })?;
-            let validate_error = |error: std::io::Error| DaemonError::LocalTransport {
-                operation: "validate inline prompt attachment directory",
+            let prepared = private_directory::prepare(&root, &std::env::temp_dir());
+            #[cfg(not(unix))]
+            let prepared = prepare_nonunix_directory(&root);
+            prepared.map_err(|error| DaemonError::LocalTransport {
+                operation: "prepare private inline prompt attachment directory",
                 message: error.to_string(),
-            };
-            let temp_root = std::env::temp_dir();
-            let relative =
-                root.strip_prefix(&temp_root)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "validate inline prompt attachment directory",
-                        message: format!(
-                            "attachment root is outside the current temp directory: {error}"
-                        ),
-                    })?;
-            let expected = temp_root
-                .canonicalize()
-                .map_err(validate_error)?
-                .join(relative);
-            if root.canonicalize().map_err(validate_error)? != expected {
-                return Err(DaemonError::LocalTransport {
-                    operation: "validate inline prompt attachment directory",
-                    message: "attachment directory must not traverse symbolic links".to_string(),
-                });
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-                    .map_err(validate_error)?;
-            }
+            })?;
             let path = root.join(format!(
                 "{}-{}-{}-{}-{}",
                 crate::session::unix_epoch_ms(),
@@ -108,10 +78,33 @@ pub(crate) fn materialize_inline_prompt_attachments(
 }
 
 pub(crate) fn inline_prompt_attachment_root(session_id: &str, agent_id: &str) -> PathBuf {
+    #[cfg(unix)]
+    let namespace = format!(
+        "{INLINE_PROMPT_ATTACHMENT_DIR}-{}",
+        private_directory::current_uid()
+    );
+    #[cfg(not(unix))]
+    let namespace = INLINE_PROMPT_ATTACHMENT_DIR;
     std::env::temp_dir()
-        .join(INLINE_PROMPT_ATTACHMENT_DIR)
+        .join(namespace)
         .join(sanitize_path_component(session_id))
         .join(sanitize_path_component(agent_id))
+}
+
+#[cfg(not(unix))]
+fn prepare_nonunix_directory(root: &Path) -> std::io::Result<()> {
+    let temp = std::env::temp_dir();
+    let relative = root
+        .strip_prefix(&temp)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    fs::create_dir_all(root)?;
+    if root.canonicalize()? != temp.canonicalize()?.join(relative) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "attachment directory must not traverse symbolic links",
+        ));
+    }
+    Ok(())
 }
 
 fn sanitize_attachment_filename(value: &str) -> String {
@@ -203,6 +196,29 @@ mod permission_tests {
             0o600
         );
         assert_eq!(fs::read(&path).unwrap(), b"private");
+    }
+
+    #[test]
+    fn attachment_writer_makes_session_directory_private() {
+        let fixture = Fixture::new();
+        let parent = fixture.root.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o755)).unwrap();
+        fixture.materialize().unwrap();
+        assert_eq!(
+            fs::metadata(parent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn attachment_writer_rejects_symlink_parent_without_creating_children() {
+        let fixture = Fixture::new();
+        let target = Fixture::new();
+        fs::create_dir_all(&target.root).unwrap();
+        std::os::unix::fs::symlink(&target.root, fixture.root.parent().unwrap()).unwrap();
+        assert!(fixture.materialize().is_err());
+        assert_eq!(fs::read_dir(&target.root).unwrap().count(), 0);
     }
 
     #[test]

@@ -1103,21 +1103,15 @@ mod tests {
     #[test]
     fn managed_namespace_exposes_materialized_prompt_attachment_to_its_provider() {
         use base64::Engine;
-        use crate::runtime::agent_actor::prompt_attachment_materialization::INLINE_PROMPT_ATTACHMENT_DIR;
 
         let session_id = format!(
             "managed-attachment-session-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         );
-        let request = LaunchProviderRequest::new(
-            &session_id,
-            "codex",
-            "codex",
-            "default",
-            "gpt-5.6-luna",
-        )
-        .with_agent_id("agent:two");
+        let request =
+            LaunchProviderRequest::new(&session_id, "codex", "codex", "default", "gpt-5.6-luna")
+                .with_agent_id("agent:two");
         let attachment_root = managed_prompt_attachment_root(&request)
             .expect("managed attachment root should prepare")
             .expect("agent-bound launches should have an attachment root");
@@ -1152,7 +1146,7 @@ mod tests {
                 && window[1] == attachment_root.to_string_lossy()
                 && window[2] == attachment_root.to_string_lossy()
         }));
-        let global_root = std::env::temp_dir().join(INLINE_PROMPT_ATTACHMENT_DIR);
+        let global_root = attachment_root.parent().unwrap().parent().unwrap();
         assert!(!args.windows(3).any(|window| {
             window[0] == "--ro-bind"
                 && window[1] == global_root.to_string_lossy()
