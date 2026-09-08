@@ -68,6 +68,7 @@ export type CliInputRoutingCompositionDeps = {
   handleKernelCommand: AnyFn
   handleMachineCommand: AnyFn
   handleSliceCommand: AnyFn
+  openRoomViewer?: AnyFn
   handleRoomCommand: AnyFn
   handleRelayCommand: AnyFn
   handleCloudCommand: AnyFn
@@ -276,6 +277,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
     clientId: deps.options.clientId,
+    ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     workspaceShellContext: deps.workspaceShellContext,
     setWorkspaceShellContext: (context) => {
       deps.setWorkspaceShellContext(context)

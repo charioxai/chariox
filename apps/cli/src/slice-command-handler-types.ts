@@ -1,5 +1,6 @@
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 import type { SliceDisplayBackend } from "@chariox/kernel-client/kernel-types"
+import type { RoomViewerOpenResult, RoomViewerTarget } from "./room-command-handler.js"
 import type {
   SliceBackupRecord,
   SliceDisplayEndpoint,
@@ -39,6 +40,11 @@ export type SliceCommandHandlerDeps = {
   currentWorkspaceTarget: () => string
   currentWorktreeTarget: () => string
   focusedAgentId: () => string | null
+  isAttached?: () => boolean
+  sessionId?: () => string
+  attachmentId?: () => string | null
+  sendRoomEnvironmentRequest?: <TResponse>(request: unknown) => Promise<TResponse>
+  openRoomViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
