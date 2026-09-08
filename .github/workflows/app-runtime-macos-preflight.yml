@@ -1,0 +1,59 @@
+name: App runtime macOS resource preflight (no compilation)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/app-runtime-macos-preflight*'
+      - '.github/workflows/app-runtime-macos-preflight.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-runtime-macos-preflight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.11.9'
+          architecture: arm64
+      - name: Select existing pinned Xcode without downloading or deleting SDKs
+        run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+      - name: Test metadata parsers
+        run: node --test --test-concurrency=1 scripts/app-runtime-macos-preflight.test.mjs
+      - name: Measure resource and toolchain facts without native compilation
+        id: preflight
+        env:
+          PREFLIGHT_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: |
+          # A separate group makes the observed membership unambiguous. There
+          # is no watcher or enforced CPU/RAM/swap policy in this preflight.
+          python3 -c 'import os,sys; os.getpgrp() == os.getpid() or os.setsid(); os.execv(sys.argv[1],sys.argv[1:])' \
+            "$(command -v node)" scripts/app-runtime-macos-preflight.mjs
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.preflight.outputs.scratch != ''
+        with:
+          name: MACOS-PREFLIGHT-NO-BUILD-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.preflight.outputs.evidence }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove only owned metadata scratch
+        if: always() && steps.preflight.outputs.scratch != ''
+        env:
+          PREFLIGHT_SCRATCH: ${{ steps.preflight.outputs.scratch }}
+        run: |
+          python3 -c 'import os,pathlib,re,shutil; p=pathlib.Path(os.environ["PREFLIGHT_SCRATCH"]); root=pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(); assert p.parent==root and re.fullmatch(r"chariox-macos-preflight\.[A-Za-z0-9]+",p.name) and not p.is_symlink(); shutil.rmtree(p)'
