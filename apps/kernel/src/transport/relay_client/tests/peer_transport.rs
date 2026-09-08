@@ -168,6 +168,8 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                     destination_root: "/managed/context".to_string(),
                     primary_repository_id: "repo-primary".to_string(),
                     repositories: vec![RelayManagedContextImportedRepository {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repo-primary".to_string(),
                         role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                         target_directory: "primary".to_string(),
