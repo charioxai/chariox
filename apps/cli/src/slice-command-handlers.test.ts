@@ -122,6 +122,66 @@ test("slice command create passes display mode and current worktree mount", asyn
   assert.equal(harness.footers.at(-1)?.message, "created slice qa")
 })
 
+test("slice command create passes an explicit headed display backend", async (t) => {
+  for (const displayBackend of ["selkies", "novnc"] as const) {
+    await t.test(displayBackend, async () => {
+      const harness = sliceHarness()
+
+      await handleSliceSlashCommand(harness.deps, command(
+        "create",
+        `qa-${displayBackend}`,
+        "--display-backend",
+        displayBackend,
+        "--headed",
+      ))
+
+      assert.equal(harness.createdSlices.length, 1)
+      assert.equal(harness.createdSlices[0]?.displayMode, "headed")
+      assert.equal(harness.createdSlices[0]?.displayBackend, displayBackend)
+    })
+  }
+})
+
+test("slice command create rejects invalid display backends", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command(
+    "create",
+    "qa",
+    "--headed",
+    "--display-backend",
+    "unknown",
+  ))
+
+  assert.deepEqual(harness.createdSlices, [])
+  assert.deepEqual(harness.footers.at(-1), {
+    message: "usage: /slice create <name> --headed --display-backend selkies|novnc",
+    tone: "error",
+  })
+})
+
+test("slice command create rejects a display backend for non-headed slices", async (t) => {
+  for (const displayArgs of [[], ["--headless"]]) {
+    await t.test(displayArgs.length === 0 ? "implicit headless" : "explicit headless", async () => {
+      const harness = sliceHarness()
+
+      await handleSliceSlashCommand(harness.deps, command(
+        "create",
+        "qa",
+        ...displayArgs,
+        "--display-backend",
+        "selkies",
+      ))
+
+      assert.deepEqual(harness.createdSlices, [])
+      assert.deepEqual(harness.footers.at(-1), {
+        message: "--display-backend requires --headed",
+        tone: "error",
+      })
+    })
+  }
+})
+
 test("slice command create can request a clean base", async () => {
   const harness = sliceHarness()
 
