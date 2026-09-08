@@ -12,6 +12,8 @@
 mod monitor;
 mod record;
 mod spawn;
+#[cfg(target_os = "macos")]
+mod storage_macos;
 #[cfg(any(target_os = "macos", test))]
 mod worker_platform;
 
