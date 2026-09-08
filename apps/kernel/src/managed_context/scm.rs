@@ -107,16 +107,16 @@ impl std::fmt::Debug for GitCredentialCommandContext {
 
 impl GitCredentialCommandContext {
     pub(crate) fn inventory_from_process() -> Result<Self, DaemonError> {
+        Self::source_from_process()
+    }
+
+    pub(crate) fn source_from_process() -> Result<Self, DaemonError> {
         if let Some(home) = std::env::var_os("CHARIOX_MANAGED_PROVIDER_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
         {
             return Self::managed_target(home);
         }
-        Self::source_from_process()
-    }
-
-    pub(crate) fn source_from_process() -> Result<Self, DaemonError> {
         let home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -1347,12 +1347,23 @@ esac
             .expect("resolve managed Git credential inventory context");
         assert_eq!(context.home, target_home);
         assert_eq!(context.gh_config_dir, Some(target_home.join(".config/gh")));
+        let export_context = GitCredentialCommandContext::source_from_process()
+            .expect("resolve managed Git credential export context");
 
         restore_env("CHARIOX_MANAGED_PROVIDER_HOME", previous_provider_home);
         restore_env("HOME", previous_home);
         restore_env("PATH", previous_path);
         restore_env("XDG_CONFIG_HOME", previous_xdg_config_home);
         restore_env("GH_CONFIG_DIR", previous_gh_config_dir);
+        assert_eq!(
+            export_context, context,
+            "inventory and export must use the same credential home"
+        );
+        assert_eq!(
+            export_selected_git_credentials(&github_selection(), &export_context)
+                .expect("export credential from managed provider home"),
+            vec![github_materialization("github-secret-canary")]
+        );
         fs::remove_dir_all(root).expect("remove managed inventory fixture");
     }
 
