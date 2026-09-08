@@ -37,6 +37,8 @@ pub(super) struct Grant {
     pub temporary: String,
     pub data_mount_id: u64,
     pub temporary_mount_id: u64,
+    pub data_root: model::Identity,
+    pub temporary_root: model::Identity,
     pub data_bytes: u64,
     pub temporary_bytes: u64,
 }
@@ -162,6 +164,8 @@ impl Store {
                 temporary: path.join("tmp").to_string_lossy().into_owned(),
                 data_mount_id: journal.images[0].mount_id.ok_or(Error::Identity)?,
                 temporary_mount_id: journal.images[1].mount_id.ok_or(Error::Identity)?,
+                data_root: files::identity(&directory.child(OsStr::new("data"))?.0)?,
+                temporary_root: files::identity(&directory.child(OsStr::new("tmp"))?.0)?,
                 data_bytes: DATA_BYTES,
                 temporary_bytes: TMP_BYTES,
             })

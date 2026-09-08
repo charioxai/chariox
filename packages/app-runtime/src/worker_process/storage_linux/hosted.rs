@@ -80,6 +80,14 @@ fn exhaust(path: &std::path::Path, limit: u64) -> u64 {
 fn hosted_private_capacity_persistence_tmp_reset_and_noexec() {
     let context = Context::open("11111111111111111111111111111111");
     let mut lease = context.lease("persistent", 1);
+    let observations = lease.mount_observations();
+    for (helper, kernel) in observations {
+        assert_ne!(
+            helper, kernel,
+            "fixture must observe propagated private-namespace mounts"
+        );
+    }
+    println!("Root helper / kernel mount IDs: {observations:?}; device/inode identities matched");
     let data = lease.data_path();
     let temporary = lease.temporary_path();
     fs::write(data.join("sentinel"), b"persistent data").unwrap();

@@ -23,6 +23,7 @@ pub(super) struct Lease {
     pub data: Option<Dir>,
     pub temporary: Option<Dir>,
     path: PathBuf,
+    local_mount_ids: [u64; 2],
     released: bool,
 }
 #[derive(Serialize)]
@@ -97,9 +98,16 @@ impl Lease {
         let parent = files::search_root_directory(&path)?;
         let data = parent.child(OsStr::new("data"))?;
         let temporary = parent.child(OsStr::new("tmp"))?;
-        verify(&data, grant.data_mount_id, DATA_BYTES, uid)?;
-        verify(&temporary, grant.temporary_mount_id, TMP_BYTES, uid)?;
-        if data.0.metadata()?.dev() == temporary.0.metadata()?.dev() {
+        let local_mount_ids = [
+            verify(&data, &grant.data_root, DATA_BYTES, uid)?,
+            verify(&temporary, &grant.temporary_root, TMP_BYTES, uid)?,
+        ];
+        if grant.data_mount_id == 0
+            || grant.temporary_mount_id == 0
+            || grant.data_mount_id == grant.temporary_mount_id
+            || local_mount_ids[0] == local_mount_ids[1]
+            || data.0.metadata()?.dev() == temporary.0.metadata()?.dev()
+        {
             return Err(Error::Identity);
         }
         Ok(Self {
@@ -108,6 +116,7 @@ impl Lease {
             data: Some(data),
             temporary: Some(temporary),
             path,
+            local_mount_ids,
             released: false,
         })
     }
@@ -116,6 +125,13 @@ impl Lease {
     }
     pub fn temporary_path(&self) -> PathBuf {
         self.path.join("tmp")
+    }
+    #[cfg(test)]
+    pub fn mount_observations(&self) -> [(u64, u64); 2] {
+        [
+            (self.grant.data_mount_id, self.local_mount_ids[0]),
+            (self.grant.temporary_mount_id, self.local_mount_ids[1]),
+        ]
     }
     /// Call after the worker cgroup is empty and every broker/worker directory
     /// pin has drained, but before dropping/removing that cgroup. Held mount FDs
@@ -147,9 +163,13 @@ impl Drop for Lease {
         // pending journal stays durable if a mount or process cannot be reaped.
     }
 }
-fn verify(dir: &Dir, mount_id: u64, capacity: u64, uid: u32) -> Result<()> {
+fn verify(dir: &Dir, root: &model::Identity, capacity: u64, uid: u32) -> Result<u64> {
     let metadata = dir.0.metadata()?;
-    if mount_id == 0 || metadata.uid() != uid || metadata.mode() & 0o7777 != 0o700 {
+    if metadata.dev() != root.device
+        || metadata.ino() != root.inode
+        || metadata.uid() != uid
+        || metadata.mode() & 0o7777 != 0o700
+    {
         return Err(Error::Identity);
     }
     let mut fs = std::mem::MaybeUninit::<libc::statfs>::zeroed();
@@ -180,8 +200,11 @@ fn verify(dir: &Dir, mount_id: u64, capacity: u64, uid: u32) -> Result<()> {
         return Err(Error::Io);
     }
     let stat = unsafe { stat.assume_init() };
-    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id != mount_id {
+    // Propagation into the kernel's private mount namespace clones a mount and
+    // allocates another mount ID. The device/inode pins the same filesystem root;
+    // each namespace keeps its own mount ID for subsequent local observation.
+    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id == 0 {
         return Err(Error::Identity);
     }
-    Ok(())
+    Ok(stat.stx_mnt_id)
 }
