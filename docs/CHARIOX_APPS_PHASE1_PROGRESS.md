@@ -1425,3 +1425,13 @@ recovery, fairness, disconnected requests and the uncertainty fence. They are
 selected for hosted validation and have not yet compiled or executed. Public
 terminal enrollment requests and the normal publisher-file flow remain to be
 connected; this internal controller adds no new protocol shape.
+
+### Chromium cleanup review correction (2026-09-08)
+
+Review `5138177212` identifies asynchronous target removal after DevTools close
+acknowledgement, reproduced in hosted job `101958766187` on `efd555a5c`. Cleanup
+now polls for both fixture-created IDs to disappear under one fixed three-second
+deadline before asserting the original target count. The bounded Content-Length
+parser remains intact. The live rerun of this correction is pending; the prior
+successful execution does not erase this later cleanup failure. The review
+reports no other actionable finding through the HTTP/install increment.

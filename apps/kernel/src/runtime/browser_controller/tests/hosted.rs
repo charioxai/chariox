@@ -89,10 +89,22 @@ async fn actual_chromium_exact_target_projection() {
     for id in [&chosen, &other] {
         http_bytes("GET", &format!("/json/close/{id}")).await;
     }
-    assert_eq!(
-        http("GET", "/json/list").await.as_array().unwrap().len(),
-        before
-    );
+    // Close acknowledges the request before Chromium necessarily removes the
+    // target. Observe both exact IDs disappearing under one fixed deadline.
+    let remaining = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let targets = http("GET", "/json/list").await;
+            if targets.as_array().unwrap().iter().all(|tab| {
+                ![chosen.as_str(), other.as_str()].contains(&tab["id"].as_str().unwrap())
+            }) {
+                break targets;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("fixture-created Chromium targets were not removed before deadline");
+    assert_eq!(remaining.as_array().unwrap().len(), before);
     println!("browser_controller_acceptance={{\"exactTarget\":true,\"twoTargets\":true,\"accessibility\":true,\"textInput\":true,\"screencast\":true,\"ownerClosePreservesTabs\":true,\"fixtureTargetsRemoved\":true,\"fullViewerValidated\":false}}");
 }
 
