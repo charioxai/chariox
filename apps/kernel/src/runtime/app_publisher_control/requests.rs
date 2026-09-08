@@ -1,4 +1,4 @@
-//! Internal entry points until the shared authenticated terminal route lands.
+//! Retained owner entry points used by the authenticated terminal adapter.
 use super::*;
 type Result<T> = std::result::Result<T, PublisherOperationError>;
 enum Request {
@@ -49,7 +49,7 @@ impl AppPublisherControl {
             // own an entry; durable recovery covers a caller losing its ACK.
             while state.requests.try_join_next().is_some() {}
             if state.requests.len() + state.jobs.len() >= JOBS {
-                return Err(PublisherOperationError::Limit);
+                return Err(PublisherOperationError::Busy);
             }
             let permit = self
                 .0
@@ -57,7 +57,7 @@ impl AppPublisherControl {
                 .admission
                 .clone()
                 .try_acquire_owned()
-                .map_err(|_| PublisherOperationError::Limit)?;
+                .map_err(|_| PublisherOperationError::Busy)?;
             let store = self.0.shared.store.clone();
             let stopped = self.0.stopped.clone();
             let run_key = key.clone();

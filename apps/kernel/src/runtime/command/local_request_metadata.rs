@@ -72,6 +72,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::BeginAppPublisherEnrollment(request) => {
+            LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
         LocalDaemonRequest::BeginAppInstall(request) => {
             LocalRequestMetadata::new("app.install.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -427,6 +432,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
+        LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
+        LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
         LocalDaemonRequest::ListAppInstallations(_) => "app.list",
         LocalDaemonRequest::BeginAppInstall(_) => "app.install.begin",
         LocalDaemonRequest::GetAppInstallOperation(_) => "app.install.status",

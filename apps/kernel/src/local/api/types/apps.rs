@@ -2,6 +2,44 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BeginAppPublisherEnrollmentRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub publisher_id: String,
+    pub key_id: String,
+    pub public_key_base64: String,
+    /// Exact decimal revision; kept as text across JavaScript transports.
+    pub expected_revision: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppPublisherEnrollmentRequest {
+    pub request_id: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppPublisherEnrollmentPhase {
+    Pending,
+    Approved,
+    Denied,
+    Cancelled,
+    Failed,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppPublisherEnrollmentSummary {
+    pub request_id: String,
+    pub phase: AppPublisherEnrollmentPhase,
+    pub publisher_id: String,
+    pub key_id: String,
+    pub key_fingerprint: String,
+    /// Historical approval only; later revocation can supersede this revision.
+    pub approved_revision: Option<String>,
+    pub interaction_id: Option<String>,
+    pub failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BeginAppInstallRequest {
     pub session_id: String,
     pub request_id: String,

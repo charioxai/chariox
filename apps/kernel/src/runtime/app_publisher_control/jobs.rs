@@ -22,7 +22,7 @@ pub(super) enum Job {
 }
 pub(super) fn error(error: PublisherOperationError) -> Error {
     match error {
-        PublisherOperationError::Limit => Error::Busy,
+        PublisherOperationError::Limit | PublisherOperationError::Busy => Error::Busy,
         PublisherOperationError::Storage => Error::Storage,
         PublisherOperationError::CommitUnknown => Error::Unknown,
         _ => Error::Stopped,

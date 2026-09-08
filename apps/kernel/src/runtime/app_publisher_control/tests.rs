@@ -1,5 +1,6 @@
 use super::*;
 mod fixture;
+mod terminal;
 use fixture::Fixture;
 
 #[test]

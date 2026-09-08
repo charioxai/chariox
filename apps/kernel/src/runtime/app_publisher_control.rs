@@ -3,6 +3,7 @@
 mod jobs;
 mod pump;
 mod requests;
+mod terminal;
 #[cfg(test)]
 mod tests;
 

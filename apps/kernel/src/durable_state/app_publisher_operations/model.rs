@@ -12,6 +12,8 @@ pub(crate) enum PublisherOperationError {
     Conflict,
     #[error("app_publisher_operation_limit")]
     Limit,
+    #[error("app_publisher_operation_busy")]
+    Busy,
     #[error("app_publisher_operation_stopped")]
     Stopped,
     #[error("app_publisher_operation_storage")]

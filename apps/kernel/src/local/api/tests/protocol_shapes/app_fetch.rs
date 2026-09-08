@@ -9,7 +9,7 @@ fn fetch_sdk_contract_is_pinned_to_its_kernel_and_runtime_release() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../packages/app-sdk/test/fetch-contract.json"
     ));
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 296);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 297);
     let fixture: Value = serde_json::from_slice(BYTES).unwrap();
     assert_eq!(fixture["minimumKernelProtocol"], 296);
     assert_eq!(fixture["sdkVersion"], SUPPORTED_SDK_VERSION);

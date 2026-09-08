@@ -2,6 +2,25 @@ export function listAppInstallationsRequest(options: { after?: string; limit?: n
   return { ListAppInstallations: { after: options.after ?? null, limit: options.limit ?? null } }
 }
 
+export function beginAppPublisherEnrollmentRequest(options: {
+  sessionId: string; requestId: string; publisherId: string; keyId: string;
+  publicKeyBase64: string; expectedRevision: string;
+}) {
+  return { BeginAppPublisherEnrollment: {
+    session_id: options.sessionId, request_id: options.requestId,
+    publisher_id: options.publisherId, key_id: options.keyId,
+    public_key_base64: options.publicKeyBase64, expected_revision: options.expectedRevision,
+  } }
+}
+
+export function getAppPublisherEnrollmentRequest(requestId: string) {
+  return { GetAppPublisherEnrollment: { request_id: requestId } }
+}
+
+export function cancelAppPublisherEnrollmentRequest(requestId: string) {
+  return { CancelAppPublisherEnrollment: { request_id: requestId } }
+}
+
 export function getAppInstallationRequest(installationId: string) {
   return { GetAppInstallation: { installation_id: installationId } }
 }

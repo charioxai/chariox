@@ -5,6 +5,18 @@ export type AppReleaseSummary = {
   schema_version: number
 }
 
+export type AppPublisherEnrollmentSummary = {
+  request_id: string
+  phase: "pending" | "approved" | "denied" | "cancelled" | "failed"
+  publisher_id: string
+  key_id: string
+  key_fingerprint: string
+  /** Historical approval; later revocation can supersede this revision. */
+  approved_revision: string | null
+  interaction_id: string | null
+  failure: string | null
+}
+
 export type AppInstallationSummary = {
   installation_id: string
   app_id: string

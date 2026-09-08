@@ -106,6 +106,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::ListAppInstallations(_)
+            | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
+            | LocalDaemonRequest::GetAppPublisherEnrollment(_)
+            | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
             | LocalDaemonRequest::GetAppInstallation(_)
             | LocalDaemonRequest::BeginAppInstall(_)
             | LocalDaemonRequest::GetAppInstallOperation(_)

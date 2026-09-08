@@ -1040,6 +1040,15 @@ Workflow trigger and deployment direction:
   implicitly. Buffered SDK requests compose the stream operations under one
   original deadline and size bound. Cancellation and failed response publication
   dispose of the exact stream; a lost body chunk cannot be silently retried.
+- protocol 297 adds `BeginAppPublisherEnrollment`, `GetAppPublisherEnrollment`
+  and `CancelAppPublisherEnrollment` with `AppPublisherEnrollmentStatus`.
+  Begin carries a public Ed25519 key, publisher/key identities, an exact decimal
+  expected revision and the session for human review. The transport derives the
+  owner; it cannot supply a trust decision or approval authority. Only the
+  kernel's private RuntimeInteraction challenge can enroll the key. Status
+  reports a historical approved revision, which later revocation may supersede.
+  Stable request IDs use the owner's durable ledger across local/relay/browser
+  requests; responses bypass the older caller-independent transport cache.
 - protocol 296 pairs SDK 0.7 with worker-global `fetch` and `chariox.http.fetch`.
   Native Web value objects and body streams use the existing five kernel HTTP
   operations; each redirect opens a newly authorized destination under the

@@ -1453,3 +1453,26 @@ not establish live local/relay TUI acceptance, standalone `chariox app install`,
 OS file associations, command-catalog discoverability or browser file selection.
 Publisher enrollment remains a prerequisite; installation cannot trust its own
 package-provided key. No provider or App process ran in these terminal tests.
+
+### Public publisher review requests and protocol 297 (2026-09-08)
+
+The existing terminal route now derives the owner for publisher begin/status/
+cancel requests and forwards them to the retained controller. Begin supplies
+public review material with canonical Ed25519 bytes and a decimal revision that
+preserves values beyond JavaScript's integer precision. No client can provide
+consent, authority, an approval deadline or a kernel path. Replays use durable
+owner-scoped receipts, with historical approval clearly distinct from current
+trust after revocation. Transient controller pressure returns Busy separately
+from durable quota exhaustion.
+
+The shared-client typecheck and four App request tests pass. A new Rust protocol
+snapshot and an authenticated terminal-adapter regression are selected by the
+existing hosted gates; neither has executed locally. The snapshot hash is
+`cab71f21e31dae79978343d0014815cae131a3d38a73dd21590867ba1a7c3708`.
+The normal publisher-file command and live enrollment/installation acceptance
+remain required. SDK 0.7 retains its protocol-296 Fetch floor.
+
+The Chromium cleanup correction passes hosted run `34195220576` on `882d1b817`.
+SDK 0.7's embedded Linux bundle also executes successfully in `34195099961` and
+`34195392551`; their confinement/tool fixtures still do not exercise live kernel
+TLS or complete signed installer enrollment.
