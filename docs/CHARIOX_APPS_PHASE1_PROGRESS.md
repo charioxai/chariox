@@ -1476,3 +1476,16 @@ The Chromium cleanup correction passes hosted run `34195220576` on `882d1b817`.
 SDK 0.7's embedded Linux bundle also executes successfully in `34195099961` and
 `34195392551`; their confinement/tool fixtures still do not exercise live kernel
 TLS or complete signed installer enrollment.
+
+### Hosted integration compile corrections (2026-09-08)
+
+The protocol-295 component run `34194246954` reaches kernel compilation on both
+platforms and exposes missing install type re-exports, an undeclared UUID crate
+in the HTTP handle path, and two test-setup API mismatches. The local facade now
+exports install and publisher types. Opaque HTTP handles use the existing random
+source with the same v4 text shape and strict byte validation. Fixtures use the
+public history-root builder and an owned database path. The same export/config
+corrections are applied to the newer publisher scope before its hosted run.
+These fixes are source-reviewed; kernel compilation/execution remains pending
+the rerun. Review `5138264573` reports no actionable finding through the Fetch,
+publisher-owner, Chromium correction and TUI file-install commits.

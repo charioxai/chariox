@@ -20,9 +20,8 @@ impl Fixture {
             ));
         std::fs::create_dir(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut config = DaemonConfig::for_tests();
+        let mut config = DaemonConfig::for_tests().with_session_history_root(path.join("history"));
         config.user_config.state.path = Some(path.join("kernel.sqlite").display().to_string());
-        config.session_history_root_default = path.join("history");
         config.user_config.history.operational.path =
             Some(path.join("operational.sqlite").display().to_string());
         config.user_config.artifacts.operational.root =

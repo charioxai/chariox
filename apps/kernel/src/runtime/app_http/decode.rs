@@ -147,7 +147,15 @@ fn optional(fields: &mut Map<String, Value>, name: &str) -> Result<Option<String
 }
 fn identity(value: Value) -> Result<String> {
     let value = string(value, 36)?;
-    if uuid::Uuid::parse_str(&value).is_err() || value.len() != 36 {
+    if value.len() != 36
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    {
         return Err(HttpError::Invalid);
     }
     Ok(value)

@@ -112,7 +112,7 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
         .store
         .get_app_installation("alice", &initial.token.installation_id)
         .is_err());
-    let reopened = DurableKernelStateStore::open_owned(f.store.path()).unwrap();
+    let reopened = DurableKernelStateStore::open_owned(f.store.path().to_path_buf()).unwrap();
     assert_eq!(
         cancelled,
         reopened

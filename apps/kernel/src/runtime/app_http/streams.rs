@@ -27,6 +27,22 @@ use tokio::{
 pub(super) use ports::ReadResult;
 use ports::StreamPort;
 
+fn stream_id() -> String {
+    // Opaque v4-shaped handles use the kernel's existing random source.
+    let bits = (rand::random::<u128>() & !((0xf_u128 << 76) | (0x3_u128 << 62)))
+        | (4_u128 << 76)
+        | (2_u128 << 62);
+    let hex = format!("{bits:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
 struct Scope {
     owner: String,
     catalog: Arc<AppCatalog>,
@@ -174,7 +190,7 @@ impl HttpStreams {
         });
         Ok(PendingStart {
             group: self.clone(),
-            id: uuid::Uuid::new_v4().to_string(),
+            id: stream_id(),
             entry,
             exchange,
             target,
