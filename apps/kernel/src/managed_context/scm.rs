@@ -1387,12 +1387,13 @@ esac
     #[test]
     fn github_opt_out_never_invokes_credential_commands() {
         let (root, target_home, target) = fake_target("opt-out", None);
-        let gh = root.join("bin/gh");
-        fs::write(
-            &gh,
-            "#!/bin/sh\n/usr/bin/touch \"$HOME/unexpected-gh\"\nexit 2\n",
-        )
-        .expect("install credential-command spy");
+        for executable in ["gh", "git"] {
+            fs::write(
+                root.join("bin").join(executable),
+                "#!/bin/sh\n/usr/bin/touch \"$HOME/unexpected-credential-command\"\nexit 2\n",
+            )
+            .expect("install credential-command spy");
+        }
         let selection = ManagedContextGitCredentialSelection::None;
         assert!(export_selected_git_credentials(&selection, &target)
             .expect("export without Git credentials")
@@ -1406,7 +1407,7 @@ esac
         )
         .expect("materialize without Git credentials")
         .is_empty());
-        assert!(!target_home.join("unexpected-gh").exists());
+        assert!(!target_home.join("unexpected-credential-command").exists());
         assert!(!binding_path(&target).exists());
         fs::remove_dir_all(root).expect("remove opt-out fixture");
     }
