@@ -92,8 +92,8 @@ verification. No binaries, source trees or compiler objects enter this cache.
 
 The explicit `--resource-profile github-linux` leaves the default shared-host
 limits unchanged. [Node's upstream build guidance](https://github.com/nodejs/node/blob/v24.20.0/BUILDING.md#prerequisites)
-describes an 8 GB machine for four compilation jobs; this profile attempts one
-job inside a hard 6 GiB, no-swap, two-CPU, 256-process cgroup. The driver verifies
+describes an 8 GB machine for four compilation jobs; the dedicated Linux retry
+attempts two jobs inside the same hard 6 GiB, no-swap, two-CPU, 256-process cgroup. The driver verifies
 those actual limits before downloading source and throughout compilation. It
 requires at least 7 GiB host memory, 3 GiB initially available memory and 24 GiB
 free disk, then preserves 768 MiB memory and 4 GiB disk reserves. Memory
@@ -106,8 +106,19 @@ disposable VM. It then uses the digest-pinned official
 `node:24.20.0-bookworm` amd64 builder in `runtime.lock.json`, with the locked
 Debian GCC 12.2.0, Python 3.11.2 and Make 4.3 checks still enforced. No image or
 source is downloaded by planning or by the lightweight tooling tests. Actual
-compilation has a 165-minute container timeout and a 180-minute job timeout.
+compilation has a 300-minute container timeout and a 330-minute job timeout.
 Scratch is outside the checkout and removed after artifact handling.
+
+The original one-job [run 34167089795](https://github.com/charioxai/chariox/actions/runs/34167089795)
+reached its 165-minute command deadline on September 8, 2026 while compiling
+V8 `turbofan-typer.o`, after 3,635 reported C/C++ compilation operations. It
+returned timeout exit 124 with no compiler or resource-threshold error in the
+retained log; no artifact was produced. The two-job retry is a dedicated hosted
+resource experiment, not measured proof that two compilers or linking fit. Its
+hard limits and remaining-resource guards are unchanged. The longer deadline
+and profile change alter the exact native-input fingerprint, so an earlier
+receipt cannot authorize reuse. macOS and ordinary shared-host defaults are
+unchanged.
 
 On success, the workflow retains at most 512 MiB of explicitly
 `UNSIGNED-NONRELEASE` libraries, license and provenance for seven days. These

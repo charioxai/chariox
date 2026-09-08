@@ -14,7 +14,7 @@ export function validateCiProfile(profile) {
     throw new Error('invalid dedicated CI resource profile');
   }
   const bounds = profile.resourceBounds;
-  if (bounds.maxJobs !== 1 || bounds.minTotalMemoryBytes < 7 * GiB
+  if (bounds.maxJobs !== 2 || bounds.minTotalMemoryBytes < 7 * GiB
       || bounds.minFreeMemoryBytes < 3 * GiB || bounds.minFreeDiskBytes < 24 * GiB
       || bounds.minimumRemainingMemoryBytes < 768 * MiB || bounds.minimumRemainingDiskBytes < 4 * GiB
       || profile.containerMemoryBytes !== 6 * GiB || profile.maxCpus !== 2 || profile.maxPids !== 256

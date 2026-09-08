@@ -25,7 +25,9 @@ test('dedicated profile is explicit and never changes the shared-host defaults',
   const observed = { totalMemoryBytes: 7.5 * GiB, freeMemoryBytes: 4 * GiB, freeDiskBytes: 30 * GiB };
   checkBuildResources(ci.resourceBounds, observed);
   assert.throws(() => checkBuildResources(ordinary.resourceBounds, observed));
-  assert.throws(() => createPlan({ ...options, resourceProfile: 'github-linux', jobs: 2 }, lock));
+  const twoJobs = createPlan({ ...options, resourceProfile: 'github-linux', jobs: 2 }, lock);
+  assert.ok(twoJobs.commands.some(command => command.args.includes('-j2')));
+  assert.throws(() => createPlan({ ...options, resourceProfile: 'github-linux', jobs: 3 }, lock));
   assert.throws(() => createPlan({ ...options, resourceProfile: 'github-linux', target: 'darwin-arm64' }, lock));
   assert.throws(() => createPlan({ ...options, resourceProfile: 'unrestricted' }, lock));
   assert.equal(parseOptions(['plan', '--target', 'linux-x64', '--scratch', '/outside/runtime', '--resource-profile', 'github-linux']).resourceProfile, 'github-linux');
@@ -61,7 +63,7 @@ test('host availability includes reclaimable memory but rejects missing measurem
 
 test('CI profile and complete artifact budget cannot silently widen', () => {
   for (const mutate of [
-    profile => { profile.resourceBounds.maxJobs = 2; },
+    profile => { profile.resourceBounds.maxJobs = 3; },
     profile => { profile.resourceBounds.minimumRemainingMemoryBytes = 0; },
     profile => { profile.resourceBounds.minFreeDiskBytes = 1; },
     profile => { profile.containerMemoryBytes = 8 * GiB; },
@@ -75,4 +77,16 @@ test('CI profile and complete artifact budget cannot silently widen', () => {
   checkArtifactBudget(lock.dedicatedCi, [cap - 1024, 1024]);
   assert.throws(() => checkArtifactBudget(lock.dedicatedCi, [cap, 1]));
   assert.throws(() => checkArtifactBudget(lock.dedicatedCi, [NaN]));
+});
+
+
+test('hosted retry changes build parallelism and deadline without widening hard limits', async () => {
+  const recipe = await readFile(new URL('./run-app-runtime-native-ci.sh', import.meta.url), 'utf8');
+  const workflow = await readFile(new URL('../.github/workflows/app-runtime-native.yml', import.meta.url), 'utf8');
+  assert.match(recipe, /timeout --signal=TERM --kill-after=10s 300m docker run/);
+  assert.match(recipe, /--cpus=2 --memory=6g --memory-swap=6g --pids-limit=256/);
+  assert.match(recipe, /--target linux-x64 --jobs 2/);
+  assert.match(workflow, /timeout-minutes: 330/);
+  assert.equal(lock.dedicatedCi.resourceBounds.minimumRemainingMemoryBytes, 768 * 1024 ** 2);
+  assert.equal(lock.dedicatedCi.resourceBounds.minimumRemainingDiskBytes, 4 * GiB);
 });

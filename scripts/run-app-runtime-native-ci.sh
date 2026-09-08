@@ -37,7 +37,7 @@ trap 'exit 130' INT
 
 # Only the CI markers and an empty scratch home cross into the container.
 # Its cgroup settings are independently checked by the Node build driver.
-timeout --signal=TERM --kill-after=10s 165m docker run --rm --init \
+timeout --signal=TERM --kill-after=10s 300m docker run --rm --init \
   --name "$ci_container" --cpus=2 --memory=6g --memory-swap=6g --pids-limit=256 \
   --cap-drop=ALL --security-opt=no-new-privileges --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m \
@@ -46,5 +46,5 @@ timeout --signal=TERM --kill-after=10s 165m docker run --rm --init \
   --mount "type=bind,source=$ci_workspace,target=/workspace,readonly" \
   --mount "type=bind,source=$ci_scratch,target=/build-scratch" \
   --workdir /workspace --entrypoint /usr/local/bin/node "$ci_image" \
-  scripts/build-app-runtime.mjs build --target linux-x64 --jobs 1 \
+  scripts/build-app-runtime.mjs build --target linux-x64 --jobs 2 \
   --resource-profile github-linux --scratch /build-scratch/runtime --download-source

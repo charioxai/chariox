@@ -26,7 +26,7 @@
     "name": "github-linux",
     "builderImage": "node:24.20.0-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b",
     "resourceBounds": {
-      "maxJobs": 1,
+      "maxJobs": 2,
       "minTotalMemoryBytes": 7516192768,
       "minFreeMemoryBytes": 3221225472,
       "minFreeDiskBytes": 25769803776,
