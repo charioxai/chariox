@@ -149,21 +149,23 @@ export async function recoverCookieImport({journal,store,runExclusive,authorize}
         || !Array.isArray(record.imported) || !record.imported.length || record.imported.length > 512) {
       fail('cookie_import_recovery_invalid',true);
     }
-    validateSnapshot(record.before);
+    validateSnapshot(record.before,{allowExpired:true});
     const imported = record.imported.map(cookie => {
       const {url,...rest} = cookie;
       return {...rest,domain:cookie.domain ?? new URL(url).hostname,
         session:cookie.expires === undefined,expires:cookie.expires ?? -1};
     });
-    validateSnapshot(imported);
+    validateSnapshot(imported,{allowExpired:true});
     const keys = new Set(imported.map(identity));
     const replaced = record.before.filter(cookie => keys.has(identity(cookie)));
     await check();
     await store.remove(imported);
     await check();
-    if (replaced.length) await store.write(replaced.map(restoreParams));
+    const restorable = unexpired(replaced);
+    if (restorable.length) await store.write(restorable.map(restoreParams));
     await check();
-    if (fingerprint(await store.read()) !== fingerprint(record.before)) {
+    const actual = await store.read();
+    if (fingerprint(actual) !== fingerprint(unexpired(record.before))) {
       fail('cookie_import_recovery_verification_failed',true);
     }
     await check();
@@ -180,7 +182,12 @@ function identity(cookie) {
     cookie.partitionKey?.hasCrossSiteAncestor ?? null]);
 }
 
-function validateSnapshot(cookies) {
+function unexpired(cookies) {
+  const now = Date.now() / 1000;
+  return cookies.filter(cookie => cookie.session || cookie.expires > now);
+}
+
+function validateSnapshot(cookies, {allowExpired = false} = {}) {
   if (!Array.isArray(cookies) || cookies.length > 10000
       || new TextEncoder().encode(JSON.stringify(cookies)).byteLength > 4 * 1024 * 1024) fail('cookie_import_snapshot_too_large');
   const keys = new Set();
@@ -193,7 +200,8 @@ function validateSnapshot(cookies) {
       fail('cookie_import_snapshot_unsupported');
     }
     if (typeof cookie.session !== 'boolean' || (cookie.session ? cookie.expires !== -1
-        : !Number.isFinite(cookie.expires) || cookie.expires <= Date.now() / 1000)) {
+        : !Number.isFinite(cookie.expires) || cookie.expires < 0
+          || (!allowExpired && cookie.expires <= Date.now() / 1000))) {
       fail('cookie_import_snapshot_unsupported');
     }
     if (cookie.partitionKeyOpaque || Object.keys(cookie).some(key => ![

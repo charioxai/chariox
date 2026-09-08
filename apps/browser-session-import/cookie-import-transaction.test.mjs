@@ -126,6 +126,19 @@ test('recovery reports unrelated cookie loss without rewriting that domain', asy
     pending.bytes.fill(0);
   });
 });
+
+test('recovery does not resurrect cookies that expired while the executor was down', async () => {
+  await withJournal(async journal => {
+    const expired = stored({value:'old',session:false,expires:1});
+    await journal.prepare(Buffer.from(JSON.stringify({schema:1,before:[expired],
+      imported:[{name:'session',value:'new',url:'https://example.test/',path:'/',
+        secure:true,httpOnly:true,sameSite:'Lax',expires:2}]})));
+    const {options,store,writes} = fixture();
+    assert.equal((await recoverCookieImport({...options,journal})).recovered,true);
+    assert.deepEqual(await store.read(),[]);
+    assert.equal(writes(),0);
+  });
+});
 function fixture(initial = []) {
   let jar = structuredClone(initial);
   let writes = 0;

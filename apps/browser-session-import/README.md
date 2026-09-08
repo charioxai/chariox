@@ -313,8 +313,9 @@ provide a verified fresh store, and authorize recovery under exclusive ownership
 Replay validates the record, removes attempted cookie identities, restores only
 their previous values and verifies the complete snapshot. Unrelated loss remains
 an error, not permission to rewrite another domain. Missing records, denial and
-verification failures keep recovery required. Expired snapshots are rejected
-conservatively; expiry-aware recovery is not implemented.
+verification failures keep recovery required. Replay accepts valid expired records
+but does not restore expired cookies. Verification discounts natural expiry from
+the saved snapshot; session cookies retain their original session semantics.
 
 Verified replay returns a receipt but retains the record. The kernel must durably
 record recovery before discarding it and lifting quarantine. This function does
