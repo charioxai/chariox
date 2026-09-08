@@ -534,51 +534,9 @@ fn managed_prompt_attachment_root(
     let Some(agent_id) = request.agent_id.as_deref() else {
         return Ok(None);
     };
-    let root =
-        crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
-            &request.session_id,
-            agent_id,
-        );
-    std::fs::create_dir_all(&root).map_err(|error| {
-        isolation_error(format!(
-            "managed provider prompt attachment directory could not be created: {error}"
-        ))
-    })?;
-    let metadata = std::fs::symlink_metadata(&root).map_err(|error| {
-        isolation_error(format!(
-            "managed provider prompt attachment directory could not be inspected: {error}"
-        ))
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(isolation_error(
-            "managed provider prompt attachment path must be a nonsymlink directory",
-        ));
-    }
-    let temp_root = std::env::temp_dir();
-    let relative = root.strip_prefix(&temp_root).map_err(|_| {
-        isolation_error(
-            "managed provider prompt attachment path must stay under the process temp directory",
-        )
-    })?;
-    let expected = temp_root
-        .canonicalize()
-        .map_err(|error| {
-            isolation_error(format!(
-                "managed provider temp directory could not be resolved: {error}"
-            ))
-        })?
-        .join(relative);
-    let canonical = root.canonicalize().map_err(|error| {
-        isolation_error(format!(
-            "managed provider prompt attachment directory could not be resolved: {error}"
-        ))
-    })?;
-    if canonical != expected {
-        return Err(isolation_error(
-            "managed provider prompt attachment path must not traverse symlinks",
-        ));
-    }
-    Ok(Some(root))
+    crate::runtime::agent_actor::prompt_attachment_materialization::prepare_inline_prompt_attachment_root(
+        &request.session_id, agent_id,
+    ).map(Some)
 }
 
 #[cfg(target_os = "linux")]
@@ -1103,6 +1061,7 @@ mod tests {
     #[test]
     fn managed_namespace_exposes_materialized_prompt_attachment_to_its_provider() {
         use base64::Engine;
+        use std::os::unix::fs::PermissionsExt;
 
         let session_id = format!(
             "managed-attachment-session-{}-{}",
@@ -1115,6 +1074,16 @@ mod tests {
         let attachment_root = managed_prompt_attachment_root(&request)
             .expect("managed attachment root should prepare")
             .expect("agent-bound launches should have an attachment root");
+        for path in [
+            &attachment_root,
+            attachment_root.parent().unwrap(),
+            attachment_root.parent().unwrap().parent().unwrap(),
+        ] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
         let attachment = crate::session::PromptAttachment::new(
             "chariox-cloud://artifact/art-1",
             "text/plain",

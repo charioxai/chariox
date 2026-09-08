@@ -37,15 +37,7 @@ pub(crate) fn materialize_inline_prompt_attachments(
                 .filename()
                 .map(sanitize_attachment_filename)
                 .unwrap_or_else(|| format!("attachment-{index}"));
-            let root = inline_prompt_attachment_root(session_id, agent_id);
-            #[cfg(unix)]
-            let prepared = private_directory::prepare(&root, &std::env::temp_dir());
-            #[cfg(not(unix))]
-            let prepared = prepare_nonunix_directory(&root);
-            prepared.map_err(|error| DaemonError::LocalTransport {
-                operation: "prepare private inline prompt attachment directory",
-                message: error.to_string(),
-            })?;
+            let root = prepare_inline_prompt_attachment_root(session_id, agent_id)?;
             let path = root.join(format!(
                 "{}-{}-{}-{}-{}",
                 crate::session::unix_epoch_ms(),
@@ -89,6 +81,22 @@ pub(crate) fn inline_prompt_attachment_root(session_id: &str, agent_id: &str) ->
         .join(namespace)
         .join(sanitize_path_component(session_id))
         .join(sanitize_path_component(agent_id))
+}
+
+pub(crate) fn prepare_inline_prompt_attachment_root(
+    session_id: &str,
+    agent_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    let root = inline_prompt_attachment_root(session_id, agent_id);
+    #[cfg(unix)]
+    let prepared = private_directory::prepare(&root, &std::env::temp_dir());
+    #[cfg(not(unix))]
+    let prepared = prepare_nonunix_directory(&root);
+    prepared.map_err(|error| DaemonError::LocalTransport {
+        operation: "prepare private inline prompt attachment directory",
+        message: error.to_string(),
+    })?;
+    Ok(root)
 }
 
 #[cfg(not(unix))]
@@ -172,6 +180,24 @@ mod permission_tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(self.root.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn empty_attachment_root_is_private_before_materialization() {
+        let fixture = Fixture::new();
+        let root = prepare_inline_prompt_attachment_root(&fixture.session, "agent").unwrap();
+        assert_eq!(root, fixture.root);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        for path in [
+            &root,
+            root.parent().unwrap(),
+            root.parent().unwrap().parent().unwrap(),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
         }
     }
 
