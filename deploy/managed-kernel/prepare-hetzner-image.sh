@@ -59,6 +59,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
+  dbus-user-session \
   acl \
   bash \
   bubblewrap \

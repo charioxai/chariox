@@ -103,6 +103,8 @@ async function invoke({
   running = false,
   action = "provision",
   updateFails = false,
+  paused = false,
+  unpauseFails = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-process-limit-"))
   try {
@@ -124,6 +126,7 @@ if (args[0] === "container" && args[1] === "inspect") {
 if (args[0] === "inspect") {
   const format = args[args.indexOf("--format") + 1] || args[args.indexOf("-f") + 1] || "";
   if (format.includes("HostConfig.Ulimits")) console.log(process.env.CHARIOX_TEST_NOFILE);
+  else if (format.includes("State.Paused")) console.log(process.env.CHARIOX_TEST_PAUSED === "1" ? "true" : "false");
   else console.log(process.env.CHARIOX_TEST_RUNNING === "1" ? "true" : "false");
   process.exit(0);
 }
@@ -133,6 +136,7 @@ if (args[0] === "ps") {
 }
 if (["volume", "create", "start", "stop", "rm"].includes(args[0])) process.exit(0);
 if (args[0] === "update") process.exit(process.env.CHARIOX_TEST_UPDATE_FAILS === "1" ? 73 : 0);
+if (args[0] === "unpause") process.exit(process.env.CHARIOX_TEST_UNPAUSE_FAILS === "1" ? 74 : 0);
 // Stop before running setup inside the fixture container.
 if (args[0] === "exec") process.exit(71);
 throw new Error("unexpected Docker call: " + args[0]);
@@ -145,6 +149,7 @@ throw new Error("unexpected Docker call: " + args[0]);
         CHARIOX_TEST_DOCKER_LOG: log, CHARIOX_TEST_PROTOCOL: protocol,
         CHARIOX_TEST_EXISTING: existing ? "1" : "0", CHARIOX_TEST_UPDATE_FAILS: updateFails ? "1" : "0",
         CHARIOX_TEST_RUNNING: running ? "1" : "0", CHARIOX_TEST_NOFILE: existingNofile,
+        CHARIOX_TEST_PAUSED: paused ? "1" : "0", CHARIOX_TEST_UNPAUSE_FAILS: unpauseFails ? "1" : "0",
         CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: `sha256:${"a".repeat(64)}`,
         CHARIOX_SLICE_BUILD_IMAGE: "never", CHARIOX_SLICE_NAME: "chariox-process-limit-fixture",
         ...(limit === undefined ? {} : { CHARIOX_SLICE_DOCKER_PIDS_LIMIT: limit }),
@@ -158,3 +163,18 @@ throw new Error("unexpected Docker call: " + args[0]);
     await rm(root, { recursive: true, force: true })
   }
 }
+
+test("explicit recovery unpauses an interrupted snapshot before executing in the container", async () => {
+  const { calls } = await invoke({ existing: true, running: true, paused: true, action: "recover" })
+  const unpause = calls.findIndex(args => args[0] === "unpause")
+  const exec = calls.findIndex(args => args[0] === "exec")
+  assert.ok(unpause >= 0, "paused recovery must issue unpause")
+  assert.ok(exec > unpause, "no container exec is possible before unpause")
+})
+
+test("failed unpause prevents recovery from executing or recreating a container", async () => {
+  const { result, calls } = await invoke({ existing: true, running: true, paused: true, unpauseFails: true, action: "recover" })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /failed to unpause/)
+  assert.equal(calls.some(args => ["exec", "create", "rm"].includes(args[0])), false)
+})

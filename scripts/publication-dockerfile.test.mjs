@@ -165,10 +165,9 @@ test("embedded toolchain SBOM removes volatile identity and time fields", () => 
 test("publication image labels the protocol version verified against its kernel", () => {
   const protocolVersion = kernelTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)/)?.[1]
   assert.ok(protocolVersion, "the shared kernel client protocol version must be readable")
-  assert.match(
-    dockerfile,
-    new RegExp(`ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=${protocolVersion}`, "g"),
-  )
+  const defaults = [...dockerfile.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)]
+    .map(match => match[1])
+  assert.deepEqual(defaults, [protocolVersion, protocolVersion], "both build and runtime stages must match the shared protocol")
   assert.match(
     dockerfile,
     /chariox-kernel --print-local-daemon-protocol-version\)" = "\$\{CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,

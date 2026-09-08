@@ -750,6 +750,18 @@ recover_existing_container() {
   container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
   apply_container_process_limit
   verify_container_nofile_limit
+  local paused
+  paused="$(run_with_timeout 20 docker inspect -f '{{.State.Paused}}' "$SLICE_NAME")" \
+    || fail "failed to inspect slice pause state before recovery"
+  case "$paused" in
+    true)
+      log "unpausing existing container $SLICE_NAME before recovery"
+      run_with_timeout 30 docker unpause "$SLICE_NAME" >/dev/null \
+        || fail "failed to unpause slice container $SLICE_NAME before recovery"
+      ;;
+    false) ;;
+    *) fail "invalid slice pause state before recovery" ;;
+  esac
   if ! container_running; then
     log "restarting existing container $SLICE_NAME after failed state save"
     if ! run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null \

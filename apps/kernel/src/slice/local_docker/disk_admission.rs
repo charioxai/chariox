@@ -2,7 +2,6 @@ use std::fmt;
 #[cfg(unix)]
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Mutex, MutexGuard};
 
 use fs2::FileExt;
@@ -212,26 +211,10 @@ fn measure_slice_storage_with_helper(
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceStorageMeasurement, DaemonError> {
     let container = local_docker_container_name(record);
-    let volume = format!("{container}-home");
     let helper = format!("{container}-disk-admission-{:016x}", rand::random::<u64>());
-    remove_helper_best_effort(&helper);
     let mut created = false;
     let result = (|| {
-        docker_success(
-            &[
-                "create",
-                "--name",
-                &helper,
-                "--user",
-                "root",
-                "-v",
-                &format!("{volume}:/home-src:ro"),
-                &options.docker_image,
-                "sleep",
-                "infinity",
-            ],
-            "create slice disk measurement helper",
-        )?;
+        super::snapshot_pause::create_helper(record, options, &helper)?;
         created = true;
         docker_success(&["start", &helper], "start slice disk measurement helper")?;
         let home_bytes = docker_numeric_field(
@@ -303,14 +286,6 @@ fn docker_success(args: &[&str], operation: &'static str) -> Result<(), DaemonEr
             String::from_utf8_lossy(&output.stderr).trim()
         )))
     }
-}
-
-fn remove_helper_best_effort(helper: &str) {
-    let _ = docker_command()
-        .args(["rm", "-f", helper])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 fn host_available_space(path: &Path) -> Result<u64, DaemonError> {

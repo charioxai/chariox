@@ -97,7 +97,14 @@ const CREDENTIAL_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_CLAUDE_STATS",
   "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
 ])
+const ROOM_BINDING_ENVIRONMENT = [
+  "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+  "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+  "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+  "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID",
+]
 const ALLOWED_ENVIRONMENT = new Set([
+  ...ROOM_BINDING_ENVIRONMENT,
   "CHARIOX_SLICE_NAME",
   "CHARIOX_SLICE_HOSTNAME",
   "CHARIOX_SLICE_ID",
@@ -316,7 +323,7 @@ function validateDocker(args) {
     || exactArguments(args, ["ps", "-a", "--format", "{{.Names}}"])
   ) return
   if (args[0] === "inspect" && args.length === 4 && args[1] === "--format") {
-    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}"].includes(args[2])) {
+    if (!["{{.State.Running}} {{.State.Status}}", "{{.HostConfig.Memory}}", '{{index .Config.Labels "io.chariox.snapshot-helper"}}'].includes(args[2])) {
       fail("Docker inspect format is invalid")
     }
     validateSliceContainer(args[3], "Docker container")
@@ -342,11 +349,16 @@ function validateDocker(args) {
     validateResource(args[3], "Docker image")
     return
   }
+  if (exactArguments(args.slice(0, 4), ["image", "inspect", "--format", "{{.Id}}"])
+      && args.length === 5) {
+    validateResource(args[4], "Docker image")
+    return
+  }
   if (exactArguments(args.slice(0, 2), ["container", "inspect"]) && args.length === 3) {
     validateSliceContainer(args[2], "Docker container")
     return
   }
-  if (["start", "stop"].includes(args[0]) && args.length === 2) {
+  if (["start", "stop", "pause", "unpause"].includes(args[0]) && args.length === 2) {
     validateSliceContainer(args[1], "Docker container")
     return
   }
@@ -361,19 +373,24 @@ function validateDocker(args) {
   }
   if (
     args[0] === "create" &&
-    args.length === 10 &&
+    args.length === 20 &&
     args[1] === "--name" &&
-    args[3] === "--user" &&
-    args[4] === "root" &&
-    args[5] === "-v" &&
-    args[8] === "sleep" &&
-    args[9] === "infinity"
+    exactArguments(args.slice(3, 11), ["--memory", "512m", "--cpus", "1", "--pids-limit", "64", "--network", "none"]) &&
+    args[11] === "--label" && args[12] === `io.chariox.snapshot-helper=${args[2]}` &&
+    args[13] === "--user" &&
+    args[14] === "root" &&
+    args[15] === "-v" &&
+    args[18] === "sleep" &&
+    args[19] === "infinity"
   ) {
-    validateResource(args[2], "Docker helper container")
-    const [volume, target, extra] = args[6].split(":")
+    validateSliceContainer(args[2], "Docker helper container")
+    const suffix = /-(?:disk-admission-[a-f0-9]{16}|home-archive-[0-9]{1,20})$/.exec(args[2])
+    if (!suffix) fail("Docker helper identity is invalid")
+    const [volume, target, extra] = args[16].split(":")
     validateResource(volume, "Docker volume")
+    if (volume !== `${args[2].slice(0, suffix.index)}-home`) fail("Docker helper volume does not match its slice")
     if (target !== "/home-src" || extra !== "ro") fail("Docker helper volume target is invalid")
-    validateResource(args[7], "Docker image")
+    validateResource(args[17], "Docker image")
     return
   }
   if (args[0] === "cp" && args.length === 3) {
@@ -421,6 +438,21 @@ function validateProvisioner(action, environment, files) {
       : null
     if (decoded?.length !== 65 || decoded[0] !== 4) {
       fail("relay owner public key is invalid")
+    }
+  }
+  if (ROOM_BINDING_ENVIRONMENT.some(name => Object.hasOwn(environment, name))) {
+    for (const name of ROOM_BINDING_ENVIRONMENT) {
+      const value = environment[name]
+      if (name === "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY") {
+        const decoded = typeof value === "string" && /^[A-Za-z0-9+/]{87}=$/.test(value)
+          ? Buffer.from(value, "base64") : null
+        if (decoded?.length !== 65 || decoded[0] !== 4) fail("Room home public key is invalid")
+      } else if (typeof value !== "string" || !/^[a-zA-Z0-9_.:-]{1,180}$/.test(value)) {
+        fail(`${name} is invalid or missing`)
+      }
+    }
+    if (environment.CHARIOX_ROOM_ENVIRONMENT_SLICE_ID !== environment.CHARIOX_SLICE_ID) {
+      fail("Room binding does not match the provisioned slice")
     }
   }
   const commonEnvironment = new Set([

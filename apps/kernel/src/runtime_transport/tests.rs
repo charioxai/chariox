@@ -591,6 +591,10 @@ async fn slice_backup_restore_interruption_after_container_creation_rolls_back_o
 set -eu
 root=$CHARIOX_RESTORE_INTERRUPTION_ROOT
 printf '%s\n' "$*" >> "$root/docker.log"
+if [ -f "$root/docker-unavailable" ]; then
+  printf 'Cannot connect to the Docker daemon\n' >&2
+  exit 1
+fi
 case "$*" in
   "info") ;;
   "info --format {{.MemTotal}}") printf '17179869184\n' ;;
@@ -753,6 +757,62 @@ exit 0
         RuntimeTransportEnvGuard::set("CHARIOX_RESTORE_INTERRUPTION_ROOT", root.path().as_os_str());
     let provisioner_guard =
         RuntimeTransportEnvGuard::set("CHARIOX_SLICE_DOCKER_PROVISIONER", provisioner.as_os_str());
+    let unavailable_archive = root.path().join("unavailable-rollback.tar.zst");
+    std::fs::rename(
+        &transaction.rollback_backup.home_archive_path,
+        &unavailable_archive,
+    )
+    .expect("fault should make only the rollback archive unavailable");
+    let mut blocked = DaemonApp::bootstrap(config.clone())
+        .expect("an unavailable rollback must not prevent the home kernel from starting");
+    assert_eq!(
+        blocked.slices().list_pending_backup_restores(),
+        vec![transaction.clone()],
+        "failed recovery must retain the transaction",
+    );
+    let blocked_slice = blocked.slices().resolve(&slice.id).expect("slice should remain visible");
+    assert_eq!(blocked_slice.status, crate::slice::SliceStatus::Unhealthy);
+    assert_eq!(
+        blocked_slice.last_operation_status,
+        Some(crate::slice::SliceOperationStatus::Failed),
+    );
+    assert!(blocked_slice.last_error.as_deref().is_some_and(|error|
+        error.contains("rollback") && error.contains("restart the kernel to retry")
+    ));
+    assert!(blocked.slices().try_begin_operation(&slice.id, "slice.start").is_err());
+    assert!(Path::new(&transaction.rollback_backup.manifest_path).exists());
+    assert_eq!(
+        std::fs::read(&unavailable_archive).expect("original archive remains intact"),
+        b"prior-home-generation",
+    );
+    let (unrelated, _) = crate::app::KernelSessionService::new(&mut blocked)
+        .create_session(CreateSessionRequest::new("unrelated-workspace", "unrelated-workspace"))
+        .expect("unrelated Rooms must remain usable during slice recovery failure");
+    assert!(blocked.sessions().get_session(unrelated.id()).is_ok());
+    drop(blocked);
+    std::fs::rename(&unavailable_archive, &transaction.rollback_backup.home_archive_path)
+        .expect("repair should make the same rollback archive available again");
+
+    let docker_unavailable = root.path().join("docker-unavailable");
+    std::fs::write(&docker_unavailable, b"").expect("Docker outage marker should write");
+    let blocked = DaemonApp::bootstrap(config.clone())
+        .expect("Docker outage during rollback must not prevent kernel startup");
+    assert_eq!(blocked.slices().list_pending_backup_restores(), vec![transaction.clone()]);
+    let blocked_slice = blocked.slices().resolve(&slice.id).expect("slice remains visible");
+    assert_eq!(blocked_slice.status, crate::slice::SliceStatus::Unhealthy);
+    assert!(blocked_slice.last_error.as_deref().is_some_and(|error|
+        error.contains("rollback") && error.contains("Docker")
+    ));
+    assert!(blocked.sessions().get_session(unrelated.id()).is_ok());
+    assert!(blocked.slices().try_begin_operation(&slice.id, "slice.start").is_err());
+    assert!(Path::new(&transaction.rollback_backup.manifest_path).exists());
+    assert_eq!(
+        std::fs::read(&transaction.rollback_backup.home_archive_path)
+            .expect("Docker outage must preserve the archive"),
+        b"prior-home-generation",
+    );
+    drop(blocked);
+    std::fs::remove_file(&docker_unavailable).expect("Docker outage marker should clear");
     let recovered = DaemonApp::bootstrap(config.clone())
         .expect("kernel startup should roll back the interrupted restore");
     assert!(recovered.slices().list_pending_backup_restores().is_empty());

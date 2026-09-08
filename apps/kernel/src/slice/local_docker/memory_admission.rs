@@ -220,6 +220,11 @@ fn require_bounded_container_limit(container: &str, limit: u64) -> Result<u64, D
     if limit > 0 {
         return Ok(limit);
     }
+    if super::snapshot_pause::is_snapshot_helper(container) {
+        return Err(memory_measurement_error(&format!(
+            "internal snapshot helper `{container}` has no memory limit; recover its owning slice to clean up an interrupted snapshot"
+        )));
+    }
     Err(DaemonError::LocalTransport {
         operation: "slice.memory.admission",
         message: format!(

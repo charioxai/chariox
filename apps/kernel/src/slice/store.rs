@@ -438,6 +438,14 @@ impl SliceStore {
             }
         })?;
         drop(state);
+        // Restore and rollback both leave the replacement container stopped.
+        // Publish that status with the resolution, including retries from an
+        // earlier Unhealthy recovery diagnostic.
+        record.status = SliceStatus::Stopped;
+        record.worker_kernel_id = None;
+        record.worker_machine_id = None;
+        record.relay_endpoint = None;
+        record.providers.clear();
         record.saved_state_ref = Some(saved_state.id.clone());
         record.saved_state_status = Some(SliceSavedStateStatus::Saved);
         record.saved_state_updated_at_ms = Some(now_ms);
@@ -611,7 +619,17 @@ impl SliceStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed = Vec::new();
+        let quarantined: std::collections::BTreeSet<_> = state
+            .pending_backup_restores
+            .values()
+            .map(|transaction| transaction.source_slice_id.clone())
+            .collect();
         for record in state.records.values_mut() {
+            // Host state cannot establish that a partially restored container
+            // is usable. Preserve the recovery failure until rollback succeeds.
+            if quarantined.contains(&record.id) {
+                continue;
+            }
             let host_runtime = inspect_host_runtime(record);
             let was_runtime_status = matches!(
                 record.status,

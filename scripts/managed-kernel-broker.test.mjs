@@ -41,6 +41,23 @@ function validate(request, shareRoot) {
   })
 }
 
+test("snapshot helpers require bounded isolated resources and matching ownership", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-helper-policy-"))
+  context.after(() => rm(root, {recursive: true, force: true}))
+  const helper = "chariox-slice-dev-disk-admission-0123456789abcdef"
+  const args = ["create", "--name", helper, "--memory", "512m", "--cpus", "1",
+    "--pids-limit", "64", "--network", "none", "--label", `io.chariox.snapshot-helper=${helper}`,
+    "--user", "root", "-v", "chariox-slice-dev-home:/home-src:ro", "chariox-slice-linux:test", "sleep", "infinity"]
+  assert.equal(validate({kind: "docker", args}, root).status, 0)
+  for (const [index, value] of [[4, "0"], [6, "0"], [8, "0"], [10, "host"],
+    [12, "io.chariox.snapshot-helper=another"], [16, "chariox-slice-other-home:/home-src:ro"],
+    [16, "chariox-slice-dev-home:/home-src:rw"], [2, "chariox-slice-dev"]]) {
+    const invalid = [...args]; invalid[index] = value
+    assert.notEqual(validate({kind: "docker", args: invalid}, root).status, 0, `${index}: ${value}`)
+  }
+  assert.notEqual(validate({kind: "docker", args: [...args, "--privileged"]}, root).status, 0)
+})
+
 async function waitFor(check, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -112,11 +129,16 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
         args: [
           "create",
           "--name",
-          "chariox-slice-helper",
+          "chariox-slice-dev-home-archive-1",
+          "--memory", "512m",
+          "--cpus", "1",
+          "--pids-limit", "64",
+          "--network", "none",
+          "--label", "io.chariox.snapshot-helper=chariox-slice-dev-home-archive-1",
           "--user",
           "root",
           "-v",
-          "chariox-slice-home:/home-src:ro",
+          "chariox-slice-dev-home:/home-src:ro",
           "chariox-slice-linux:test",
           "sleep",
           "infinity",
@@ -698,7 +720,14 @@ test("managed slice broker pins a provisioner path inode across caller replaceme
     return
   }
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-pin-"))
-  context.after(() => rm(root, { recursive: true, force: true }))
+  context.after(async () => {
+    const handle = createHash("sha256").update("chariox-slice-dev\0workspace").digest("hex")
+    const target = join(root, "handles", handle)
+    if (spawnSync("/usr/bin/mountpoint", ["-q", "--", target]).status === 0) {
+      assert.equal(spawnSync("/usr/bin/umount", [target], { timeout: 3000 }).status, 0)
+    }
+    await rm(root, { recursive: true, force: true })
+  })
   const share = join(root, "share")
   const workspace = join(share, "slices/development/slice-dev/development/workspace")
   const moved = join(share, "workspace-original")
@@ -714,7 +743,9 @@ test("managed slice broker pins a provisioner path inode across caller replaceme
 set -eu
 : > '${started}'
 while [ ! -e '${release}' ]; do sleep 0.01; done
-cat "$CHARIOX_SLICE_WORKSPACE/value"
+# Match provision-linux-docker-slice.sh: WORKSPACE is the container destination;
+# the broker-owned SOURCE is the host bind mount, pinned across path replacement.
+cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
 `)
   await chmod(provisioner, 0o755)
   const child = spawn(process.execPath, [broker, "--stdio"], {
@@ -746,6 +777,7 @@ cat "$CHARIOX_SLICE_WORKSPACE/value"
   await waitFor(() => access(started).then(() => true, () => false))
   await rename(workspace, moved)
   await symlink(outside, workspace)
+  assert.equal(await readFile(join(workspace, "value"), "utf8"), "secret")
   await writeFile(release, "go")
   await waitFor(() => Promise.resolve(stdout.includes("\n")))
   child.stdin.end()
