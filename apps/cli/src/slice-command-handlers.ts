@@ -995,7 +995,7 @@ async function openSliceScreen(
       sliceId: slice.id,
       binding: response.RoomEnvironmentSlice.binding,
     })
-    if (scoped.error) {
+    if (scoped.error !== null) {
       deps.flashFooter(scoped.error, "error")
       return
     }
