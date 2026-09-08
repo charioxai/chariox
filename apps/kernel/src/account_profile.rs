@@ -3687,7 +3687,9 @@ mod tests {
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
         let home = root.join("home");
-        registry.migrate_effective_defaults("owner-a", &home).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
 
         let environment = registry
             .resolve_environment("owner-a", "claude", "default")
