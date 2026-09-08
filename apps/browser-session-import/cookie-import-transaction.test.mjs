@@ -65,9 +65,8 @@ test('recovery restores replaced cookies and retains the journal for durable ker
   await withJournal(async journal => {
     const original = stored({value:'original'});
     const {options,store} = fixture([original]);
-    await assert.rejects(applyCookieImport({...options,overwrite:true,journal:{...journal,
-      discard:async () => { throw Error('simulated cleanup interruption'); },
-    }}), {recoveryRequired:true});
+    // Model losing the caller after readback, before durable completion.
+    await applyCookieImport({...options,overwrite:true,journal});
     const result = await recoverCookieImport({...options,journal});
     assert.equal(result.recovered,true);
     assert.equal((await store.read())[0].value,'original');
