@@ -806,8 +806,8 @@ fn linux_docker_headed_browser_reopens_tabs_after_snapshot_quiescence() {
     .expect("slice screen script should be readable");
 
     assert!(script.contains("chromium_has_restorable_session"));
-    assert!(script.contains("chrome_startup_target_args=(--restore-last-session)"));
-    assert!(script.contains("chrome_startup_target_args=(\"$CHROME_URL\")"));
+    assert!(script.contains("chrome_startup_target_args+=(--restore-last-session)"));
+    assert!(script.contains("chrome_startup_target_args=(-- \"$CHROME_URL\")"));
     assert!(script.contains("\"${chrome_startup_target_args[@]}\""));
 }
 
@@ -1266,6 +1266,11 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
   printf 'sha256:fixture\n'
   exit 0
 fi
+if [ "$1" = "inspect" ] && [ "$2" = "--format" ]; then
+  case "$3" in
+    *HostConfig.Ulimits*) printf '8192:8192\n'; exit 0 ;;
+  esac
+fi
 if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
   printf 'true\n'
   exit 0
@@ -1301,6 +1306,7 @@ exit 0
         .env("CHARIOX_SLICE_DOCKER_IMAGE", "fixture")
         .env("CHARIOX_SLICE_BASE_IMAGE", "fixture")
         .env("CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT", "2")
+        .env("CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", "8192")
         .env("CHARIOX_SLICE_DEVELOPMENT_MOUNT_0", "/development/primary")
         .env(
             "CHARIOX_SLICE_DEVELOPMENT_MOUNT_1",
@@ -1355,6 +1361,11 @@ printf '%s\n' "$*" >> "$DOCKER_LOG"
 if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
   exit 0
 fi
+if [ "$1" = "inspect" ] && [ "$2" = "--format" ]; then
+  case "$3" in
+    *HostConfig.Ulimits*) printf '8192:8192\n'; exit 0 ;;
+  esac
+fi
 if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
   if [ -f "$DOCKER_RUNNING" ]; then printf 'true\n'; else printf 'false\n'; fi
   exit 0
@@ -1394,6 +1405,7 @@ exit 0
         .env("CHARIOX_SLICE_NAME", "saved-slice")
         .env("CHARIOX_SLICE_DOCKER_IMAGE", "prior-saved-image")
         .env("CHARIOX_SLICE_BASE_IMAGE", "current-runtime-image")
+        .env("CHARIOX_SLICE_DOCKER_NOFILE_LIMIT", "8192")
         .env("CHARIOX_SLICE_START_DESKTOP", "0")
         .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "0")
         .env("CHARIOX_SLICE_START_RUNTIME", "1")
