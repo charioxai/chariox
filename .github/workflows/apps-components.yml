@@ -122,41 +122,52 @@ jobs:
         env:
           RUST_MIN_STACK: '16777216'
         run: |
-          cargo test --locked -p chariox-kernel --lib runtime::app_control:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib app_relay_ -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_package_upload_control:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_package_preparation:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_state_broker:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_files_broker::tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_worker:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_lifecycle:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::router::tests::session_actor_projection::kernel_operation_interactions:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::router::tests::session_actor_projection::runtime_interactions:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::native_interaction_bridge::tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::state::runtime_interaction_owned_state:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib session::runtime_interactions::subject_tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::router::tests::app_tools:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::state::provider_reload::tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::state::provider_output_runtime_tests::mcp_catalog_reload:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::state::pending_runtime_state::pollers::tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib app::remote_lease::tests::catalog_admission:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::runtime_tool_catalog::tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib transport::mcp_server::catalog_stream_tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib provider::codex_client::mcp_reload::tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::state::remote_prompt_worker_submission_runtime::tests::native_refresh_pending_retries_only_the_exact_pre_admission_relay_error -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_operation_budget:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::app_event_pump:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib app_event_pump_runtime:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib runtime::prompt_state::dispatch_intent_tests -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib dispatch_recovery_tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib pump_integration_tests:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib concurrent_owned_workflow_launches_preserve_single_run_admission -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib failed_owned_queue_launch_releases_its_workspace_claim -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib app_bindings:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib app_binding_parser_preserves_meta_self_access -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib app_upload_maximum_chunk -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib durable_state:: -- --test-threads=1
-          cargo test --locked -p chariox-kernel --lib queued_event_prompt_derives_reply_and_context_capabilities_independently -- --test-threads=1
+          # Compile once. A compile failure stops immediately; independent
+          # fixture failures must not hide the other selected kernel results.
+          cargo test --locked -p chariox-kernel --lib --no-run
+          app_kernel_failures=0
+          for app_kernel_filter in \
+            runtime::app_control:: \
+            app_relay_ \
+            runtime::app_package_upload_control:: \
+            runtime::app_package_preparation:: \
+            runtime::app_state_broker:: \
+            runtime::app_files_broker::tests:: \
+            runtime::app_worker:: \
+            runtime::app_lifecycle:: \
+            runtime::router::tests::session_actor_projection::kernel_operation_interactions:: \
+            runtime::router::tests::session_actor_projection::runtime_interactions:: \
+            runtime::native_interaction_bridge::tests:: \
+            runtime::state::runtime_interaction_owned_state:: \
+            session::runtime_interactions::subject_tests:: \
+            runtime::router::tests::app_tools:: \
+            runtime::state::provider_reload::tests:: \
+            runtime::state::provider_output_runtime_tests::mcp_catalog_reload:: \
+            runtime::state::pending_runtime_state::pollers::tests:: \
+            app::remote_lease::tests::catalog_admission:: \
+            runtime::runtime_tool_catalog::tests:: \
+            transport::mcp_server::catalog_stream_tests:: \
+            provider::codex_client::mcp_reload::tests:: \
+            runtime::state::remote_prompt_worker_submission_runtime::tests::native_refresh_pending_retries_only_the_exact_pre_admission_relay_error \
+            runtime::app_operation_budget:: \
+            runtime::app_event_pump:: \
+            app_event_pump_runtime:: \
+            runtime::prompt_state::dispatch_intent_tests \
+            dispatch_recovery_tests:: \
+            pump_integration_tests:: \
+            concurrent_owned_workflow_launches_preserve_single_run_admission \
+            failed_owned_queue_launch_releases_its_workspace_claim \
+            app_bindings:: \
+            app_binding_parser_preserves_meta_self_access \
+            app_upload_maximum_chunk \
+            durable_state:: \
+            queued_event_prompt_derives_reply_and_context_capabilities_independently \
+          ; do
+            if ! cargo test --locked -p chariox-kernel --lib "$app_kernel_filter" -- --test-threads=1; then
+              app_kernel_failures=1
+            fi
+          done
+          exit "$app_kernel_failures"
       - name: Test native CLI developer dispatch
         run: >-
           cargo test --locked -p chariox-kernel --bin chariox-cli app_developer::tests:: -- --test-threads=1

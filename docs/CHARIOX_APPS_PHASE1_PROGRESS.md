@@ -1210,3 +1210,9 @@ entire new subject union. Its overrides are now restricted to the agent variant.
 The full kernel-client and referenced tool-display source graph passes no-emit
 TypeScript validation with external dependency paths and a 1,536 MiB heap cap.
 This check includes test files omitted by the earlier focused CLI graph.
+
+The hosted App kernel step now compiles its test binary once and reports all 35
+existing filter groups even if one fixture fails. It still fails the gate if any
+filter fails, and stops immediately on a compile error. The filter inventory is
+unchanged; Bash syntax validation passes. This avoids repeated hosted rebuild
+cycles merely to discover the next independent fixture failure.
