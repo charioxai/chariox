@@ -335,6 +335,45 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
                 .ensure_no_pending_environment_import(session.id())
                 .is_err());
             assert!(dispatch(&router, &caller, prepare.clone()).await.is_err());
+            assert!(
+                state
+                    .resume_browser_import_cleanup(
+                        &destination_command(denied_caller.clone()),
+                        session.id(),
+                        attachment.id(),
+                        id,
+                    )
+                    .await
+                    .is_err(),
+                "automation cannot resume cleanup"
+            );
+            // Model reopening a record that has not durably acknowledged rollback.
+            let recovery_database = rusqlite::Connection::open(&database_path).unwrap();
+            recovery_database
+                .execute(
+                    "UPDATE durable_browser_import SET recovery_required = 1 WHERE request_id = ?1",
+                    [id],
+                )
+                .unwrap();
+            assert!(
+                state
+                    .resume_browser_import_cleanup(
+                        &destination_command(caller.clone()),
+                        session.id(),
+                        attachment.id(),
+                        id,
+                    )
+                    .await
+                    .is_err(),
+                "unverified state requires recovery, not cleanup"
+            );
+            recovery_database
+                .execute(
+                    "UPDATE durable_browser_import SET recovery_required = 0 WHERE request_id = ?1",
+                    [id],
+                )
+                .unwrap();
+            drop(recovery_database);
             assert!(state
                 .resume_browser_import_cleanup(
                     &destination_command(caller.clone()),
