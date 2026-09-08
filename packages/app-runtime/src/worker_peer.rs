@@ -86,7 +86,9 @@ impl PeerLimits {
 pub struct BrokerCancellation(watch::Receiver<bool>);
 impl BrokerCancellation {
     pub fn is_cancelled(&self) -> bool {
-        *self.0.borrow()
+        // Losing the actor also withdraws authority to start queued work, even
+        // when it could not publish an explicit cancellation before dropping.
+        *self.0.borrow() || self.0.has_changed().is_err()
     }
     pub async fn cancelled(&mut self) {
         while !*self.0.borrow_and_update() {
@@ -243,4 +245,38 @@ fn wall_ms() -> Result<u64> {
         .and_then(|duration| u64::try_from(duration.as_millis()).ok())
         .filter(|value| *value <= 9_007_199_254_740_991)
         .ok_or(PeerError::Invalid)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn losing_last_sender_cancels_queued_work_without_a_value_change() {
+        let (sender, receiver) = watch::channel(false);
+        let other_sender = sender.clone();
+        let mut cancellation = BrokerCancellation(receiver);
+        drop(sender);
+        assert!(!cancellation.is_cancelled());
+        drop(other_sender);
+        assert!(cancellation.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("closed cancellation must wake asynchronous waiters");
+        assert!(cancellation.clone().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_survives_sender_close_and_async_observation() {
+        let (sender, receiver) = watch::channel(false);
+        let mut cancellation = BrokerCancellation(receiver);
+        sender.send_replace(true);
+        assert!(cancellation.is_cancelled());
+        cancellation.cancelled().await;
+        drop(sender);
+        assert!(cancellation.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("observing cancellation must not clear it");
+    }
 }
