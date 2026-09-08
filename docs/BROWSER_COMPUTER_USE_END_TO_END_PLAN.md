@@ -583,6 +583,13 @@ helper. Do not inject a token or edit Git configuration manually to pass this
 test. Also prove that selecting None produces no credential transfer and that
 a missing or disconnected source cannot silently become a successful transfer.
 
+Copying an existing local kernel must carry its available Git credential
+selection along with the copied context and vault, with the selection visible
+before launch and an explicit opt-out. Do not treat the current independently
+defaulted None selection as meeting this expectation. Preserve source binding
+and explicit consent in the launch plan; never resolve credentials from a
+different connected kernel or silently omit them when inventory is unavailable.
+
 Add a separate, explicitly authorized operation to transfer selected Git
 credentials to an existing ready managed kernel. Users must not need to wipe
 their kernel, workspaces, or running sessions because they initially selected
@@ -604,6 +611,7 @@ Required validation matrix:
 | --- | --- |
 | Initial Git selection | Picker selection survives request serialization, Cloud persistence, encrypted export, target receipt, helper setup, and a real scoped push. |
 | Initial None | No credential component or helper is installed; public Git use still works. |
+| Copy local kernel | Available source Git credentials are selected with the copied context and vault; the launch summary exposes that choice, explicit opt-out is honored, and source changes or unavailable inventory cannot silently omit or substitute credentials. |
 | Add after launch | A previously credential-free ready kernel gains selected Git access without changing its bootstrap digest, workspace files, agent identities, or running sessions. |
 | Consent and identity | Wrong owner, realm, source/target kernel, key thumbprint, or operation purpose is rejected before export or materialization. |
 | Restricted contents | Supplemental transfer admits only explicitly selected Git credential components, never provider accounts, workspace archives, or kernel context. |
