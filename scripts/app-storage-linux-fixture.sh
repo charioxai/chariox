@@ -2,6 +2,7 @@
 # Dedicated runner only. Uses the production helper, its fixed enrollment, and
 # the managed service's real namespace/delegation settings with a sleep main.
 set -euo pipefail
+trap 'printf "storage_fixture_failed_at_line=%s\n" "$LINENO" >&2' ERR
 [[ $# == 4 && "$(id -u)" == 0 && -d /run/systemd/system ]]
 storage_repo="$(realpath -e "$1")" storage_scratch="$(realpath -e "$2")"
 storage_tests="$(realpath -e "$3")" storage_helper="$(realpath -e "$4")"
@@ -30,6 +31,9 @@ cat > /etc/systemd/system/chariox-managed-bootstrap.service.d/fixture.conf <<'UN
 [Unit]
 ConditionPathExists=
 [Service]
+# The observer needs completed namespace setup. Type=simple reports fork, which
+# can race the checks below before systemd executes this harmless fixture main.
+Type=exec
 ExecStart=
 ExecStart=/usr/bin/sleep infinity
 ExecStartPre=
@@ -44,6 +48,7 @@ cat > /etc/systemd/system/chariox-app-storage.service.d/fixture.conf <<'UNIT'
 Restart=no
 UNIT
 cleanup() {
+  trap - ERR
   set +e
   systemctl stop chariox-storage-actual.service chariox-storage-crash.service chariox-managed-bootstrap.service chariox-app-storage.service
   journalctl --no-pager -u chariox-app-storage.service -u chariox-managed-bootstrap.service -n 120
@@ -64,9 +69,15 @@ systemctl daemon-reload
 systemctl start chariox-app-storage.service chariox-managed-bootstrap.service
 storage_kernel="$(systemctl show -p MainPID --value chariox-managed-bootstrap.service)"
 [[ "$storage_kernel" =~ ^[1-9][0-9]+$ ]]
-[[ "$(readlink /proc/$storage_kernel/ns/mnt)" != "$(readlink /proc/1/ns/mnt)" ]]
 storage_server="$(systemctl show -p MainPID --value chariox-app-storage.service)"
-[[ "$(readlink /proc/$storage_server/ns/mnt)" == "$(readlink /proc/1/ns/mnt)" ]]
+[[ "$storage_server" =~ ^[1-9][0-9]+$ ]]
+storage_host_ns="$(readlink /proc/1/ns/mnt)"
+storage_kernel_ns="$(readlink /proc/$storage_kernel/ns/mnt)"
+storage_server_ns="$(readlink /proc/$storage_server/ns/mnt)"
+printf 'Namespace observation: host=%s kernel_pid=%s kernel=%s helper_pid=%s helper=%s\n' \
+  "$storage_host_ns" "$storage_kernel" "$storage_kernel_ns" "$storage_server" "$storage_server_ns"
+[[ "$storage_kernel_ns" != "$storage_host_ns" ]]
+[[ "$storage_server_ns" == "$storage_host_ns" ]]
 run_test() {
   local storage_unit="$1" storage_filter="$2"
   systemd-run --unit="$storage_unit" --wait --collect --pipe \

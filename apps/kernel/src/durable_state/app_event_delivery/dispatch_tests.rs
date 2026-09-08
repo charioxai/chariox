@@ -76,12 +76,14 @@ fn event(
 fn append(
     store: &DurableKernelStateStore,
     event: DurablePromptStateEventPayload,
-) -> Result<u64, crate::error::DaemonError> {
-    store.append_event(
-        DURABLE_PROMPT_STATE_EVENT_KIND,
-        Some(event.session_id.clone()),
-        serde_json::to_value(event).unwrap(),
-    )
+) -> std::result::Result<(), crate::error::DaemonError> {
+    store
+        .append_event(
+            DURABLE_PROMPT_STATE_EVENT_KIND,
+            Some(event.session_id.clone()),
+            serde_json::to_value(event).unwrap(),
+        )
+        .map(|_| ())
 }
 
 #[test]

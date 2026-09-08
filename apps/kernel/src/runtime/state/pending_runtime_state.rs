@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
 
 use tokio::sync::oneshot;
+mod pollers;
+use pollers::PendingPollers;
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingMcpContinuation {
@@ -16,6 +18,7 @@ pub(super) struct PendingMcpContinuation {
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingMcpContinuationStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingMcpContinuation>>>,
+    pub(super) pollers: PendingPollers,
 }
 
 impl PendingMcpContinuationStore {
@@ -43,6 +46,7 @@ pub(super) struct PendingProviderReload {
 #[derive(Debug, Clone, Default)]
 pub(super) struct PendingProviderReloadStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingProviderReload>>>,
+    pub(super) pollers: PendingPollers,
 }
 
 impl PendingProviderReloadStore {

@@ -971,3 +971,23 @@ retained closed owners. The full kernel library check was stopped after
 26.3 seconds by the existing local RSS guard (peak 3,756,928 KiB); it did not
 complete. Real HTTP/SSE, Codex socket, remote admission and event-pump integration
 tests are selected for hosted CI. Installed-provider compatibility remains open.
+
+
+### Deferred refresh and fixture corrections (2026-09-08)
+
+The external review at `4d840e9da` found that idle native refresh contention
+could recursively schedule new pollers and renew the retry window. The existing
+pending queues now coalesce one poller per agent with a fixed 120-second retry
+window and 500 ms cadence; an in-flight provider refresh retains its separate
+30-second I/O bound. Operation-lane admission precedes catalog invalidation.
+Two actual poller-source tests pass in the isolated harness (2.54-second compile,
+0.03-second execution, peak 70,688 KiB). Kernel contention fixtures remain in
+hosted validation.
+
+Both platform component runs reached kernel test compilation, then stopped
+at an older event-dispatch test helper's wrong Result alias/return type. The
+helper now returns its actual unit result explicitly. A later Linux storage
+fixture raced Type=simple service startup before namespace setup; the fixture
+now uses Type=exec, bounded PID/namespace observation and failure-line diagnostics.
+Production isolation assertions are unchanged. These hosted corrections need a
+fresh run; prior successful storage evidence remains recorded separately.

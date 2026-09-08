@@ -63,11 +63,24 @@ impl KernelRuntimeState {
             },
         );
         drop(pending);
+        self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
+    }
+
+    fn ensure_pending_mcp_continuation_poller(&self, session_id: &str, agent_id: &str) {
+        let pending = self.owned.pending_mcp_continuations.write();
+        if !pending.contains_key(agent_id) {
+            return;
+        }
+        let poller = self.owned.pending_mcp_continuations.pollers.claim(agent_id);
+        drop(pending);
+        let Some(mut poller) = poller else {
+            return;
+        };
         let state = self.clone();
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         tokio::spawn(async move {
-            for _ in 0..240 {
+            while poller.next().await {
                 let is_idle = state
                     .owned
                     .session_store
@@ -95,9 +108,21 @@ impl KernelRuntimeState {
                             }),
                         );
                     }
+                }
+                let queued = state.owned.pending_mcp_continuations.write();
+                if !queued.contains_key(&agent_id) {
+                    poller.release();
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let queued = state.owned.pending_mcp_continuations.write();
+            poller.release();
+            if queued.contains_key(&agent_id) {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "pending MCP continuation polling expired",
+                    serde_json::json!({"session_id": session_id, "agent_id": agent_id}),
+                );
             }
         });
     }
@@ -145,14 +170,20 @@ impl KernelRuntimeState {
             )
             .await?;
         if outcome == ProviderReloadOutcome::Deferred {
-            self.remember_mcp_continuation_with_reason(
-                &continuation.session_id,
-                &continuation.agent_id,
-                &continuation.source_attachment_id,
-                &continuation.mcp_name,
-                &continuation.previous_prompt,
-                continuation.reload_reason,
-            );
+            let mut queued = self.owned.pending_mcp_continuations.write();
+            if let Some(newer) = queued.get_mut(agent_id) {
+                newer.reload_reason = newer
+                    .reload_reason
+                    .clone()
+                    .merge(&continuation.reload_reason);
+            } else {
+                queued.insert(agent_id.to_owned(), continuation);
+            }
+            drop(queued);
+            // Usually the existing poller still owns the original budget. A
+            // prompt-completion callback may restart previously expired work,
+            // but a Deferred poll attempt never spawns a replacement task.
+            self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
             return Ok(());
         }
         if outcome == ProviderReloadOutcome::Reloaded {

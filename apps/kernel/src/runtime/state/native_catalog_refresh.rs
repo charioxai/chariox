@@ -7,15 +7,17 @@ impl KernelRuntimeState {
         run: crate::provider::RuntimeProviderRun,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
         let changes = self.owned.provider_run_projection.catalog_changes().clone();
-        let Some(watch) = changes.begin_refresh(run.id()) else {
-            return Ok(ProviderReloadOutcome::Deferred);
-        };
         let Some(lane) = self
             .owned
             .provider_store
             .run_operation_lanes()
             .try_acquire(run.id())
         else {
+            return Ok(ProviderReloadOutcome::Deferred);
+        };
+        // Contention is not a catalog change. Acquire the run lane first so
+        // retries cannot invalidate an otherwise healthy provider's discovery.
+        let Some(watch) = changes.begin_refresh(run.id()) else {
             return Ok(ProviderReloadOutcome::Deferred);
         };
         let expected_hash = run.remote_extension_manifest().manifest_hash();

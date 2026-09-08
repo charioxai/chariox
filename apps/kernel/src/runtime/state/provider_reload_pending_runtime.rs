@@ -21,12 +21,16 @@ impl KernelRuntimeState {
                 reason,
             },
         );
+        let poller = self.owned.pending_provider_reloads.pollers.claim(agent_id);
         drop(pending);
+        let Some(mut poller) = poller else {
+            return;
+        };
         let state = self.clone();
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         tokio::spawn(async move {
-            for _ in 0..240 {
+            while poller.next().await {
                 let is_idle = state
                     .owned
                     .session_store
@@ -53,12 +57,14 @@ impl KernelRuntimeState {
                             )
                             .await
                         {
-                            Ok(ProviderReloadOutcome::Deferred) => state
-                                .remember_pending_provider_reload(
-                                    &pending.session_id,
-                                    &pending.agent_id,
-                                    pending.reason,
-                                ),
+                            Ok(ProviderReloadOutcome::Deferred) => {
+                                let mut queued = state.owned.pending_provider_reloads.write();
+                                if let Some(newer) = queued.get_mut(&agent_id) {
+                                    newer.reason = newer.reason.clone().merge(&pending.reason);
+                                } else {
+                                    queued.insert(agent_id.clone(), pending);
+                                }
+                            }
                             Ok(_) => {}
                             Err(error) => {
                                 crate::logging::warn_with_fields(
@@ -73,9 +79,23 @@ impl KernelRuntimeState {
                             }
                         }
                     }
+                }
+                let queued = state.owned.pending_provider_reloads.write();
+                if !queued.contains_key(&agent_id) {
+                    poller.release();
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            // Leave the pending reason available for a later explicit change;
+            // a Deferred attempt never starts a replacement polling budget.
+            let queued = state.owned.pending_provider_reloads.write();
+            poller.release();
+            if queued.contains_key(&agent_id) {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "pending provider reload polling expired",
+                    serde_json::json!({"session_id": session_id, "agent_id": agent_id}),
+                );
             }
         });
     }
