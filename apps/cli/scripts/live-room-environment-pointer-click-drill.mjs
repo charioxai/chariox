@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict"
+import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -226,13 +227,15 @@ async function run() {
     await chmod(fixtureWorkspace, 0o777)
   }
   await assertDockerReady()
+  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
+  const relayBinary = await resolveRuntimeBinary("chariox-relay")
+  sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
+  await validatePrebuiltSliceImage(process.env.CHARIOX_ROOM_DRILL_IMAGE, sourceIdentity,
+    async image => JSON.parse((await docker(["image", "inspect", image])).stdout))
   resources.push(await resourceSnapshot("before"))
   fixture = await startFixture()
   await seedConfig(tempRoot)
 
-  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
-  const relayBinary = await resolveRuntimeBinary("chariox-relay")
-  sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
   const relayLog = createWriteStream(path.join(evidenceRoot, "relay.log"), { flags: "a" })
   const relay = spawn(relayBinary, [], {
     cwd: repoRoot,
