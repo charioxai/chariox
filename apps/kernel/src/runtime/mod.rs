@@ -14,6 +14,7 @@ pub(crate) mod browser_controller_process;
 pub(crate) mod browser_controller_snapshot;
 pub(crate) mod browser_controller_tab;
 pub(crate) mod browser_import_admission;
+pub(crate) mod browser_import_payload;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
 pub(crate) mod cloud_api_client;
