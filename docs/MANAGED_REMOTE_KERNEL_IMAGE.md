@@ -8,7 +8,7 @@ manager; it does not provision managed machines or build their images.
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
-and `chariox-relay` for `x86_64-unknown-linux-gnu` from an exact pushed
+`chariox-relay`, and `chariox-app-package` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
 outside the repository with mode `0600`. Its build command archives the Git
 object into a new temporary directory, runs a locked one-job release build, and
@@ -45,7 +45,7 @@ node scripts/package-managed-kernel-release.mjs \
 Record the printed `sha256:` release digest. Keep both private keys private.
 Copy only the generated root filesystem and a separate copy of its release
 public key to the image builder. The packager verifies the detached builder
-signature, exact commit and tree IDs, target, and all three staged binary digests
+signature, exact commit and tree IDs, target, and all four staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and

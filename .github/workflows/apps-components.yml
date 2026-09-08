@@ -9,9 +9,24 @@ on:
       - 'apps/app-worker/**'
       - 'apps/kernel/**'
       - 'packages/kernel-client/**'
+      - 'packages/tool-display/**'
+      - 'apps/cli/src/app-*.ts'
+      - 'apps/cli/src/cli-options.ts'
+      - 'apps/cli/src/cli-types.ts'
+      - 'apps/cli/src/ipc.ts'
+      - 'apps/cli/src/preferences.ts'
+      - 'apps/cli/src/runtime.ts'
+      - 'apps/cli/package.json'
+      - 'apps/cli/tsconfig.json'
+      - 'deploy/managed-kernel/**'
+      - 'scripts/*managed-kernel-release*'
       - 'scripts/build-app-runtime*'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
       - '.github/workflows/apps-components.yml'
   workflow_dispatch:
 
@@ -52,6 +67,49 @@ jobs:
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
       - name: Test runtime build planning and resource guards
         run: node --test scripts/build-app-runtime.test.mjs
+      - name: Test signed managed release helper packaging
+        run: node --test --test-concurrency=1 scripts/managed-kernel-release.test.mjs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - name: Install only developer command dependencies without lifecycle scripts
+        run: >-
+          pnpm install --frozen-lockfile --ignore-scripts
+          --filter @chariox/cli... --filter chariox
+          --child-concurrency 1 --network-concurrency 4
+      - name: Build shared command contracts
+        run: pnpm build:kernel-client
+      - name: Typecheck and test selected App developer commands
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.cwd();
+          writeFileSync(join(process.env.RUNNER_TEMP, 'app-developer-tsconfig.json'), JSON.stringify({
+            extends: join(root, 'apps/cli/tsconfig.json'),
+            compilerOptions: {
+              declaration: false, declarationMap: false, sourceMap: false,
+              typeRoots: [join(root, 'node_modules/@types'), join(root, 'apps/cli/node_modules/@types')],
+            },
+            include: ['app-developer.ts', 'app-developer.test.ts', 'app-command.ts', 'app-command.test.ts']
+              .map(name => join(root, 'apps/cli/src', name)),
+          }));
+          NODE
+          # Emit only this dependency graph to the normal package output so ESM
+          # resolves the installed workspace dependencies without custom links.
+          pnpm exec tsc -p "$RUNNER_TEMP/app-developer-tsconfig.json"
+          node --test --test-concurrency=1 apps/cli/dist/app-developer.test.js apps/cli/dist/app-command.test.js
+      - name: Remove developer command build output
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          rmSync('apps/cli/dist', { recursive: true, force: true });
+          rmSync(join(process.env.RUNNER_TEMP, 'app-developer-tsconfig.json'), { force: true });
+          NODE
       - name: Test Chromium launch, sandbox probing and restore control
         run: >-
           node --test --test-concurrency=1
@@ -68,6 +126,9 @@ jobs:
           cargo test --locked -p chariox-kernel --lib runtime::app_package_preparation:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib app_upload_maximum_chunk -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib durable_state:: -- --test-threads=1
+      - name: Test native CLI developer dispatch
+        run: >-
+          cargo test --locked -p chariox-kernel --bin chariox-cli app_developer::tests:: -- --test-threads=1
       - name: Test Chromium migration and atomic checkpoint recovery
         env:
           RUST_MIN_STACK: '16777216'
