@@ -738,13 +738,13 @@ function sliceHarness(options: {
         : { session_id: "session-1", slice_id: "slice-1", owner_kernel_id: "kernel", worker_kernel_ref: "worker" }
       return { RoomEnvironmentSlice: { binding } } as TResponse
     },
-    openRoomViewer: options.viewerConfigured === false ? undefined : async (target) => {
+    ...(options.viewerConfigured === false ? {} : { openRoomViewer: async (target: { sessionId: string; agentId: string; sliceId: string }) => {
       viewerTargets.push(target)
       return {
         url: `https://cloud.test/view?view_target=${encodeURIComponent(`${target.sessionId}:${target.agentId}:${target.sliceId}`)}`,
         opened: true,
       }
-    },
+    } }),
     listSlices: async () => slices,
     createSlice: async (createOptions) => {
       createdSlices.push(createOptions)
