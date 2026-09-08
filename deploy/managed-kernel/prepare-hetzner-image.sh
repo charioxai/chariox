@@ -68,6 +68,7 @@ apt-get install -y --no-install-recommends \
   cloud-init \
   curl \
   docker.io \
+  docker-buildx \
   fuse-overlayfs \
   gh \
   git \
@@ -208,6 +209,11 @@ for _attempt in $(seq 1 30); do
 done
 [ "$rootless_docker_ready" -eq 1 ] || fail "rootless Docker daemon is not ready"
 "$script_root/verify-rootless-handle-lifecycle.sh"
+runuser -u chariox-docker -- env -i \
+  HOME=/var/lib/chariox-docker/home \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  docker buildx version >/dev/null \
+  || fail "Docker Buildx is unavailable to the slice broker user"
 slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \

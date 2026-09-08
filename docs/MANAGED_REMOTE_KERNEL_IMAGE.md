@@ -52,6 +52,13 @@ untracked files cannot enter the release.
 
 ## Disposable Hetzner builder
 
+The host needs both Ubuntu's `docker.io` and `docker-buildx` packages. Image
+preparation installs with `--no-install-recommends`, so Buildx must be explicit.
+Validation checks plugin discovery with the broker user's clean environment.
+Headed-slice acceptance must also exercise `docker buildx build --load` through
+the provisioner. A successful `docker info` or legacy `docker build` alone does
+not prove that a fresh slice can build its runtime image.
+
 Create one x86 Hetzner server from the `ubuntu-26.04` system image. Give the
 server, its temporary SSH key, and its temporary SSH firewall the label
 `chariox.dev/managed-image-builder=true`. Limit inbound TCP 22 to the operator's
