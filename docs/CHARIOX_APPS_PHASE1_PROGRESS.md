@@ -1277,3 +1277,28 @@ identity and resource log without downloading or executing the runtime. Peak
 observed build-group RSS was 3,030,564,864 bytes. Signing, notarization, macOS
 factory integration and actual signed sandbox execution remain release gates;
 this result is not a release artifact or containment proof.
+
+### HTTP stream ownership and protocol 294 (2026-09-08)
+
+SDK 0.6 and protocol 294 add five bounded HTTP stream operations through the
+existing worker channel. The kernel checks signed destinations and current
+installation authority before enqueueing each operation, resolves and checks
+numeric peers itself, and verifies TLS for the original hostname. Anonymous
+HTTPS is implemented; credential-backed effects, Fetch redirects/decompression
+and the full compatibility corpus remain Phase 1 work.
+
+Response cleanup now survives the intermediate broker result until actual frame
+publication. Cancellation cannot produce both success and failure for one ID;
+partial-write cancellation closes framing. Lost open/read/write replies retire
+their exact stream, and subsequent body operations cannot skip an unpublished
+chunk. Shared admission and the stream operation gate remain held through that
+boundary. Eagerly reaping completed successes cannot discard unpublished errors.
+
+Nineteen actual framed-peer tests pass (4.34-second compile, 0.47-second tests,
+467,696 KiB sampled peak), plus one focused physical-publication/cancellation
+invariant (2.99-second compile, under 0.01-second test, 388,144 KiB peak). SDK
+checks pass 44 tests; runtime-bundle SDK 0.6 checks pass 13 tests in 26.48 seconds.
+The shared HTTP snapshot exercises actual Rust request decoders and response
+encoders. Its 23 kernel HTTP fixtures are selected for hosted execution and
+have not yet compiled or run; fixed libc/private-socket fixtures do not prove
+production TLS or signed Node execution.

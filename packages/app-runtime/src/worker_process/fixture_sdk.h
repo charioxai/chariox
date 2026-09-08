@@ -8,7 +8,7 @@ static int fixture_sdk_mode(const char* mode) {
   return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
       !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
       !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files") ||
-      !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health");
+      !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused");
 }
 
 static int fixture_sdk_io(void* buffer, size_t size, int writing, int64_t deadline) {
@@ -106,6 +106,7 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
 }
 
 #include "fixture_health.h"
+#include "fixture_http.h"
 
 static int fixture_sdk_run(const struct cx_launch_record* record, const char* mode) {
   const int flags = fcntl(3, F_GETFL);
@@ -152,6 +153,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   if (fsync(file) || close(file)) return 104;
   if (fixture_sdk_event("worker.fixture.ready_ack") != 1) return 105;
   if (fixture_health_mode(mode)) return fixture_health_after(response,startup)==1 ? 0 : 123;
+  if (!strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused")) { int result=fixture_http_run(response,!strcmp(mode, "sdk_http_paused")); if (result) return result; }
   if (!strcmp(mode, "sdk_files")) {
     /* Exercise both namespaces on the exact inherited production peer. */
     if (fixture_sdk_request("files-state", "state.get", "{\"key\":\"fixture\"}") != 1 ||

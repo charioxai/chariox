@@ -694,3 +694,6 @@ async fn stalled_partial_write_closes_both_halves_and_releases_waiting_callers()
     );
     assert!(peer.is_closed());
 }
+
+#[path = "worker_peer/publication.rs"]
+mod publication;

@@ -131,6 +131,11 @@ pub(super) fn register(
         events.clone(),
         context.admission.clone(),
         &process,
+        &verified,
+        crate::runtime::app_http::HttpContext {
+            limits: context.http_limits.clone(),
+            runtime: context.runtime.clone(),
+        },
     )
     .map_err(|_| LifecycleError::Preparation)?;
     let (starting, controls) = AppWorkerOwner::start_blocking(

@@ -133,6 +133,7 @@ jobs:
             runtime::app_package_preparation:: \
             runtime::app_state_broker:: \
             runtime::app_files_broker::tests:: \
+            runtime::app_http:: \
             runtime::app_worker:: \
             runtime::app_lifecycle:: \
             runtime::router::tests::session_actor_projection::kernel_operation_interactions:: \

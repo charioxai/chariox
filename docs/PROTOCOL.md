@@ -1029,6 +1029,17 @@ Workflow trigger and deployment direction:
   and, for scheduled bindings, `scheduleRevision`, preserved on retries. The
   worker frame remains v1; the SDK payload and binding snapshots are versioned
   together. These contracts do not yet assert App workflow delivery readiness.
+- protocol 294 pairs SDK 0.6 with the worker's bounded HTTP stream contract:
+  `http.open`, `http.write`, `http.headers`, `http.read` and `http.cancel`.
+  The worker frame remains v1. Stream IDs are opaque and scoped to one worker;
+  each operation rechecks the installation's current signed network authority
+  on the kernel writer. DNS resolution, peer-address checks and TLS happen in
+  the kernel. This slice supports anonymous HTTPS to declared origins/methods;
+  credentials and critical-operation receipts are not yet connected, so routes
+  requiring them return explicit errors. Neither redirects nor retries occur
+  implicitly. Buffered SDK requests compose the stream operations under one
+  original deadline and size bound. Cancellation and failed response publication
+  dispose of the exact stream; a lost body chunk cannot be silently retried.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -6,6 +6,7 @@ use crate::local::{
 };
 
 mod app_events;
+mod app_install;
 mod apps;
 mod core;
 mod credential_enrollment;

@@ -29,6 +29,8 @@ pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_http;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
 pub(crate) mod apps;
 #[cfg(test)]
@@ -157,6 +159,8 @@ enum DurableWriterRequest {
     AppTools(Box<app_tools::AppToolsRequest>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     AppFile(Box<app_files::AppFileRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppHttp(Box<crate::runtime::app_http::HttpJob>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     AppInstallationOperation(Box<app_installation_operations::AppInstallationOperationRequest>),
 }
@@ -1417,6 +1421,11 @@ fn run_durable_writer(
                 app_files::execute(&mut connection, *request);
                 continue;
             }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppHttp(request) => {
+                app_http::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppEventQueue(request) => {
                 if matches!(
                     app_event_delivery::execute(&mut connection, *request),
@@ -1448,7 +1457,7 @@ fn run_durable_writer(
             match receiver.recv_timeout(remaining) {
                 Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                Ok(request @ (DurableWriterRequest::AppTools(_) | DurableWriterRequest::AppFile(_) | DurableWriterRequest::AppInstallationOperation(_))) => {
+                Ok(request @ (DurableWriterRequest::AppTools(_) | DurableWriterRequest::AppFile(_) | DurableWriterRequest::AppHttp(_) | DurableWriterRequest::AppInstallationOperation(_))) => {
                     pending = Some(request);
                     break;
                 }

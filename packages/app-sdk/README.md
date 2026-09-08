@@ -157,3 +157,23 @@ JavaScript receiver must accept or reject the same cases. Tests also cover real
 framing fragmentation, invalid UTF-8, truncated frames, write backpressure,
 absolute frame deadlines, out-of-order replies, late replies, cancellation,
 generation mismatch, handler capacity, lifecycle exclusion and event separation.
+
+## HTTP streaming (SDK 0.6)
+
+`http.open`, `write`, `headers`, `read`, and `cancel` use the kernel's existing
+worker channel. Production currently supports anonymous HTTPS to the signed
+package's exact approved origins/methods. Opaque connections and protected-effect
+receipts return explicit unsupported responses until their authority is wired.
+No provider account credentials, redirects, cookies, automatic decompression,
+raw sockets, or body retries are supplied by these methods.
+
+The kernel limits streams to four per installation and 32 per kernel, each with
+two 64 KiB queued chunks per direction, a 64 MiB upload, a 256 MiB response, one
+hour total lifetime and 120 seconds without socket activity. These are initial
+policy limits. Keep at most one read (or headers request) and one write in flight.
+A pull can return `pending: true`; later pulls retain the same stream and do not
+reset its lifetime. Headers can be requested again. A consumed body chunk or
+write with unknown completion must never be retried. Always cancel a stream when
+finished or abandoning it. `http.request` is a 512 KiB buffered convenience using
+one original deadline, at most 30 seconds, across its component operations.
+This subset does not claim Fetch conformance.

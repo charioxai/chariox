@@ -1,6 +1,7 @@
 import { AppError } from './errors.js';
 import { object, token } from './protocol.js';
 import { AppPeer } from './peer.js';
+import { createHttp } from './http.js';
 import { validateOccurrence, validateOccurrences } from './occurrences.js';
 
 export { AppError } from './errors.js';
@@ -133,18 +134,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       import: (grantId, destination, options) => call('files.import', { grantId: name(grantId, 'file grant'), destination: relativePath(destination) }, options),
       export: (path, options) => call('files.export', { path: relativePath(path) }, options),
     }),
-    http: Object.freeze({
-      request(request, options) {
-        record(request, 'HTTP request');
-        let url;
-        try { url = new URL(request.url); } catch { throw new AppError('INVALID_ARGUMENT', 'Invalid HTTP URL'); }
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-          throw new AppError('INVALID_ARGUMENT', 'Expected an HTTP URL without credentials');
-        }
-        const { body, ...parameters } = request;
-        return call('http.request', { ...parameters, url: url.href, ...(body === undefined ? {} : { bodyBase64: bytes(body) }) }, options);
-      },
-    }),
+    http: createHttp(call),
     log: Object.freeze({
       write(level, message, fields = {}, options) {
         if (!['debug', 'info', 'warn', 'error'].includes(level) || typeof message !== 'string' || message.length > 4096) {

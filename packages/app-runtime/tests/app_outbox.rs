@@ -69,7 +69,7 @@ impl Package {
         Self { manifest:serde_json::from_value(json!({
             "schema":"chariox.app.v1","appId":"com.example.events","version":"1.0.0",
             "publisher":{"id":"com.example","keyId":"developer","name":"Developer"},
-            "sdkVersion":"0.5.0","appContractVersion":1,"minKernelProtocol":500,
+            "sdkVersion":"0.6.0","appContractVersion":1,"minKernelProtocol":500,
             "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
             "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
         })).unwrap(),key:SigningKey::from_bytes(&[73;32]), files:BTreeMap::from([

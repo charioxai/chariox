@@ -27,7 +27,7 @@ const SIGNATURE_SCHEMA: &str = "chariox.package-signature.v1";
 
 /// The signed envelope is versioned independently from SDK and kernel protocol.
 pub const PACKAGE_CONTRACT_VERSION: u32 = 1;
-pub const SUPPORTED_SDK_VERSION: &str = "0.5.0";
+pub const SUPPORTED_SDK_VERSION: &str = "0.6.0";
 
 #[derive(Debug, Clone)]
 pub struct Limits {

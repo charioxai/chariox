@@ -68,6 +68,11 @@ impl Fixture {
             catalog.clone(),
             admission.clone(),
             &process,
+            &package,
+            crate::runtime::app_http::HttpContext {
+                limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
+                runtime: runtime.handle().clone(),
+            },
         )
         .unwrap();
         let (starting, events) = AppWorkerOwner::start_blocking(

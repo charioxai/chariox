@@ -4,6 +4,7 @@
 //! caller authority. WorkerProcess retains the process, sandbox and FD lifecycle.
 
 mod actor;
+mod publication;
 mod request;
 mod transport;
 mod validation;
@@ -110,11 +111,21 @@ pub struct BrokerRequest {
 pub type BrokerFuture =
     Pin<Box<dyn Future<Output = std::result::Result<serde_json::Value, RemoteError>> + Send>>;
 pub type BrokerDrainFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+/// Host-only completion ownership. Dropping an unpublished guard must release
+/// or poison its exact operation; callbacks must be nonblocking and infallible.
+pub trait ResponsePublication: Send + 'static {
+    fn published(&mut self);
+}
 pub trait Broker: Send + Sync + 'static {
     /// One validated request, including worker.ready. No method is acknowledged
     /// automatically. The implementation retains kernel-owned identity/policy;
     /// request params carry no authenticated owner, agent, grant or generation.
     fn handle(&self, request: BrokerRequest) -> BrokerFuture;
+    /// Transfers bounded completion ownership after the handler has finished.
+    /// Apps cannot construct or select this guard through the wire protocol.
+    fn take_response_guard(&self, _request_id: &str) -> Option<Box<dyn ResponsePublication>> {
+        None
+    }
     /// Host-only lifecycle notification. Must be nonblocking and idempotent;
     /// it cancels background work without releasing its resource reservations.
     fn begin_draining(&self) {}

@@ -189,6 +189,12 @@ struct StartupBroker {
     report: Mutex<Option<oneshot::Sender<Result<ReadyReport, AppWorkerError>>>>,
 }
 impl Broker for StartupBroker {
+    fn take_response_guard(
+        &self,
+        id: &str,
+    ) -> Option<Box<dyn chariox_app_runtime::worker_peer::ResponsePublication>> {
+        self.delegate.take_response_guard(id)
+    }
     fn begin_draining(&self) {
         // A peer closing before the owner observes it also withdraws this exact
         // worker immediately. Admission forwards the delegate hook only once.

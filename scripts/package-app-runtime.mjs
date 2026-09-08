@@ -42,7 +42,7 @@ function git(repository, args, bytes = false) {
 
 export function validateBundleContract(contract) {
   if (contract?.schema !== 'chariox.app-runtime-bundle-contract.v1'
-    || !equal(contract.sdk, { name: '@chariox/app-sdk', version: '0.5.0', appContractVersion: 1, wireVersion: 1 })
+    || !equal(contract.sdk, { name: '@chariox/app-sdk', version: '0.6.0', appContractVersion: 1, wireVersion: 1 })
     || !equal(sorted(contract.bootstrap ?? []), ['bootstrap-config.cjs', 'bootstrap.cjs'])
     || !equal(contract.limits, { files: 32, sourceFileBytes: 262144, manifestBytes: MAX_MANIFEST, bundleBytes: 536870912 })
     || !Array.isArray(contract.sdkFiles) || contract.sdkFiles.length > 24

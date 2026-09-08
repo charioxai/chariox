@@ -1,0 +1,15 @@
+{
+  "minimumKernelProtocol": 294,
+  "sdkVersion": "0.6.0",
+  "limits": { "installationStreams": 4, "kernelStreams": 32, "chunkBytes": 65536, "queuedChunks": 2, "requestBytes": 67108864, "responseBytes": 268435456, "lifetimeMs": 3600000, "inactivityMs": 120000, "pullMs": 1000 },
+  "cases": [
+    { "method": "http.open", "params": { "url": "https://api.example.com/fixture", "method": "POST", "headers": [["content-type", "application/octet-stream"]], "hasBody": true }, "result": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" } },
+    { "method": "http.write", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a", "bodyBase64": "AP9vaw==", "end": true }, "result": { "bytesWritten": 4 } },
+    { "method": "http.headers", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" }, "result": { "pending": true } },
+    { "method": "http.headers", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" }, "result": { "pending": false, "status": 200, "headers": [["content-type", "application/octet-stream"]], "url": "https://api.example.com/fixture" } },
+    { "method": "http.read", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" }, "result": { "pending": true } },
+    { "method": "http.read", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" }, "result": { "pending": false, "done": false, "chunkBase64": "AP9vaw==" } },
+    { "method": "http.read", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" }, "result": { "pending": false, "done": true, "chunkBase64": "" } },
+    { "method": "http.cancel", "params": { "streamId": "07f5a249-a00b-4196-acdf-938265f88e0a" }, "result": null }
+  ]
+}

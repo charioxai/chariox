@@ -6,13 +6,13 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_event_payload_contract_is_versioned_and_matches_the_sdk_fixture() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
     let fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../packages/app-sdk/test/event-contract.json"
     )))
     .unwrap();
-    assert_eq!(fixture["minimumKernelProtocol"], 293);
+    assert_eq!(fixture["minimumKernelProtocol"], 294);
     assert_eq!(fixture["sdkVersion"], SUPPORTED_SDK_VERSION);
     let declaration: EventDeclaration =
         serde_json::from_value(fixture["declaration"].clone()).unwrap();

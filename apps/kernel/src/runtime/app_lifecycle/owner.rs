@@ -4,6 +4,7 @@ use super::*;
 use chariox_app_runtime::worker_process::WorkerExit;
 
 pub(super) struct Context {
+    pub http_limits: Arc<crate::runtime::app_http::HttpLimits>,
     pub store: DurableKernelStateStore,
     pub publisher: AppWorkerPublisher,
     pub admission: Arc<Semaphore>,

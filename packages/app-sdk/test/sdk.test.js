@@ -151,7 +151,7 @@ test('SDK emission matches the shared Rust event payload snapshot', async () => 
   const fixture = JSON.parse(readFileSync(new URL('./event-contract.json', import.meta.url), 'utf8'));
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(metadata.version, fixture.sdkVersion);
-  assert.equal(fixture.minimumKernelProtocol, 293);
+  assert.equal(fixture.minimumKernelProtocol, 294);
   const { transport, sdk } = setup();
   const pending = sdk.events.emit(fixture.occurrence);
   assert.deepEqual(transport.sent[0].params, fixture.occurrence);
@@ -177,10 +177,10 @@ test('HTTP and human validation are kernel calls; user approval does not hold a 
   const { transport, sdk } = setup();
   assert.throws(() => sdk.http.request({ url: 'file:///etc/passwd' }), { code: 'INVALID_ARGUMENT' });
   assert.throws(() => sdk.http.request({ url: 'https://user:pass@example.com/' }), { code: 'INVALID_ARGUMENT' });
-  const http = sdk.http.request({ url: 'https://api.example.test/issues', connectionId: 'connection-1', body: 'hello' });
-  assert.equal(transport.sent[0].method, 'http.request');
-  assert.equal(transport.sent[0].params.bodyBase64, 'aGVsbG8=');
-  transport.receive(response(transport.sent[0].id, { status: 200, headers: [], bodyBase64: '', url: 'https://api.example.test/issues' }));
+  const http = sdk.http.open({ url: 'https://api.example.test/issues', connectionId: 'connection-1', method: 'POST', hasBody: true });
+  assert.equal(transport.sent[0].method, 'http.open');
+  assert.equal(transport.sent[0].params.hasBody, true);
+  transport.receive(response(transport.sent[0].id, { streamId: '07f5a249-a00b-4196-acdf-938265f88e0a' }));
   await http;
   const validation = sdk.validation.request({ action: 'pay', parameters: { amount: 10 } });
   transport.receive(response(transport.sent[1].id, { operationId: 'operation-1', state: 'pending' }));

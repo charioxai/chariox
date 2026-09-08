@@ -94,6 +94,7 @@ pub(crate) enum StartDisposition {
 #[derive(Clone)]
 pub(crate) struct AppLifecycleService(Arc<Inner>);
 struct Inner {
+    http_limits: Arc<crate::runtime::app_http::HttpLimits>,
     store: DurableKernelStateStore,
     publisher: AppWorkerPublisher,
     admission: Arc<Semaphore>,
@@ -141,6 +142,7 @@ impl AppLifecycleService {
         publisher: AppWorkerPublisher,
     ) -> Self {
         Self(Arc::new(Inner {
+            http_limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
             store,
             publisher,
             admission,

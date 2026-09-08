@@ -70,6 +70,9 @@ export interface HttpRequest {
   connectionId?: string;
   operationId?: string;
 }
+export interface HttpOpenRequest extends Omit<HttpRequest, 'body'> { hasBody?: boolean }
+export type HttpHeaders = { pending: true } | { pending: false; status: number; headers: [string,string][]; url: string };
+export type HttpChunk = { pending: true } | { pending: false; done: boolean; chunkBase64: string };
 export interface HttpResponse {
   status: number;
   headers: [string, string][];
@@ -109,7 +112,19 @@ export interface AppSdk {
     import(grantId: string, destination: string, options?: CallOptions): Promise<{ bytesWritten: number }>;
     export(path: string, options?: CallOptions): Promise<{ operationId: string }>;
   };
-  readonly http: { request(request: HttpRequest, options?: CallOptions): Promise<HttpResponse> };
+  readonly http: {
+    /** Anonymous HTTPS only; no automatic redirects, decoding or body retries. */
+    open(request: HttpOpenRequest, options?: CallOptions): Promise<{ streamId: string }>;
+    /** At most 64 KiB; only one write may be in flight. Empty chunks require end=true. */
+    write(streamId: string, contents: string | Uint8Array, end?: boolean, options?: CallOptions): Promise<{ bytesWritten: number }>;
+    /** Bounded pull; pending=true consumes no body data. Headers may be requested again. */
+    headers(streamId: string, options?: CallOptions): Promise<HttpHeaders>;
+    /** A body chunk is consumed once. Never retry after unknown/lost completion. */
+    read(streamId: string, options?: CallOptions): Promise<HttpChunk>;
+    cancel(streamId: string, options?: CallOptions): Promise<null>;
+    /** Convenience composition with a 512 KiB body/response and one overall deadline. */
+    request(request: HttpRequest, options?: CallOptions): Promise<HttpResponse>;
+  };
   readonly log: {
     write(level: 'debug' | 'info' | 'warn' | 'error', message: string, fields?: Record<string, Json>, options?: CallOptions): Promise<null>;
   };

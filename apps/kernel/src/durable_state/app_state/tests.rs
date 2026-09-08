@@ -55,6 +55,9 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
 pub(super) fn tool_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
     catalog_with_package(store, tool_package())
 }
+pub(super) fn http_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
+    catalog_with_package(store, http_package())
+}
 fn catalog_with_package(
     store: &DurableKernelStateStore,
     package_bytes: (Vec<u8>, TrustedPublisher),
@@ -145,6 +148,12 @@ pub(super) fn tool_package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(true)
 }
 fn package_with_tools(with_tools: bool) -> (Vec<u8>, TrustedPublisher) {
+    package_with_options(with_tools, false)
+}
+pub(super) fn http_package() -> (Vec<u8>, TrustedPublisher) {
+    package_with_options(false, true)
+}
+fn package_with_options(with_tools: bool, with_network: bool) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":"1.0.0",
         "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
@@ -152,6 +161,15 @@ fn package_with_tools(with_tools: bool) -> (Vec<u8>, TrustedPublisher) {
         "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
         "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
     })).unwrap();
+    if with_network {
+        manifest.capabilities.network = vec![chariox_app_package::NetworkDestination {
+            origin: "https://api.example.com".into(),
+            methods: vec![
+                chariox_app_package::HttpMethod::Get,
+                chariox_app_package::HttpMethod::Post,
+            ],
+        }];
+    }
     let mut files = BTreeMap::from([
         (
             "runtime/main.js".into(),

@@ -16,6 +16,7 @@ pub(super) struct Outgoing {
     pub message: Message,
     // A queued request cancelled before its first write must not start later.
     pub live: Option<Arc<AtomicBool>>,
+    pub publication: Option<super::publication::Guarded>,
 }
 
 pub(super) async fn read<T: AsyncRead + Unpin>(
@@ -43,12 +44,13 @@ pub(super) async fn read<T: AsyncRead + Unpin>(
 pub(super) async fn write<T: AsyncWrite + Unpin>(
     mut writer: Writer<T>,
     mut outgoing: mpsc::Receiver<Outgoing>,
+    published: mpsc::Sender<super::publication::Ack>,
     incoming: mpsc::Sender<Result<Message>>,
     mut stopped: watch::Receiver<bool>,
     budget: Duration,
 ) {
     loop {
-        let item = tokio::select! { biased;
+        let mut item = tokio::select! { biased;
             _ = stop(&mut stopped) => return,
             item = outgoing.recv() => match item {Some(item)=>item,None=>return},
         };
@@ -59,9 +61,32 @@ pub(super) async fn write<T: AsyncWrite + Unpin>(
         {
             continue;
         }
-        let result = tokio::select! { biased;
-            _ = stop(&mut stopped) => return,
-            result = writer.send(&item.message,budget) => result,
+        if item
+            .publication
+            .as_ref()
+            .is_some_and(|guard| guard.stopped())
+        {
+            let ack = item.publication.take().unwrap().complete(false);
+            tokio::select! { biased;
+                _ = stop(&mut stopped) => return,
+                result = published.send(ack) => if result.is_err() { return; },
+            }
+            continue;
+        }
+        let result = if let Some(guard) = &mut item.publication {
+            // Once any frame write may have started, cancellation closes both
+            // halves. The channel can never continue from a partial reply.
+            tokio::select! { biased;
+                _ = stop(&mut stopped) => return,
+                _ = stop(&mut guard.cancellation) => Err(crate::wire::WireError::Invalid("reply publication stopped")),
+                _ = tokio::time::sleep_until(guard.deadline) => Err(crate::wire::WireError::Invalid("reply publication stopped")),
+                result = writer.send(&item.message,budget) => result,
+            }
+        } else {
+            tokio::select! { biased;
+                _ = stop(&mut stopped) => return,
+                result = writer.send(&item.message,budget) => result,
+            }
         };
         if result.is_err() {
             tokio::select! { biased;
@@ -69,6 +94,13 @@ pub(super) async fn write<T: AsyncWrite + Unpin>(
                 _ = incoming.send(Err(PeerError::Io)) => {},
             }
             return;
+        }
+        if let Some(guard) = item.publication.take() {
+            let ack = guard.complete(true);
+            tokio::select! { biased;
+                _ = stop(&mut stopped) => return,
+                result = published.send(ack) => if result.is_err() { return; },
+            }
         }
     }
 }

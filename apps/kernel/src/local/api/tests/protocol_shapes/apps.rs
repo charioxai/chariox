@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -85,7 +85,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 294);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![

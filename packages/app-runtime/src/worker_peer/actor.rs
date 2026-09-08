@@ -37,6 +37,7 @@ struct Actor {
     queued: VecDeque<Outgoing>,
     events: mpsc::Sender<ControlEvent>,
     pending: BTreeMap<String, Pending>,
+    publishing: BTreeMap<String, super::publication::Pending>,
     active: BTreeMap<String, Active>,
     handlers: JoinSet<(String, std::result::Result<serde_json::Value, RemoteError>)>,
 }
@@ -58,6 +59,7 @@ where
     let (reader, writer) = channel.split();
     let (incoming_tx, mut incoming) = mpsc::channel(limits.queued_frames);
     let (outgoing, outgoing_rx) = mpsc::channel(limits.queued_frames);
+    let (published_tx, mut published) = mpsc::channel(limits.broker_handlers);
     let read_task = tokio::spawn(transport::read(
         reader,
         incoming_tx.clone(),
@@ -67,6 +69,7 @@ where
     let write_task = tokio::spawn(transport::write(
         writer,
         outgoing_rx,
+        published_tx,
         incoming_tx,
         stop_receiver.clone(),
         limits.frame_timeout,
@@ -78,6 +81,7 @@ where
         queued: VecDeque::new(),
         events,
         pending: BTreeMap::new(),
+        publishing: BTreeMap::new(),
         active: BTreeMap::new(),
         handlers: JoinSet::new(),
     };
@@ -90,6 +94,7 @@ where
         let result = tokio::select! { biased;
             _=transport::stop(&mut stop_receiver)=>break Ok(()),
             result=async {tokio::select! {
+            ack=published.recv()=>match ack {Some(ack)=>actor.published(ack),None=>Err(PeerError::Io)},
             command=commands.recv()=> match command {Some(command)=>actor.call(command),None=>Err(PeerError::Closed)},
             message=incoming.recv()=>match message {Some(Ok(message))=>actor.receive(message),Some(Err(error))=>Err(error),None=>Err(PeerError::Io)},
             completed=actor.handlers.join_next(), if !actor.handlers.is_empty()=>match completed {
@@ -126,6 +131,9 @@ where
     for active in actor.active.values() {
         active.cancel.send_replace(true);
     }
+    for pending in actor.publishing.values() {
+        pending.cancel.send_replace(true);
+    }
     actor.broker.begin_draining();
     let _ = read_task.await;
     let _ = write_task.await;
@@ -144,7 +152,11 @@ impl Actor {
         if self.queued.len() >= bound {
             return Err(PeerError::Busy);
         }
-        self.queued.push_back(Outgoing { message, live });
+        self.queued.push_back(Outgoing {
+            message,
+            live,
+            publication: None,
+        });
         Ok(())
     }
     fn response(&mut self, id: String, outcome: Outcome) -> Result<()> {
@@ -224,10 +236,14 @@ impl Actor {
                 deadline_ms,
                 ..
             } => {
-                if self.active.contains_key(&id) {
+                self.publishing.retain(|_, pending| {
+                    !(pending.finished.load(Ordering::Acquire)
+                        && pending.physically_published.load(Ordering::Relaxed))
+                });
+                if self.active.contains_key(&id) || self.publishing.contains_key(&id) {
                     return Err(PeerError::Protocol);
                 }
-                if self.active.len() >= self.limits.broker_handlers {
+                if self.active.len() + self.publishing.len() >= self.limits.broker_handlers {
                     return self.failure(id, "BUSY", "Kernel App broker capacity is full");
                 }
                 let remaining = deadline_ms.saturating_sub(wall_ms()?);
@@ -282,6 +298,24 @@ impl Actor {
         }
     }
     fn cancel_handler(&mut self, id: &str, code: &str, message: &str) -> Result<()> {
+        if let Some(pending) = self.publishing.get_mut(id) {
+            let _completion = pending
+                .completion
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending.failure.is_some() || pending.finished.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            pending.failure = Some(RemoteError {
+                code: code.into(),
+                message: message.into(),
+                retryable: Some(false),
+            });
+            pending.cancel.send_replace(true);
+            // The writer chooses one outcome. Sending failure here could race
+            // a complete success frame and duplicate this response identity.
+            return Ok(());
+        }
         let Some(active) = self.active.get_mut(id) else {
             return Ok(());
         };
@@ -297,6 +331,7 @@ impl Actor {
         id: String,
         outcome: std::result::Result<serde_json::Value, RemoteError>,
     ) -> Result<()> {
+        let guard = self.broker.take_response_guard(&id);
         let Some(active) = self.active.remove(&id) else {
             return Err(PeerError::Protocol);
         };
@@ -306,13 +341,62 @@ impl Actor {
         if Instant::now() >= active.deadline {
             return self.failure(id, "DEADLINE_EXCEEDED", "App broker deadline exceeded");
         }
-        self.response(
-            id,
-            match outcome {
-                Ok(result) => Outcome::Success(Success { result }),
-                Err(error) => Outcome::Failure(Failure { error }),
-            },
-        )
+        let outcome = match outcome {
+            Ok(result) => Outcome::Success(Success { result }),
+            Err(error) => Outcome::Failure(Failure { error }),
+        };
+        if let Some(guard) = guard {
+            let finished = Arc::new(AtomicBool::new(false));
+            let completion = Arc::new(std::sync::Mutex::new(()));
+            let physically_published = Arc::new(AtomicBool::new(false));
+            let publication = super::publication::Guarded {
+                completion: completion.clone(),
+                physically_published: physically_published.clone(),
+                id: id.clone(),
+                deadline: active.deadline,
+                cancellation: active.cancel.subscribe(),
+                finished: finished.clone(),
+                guard,
+            };
+            self.response(id.clone(), outcome)?;
+            self.queued.back_mut().expect("new response").publication = Some(publication);
+            self.publishing.insert(
+                id,
+                super::publication::Pending {
+                    cancel: active.cancel,
+                    deadline: active.deadline,
+                    failure: None,
+                    completion,
+                    physically_published,
+                    finished,
+                },
+            );
+            Ok(())
+        } else {
+            self.response(id, outcome)
+        }
+    }
+    fn published(&mut self, ack: super::publication::Ack) -> Result<()> {
+        if !self
+            .publishing
+            .get(&ack.id)
+            .is_some_and(|pending| Arc::ptr_eq(&pending.finished, &ack.finished))
+        {
+            return Ok(());
+        }
+        let pending = self
+            .publishing
+            .remove(&ack.id)
+            .expect("matched publication");
+        if !ack.published {
+            let error = pending.failure.unwrap_or(RemoteError {
+                code: "DEADLINE_EXCEEDED".into(),
+                message: "App broker reply was not published within its budget".into(),
+                retryable: Some(false),
+            });
+            return self.response(ack.id, Outcome::Failure(Failure { error }));
+        }
+        Ok(())
     }
     fn expire(&mut self) -> Result<()> {
         let now = Instant::now();
@@ -346,6 +430,23 @@ impl Actor {
             .collect();
         for id in expired {
             self.cancel_handler(&id, "DEADLINE_EXCEEDED", "App broker deadline exceeded")?;
+        }
+        let expired = self
+            .publishing
+            .iter()
+            .filter(|(_, pending)| {
+                pending.failure.is_none()
+                    && !pending.finished.load(Ordering::Acquire)
+                    && now >= pending.deadline
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in expired {
+            self.cancel_handler(
+                &id,
+                "DEADLINE_EXCEEDED",
+                "App broker reply deadline exceeded",
+            )?;
         }
         Ok(())
     }
