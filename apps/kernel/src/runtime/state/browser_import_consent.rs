@@ -11,6 +11,38 @@ use crate::runtime::browser_import_admission::{ImportBinding, ImportRequestId};
 use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::session::{EnvironmentLifecycle, DEFAULT_LOCAL_USER_ID};
 
+/// Cannot be constructed from a caller-supplied identity or detached from its lock.
+pub(crate) struct BrowserImportDestination {
+    runtime: KernelRuntimeState,
+    binding: ImportBinding,
+    id: ImportRequestId,
+    _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+impl BrowserImportDestination {
+    /// Trusted executor only, after verified application or rollback. Cleanup
+    /// must acknowledge removal of the matching encrypted recovery journal.
+    /// Any failure retains the durable admission block for restart recovery.
+    pub(crate) async fn complete_after_verification<F>(self, cleanup: F) -> Result<(), DaemonError>
+    where
+        F: std::future::Future<Output = Result<(), DaemonError>>,
+    {
+        let store = &self.runtime.owned.durable_state_store;
+        store
+            .mark_browser_import_recovered(&self.binding.environment_id, self.id.as_str())
+            .map_err(|_| denied())?;
+        cleanup.await.map_err(|_| denied())?;
+        store
+            .clear_recovered_browser_import(&self.binding.environment_id, self.id.as_str())
+            .map_err(|_| denied())?;
+        self.runtime
+            .owned
+            .browser_import_admission
+            .finish(&self.id)
+            .map_err(|_| denied())
+    }
+}
+
 impl KernelRuntimeState {
     /// Destination entry point. Revalidate consent after draining room actions,
     /// then acknowledge durable recovery state before permitting cookie mutation.
@@ -19,7 +51,7 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         selection: &BrowserImportSelection,
         request_id: &str,
-    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, DaemonError> {
+    ) -> Result<BrowserImportDestination, DaemonError> {
         let guard = self
             .owned
             .environment_execution_gates
@@ -41,7 +73,12 @@ impl KernelRuntimeState {
                 &binding.room_id,
             )
             .map_err(|_| denied())?;
-        Ok(guard)
+        Ok(BrowserImportDestination {
+            runtime: self.clone(),
+            binding,
+            id,
+            _guard: guard,
+        })
     }
 
     /// Terminal consent only. No cookie payload, controller write or agent turn.

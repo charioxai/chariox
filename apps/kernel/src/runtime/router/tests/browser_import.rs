@@ -299,7 +299,31 @@ async fn consent_round_trip(test_destination: bool) {
         assert!(state
             .ensure_no_pending_environment_import(session.id())
             .is_err());
-        drop(destination_guard);
+        destination_guard
+            .complete_after_verification(async {
+                assert!(state
+                    .ensure_no_pending_environment_import(session.id())
+                    .is_err());
+                let database = rusqlite::Connection::open(&database_path).unwrap();
+                let recovery_required: bool = database.query_row(
+                "SELECT recovery_required FROM durable_browser_import WHERE environment_id = ?1",
+                [&environment.environment_id], |row| row.get(0),
+            ).unwrap();
+                assert!(
+                    !recovery_required,
+                    "durable verification must precede journal cleanup"
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(state
+            .ensure_no_pending_environment_import(session.id())
+            .is_ok());
+        assert!(
+            dispatch(&router, &caller, prepare).await.is_ok(),
+            "completion must release the in-memory consent claim too"
+        );
         return;
     }
     let cancel = json!({"CancelBrowserImport": {"session_id": session.id(), "attachment_id": attachment.id(), "request_id": id}});
