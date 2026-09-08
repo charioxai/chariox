@@ -51,6 +51,7 @@ import {
 } from "./lib/room-tui-notices.mjs"
 import { hasRoomReadyProjection } from "./lib/room-drill-ready-notices.mjs"
 import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
+import { roomTuiScriptInvocation } from "./lib/room-tui-script-invocation.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -2242,9 +2243,7 @@ async function startLocalTui({ tempRoot, kernelUrl }) {
 
 async function startTui({ kind, tempRoot, env, connectionArgs }) {
   const automationSocket = path.join(tempRoot, `${kind}-tui.sock`)
-  const args = [
-    "-q",
-    "/dev/null",
+  const tuiCommand = [
     "bun",
     path.join(repoRoot, "apps", "cli", "dist", "index.js"),
     ...connectionArgs,
@@ -2256,7 +2255,8 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     "--model", `room-activity-${kind}-tui-drill`,
     "--client-id", `${runId}-${kind}-tui`,
   ]
-  const tui = spawn("script", args, {
+  const invocation = roomTuiScriptInvocation(tuiCommand[0], tuiCommand.slice(1))
+  const tui = spawn(invocation.command, invocation.args, {
     cwd: repoRoot,
     env,
     detached: true,
