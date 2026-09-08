@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       native_run:
-        description: 'Reviewed native build run (exact allowlist: 34176513092)'
+        description: 'Reviewed native build run (exact allowlist: 34185809490)'
         required: true
-        default: '34176513092'
+        default: '34185809490'
   pull_request:
     paths:
       - 'apps/app-worker/tests/embedded-*'
@@ -53,7 +53,7 @@ jobs:
         id: artifact
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          NATIVE_RUN: ${{ inputs.native_run || '34176513092' }}
+          NATIVE_RUN: ${{ inputs.native_run || '34185809490' }}
         run: node scripts/app-runtime-embedded-artifact.mjs
       - name: Install small launcher and bubblewrap build dependencies
         run: |

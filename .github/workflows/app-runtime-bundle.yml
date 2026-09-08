@@ -6,13 +6,20 @@ on:
     paths:
       - 'apps/app-worker/bundle.lock.json'
       - 'apps/app-worker/runtime.lock.json'
+      - 'apps/app-worker/macos-build-profile.json'
       - 'apps/app-worker/src/bootstrap*.cjs'
       - 'packages/app-sdk/**'
       - 'scripts/package-app-runtime*.mjs'
       - 'scripts/app-runtime-bundle*.mjs'
+      - 'scripts/build-app-runtime*.mjs'
+      - 'scripts/app-runtime-ci-*.mjs'
+      - 'scripts/app-runtime-macos-*'
+      - 'scripts/run-app-runtime-*'
       - 'scripts/app-runtime-release*.mjs'
       - 'scripts/sign-app-runtime-release*.mjs'
       - '.github/workflows/app-runtime-bundle.yml'
+      - '.github/workflows/app-runtime-native.yml'
+      - '.github/workflows/app-runtime-macos-native.yml'
 
 permissions:
   contents: read

@@ -1051,3 +1051,22 @@ tests and seven lifecycle/writer tests have completed independent source review
 and are selected for hosted execution. The file tests include the real inherited
 SDK channel, current-authority changes, queued cancellation and actual publication
 before lost writer replies or task panics. They are not yet recorded as passing.
+
+### Target-specific bundle provenance and hosted follow-up (2026-09-08)
+
+Bundle assembly now verifies the correct Linux or macOS native source graph.
+macOS includes its command owner, resource profile and toolchain checks; Linux
+changes do not invalidate a macOS receipt. Seventeen bundle/artifact tests pass
+(18.655 seconds), including graph substitution, missing owner sources,
+historical-source classification and JavaScript-only bundle changes. Five
+downstream release-signing tests pass (7.270 seconds). Embedded Linux validation
+now selects the exact admitted `34185809490`/`28904c4f6` build, still requiring
+successful completion and the actual artifact before execution can begin.
+
+The external review of `28904c4f6` reports no actionable finding and confirms the
+deferred-refresh correction. Linux component job `101933705128` now compiles the
+kernel and passes the preceding routing/storage filters, but five fixed-worker
+registration tests fail with `Unavailable`. Investigation is active; this is not
+a kernel contract pass. The obsolete automatic native build `34184116743` was
+cancelled after the new explicitly admitted builds began, avoiding duplicate
+compilation of a revision with the known loader validation defect.

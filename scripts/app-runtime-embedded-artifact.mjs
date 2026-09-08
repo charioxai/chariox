@@ -7,8 +7,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { packageRuntime, verifyBundle } from './package-app-runtime.mjs';
 
-export const NATIVE_RUN = '34176513092';
-export const NATIVE_HEAD = 'a028881fb2a2cf487b910a439b345f2b7713ac8d';
+export const NATIVE_RUN = '34185809490';
+export const NATIVE_HEAD = '28904c4f61e4df56d939a9e7b156373cc612c031';
 const REPOSITORY_NAME = 'charioxai/chariox';
 const WORKFLOW = '.github/workflows/app-runtime-native.yml';
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');

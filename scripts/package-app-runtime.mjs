@@ -5,17 +5,27 @@ import { lstat, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseJson } from '../packages/app-sdk/src/json.js';
-import { currentInputs, fingerprint, NATIVE_BUILD_INPUTS } from './app-runtime-ci-receipt.mjs';
+import { currentInputs, fingerprint, nativeBuildInputs } from './app-runtime-ci-receipt.mjs';
 import { checkDependencies, checkToolchainVersions, validateLock } from './build-app-runtime.mjs';
 import { digestAndCopy, inventory, outputDirectory, readSmall, relativeFile, sha256, stableJson } from './app-runtime-bundle-files.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RUNTIME_LOCK = 'apps/app-worker/runtime.lock.json';
 const BUNDLE_LOCK = 'apps/app-worker/bundle.lock.json';
-const BASE_NATIVE_INPUTS = [RUNTIME_LOCK, 'apps/app-worker/src/runtime.h', 'apps/app-worker/src/node_runtime.cc',
-  'scripts/build-app-runtime.mjs', 'scripts/app-runtime-ci-resources.mjs', 'scripts/run-app-runtime-native-ci.sh', '.github/workflows/app-runtime-native.yml'];
-export const BUNDLE_TOOL_INPUTS = [BUNDLE_LOCK, 'scripts/package-app-runtime.mjs', 'scripts/app-runtime-bundle-files.mjs',
-  'scripts/package-app-runtime.test.mjs', ...NATIVE_BUILD_INPUTS];
+function baseNativeInputs(target) {
+  return [RUNTIME_LOCK, 'apps/app-worker/src/runtime.h', 'apps/app-worker/src/node_runtime.cc',
+    'scripts/build-app-runtime.mjs', 'scripts/app-runtime-ci-resources.mjs',
+    ...(target.startsWith('linux-') ? ['scripts/run-app-runtime-native-ci.sh', '.github/workflows/app-runtime-native.yml']
+      : ['scripts/run-app-runtime-macos-ci.mjs', '.github/workflows/app-runtime-macos-native.yml',
+        'apps/app-worker/macos-build-profile.json', 'scripts/app-runtime-macos-build.mjs',
+        'scripts/app-runtime-macos-command.mjs', 'scripts/app-runtime-macos-command.py',
+        'scripts/app-runtime-macos-preflight.mjs', 'scripts/app-runtime-macos-watch.mjs'])];
+}
+export function bundleToolInputs(target = 'linux-x64') {
+  return [BUNDLE_LOCK, 'scripts/package-app-runtime.mjs', 'scripts/app-runtime-bundle-files.mjs',
+    'scripts/package-app-runtime.test.mjs', ...nativeBuildInputs(target)];
+}
+export const BUNDLE_TOOL_INPUTS = bundleToolInputs();
 const MAX_MANIFEST = 262144;
 const HEX = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -71,27 +81,28 @@ function mappedSources(contract) {
 }
 
 async function nativeProvenance(repository, manifest, allowHistorical) {
+  const inputs = nativeBuildInputs(manifest.target);
   if (!COMMIT.test(manifest.sourceCommit) || !COMMIT.test(manifest.sourceTree)
     || git(repository, ['rev-parse', `${manifest.sourceCommit}^{tree}`]).trim() !== manifest.sourceTree
-    || !Array.isArray(manifest.buildInputs) || manifest.buildInputs.length > NATIVE_BUILD_INPUTS.length
+    || !Array.isArray(manifest.buildInputs) || manifest.buildInputs.length > inputs.length
     || new Set(manifest.buildInputs.map(input => input.path)).size !== manifest.buildInputs.length
-    || !BASE_NATIVE_INPUTS.every(path => manifest.buildInputs.some(input => input.path === path)))
+    || !baseNativeInputs(manifest.target).every(path => manifest.buildInputs.some(input => input.path === path)))
     throw new Error('native build provenance is incomplete');
   for (const input of manifest.buildInputs) {
-    if (!NATIVE_BUILD_INPUTS.includes(input.path) || !HEX.test(input.sha256)
+    if (!inputs.includes(input.path) || !HEX.test(input.sha256)
       || sha256(git(repository, ['show', `${manifest.sourceCommit}:${input.path}`], true)) !== input.sha256)
       throw new Error('native build source digest mismatch');
   }
-  const tree = git(repository, ['ls-tree', '-r', '-z', manifest.sourceCommit, '--', ...NATIVE_BUILD_INPUTS]).split('\0').filter(Boolean).map(line => {
+  const tree = git(repository, ['ls-tree', '-r', '-z', manifest.sourceCommit, '--', ...inputs]).split('\0').filter(Boolean).map(line => {
     const match = /^(100644|100755) (blob) ([a-f0-9]{40})\t(.+)$/u.exec(line);
     if (!match) throw new Error('native provenance contains non-regular source');
     return { mode: match[1], type: match[2], sha: match[3], path: match[4] };
   });
-  const currentIdentity = currentInputs(repository);
-  const current = await Promise.all(NATIVE_BUILD_INPUTS.map(async path => ({ path,
+  const currentIdentity = currentInputs(repository, manifest.target);
+  const current = await Promise.all(inputs.map(async path => ({ path,
     sha256: sha256(await readSmall(repository, path, MAX_MANIFEST)) })));
   const matches = equal(orderInputs(manifest.buildInputs), orderInputs(current))
-    && tree.length === NATIVE_BUILD_INPUTS.length && fingerprint(tree) === currentIdentity.input_hash;
+    && tree.length === inputs.length && fingerprint(tree, manifest.target) === currentIdentity.input_hash;
   if (!matches && !allowHistorical) throw new Error('native inputs are historical; explicit --allow-historical-native is required for unsigned evidence');
   return { sourceCommit: manifest.sourceCommit, sourceTree: manifest.sourceTree,
     inputStatus: matches ? 'matches-current-source' : 'historical-source-only',
@@ -136,7 +147,7 @@ export async function packageRuntime({ nativeDirectory, output, target, allowHis
   if (!equal(await inventory(nativeDirectory, contract.limits.files), sorted(['artifact-manifest.json', ...files.map(file => file.path)])))
     throw new Error('native artifact has missing or undeclared files');
   const provenance = await nativeProvenance(repository, native, allowHistorical);
-  const selectedInputs = sorted([...new Set([...sourceFiles.map(file => file.source), ...BUNDLE_TOOL_INPUTS])]);
+  const selectedInputs = sorted([...new Set([...sourceFiles.map(file => file.source), ...bundleToolInputs(target)])]);
   if (git(repository, ['status', '--porcelain', '--', ...selectedInputs])) throw new Error('bundle sources must be committed');
   const sourceCommit = git(repository, ['rev-parse', 'HEAD']).trim();
   const buildInputs = await Promise.all(selectedInputs.map(async path => {
@@ -193,6 +204,7 @@ export async function verifyBundle(directory) {
   const runtime = validateLock(json(await readSmall(directory, 'runtime.lock.json', MAX_MANIFEST)));
   const native = json(await readSmall(directory, 'native-artifact-manifest.json', MAX_MANIFEST));
   const libraries = nativeFiles(native, runtime, manifest.target);
+  const nativeInputs = nativeBuildInputs(manifest.target);
   await validateSdk(join(directory, 'sdk'), contract);
   if (manifest.runtimeVersion !== runtime.runtimeVersion || manifest.workerAbi !== runtime.workerAbi
     || manifest.nodeVersion !== runtime.node.version || manifest.nodeModuleAbi !== runtime.node.moduleAbi
@@ -200,10 +212,10 @@ export async function verifyBundle(directory) {
     || manifest.native?.sourceTree !== native.sourceTree || manifest.native?.evidence !== 'unsigned-native-manifest-only'
     || !['matches-current-source', 'historical-source-only'].includes(manifest.native?.inputStatus)
     || !COMMIT.test(manifest.sourceCommit) || !COMMIT.test(native.sourceCommit) || !COMMIT.test(native.sourceTree)
-    || !Array.isArray(native.buildInputs) || native.buildInputs.length > NATIVE_BUILD_INPUTS.length
-    || !BASE_NATIVE_INPUTS.every(path => native.buildInputs.some(input => input.path === path))
+    || !Array.isArray(native.buildInputs) || native.buildInputs.length > nativeInputs.length
+    || !baseNativeInputs(manifest.target).every(path => native.buildInputs.some(input => input.path === path))
     || new Set(native.buildInputs.map(input => input.path)).size !== native.buildInputs.length
-    || native.buildInputs.some(input => !NATIVE_BUILD_INPUTS.includes(input.path) || !HEX.test(input.sha256))
+    || native.buildInputs.some(input => !nativeInputs.includes(input.path) || !HEX.test(input.sha256))
     || manifest.native.inputDigest !== inputDigest(native.buildInputs)
     || (manifest.native.inputStatus === 'historical-source-only' ? manifest.native.receiptInputHash !== null
       : !HEX.test(manifest.native.receiptInputHash))
@@ -215,12 +227,12 @@ export async function verifyBundle(directory) {
     || !equal(await inventory(directory, contract.limits.files), sorted(['bundle-manifest.json', ...expected])))
     throw new Error('bundle contains missing, duplicate or undeclared files');
   const sources = mappedSources(contract);
-  const expectedInputs = sorted([...new Set([...sources.map(file => file.source), ...BUNDLE_TOOL_INPUTS])]);
+  const expectedInputs = sorted([...new Set([...sources.map(file => file.source), ...bundleToolInputs(manifest.target)])]);
   if (!Array.isArray(manifest.buildInputs) || !equal(manifest.buildInputs.map(input => input.path), expectedInputs)
     || manifest.buildInputs.some(input => !HEX.test(input.sha256))
     || sources.some(file => manifest.buildInputs.find(input => input.path === file.source).sha256
       !== manifest.files.find(entry => entry.path === file.path).sha256)
-    || manifest.native.inputStatus === 'matches-current-source' && (!equal(sorted(native.buildInputs.map(input => input.path)), sorted(NATIVE_BUILD_INPUTS))
+    || manifest.native.inputStatus === 'matches-current-source' && (!equal(sorted(native.buildInputs.map(input => input.path)), sorted(nativeInputs))
       || native.buildInputs.some(input => manifest.buildInputs.find(current => current.path === input.path).sha256 !== input.sha256)))
     throw new Error('bundle source inventory differs from its provenance');
   let total = manifestBytes.length;

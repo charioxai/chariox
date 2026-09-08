@@ -5,12 +5,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { BUNDLE_TOOL_INPUTS, bundleSources, packageRuntime, validateBundleContract, verifyBundle } from './package-app-runtime.mjs';
+import { bundleToolInputs, bundleSources, packageRuntime, validateBundleContract, verifyBundle } from './package-app-runtime.mjs';
 import { builderDirectory, inventory, sha256, stableJson } from './app-runtime-bundle-files.mjs';
-import { currentInputs, NATIVE_BUILD_INPUTS } from './app-runtime-ci-receipt.mjs';
+import { currentInputs, nativeBuildInputs } from './app-runtime-ci-receipt.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const target = 'linux-x64';
 const fixtures = new Set();
 test.after(async () => { for (const root of fixtures) await rm(root, { recursive: true, force: true }); });
 
@@ -22,14 +21,14 @@ function commit(root) {
   git(root, ['-c', 'user.name=Bundle Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture source']);
 }
 
-async function fixture() {
+async function fixture(target = 'linux-x64') {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'chariox-runtime-bundle-'));
   fixtures.add(root);
   const source = join(root, 'source'); const nativeDirectory = join(root, 'native');
   await mkdir(source, { mode: 0o700 }); await mkdir(nativeDirectory, { mode: 0o700 });
   const contract = validateBundleContract(JSON.parse(await readFile(join(repository, 'apps/app-worker/bundle.lock.json'), 'utf8')));
   const sources = await bundleSources(repository, contract);
-  for (const file of new Set([...sources.map(file => file.source), ...BUNDLE_TOOL_INPUTS])) {
+  for (const file of new Set([...sources.map(file => file.source), ...bundleToolInputs(target)])) {
     await mkdir(dirname(join(source, file)), { recursive: true, mode: 0o700 });
     await cp(join(repository, file), join(source, file));
   }
@@ -47,9 +46,15 @@ async function fixture() {
     workerAbi: runtime.workerAbi, target, nodeVersion: runtime.node.version, nodeModuleAbi: runtime.node.moduleAbi,
     source: { url: runtime.node.url, sha256: runtime.node.sha256 },
     sourceCommit: git(source, ['rev-parse', 'HEAD']), sourceTree: git(source, ['rev-parse', 'HEAD^{tree}']),
-    buildInputs: await Promise.all(NATIVE_BUILD_INPUTS.map(async path => ({ path, sha256: sha256(await readFile(join(source, path))) }))),
-    toolchain: { cc: '12.2.0', cxx: '12.2.0', python: 'Python 3.11.2', make: 'GNU Make 4.3\nfixture' },
-    dependencies: { [selected.nodeLibrary]: ' (NEEDED) Shared library: [libc.so.6]', [selected.runtimeLibrary]: ` (NEEDED) Shared library: [${selected.nodeLibrary}]` },
+    buildInputs: await Promise.all(nativeBuildInputs(target).map(async path => ({ path, sha256: sha256(await readFile(join(source, path))) }))),
+    toolchain: selected.platform === 'linux'
+      ? { cc: '12.2.0', cxx: '12.2.0', python: 'Python 3.11.2', make: 'GNU Make 4.3\nfixture' }
+      : { cc: 'Apple clang version 17.0.0', cxx: 'Apple clang version 17.0.0', python: 'Python 3.11.9',
+        make: 'GNU Make 3.81\nfixture', xcode: 'Xcode 16.4\nBuild version 16F6' },
+    dependencies: selected.platform === 'linux'
+      ? { [selected.nodeLibrary]: ' (NEEDED) Shared library: [libc.so.6]', [selected.runtimeLibrary]: ` (NEEDED) Shared library: [${selected.nodeLibrary}]` }
+      : { [selected.nodeLibrary]: `${selected.nodeLibrary}:\n /usr/lib/libSystem.B.dylib (compatibility version 1.0.0)`,
+        [selected.runtimeLibrary]: `${selected.runtimeLibrary}:\n @rpath/${selected.nodeLibrary} (compatibility version 1.0.0)` },
     files, signing: { status: 'unsigned', notarization: 'not-performed' },
     validation: { nativeBuild: 'completed', runtimeExecution: 'not-performed' }, loading: runtime.loading,
   };
@@ -87,6 +92,52 @@ test('bootstrap and SDK changes alter bundle identity without changing native re
     assert.equal(next.native.receiptInputHash, nativeHash);
     prior = next;
   }
+});
+
+test('macOS artifacts use their exact native graph and retain deterministic unsigned bundle identity', async () => {
+  const f = await fixture('darwin-arm64');
+  const nativeHash = currentInputs(f.source, f.options.target).input_hash;
+  const first = await packageRuntime(f.options);
+  assert.deepEqual(await verifyBundle(f.options.output), first);
+  assert.equal(first.native.receiptInputHash, nativeHash);
+  assert.ok(first.buildInputs.some(input => input.path === 'apps/app-worker/macos-build-profile.json'));
+  assert.ok(!first.buildInputs.some(input => input.path === '.github/workflows/app-runtime-native.yml'));
+  const second = await packageRuntime({ ...f.options, output: join(f.root, 'second') });
+  assert.equal(first.bundleDigest, second.bundleDigest);
+  const source = join(f.source, 'apps/app-worker/src/bootstrap.cjs');
+  await writeFile(source, `${await readFile(source, 'utf8')}\n// JS-only bundle revision\n`); commit(f.source);
+  const changed = await packageRuntime({ ...f.options, output: join(f.root, 'changed') });
+  assert.notEqual(changed.bundleDigest, first.bundleDigest);
+  assert.equal(changed.native.receiptInputHash, nativeHash);
+});
+
+test('macOS graph omissions and Linux graph substitution cannot claim macOS provenance', async () => {
+  for (const substitute of [false, true]) {
+    const f = await fixture('darwin-arm64');
+    const index = f.manifest.buildInputs.findIndex(input => input.path === 'scripts/app-runtime-macos-command.py');
+    if (substitute) f.manifest.buildInputs[index].path = 'scripts/run-app-runtime-native-ci.sh';
+    else f.manifest.buildInputs.splice(index, 1);
+    await writeFile(join(f.nativeDirectory, 'artifact-manifest.json'), JSON.stringify(f.manifest));
+    await assert.rejects(packageRuntime({ ...f.options, allowHistorical: true }), /provenance|digest/);
+  }
+});
+
+test('macOS native changes require historical mode while unrelated Linux inputs do not affect its receipt', async () => {
+  const f = await fixture('darwin-arm64');
+  const before = currentInputs(f.source, f.options.target).input_hash;
+  await mkdir(join(f.source, '.github/workflows'), { recursive: true });
+  await writeFile(join(f.source, '.github/workflows/app-runtime-native.yml'), '# unrelated Linux-only change\n');
+  commit(f.source);
+  assert.equal(currentInputs(f.source, f.options.target).input_hash, before);
+  await packageRuntime(f.options);
+  const path = join(f.source, 'scripts/app-runtime-macos-command.py');
+  await writeFile(path, `${await readFile(path, 'utf8')}\n# new native build owner revision\n`); commit(f.source);
+  const options = { ...f.options, output: join(f.root, 'changed') };
+  await assert.rejects(packageRuntime(options), /historical/);
+  const changed = await packageRuntime({ ...options, allowHistorical: true });
+  assert.equal(changed.native.inputStatus, 'historical-source-only');
+  assert.equal(changed.native.receiptInputHash, null);
+  assert.deepEqual(await verifyBundle(options.output), changed);
 });
 
 test('historical native sources require explicit evidence mode and cannot claim a current receipt', async () => {
