@@ -7,6 +7,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { assertOnlySlowSubscriptionClosed } from "./lib/reconnect-storm-pressure.mjs"
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const args = process.argv.slice(2)
 const clientCount = numberArg("--clients", 32)
@@ -373,6 +375,7 @@ try {
     slowSubscriptionClosedAtMs = Date.now()
     return true
   }, timeoutMs, "relay to close only the slow subscription")
+  assertOnlySlowSubscriptionClosed(relayHealth, clientCount)
   const healthyCompletedAtMs = healthyStartedAt + healthyTrafficLatencyMs
   assert.ok(slowSubscriptionClosedAtMs > healthyCompletedAtMs, "slow subscription closed before healthy traffic completed")
   const metrics = processMetrics(children)

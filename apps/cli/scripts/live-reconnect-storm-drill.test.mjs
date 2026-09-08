@@ -82,6 +82,7 @@ test("reconnect storm drill requires isolated slow-lane closure", async () => {
   assert.match(source, /subscription_queue_max_depth >= pressureQueueDepth/)
   assert.match(source, /pressured_subscription_count >= 1/)
   assert.match(source, /slow subscription closed before healthy work completed/)
+  assert.match(source, /assertOnlySlowSubscriptionClosed\(relayHealth, clientCount\)/)
   assert.match(source, /slow flood did not advance during the healthy probe/)
   assert.match(source, /await healthyProbeStarted/)
   assert.match(source, /slow flood progress during the healthy probe/)
