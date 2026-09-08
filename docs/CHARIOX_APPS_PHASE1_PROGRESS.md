@@ -1223,3 +1223,18 @@ kernel compilation on both platforms and identify one type error in failed
 approval-projection cleanup: the session getter already returns an owned value.
 The unnecessary `.cloned()` is removed; full kernel compilation and the new
 regressions remain pending the hosted rerun.
+
+### Verified UI asset reads (2026-09-08)
+
+The retained verified release now exposes a bounded reader for its signed `ui/`
+inventory. It opens files relative to held directories, rejects runtime/schema
+and unknown paths, and checks exact size and digest before returning bytes.
+The App-origin service must still supply current installation authorization and
+bounded blocking admission; no viewer endpoint or browser authority is implied.
+
+Both actual release-store regressions pass in the current working tree: nested
+UI assets and allocation/path limits, plus same-size tampering and symlink
+substitution after verification. Compilation took 5.34 seconds, the tests 0.10
+seconds, and sampled task RSS peaked at 391,120 KiB. No full kernel compilation
+or local Chromium launch ran. Review `5137783049` also reports no actionable
+finding in the preceding approval-cleanup compile fix.

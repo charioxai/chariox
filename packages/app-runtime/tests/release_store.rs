@@ -101,6 +101,89 @@ fn budget() -> StageBudget {
 }
 
 #[test]
+fn ui_asset_reads_require_signed_ui_inventory_and_bounded_allocation() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    let mut files: BTreeMap<String, Vec<u8>> = package
+        .files()
+        .map(|(path, bytes)| (path.into(), bytes.to_vec()))
+        .collect();
+    files.insert("ui/assets/main.css".into(), b"body { margin: 0 }".to_vec());
+    let archive = pack(
+        package.manifest(),
+        &files,
+        &SigningKey::from_bytes(&[27; 32]),
+        &Limits::default(),
+    )
+    .unwrap();
+    let package = verify(&archive, &policy).unwrap();
+    store.stage(&package, &archive, budget()).unwrap();
+    let lease = store.lease_verified(&package, &archive).unwrap();
+    assert_eq!(
+        lease.read_ui_asset("index.html", 1024).unwrap(),
+        files["ui/index.html"]
+    );
+    assert_eq!(
+        lease.read_ui_asset("assets/main.css", 1024).unwrap(),
+        files["ui/assets/main.css"]
+    );
+    assert!(matches!(
+        lease.read_ui_asset("index.html", 1),
+        Err(ReleaseStoreError::ReservationExceeded)
+    ));
+    for path in [
+        "",
+        "/index.html",
+        "ui/index.html",
+        "../runtime/main.js",
+        "runtime/main.js",
+        "%2e%2e/runtime/main.js",
+        "assets/../index.html",
+        "assets\\main.css",
+        "missing.js",
+    ] {
+        assert!(
+            matches!(
+                lease.read_ui_asset(path, 1024),
+                Err(ReleaseStoreError::UnsafeEntry)
+            ),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn ui_asset_reads_reject_content_changes_and_symlinks_after_lease_verification() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    let staged = store.stage(&package, &archive, budget()).unwrap();
+    let lease = store.lease_verified(&package, &archive).unwrap();
+    let ui = staged.path.join("payload/ui");
+    let entry = ui.join("index.html");
+    let original = package.file("ui/index.html").unwrap();
+    permissions(&entry, 0o600);
+    fs::write(&entry, vec![b'x'; original.len()]).unwrap();
+    permissions(&entry, 0o400);
+    assert!(matches!(
+        lease.read_ui_asset("index.html", 1024),
+        Err(ReleaseStoreError::InvalidExisting)
+    ));
+    permissions(&entry, 0o600);
+    fs::write(&entry, original).unwrap();
+    permissions(&entry, 0o400);
+    assert_eq!(lease.read_ui_asset("index.html", 1024).unwrap(), original);
+    permissions(&ui, 0o700);
+    fs::remove_file(&entry).unwrap();
+    symlink("../runtime/main.js", &entry).unwrap();
+    permissions(&ui, 0o500);
+    assert!(lease.read_ui_asset("index.html", 1024).is_err());
+}
+
+#[test]
 fn stored_archive_reopen_retains_exact_bytes_and_shared_generation_lock() {
     use std::os::fd::AsRawFd;
     let directory = Directory::new();

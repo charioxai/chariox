@@ -13,6 +13,8 @@ use std::{
 
 type Result<T> = std::result::Result<T, ReleaseStoreError>;
 
+mod ui_assets;
+
 /// Held stored bytes only. The caller must verify the signature using current
 /// enrolled trust, then obtain VerifiedReleaseLease from the complete tree.
 pub struct StoredReleaseArchive {
@@ -76,6 +78,7 @@ pub struct VerifiedReleaseLease {
     package_digest: String,
     manifest: Manifest,
     declarations: Declarations,
+    ui_assets: ui_assets::Inventory,
 }
 impl VerifiedReleaseLease {
     pub fn package_digest(&self) -> &str {
@@ -125,5 +128,6 @@ pub(super) fn verified(
         package_digest: digest.into(),
         manifest: package.manifest().clone(),
         declarations: package.declarations().clone(),
+        ui_assets: ui_assets::inventory(package),
     })
 }
