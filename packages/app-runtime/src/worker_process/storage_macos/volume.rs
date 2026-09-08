@@ -128,6 +128,7 @@ impl MountedStorage {
             {
                 return Err(Error::Identity);
             }
+            #[cfg(test)]
             let metadata = dir.0.metadata()?;
             #[cfg(test)]
             eprintln!(
@@ -137,9 +138,7 @@ impl MountedStorage {
                 unsafe { libc::geteuid() },
                 metadata.mode() & 0o7777,
             );
-            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7777 != 0o700 {
-                return Err(Error::Identity);
-            }
+            private_volume_root(&dir.0)?;
             let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
             if unsafe { libc::fstatfs(dir.0.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
                 return Err(Error::Io);
@@ -280,6 +279,24 @@ impl MountedStorage {
         self.released = true;
         Ok(())
     }
+}
+
+/// APFS creation currently returns an owner-matching 0755 volume root even
+/// with hdiutil -mode0700. Set privacy on the verified mounted descriptor before
+/// any worker can receive it; never chmod an unexpected owner's filesystem.
+pub(super) fn private_volume_root(root: &File) -> Result<()> {
+    let metadata = root.metadata()?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(Error::Identity);
+    }
+    if unsafe { libc::fchmod(root.as_raw_fd(), 0o700) } != 0 {
+        return Err(Error::Io);
+    }
+    root.sync_all()?;
+    if root.metadata()?.mode() & 0o7777 != 0o700 {
+        return Err(Error::Identity);
+    }
+    Ok(())
 }
 
 pub(super) fn create_arguments(

@@ -9,6 +9,21 @@ use std::{
 
 mod hosted;
 
+#[test]
+fn verified_owner_volume_root_is_made_private_on_held_directory() {
+    let scratch = Scratch::new();
+    let directory = File::open(&scratch.0).unwrap();
+    fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o755)).unwrap();
+    volume::private_volume_root(&directory).unwrap();
+    assert_eq!(directory.metadata().unwrap().mode() & 0o7777, 0o700);
+    let path = scratch.0.join("ordinary-file");
+    fs::write(&path, b"fixture").unwrap();
+    assert_eq!(
+        volume::private_volume_root(&File::open(path).unwrap()),
+        Err(Error::Identity)
+    );
+}
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {

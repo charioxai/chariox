@@ -73,7 +73,7 @@ reclamation. A crash during first creation can discard only the uncommitted
 image named by that private creation intent. Existing data with a committed UUID
 is never silently recreated when missing.
 
-Seven ordinary tests exercise parsing, identity checks, journal fsync recovery,
+Eight ordinary tests exercise parsing, identity checks, journal fsync recovery,
 interrupted temporary files, fixed command arguments, capacity accounting, and
 preserved recovery after an explicit cleanup attempt.
 They never call hdiutil or create a filesystem. The dedicated
@@ -94,6 +94,11 @@ caught the original size-unit error: `67108864b` requested 32 GiB instead of
 64 MiB. The post-create size check rejected that oversized image before any App
 ran; its recovery journal was retained on the disposable runner. The corrected
 explicit-MiB path still needs the hosted creation/mount/recovery drill to pass.
+Run [34177429718](https://github.com/charioxai/chariox/actions/runs/34177429718)
+confirmed a correctly sized image, APFS UUID, required mount flags, exact device
+and mountpoint, and successful cleanup. Its remaining rejection was the new
+APFS root's 0755 mode despite `hdiutil -mode0700`. Preparation now applies 0700
+and fsync to the verified same-owner mounted descriptor before worker admission.
 This is also why a post-create length check is not a hard precreation bound.
 An inherited process file-size limit would cover only writers that actually
 inherit it; DiskImages service ownership must be observed before asserting that
