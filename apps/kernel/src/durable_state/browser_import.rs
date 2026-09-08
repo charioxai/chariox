@@ -21,6 +21,12 @@ pub(crate) enum ImportStateWrite {
     },
 }
 
+impl std::fmt::Debug for ImportStateWrite {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[browser import state transition]")
+    }
+}
+
 impl DurableKernelStateStore {
     /// A recovered row still blocks admission until journal cleanup is complete.
     pub(crate) fn browser_import_pending(&self, environment_id: &str) -> Result<bool, DaemonError> {

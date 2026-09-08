@@ -26,6 +26,7 @@ impl Drop for Scratch {
 
 async fn consent_round_trip() {
     let config = DaemonConfig::for_tests();
+    let database_path = config.user_config.state.path.clone().unwrap();
     let _scratch = Scratch(
         std::path::PathBuf::from(config.user_config.state.path.as_ref().unwrap())
             .parent()
@@ -87,6 +88,36 @@ async fn consent_round_trip() {
         metaagent_id: None,
     };
     let prepare = json!({"PrepareBrowserImport": {"selection": selection}});
+    // Seed durable state directly to model a prior executor/kernel restart.
+    let database = rusqlite::Connection::open(database_path).unwrap();
+    database
+        .execute(
+            "INSERT INTO durable_browser_import VALUES (?1, 'prior-request', ?2, ?3, 1)",
+            rusqlite::params![
+                environment.environment_id,
+                DEFAULT_LOCAL_USER_ID,
+                session.id()
+            ],
+        )
+        .unwrap();
+    assert!(
+        dispatch(&router, &caller, prepare.clone()).await.is_err(),
+        "durable recovery state must block new consent"
+    );
+    database
+        .execute(
+            "UPDATE durable_browser_import SET recovery_required = 0",
+            [],
+        )
+        .unwrap();
+    assert!(
+        dispatch(&router, &caller, prepare.clone()).await.is_err(),
+        "verified recovery still blocks until journal cleanup"
+    );
+    database
+        .execute("DELETE FROM durable_browser_import", [])
+        .unwrap();
+    drop(database);
     let mut unverified = caller.clone();
     unverified.public_key_thumbprint = None;
     assert!(dispatch(&router, &unverified, prepare.clone())
