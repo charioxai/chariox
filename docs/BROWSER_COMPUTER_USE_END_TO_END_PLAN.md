@@ -227,8 +227,9 @@ while the PR is still evolving. Keep the PR out of the ready-to-merge CI path
 until its exact head has passed focused validation and the independent reviewer
 has no remaining comments.
 
-Run GitHub CI once for that final, reviewer-clean head immediately before
-merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
+Defer GitHub CI until the goal's implementation and functional validation are
+ready for the final gate, as requested by the user. Then run it for each final,
+reviewer-clean head immediately before merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
 exact-head reviewer loop, and then run the final CI gate again. Do not treat a
 successful run for an older SHA as evidence for a changed head.
 
@@ -245,12 +246,19 @@ agent performing review. Do not send it messages, ask it for status, direct its
 work, interrupt it, or use it as an implementation sub-agent. Review must remain
 independent and arrive through the established reviewer and PR-comment path.
 
-The independent reviewer services and state under `~/.chariox-reviewer` are
-shared infrastructure owned outside this implementation program. The
-implementation agent is not responsible for operating, diagnosing, repairing,
-restarting, stopping, pruning, or modifying that infrastructure. Do not touch it
-unless the user explicitly changes this instruction and assigns reviewer repair
-as a separate task.
+The user subsequently assigned reviewer health to the implementation agent.
+Inspect reviewer health and repair verified reviewer faults when needed, while
+preserving independent review decisions. Services and state under
+`~/.chariox-reviewer` remain shared infrastructure: do not stop, restart, or
+prune them for resource cleanup. A repair must address an observed reviewer
+fault, preserve queued work, and include verification that reviews resume.
+
+Do not use built-in sub-agents or coordinate with unrelated agents. The user's
+later authorization specifically permits delegating implementation and heavy
+validation to remote Chariox agents through the Web terminal. Use that product
+path for assignments and results; direct administrative access is an exception
+for diagnosed product faults or management unavailable through the product.
+Keep those implementation assignments separate from independent review.
 
 If the reviewer is delayed, unavailable, or temporarily stops posting comments,
 record the exact commit SHA awaiting review and continue useful independent work
