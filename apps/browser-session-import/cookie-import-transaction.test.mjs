@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {randomBytes} from 'node:crypto';
+import {openCookieImportJournal} from './cookie-import-journal.mjs';
 import { applyCookieImport } from './cookie-import-transaction.mjs';
 
 const source = [{name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, hostOnly:true, session:true, sameSite:'lax', storeId:'source'}];
 const scope = {approvedDomains:['example.test'], sourceStoreId:'source'};
+async function withJournal(operation) {
+  const directory = await mkdtemp(path.join(tmpdir(),'chariox-cookie-transaction-'));
+  const key = randomBytes(32);
+  const journal = await openCookieImportJournal({directory,key,
+    binding:{userId:'user',roomId:'room',environmentId:'environment'}});
+  try { await operation(journal); }
+  finally { await journal.close(); key.fill(0); await rm(directory,{recursive:true,force:true}); }
+}
 const stored = (changes = {}) => ({name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, session:true, expires:-1, sameSite:'Lax', ...changes});
 function fixture(initial = []) {
@@ -36,6 +49,67 @@ test('publishes a verified import while leaving unrelated cookies untouched', as
   const after = await store.read();
   assert.deepEqual(after.find(c => c.domain === 'other.test'), unrelated);
   assert.equal(after.find(c => c.domain === 'example.test').httpOnly, true);
+});
+
+test('encrypted recovery record is durable before the first cookie write and cleared after verification', async () => {
+  await withJournal(async journal => {
+    const {options,store} = fixture();
+    const write = store.write;
+    store.write = async cookies => {
+      const pending = await journal.read();
+      assert.ok(pending);
+      try {
+        const record = JSON.parse(pending.bytes.toString());
+        assert.equal(record.schema,1);
+        assert.deepEqual(record.before,[]);
+        assert.equal(record.imported.length,1);
+      } finally { pending.bytes.fill(0); }
+      await write(cookies);
+    };
+    await applyCookieImport({...options,journal});
+    assert.equal(await journal.read(),null);
+  });
+});
+
+test('unresolved journal blocks another import without changing cookies', async () => {
+  await withJournal(async journal => {
+    await journal.prepare(Buffer.from('retained encrypted recovery'));
+    const {options,writes} = fixture();
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),0);
+  });
+});
+
+test('uncertain mutation failure retains encrypted recovery state', async () => {
+  await withJournal(async journal => {
+    const {options,store} = fixture();
+    store.write = async () => { throw Error('private controller payload'); };
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_failed',recoveryRequired:true});
+    const pending = await journal.read();
+    assert.ok(pending);
+    pending.bytes.fill(0);
+  });
+});
+
+test('revocation during journal preparation does not mutate the cookie store', async () => {
+  await withJournal(async journal => {
+    const {options,store,writes} = fixture();
+    let allowed = true;
+    let removals = 0;
+    store.remove = async () => { removals++; };
+    const guardedJournal = {...journal, prepare:async bytes => {
+      const receipt = await journal.prepare(bytes);
+      allowed = false;
+      return receipt;
+    }};
+    await assert.rejects(applyCookieImport({...options,journal:guardedJournal,
+      authorize:async () => allowed}), {code:'cookie_import_denied',recoveryRequired:false});
+    assert.equal(writes(),0);
+    assert.equal(removals,0);
+    assert.equal(await journal.read(),null);
+  });
 });
 
 test('requires a fresh exclusive authorization and explicit overwrite before mutation', async () => {
