@@ -1258,3 +1258,22 @@ Its separate process has hard memory, CPU and lifetime limits; it enters only
 the owned browser's network namespace and drops privilege before execution.
 Hosted browser execution, Room integration and released-terminal acceptance
 remain required and are not inferred from the unit harness.
+
+### Hosted kernel and native build follow-up (2026-09-08)
+
+Linux component job `101951820792` on `a3f0da44e` now compiles the full kernel
+and runs every selected filter. The protocol-293 interaction, ownership,
+native-bridge and subject groups pass, as do the durable writer tests. Four
+fixtures fail: two first-install native health cases and two workflow recovery
+cases. The workflow fixtures now use the resumable Pause operation (Cancel
+correctly archives terminal runs) and pass current agent-store snapshots to
+publication creation, matching the production owned path. Their hosted rerun
+and the separate first-install fixture correction remain pending.
+
+The admitted macOS native build `34185809550` succeeds for frozen source
+`28904c4f61e4df56d939a9e7b156373cc612c031` after 108 minutes of compilation.
+The unsigned artifact is retained in GitHub; local evidence contains its
+identity and resource log without downloading or executing the runtime. Peak
+observed build-group RSS was 3,030,564,864 bytes. Signing, notarization, macOS
+factory integration and actual signed sandbox execution remain release gates;
+this result is not a release artifact or containment proof.

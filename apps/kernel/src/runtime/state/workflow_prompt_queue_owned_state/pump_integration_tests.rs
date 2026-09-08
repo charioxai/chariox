@@ -58,10 +58,12 @@ fn one_pass_without_a_view_queues_the_original_event_and_recovers_its_prompt_rec
             .set_workflow_endpoint_owner(&session, &workflow, &endpoint, "alice".into())
             .unwrap();
         let publication = sessions
-            .create_workflow_publication(
+            .create_workflow_publication_idempotent(
                 &session,
                 &workflow,
                 &endpoint,
+                None,
+                None,
                 Some("default".into()),
                 Some("app-pump".into()),
                 Some("event_based".into()),
@@ -74,6 +76,7 @@ fn one_pass_without_a_view_queues_the_original_event_and_recovers_its_prompt_rec
                 None,
                 None,
                 None,
+                runtime.owned.agent_store.get_session_agents(&session),
                 "alice".into(),
             )
             .unwrap();

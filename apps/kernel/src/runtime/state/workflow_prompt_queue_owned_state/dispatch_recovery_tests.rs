@@ -114,15 +114,17 @@ fn user_resume_of_unsubmitted_entry_keeps_one_original_operation() {
         .workflow_entry_intent(&session, &run)
         .unwrap()
         .unwrap();
+    // User pause keeps a resumable run. Cancel is terminal and persistence
+    // correctly archives it before this resume path can operate on it.
     runtime
         .owned
         .session_store
         .write()
-        .cancel_workflow_run(&session, &run)
+        .pause_workflow_run(&session, &run)
         .unwrap();
     runtime
         .owned
-        .persist_workflow_runtime_session(&session, "fixture_stopped")
+        .persist_workflow_runtime_session(&session, "fixture_paused")
         .unwrap();
     drop(blocker);
     runtime.owned.workflow_resume_run(&session, &run).unwrap();
