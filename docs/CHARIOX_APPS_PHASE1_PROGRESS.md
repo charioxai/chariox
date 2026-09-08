@@ -479,8 +479,8 @@ runtime code integrity. Failed and successful evidence remains in
 [Linux and macOS component CI](https://github.com/charioxai/chariox/actions/runs/34169996393)
 passed the fourteen kernel Chromium migration cases, atomic checkpoint failure
 injection and four actual process-ownership tests on each platform. The real
-browser drill exposed a verifier lifecycle race and ptrace-restricted namespace
-links, both corrected with explicit observation evidence. The probe retains
+browser drill exposed verifier lifetime and renderer-discovery assumptions,
+corrected with CDP process inventory and explicit observation evidence. The probe retains
 kernel PID-nesting, identity and seccomp checks and records when network
 isolation relies on Chromium's diagnostic. A real browser persistence pass and
 live Google acceptance remain outstanding until their separate drills pass.
@@ -492,3 +492,32 @@ Historical native artifacts require an explicit evidence-only mode; neither
 assembly nor unsigned manifests establish release authenticity, embedded Node
 execution or production containment. No full Phase 1 release gate is advanced
 by these component results alone.
+
+## Hosted Chromium persistence result: 2026-09-07
+
+[Run 34171378772](https://github.com/charioxai/chariox/actions/runs/34171378772)
+passed on commit `12ffd1f5156625ecd82d2c88d1ef31451273abb2`. It ran the
+production launcher, sandbox probe and home-restore action with the exact
+committed seccomp policy, Chromium `147.0.7727.137-1~deb12u1`, Node `22.23.2`
+and Linux `6.17.0-1022-azure` in resource-limited, externally disconnected
+containers. The initial, restored and empty browsers exposed 3, 4 and 3
+renderers. Every renderer passed direct PID/network namespace-inode separation,
+kernel PID nesting, non-root UID, zero effective capabilities, no-new-privileges
+and additional-seccomp-filter checks. All restricted namespace-link counts were
+zero: this result did not use the documented diagnostic-only network path.
+
+Persistent HttpOnly authentication and visible cookies, localStorage, IndexedDB
+and the fixture tab survived a clean browser stop, whole-home archive, removal
+of the original container, production restore into a fresh volume and relaunch.
+Server-side revocation denied authentication while preserving local data; an
+empty profile lost authentication and all three local storage fixtures. Owned
+resource cleanup completed successfully. Evidence is retained outside Git in
+`chromium-34171378772/{inputs.json,results.json,versions.txt}` under the task's
+evidence directory.
+
+This advances the deterministic browser persistence part of P1.14. The result
+explicitly records `fullKernelMigrationValidated=false` and
+`googleAuthenticationValidated=false`. Full kernel migration with real
+containers, live Google acceptance, App-origin isolation and shared-viewer
+input/accessibility remain separate release requirements. The complete browser
+persistence or Phase 1 release gate is not marked passed by this fixture.
