@@ -247,7 +247,7 @@ export async function executeSliceCommand(
           sliceId: slice.id,
           binding,
         })
-        if (scoped.error) return { ok: false, message: scoped.error }
+        if (scoped.error !== null) return { ok: false, message: scoped.error }
         if (!deps.openRoomViewer) {
           return { ok: false, message: "Chariox Cloud Web View is unavailable in this client" }
         }
