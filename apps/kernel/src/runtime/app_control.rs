@@ -18,6 +18,8 @@ mod uploads;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod workers;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) use workers::AppWorkerPublisher;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod catalog;
 
 #[derive(Clone)]
@@ -29,12 +31,24 @@ pub(crate) struct AppControlService {
     event_pump: super::app_event_pump::AppEventPump,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    lifecycle: super::app_lifecycle::AppLifecycleService,
 }
 
 impl AppControlService {
     pub(crate) fn new(store: DurableKernelStateStore) -> Self {
         let uploads = super::app_package_upload_control::AppPackageUploadControl::new(
             store.path().to_path_buf(),
+        );
+        let admission = Arc::new(Semaphore::new(8));
+        let event_pump = super::app_event_pump::AppEventPump::new();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let workers = workers::ActiveWorkers::default();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let lifecycle = super::app_lifecycle::AppLifecycleService::new(
+            store.clone(),
+            admission.clone(),
+            AppWorkerPublisher::new(workers.clone(), event_pump.clone()),
         );
         Self {
             preparation: super::app_package_preparation::AppPackagePreparation::new(
@@ -43,11 +57,18 @@ impl AppControlService {
             ),
             uploads,
             store,
-            admission: Arc::new(Semaphore::new(8)),
-            event_pump: super::app_event_pump::AppEventPump::new(),
+            admission,
+            event_pump,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-            workers: workers::ActiveWorkers::default(),
+            workers,
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            lifecycle,
         }
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    pub(crate) fn lifecycle(&self) -> &super::app_lifecycle::AppLifecycleService {
+        &self.lifecycle
     }
 
     pub(crate) fn schedule_maintenance(&self) {

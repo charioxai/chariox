@@ -1018,5 +1018,36 @@ another build. Post-merge workflow_dispatch uses an explicit confirmation. Wrong
 target events have separate cheap concurrency groups so they cannot replace a
 pending build admission. The target-specific provenance graph includes all guard,
 owner, profile, workflow and admission sources. Forty-five focused tooling tests
-and sixteen concurrency-routing cases pass. New native builds have not yet run
-at this source revision.
+and sixteen concurrency-routing cases pass. Explicit PR label events admitted
+Linux run `34185809490` and macOS run `34185809550` at `28904c4f6`; both are
+in progress. The same revision's Linux ext4 factory run `34185780346` passes
+with the bounded startup observation fix. No native artifact or execution pass
+is claimed while the builds continue.
+
+### Retained lifecycle and private single-file publication (2026-09-08)
+
+The shared App control service now retains lifecycle owners for approved active
+generations. The existing kernel pump schedules bounded headless recovery;
+shutdown joins those owners before daemon cleanup. Four aggregate live slots,
+one preparation slot and the shared operation limit remain held through real
+process reap and broker drain. Durable attempt/generation fences preserve manual
+stop intent and prevent stale cleanup from overwriting a replacement. First
+installation, update migration and macOS factory integration remain in progress.
+
+Private file replacement now derives its directory and installation identity
+from the actual retained worker preparation. Descriptor-relative staging rejects
+links and path escapes, bounds each write to 512 KiB, and flushes the new inode
+before entering the writer. Publication rechecks current installation/signer
+authority, renames one file and syncs its parent. It does not claim multi-file or
+filesystem-plus-database transactions. Lost completion after publication returns
+an explicit uncertain outcome and never automatically retries the effect.
+
+Five actual filesystem tests pass for publication, cancellation cleanup, hostile
+paths and replaced entries, preparation retention and post-rename uncertainty
+(7.02-second compile, 0.04-second execution, peak 355,312 KiB). Two stored-archive
+tests pass for anchored reopen/shared locking and tamper, size and link rejection
+(5.41-second compile, 0.09-second execution, peak 325,872 KiB). Seven kernel file
+tests and seven lifecycle/writer tests have completed independent source review
+and are selected for hosted execution. The file tests include the real inherited
+SDK channel, current-authority changes, queued cancellation and actual publication
+before lost writer replies or task panics. They are not yet recorded as passing.

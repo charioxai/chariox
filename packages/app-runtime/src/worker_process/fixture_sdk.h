@@ -7,7 +7,7 @@
 static int fixture_sdk_mode(const char* mode) {
   return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
       !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
-      !strcmp(mode, "sdk_other_installation");
+      !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files");
 }
 
 static int fixture_sdk_io(void* buffer, size_t size, int writing, int64_t deadline) {
@@ -134,6 +134,17 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   if (file < 0) return 103;
   if (fsync(file) || close(file)) return 104;
   if (fixture_sdk_event("fixture.ready_ack") != 1) return 105;
+  if (!strcmp(mode, "sdk_files")) {
+    /* Exercise both namespaces on the exact inherited production peer. */
+    if (fixture_sdk_request("files-state", "state.get", "{\"key\":\"fixture\"}") != 1 ||
+        fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
+        strcmp(response, "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"files-state\",\"result\":null}")) return 118;
+    if (fixture_sdk_request("files-write", "files.atomic_replace",
+        "{\"path\":\"fixture-file\",\"contentsBase64\":\"AP9maWxl\"}") != 1 ||
+        fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
+        strcmp(response, "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"files-write\",\"result\":{\"bytesWritten\":6}}")) return 119;
+    if (fixture_sdk_event("fixture.files_complete") != 1) return 120;
+  }
   if (!strcmp(mode, "sdk_tool")) return fixture_sdk_tool(record);
   if (!strcmp(mode, "sdk_broker_call")) {
     if (fixture_sdk_request("after-ready", "state.get", "{\"key\":\"fixture\"}") != 1) return 106;

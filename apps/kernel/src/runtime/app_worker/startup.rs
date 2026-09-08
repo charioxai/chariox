@@ -186,7 +186,7 @@ struct StartupBroker {
 impl Broker for StartupBroker {
     fn handle(&self, request: BrokerRequest) -> BrokerFuture {
         if request.method != "worker.ready" {
-            if self.admission.active() {
+            if self.admission.broker_open(&request.method) {
                 return self.delegate.handle(request);
             }
             return Box::pin(async { Err(remote("APP_NOT_READY")) });
@@ -244,7 +244,7 @@ impl Broker for StartupBroker {
                     return Err(remote("APP_READY_EXPIRED"));
                 }
                 match *changed.borrow_and_update() {
-                    Phase::Active => return Ok(Value::Null),
+                    Phase::Active | Phase::Draining => return Ok(Value::Null),
                     Phase::Stopped => return Err(remote("APP_NOT_READY")),
                     Phase::Starting => {}
                 }

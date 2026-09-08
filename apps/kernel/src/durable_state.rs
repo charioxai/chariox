@@ -18,11 +18,14 @@ use crate::error::DaemonError;
 pub(crate) mod app_bindings;
 pub(crate) mod app_automations;
 pub(crate) mod app_activation;
+pub(crate) mod app_worker_lifecycle;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_publishers;
 pub(crate) mod app_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_files;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
 pub(crate) mod apps;
@@ -144,11 +147,14 @@ enum DurableWriterRequest {
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
+    AppWorkerLifecycle(Box<app_worker_lifecycle::AppWorkerLifecycleRequest>),
     AppEventMaintenance(Box<app_event_maintenance::AppEventMaintenanceRequest>),
     AppEventQueue(Box<app_event_delivery::AppEventQueueRequest>),
     WorkflowQueueStart(Box<workflow_queue_start::WorkflowQueueStartRequest>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     AppTools(Box<app_tools::AppToolsRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppFile(Box<app_files::AppFileRequest>),
 }
 
 #[derive(Debug)]
@@ -317,6 +323,7 @@ impl DurableKernelStateStore {
         app_publishers::initialize(&mut connection)?;
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
+        app_worker_lifecycle::initialize(&connection)?;
         workflow_dispatch_intents::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.workflow_dispatch_intents",
             message: error.to_string(),
@@ -1378,6 +1385,10 @@ fn run_durable_writer(
                 app_activation::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppWorkerLifecycle(request) => {
+                app_worker_lifecycle::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppEventMaintenance(request) => {
                 app_event_maintenance::execute(&mut connection, *request);
                 continue;
@@ -1385,6 +1396,11 @@ fn run_durable_writer(
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             DurableWriterRequest::AppTools(request) => {
                 app_tools::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppFile(request) => {
+                app_files::execute(&mut connection, *request);
                 continue;
             }
             DurableWriterRequest::AppEventQueue(request) => {
@@ -1418,7 +1434,7 @@ fn run_durable_writer(
             match receiver.recv_timeout(remaining) {
                 Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                Ok(request @ DurableWriterRequest::AppTools(_)) => {
+                Ok(request @ (DurableWriterRequest::AppTools(_) | DurableWriterRequest::AppFile(_))) => {
                     pending = Some(request);
                     break;
                 }
@@ -1430,6 +1446,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)
+                    | DurableWriterRequest::AppWorkerLifecycle(_)
                     | DurableWriterRequest::AppEventMaintenance(_)
                     | DurableWriterRequest::WorkflowQueueStart(_)
                     | DurableWriterRequest::AppEventQueue(_)),

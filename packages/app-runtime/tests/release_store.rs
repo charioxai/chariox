@@ -101,6 +101,77 @@ fn budget() -> StageBudget {
 }
 
 #[test]
+fn stored_archive_reopen_retains_exact_bytes_and_shared_generation_lock() {
+    use std::os::fd::AsRawFd;
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    let staged = store.stage(&package, &archive, budget()).unwrap();
+    let mut stored = store
+        .open_stored_archive(&package.package_digest())
+        .unwrap();
+    assert_eq!(stored.read_bytes().unwrap(), archive);
+    assert_eq!(stored.read_bytes().unwrap(), archive);
+    let observer = fs::File::open(&staged.path).unwrap();
+    assert_ne!(
+        unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    drop(stored);
+    assert_eq!(
+        unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+}
+
+#[test]
+fn stored_archive_rejects_tampering_oversize_and_link_replacement_before_verification() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    let staged = store.stage(&package, &archive, budget()).unwrap();
+    let path = staged.path.join("envelope.cxapp");
+    permissions(&path, 0o600);
+    let mut bad = archive.clone();
+    bad[0] ^= 1;
+    fs::write(&path, bad).unwrap();
+    permissions(&path, 0o400);
+    let mut stored = store
+        .open_stored_archive(&package.package_digest())
+        .unwrap();
+    assert!(matches!(
+        stored.read_bytes(),
+        Err(ReleaseStoreError::ArchiveMismatch)
+    ));
+    drop(stored);
+    permissions(&path, 0o600);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(128 * 1024 * 1024 + 1)
+        .unwrap();
+    permissions(&path, 0o400);
+    let mut stored = store
+        .open_stored_archive(&package.package_digest())
+        .unwrap();
+    assert!(matches!(
+        stored.read_bytes(),
+        Err(ReleaseStoreError::ReservationExceeded)
+    ));
+    drop(stored);
+    permissions(&staged.path, 0o700);
+    fs::remove_file(&path).unwrap();
+    symlink("payload/runtime/main.js", &path).unwrap();
+    permissions(&staged.path, 0o500);
+    assert!(store
+        .open_stored_archive(&package.package_digest())
+        .is_err());
+}
+
+#[test]
 fn verified_worker_lease_retains_shared_publication_lock_until_last_consumer_drains() {
     use std::os::fd::AsRawFd;
     let directory = Directory::new();

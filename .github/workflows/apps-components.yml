@@ -125,7 +125,9 @@ jobs:
           cargo test --locked -p chariox-kernel --lib runtime::app_package_upload_control:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::app_package_preparation:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::app_state_broker:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::app_files_broker::tests:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::app_worker:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::app_lifecycle:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::router::tests::app_tools:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::state::provider_reload::tests:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::state::provider_output_runtime_tests::mcp_catalog_reload:: -- --test-threads=1

@@ -9,6 +9,8 @@
 //! cancellation clone is nonblocking; cancellation does not release admission.
 
 mod monitor;
+mod private_data;
+pub use private_data::{PreparedDataReplace, PrivateData, PrivateDataError};
 #[cfg(target_os = "linux")]
 mod platform_linux;
 mod record;
@@ -68,6 +70,11 @@ impl PreparedWorker {
 /// WorkerProcess. Linux must own its exact cgroup + bundled bubblewrap namespace
 /// domain; a process group alone cannot contain bubblewrap's nested session.
 trait ResourceDomain: Send {
+    /// The held writable data mount from the sealed platform preparation.
+    /// Never reopen a worker-supplied path in the kernel's namespace.
+    fn private_data_directory(&self) -> Result<File, WorkerError> {
+        Err(WorkerError::Preparation)
+    }
     /// Trusted setup only: Linux inherits cgroup.procs at FD5 and the pinned
     /// bubblewrap executable at FD6. Both close before native App main. Ordinary
     /// workers and macOS Apple-tool launches retain the original FD0..4 ABI.

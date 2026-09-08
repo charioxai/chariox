@@ -23,6 +23,15 @@ pub(super) struct Domain {
 }
 
 impl ResourceDomain for Domain {
+    fn private_data_directory(&self) -> Result<File> {
+        if self.storage.is_none() {
+            return Err(super::WorkerError::Preparation);
+        }
+        self._roots[1]
+            .object
+            .try_clone()
+            .map_err(|_| super::WorkerError::Preparation)
+    }
     fn setup_descriptors(&self) -> &[File] {
         &self.setup
     }

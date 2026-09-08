@@ -30,6 +30,7 @@ pub enum Mode {
     NoReport,
     BrokerCall,
     ToolEcho,
+    Files,
     OtherInstallation,
 }
 impl Mode {
@@ -40,6 +41,7 @@ impl Mode {
             Self::NoReport => "sdk_no_report",
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
+            Self::Files => "sdk_files",
             Self::OtherInstallation => "sdk_other_installation",
         }
     }
@@ -72,6 +74,38 @@ impl Observation {
             .metadata()
             .map(|m| m.len() / 2)
             .unwrap_or(0)
+    }
+    /// Observe only the fixed broker fixture output; no caller-selected path.
+    pub fn private_file(&self) -> io::Result<Option<Vec<u8>>> {
+        let file = match File::open(self.marker.with_file_name("fixture-file")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut bytes = Vec::new();
+        file.take(512 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 512 * 1024 {
+            return Err(io::Error::other(
+                "fixed private fixture output exceeded bound",
+            ));
+        }
+        Ok(Some(bytes))
+    }
+    pub fn pending_file_replacements(&self) -> io::Result<usize> {
+        let mut count = 0;
+        for (index, entry) in fs::read_dir(self.marker.parent().unwrap())?.enumerate() {
+            if index >= 1024 {
+                return Err(io::Error::other("fixed fixture directory exceeded bound"));
+            }
+            if entry?
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(b".chariox-replace-")
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -181,6 +215,7 @@ impl Fixture {
                 marker: Path::new(&roots[1]).join("ready-ack"),
                 _scratch: self.scratch.clone(),
             };
+            let private_data = objects[1].try_clone()?;
             Ok((
                 PreparedWorker {
                     program: CString::new(self.executable.as_os_str().as_bytes()).unwrap(),
@@ -203,6 +238,7 @@ impl Fixture {
                     },
                     _objects: objects,
                     domain: Box::new(FixtureDomain {
+                        private_data,
                         reaped,
                         dropped,
                         _scratch: self.scratch.clone(),
@@ -224,11 +260,17 @@ impl Fixture {
 }
 
 struct FixtureDomain {
+    private_data: File,
     reaped: Arc<AtomicBool>,
     dropped: Arc<AtomicBool>,
     _scratch: Arc<Scratch>,
 }
 impl ResourceDomain for FixtureDomain {
+    fn private_data_directory(&self) -> Result<File, WorkerError> {
+        self.private_data
+            .try_clone()
+            .map_err(|_| WorkerError::Preparation)
+    }
     fn verify_before_continue(&mut self, pid: libc::pid_t) -> Result<(), WorkerError> {
         if unsafe { libc::getsid(pid) } != pid {
             return Err(WorkerError::ResourceDomain);

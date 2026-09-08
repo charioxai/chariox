@@ -48,6 +48,10 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control()
+            .lifecycle()
+            .schedule_recovery(tokio::runtime::Handle::current());
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
@@ -369,6 +373,18 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let lifecycle = self.app_control().lifecycle().clone();
+            // The blocking owner survives cancellation of this await and keeps
+            // every worker/broker lease until actual shutdown finishes.
+            tokio::task::spawn_blocking(move || lifecycle.shutdown_blocking())
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_worker_shutdown",
+                    message: "App worker shutdown did not complete".into(),
+                })?;
+        }
         self.with_app_side_effect(|app| app.shutdown_cleanup())
             .await
     }

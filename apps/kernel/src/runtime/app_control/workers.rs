@@ -12,16 +12,24 @@ type Key = (String, String);
 #[derive(Clone, Default)]
 pub(super) struct ActiveWorkers(Arc<Mutex<BTreeMap<Key, ActivatedApp>>>);
 
-impl AppControlService {
-    /// The blocking lifecycle owner publishes only after the exact process's
-    /// readiness and durable activation proof. It must retain AppWorkerOwner and
-    /// serialize replacement for this installation through its complete drain.
-    /// This registry provides discovery, not lifecycle admission or resource caps.
-    pub(crate) fn publish_app_worker(
-        &self,
-        owner: &str,
-        worker: ActivatedApp,
-    ) -> Result<(), AppWorkerError> {
+/// Retained by lifecycle threads without retaining AppControl/the lifecycle
+/// service itself. This avoids a service->thread->service shutdown cycle.
+#[derive(Clone)]
+pub(crate) struct AppWorkerPublisher {
+    workers: ActiveWorkers,
+    event_pump: crate::runtime::app_event_pump::AppEventPump,
+}
+impl AppWorkerPublisher {
+    pub(super) fn new(
+        workers: ActiveWorkers,
+        event_pump: crate::runtime::app_event_pump::AppEventPump,
+    ) -> Self {
+        Self {
+            workers,
+            event_pump,
+        }
+    }
+    pub(crate) fn publish(&self, owner: &str, worker: ActivatedApp) -> Result<(), AppWorkerError> {
         let lease = worker.lease(owner)?;
         let key = (
             lease.owner().to_owned(),
@@ -40,6 +48,21 @@ impl AppControlService {
         drop(workers);
         self.event_pump.wake();
         Ok(())
+    }
+}
+
+impl AppControlService {
+    /// The blocking lifecycle owner publishes only after the exact process's
+    /// readiness and durable activation proof. It must retain AppWorkerOwner and
+    /// serialize replacement for this installation through its complete drain.
+    /// This registry provides discovery, not lifecycle admission or resource caps.
+    pub(crate) fn publish_app_worker(
+        &self,
+        owner: &str,
+        worker: ActivatedApp,
+    ) -> Result<(), AppWorkerError> {
+        AppWorkerPublisher::new(self.workers.clone(), self.event_pump.clone())
+            .publish(owner, worker)
     }
 
     pub(crate) fn active_app_lease(

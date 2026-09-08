@@ -6,7 +6,7 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod lease;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use lease::VerifiedReleaseLease;
+pub use lease::{StoredReleaseArchive, VerifiedReleaseLease};
 
 /// The installer/helper and kernel share this naming rule. The path is still
 /// required to come from trusted kernel configuration or root enrollment.
@@ -182,6 +182,15 @@ mod unix {
             archive: &[u8],
         ) -> Result<super::VerifiedReleaseLease> {
             super::lease::verified(&self.root, package, archive)
+        }
+
+        /// Anchored, leased bytes for restart-time signature verification. The
+        /// returned archive is not publisher trust or execution authority.
+        pub fn open_stored_archive(
+            &self,
+            expected_digest: &str,
+        ) -> Result<super::StoredReleaseArchive> {
+            super::lease::stored_archive(&self.root, expected_digest)
         }
 
         /// Conservative bytes the kernel must reserve before starting this

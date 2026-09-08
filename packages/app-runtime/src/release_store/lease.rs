@@ -4,9 +4,68 @@ use super::unix::{digest_name, verify_tree, ExpectedTree, ReleaseStoreError, Roo
 use crate::private_fs::{same_entry, Dir};
 use chariox_app_package::{Declarations, Manifest, VerifiedPackage};
 use sha2::{Digest, Sha256};
-use std::{ffi::OsStr, fs::File, os::fd::AsRawFd};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
+};
 
 type Result<T> = std::result::Result<T, ReleaseStoreError>;
+
+/// Held stored bytes only. The caller must verify the signature using current
+/// enrolled trust, then obtain VerifiedReleaseLease from the complete tree.
+pub struct StoredReleaseArchive {
+    _root: Dir,
+    file: File,
+    digest: String,
+}
+impl StoredReleaseArchive {
+    pub fn read_bytes(&mut self) -> Result<Vec<u8>> {
+        const LIMIT: u64 = 128 * 1024 * 1024;
+        let size = self.file.metadata()?.len();
+        if size == 0 || size > LIMIT {
+            return Err(ReleaseStoreError::ReservationExceeded);
+        }
+        let capacity = usize::try_from(size).map_err(|_| ReleaseStoreError::ReservationExceeded)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|_| ReleaseStoreError::ReservationExceeded)?;
+        bytes.resize(capacity, 0);
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.read_exact(&mut bytes)?;
+        if self.file.read(&mut [0_u8; 1])? != 0
+            || format!("sha256:{:x}", Sha256::digest(&bytes)) != self.digest
+        {
+            return Err(ReleaseStoreError::ArchiveMismatch);
+        }
+        Ok(bytes)
+    }
+}
+pub(super) fn stored_archive(store: &Dir, digest: &str) -> Result<StoredReleaseArchive> {
+    let name = OsStr::new(digest_name(digest)?);
+    let root = store.child(name)?;
+    if unsafe { libc::flock(root.0.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        return Err(ReleaseStoreError::Busy);
+    }
+    let metadata = root.0.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o7777 != 0o500
+        || !same_entry(store, name, &root)?
+    {
+        return Err(ReleaseStoreError::UnsafeEntry);
+    }
+    let file = root.read_file(OsStr::new("envelope.cxapp"), true)?;
+    if file.metadata()?.mode() & 0o7777 != 0o400 || !same_entry(store, name, &root)? {
+        return Err(ReleaseStoreError::UnsafeEntry);
+    }
+    Ok(StoredReleaseArchive {
+        _root: root,
+        file,
+        digest: digest.into(),
+    })
+}
 
 /// Only ReleaseStore::lease_verified can create this value. The package root
 /// retains a shared lease until the native worker and every broker call drain.

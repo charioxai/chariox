@@ -3,6 +3,8 @@
 //! report and a durable active-generation proof. Neither is permanent authority.
 
 mod call;
+mod lifecycle;
+pub(crate) use lifecycle::AppWorkerDrain;
 mod startup;
 #[cfg(test)]
 mod tests;
@@ -38,6 +40,7 @@ pub(crate) enum AppWorkerError {
 enum Phase {
     Starting,
     Active,
+    Draining,
     Stopped,
 }
 
@@ -58,6 +61,22 @@ impl Admission {
     }
     fn active(&self) -> bool {
         self.phase.lock().is_ok_and(|phase| *phase == Phase::Active)
+    }
+    fn broker_open(&self, method: &str) -> bool {
+        self.phase.lock().is_ok_and(|phase| {
+            *phase == Phase::Active
+                || (*phase == Phase::Draining
+                    && matches!(
+                        method,
+                        "state.get"
+                            | "state.list"
+                            | "state.transaction"
+                            | "events.emit"
+                            | "events.status"
+                            | "events.retry"
+                            | "files.atomic_replace"
+                    ))
+        })
     }
 }
 
@@ -93,24 +112,32 @@ impl AppWorkerOwner {
         self.peer.close();
     }
     pub(crate) fn shutdown_blocking(mut self) {
-        self.shutdown();
+        let _ = self.shutdown();
     }
-    fn shutdown(&mut self) {
+    fn shutdown(
+        &mut self,
+    ) -> Result<
+        chariox_app_runtime::worker_process::WorkerExit,
+        chariox_app_runtime::worker_process::WorkerError,
+    > {
         self.stop();
         if let Some(task) = self.peer_task.take() {
             // Admitted writer/effect reservations survive cancellation. Drain
             // them before releasing this owner and joining the native process.
             let _ = self.runtime.block_on(task.join());
         }
-        if let Some(process) = self.process.take() {
-            let _ = process.shutdown_blocking();
-        }
+        let result = self
+            .process
+            .take()
+            .ok_or(chariox_app_runtime::worker_process::WorkerError::Supervisor)?
+            .shutdown_blocking();
         self.live.take();
+        result
     }
 }
 impl Drop for AppWorkerOwner {
     fn drop(&mut self) {
-        self.shutdown();
+        let _ = self.shutdown();
     }
 }
 impl LiveWorker {
