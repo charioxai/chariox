@@ -962,7 +962,10 @@ async function openSliceScreen(
   }
   const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
   const slice = await deps.getSlice(resolvedRef)
-  if (slice?.display_endpoint?.kind === "selkies") {
+  const endpoint = slice.display_endpoint?.kind === "selkies"
+    ? null
+    : await deps.getSliceDisplayEndpoint(resolvedRef)
+  if (!endpoint || endpoint.kind === "selkies") {
     if (!deps.isAttached?.()) {
       deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
       return
@@ -1011,7 +1014,6 @@ async function openSliceScreen(
     ].join("\n"))
     return
   }
-  const endpoint = await deps.getSliceDisplayEndpoint(resolvedRef)
   deps.appendNotice(endpoint.url)
   const opened = await deps.openExternalUrl?.(endpoint.url)
   deps.flashFooter(`${opened ? "opened" : "screen"} ${endpoint.url}`, "info")
