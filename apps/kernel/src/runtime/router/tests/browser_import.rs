@@ -3,15 +3,20 @@ use serde_json::{json, Value};
 
 #[test]
 fn browser_import_consent_requires_verified_owner_and_unchanged_selection() {
-    run_consent_round_trip(false);
+    run_consent_round_trip(None);
 }
 
 #[test]
 fn browser_import_destination_claim_requires_verified_owner() {
-    run_consent_round_trip(true);
+    run_consent_round_trip(Some(false));
 }
 
-fn run_consent_round_trip(test_destination: bool) {
+#[test]
+fn browser_import_failed_cleanup_retains_admission_block() {
+    run_consent_round_trip(Some(true));
+}
+
+fn run_consent_round_trip(cleanup_failure: Option<bool>) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
@@ -19,7 +24,7 @@ fn run_consent_round_trip(test_destination: bool) {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(consent_round_trip(test_destination));
+                .block_on(consent_round_trip(cleanup_failure));
         })
         .unwrap()
         .join()
@@ -33,7 +38,7 @@ impl Drop for Scratch {
     }
 }
 
-async fn consent_round_trip(test_destination: bool) {
+async fn consent_round_trip(cleanup_failure: Option<bool>) {
     let config = DaemonConfig::for_tests();
     let database_path = config.user_config.state.path.clone().unwrap();
     let _scratch = Scratch(
@@ -266,7 +271,7 @@ async fn consent_round_trip(test_destination: bool) {
     assert!(dispatch(&router, &denied_caller, authorize.clone())
         .await
         .is_err());
-    if test_destination {
+    if let Some(cleanup_failure) = cleanup_failure {
         let destination_selection = serde_json::from_value(selection.clone()).unwrap();
         let destination_request: LocalDaemonRequest =
             serde_json::from_value(authorize.clone()).unwrap();
@@ -299,7 +304,7 @@ async fn consent_round_trip(test_destination: bool) {
         assert!(state
             .ensure_no_pending_environment_import(session.id())
             .is_err());
-        destination_guard
+        let completion = destination_guard
             .complete_after_verification(async {
                 assert!(state
                     .ensure_no_pending_environment_import(session.id())
@@ -313,10 +318,26 @@ async fn consent_round_trip(test_destination: bool) {
                     !recovery_required,
                     "durable verification must precede journal cleanup"
                 );
-                Ok(())
+                if cleanup_failure {
+                    Err(DaemonError::LocalTransport {
+                        operation: "fixture cleanup",
+                        message: "synthetic private storage detail".into(),
+                    })
+                } else {
+                    Ok(())
+                }
             })
-            .await
-            .unwrap();
+            .await;
+        if cleanup_failure {
+            let error = completion.unwrap_err();
+            assert!(!format!("{error:?}").contains("synthetic private storage detail"));
+            assert!(state
+                .ensure_no_pending_environment_import(session.id())
+                .is_err());
+            assert!(dispatch(&router, &caller, prepare).await.is_err());
+            return;
+        }
+        completion.unwrap();
         assert!(state
             .ensure_no_pending_environment_import(session.id())
             .is_ok());
