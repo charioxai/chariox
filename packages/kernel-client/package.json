@@ -77,6 +77,7 @@
     "./shell-script": "./dist/shell-script.js",
     "./shell-workspace-format": "./dist/shell-workspace-format.js",
     "./slice-format": "./dist/slice-format.js",
+    "./slice-screen-viewer": "./dist/slice-screen-viewer.js",
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js"
   },
   "types": "./dist/index.d.ts",
