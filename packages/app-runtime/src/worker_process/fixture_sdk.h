@@ -112,7 +112,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
       fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1) return 95;
   static const char rejected[] = "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"before-ready\",\"error\":{\"code\":\"APP_NOT_READY\",";
   if (strncmp(response, rejected, sizeof(rejected) - 1)) return 96;
-  if (fixture_sdk_event("fixture.before_ready_rejected") != 1) return 97;
+  if (fixture_sdk_event("worker.fixture.before_ready_rejected") != 1) return 97;
   if (!strcmp(mode, "sdk_no_report")) {
     /* Parent owns the short activation timeout. EOF/kill ends this fixed shim. */
     return fixture_sdk_receive(response, cx_monotonic_ms() + 30000) == 0 ? 0 : 98;
@@ -133,7 +133,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   const int file = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (file < 0) return 103;
   if (fsync(file) || close(file)) return 104;
-  if (fixture_sdk_event("fixture.ready_ack") != 1) return 105;
+  if (fixture_sdk_event("worker.fixture.ready_ack") != 1) return 105;
   if (!strcmp(mode, "sdk_files")) {
     /* Exercise both namespaces on the exact inherited production peer. */
     if (fixture_sdk_request("files-state", "state.get", "{\"key\":\"fixture\"}") != 1 ||
@@ -143,7 +143,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
         "{\"path\":\"fixture-file\",\"contentsBase64\":\"AP9maWxl\"}") != 1 ||
         fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
         strcmp(response, "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"files-write\",\"result\":{\"bytesWritten\":6}}")) return 119;
-    if (fixture_sdk_event("fixture.files_complete") != 1) return 120;
+    if (fixture_sdk_event("worker.fixture.files_complete") != 1) return 120;
   }
   if (!strcmp(mode, "sdk_tool")) return fixture_sdk_tool(record);
   if (!strcmp(mode, "sdk_broker_call")) {

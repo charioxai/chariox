@@ -178,7 +178,7 @@ fn one_pass_without_a_view_queues_the_original_event_and_recovers_its_prompt_rec
     async_runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if controls.recv().await.unwrap().name == "fixture.ready_ack" {
+                if controls.recv().await.unwrap().name == "worker.fixture.ready_ack" {
                     break;
                 }
             }

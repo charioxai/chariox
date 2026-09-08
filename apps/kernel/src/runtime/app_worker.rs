@@ -15,7 +15,7 @@ pub(crate) use startup::RegisteredAppWorker;
 
 use chariox_app_runtime::{
     app_outbox::EventCatalog,
-    worker_peer::{PeerTask, WorkerPeer},
+    worker_peer::{Broker, PeerTask, WorkerPeer},
     worker_process::{WorkerCancellation, WorkerProcess},
     worker_readiness::RegisteredHandlers,
 };
@@ -48,6 +48,8 @@ struct Admission {
     phase: Mutex<Phase>,
     changed: watch::Sender<Phase>,
     cancellation: WorkerCancellation,
+    broker: Weak<dyn Broker>,
+    broker_draining: std::sync::atomic::AtomicBool,
 }
 impl Admission {
     fn stop(&self) {
@@ -58,6 +60,33 @@ impl Admission {
         }
         self.changed.send_replace(Phase::Stopped);
         self.cancellation.cancel();
+        self.notify_broker_draining();
+    }
+    fn notify_broker_draining(&self) {
+        if !self
+            .broker_draining
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            // Never call an external delegate while holding the phase mutex.
+            if let Some(broker) = self.broker.upgrade() {
+                broker.begin_draining();
+            }
+        }
+    }
+    fn begin_draining(&self) -> Result<(), AppWorkerError> {
+        {
+            let mut phase = self
+                .phase
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !matches!(*phase, Phase::Active | Phase::Draining) {
+                return Err(AppWorkerError::Unavailable);
+            }
+            *phase = Phase::Draining;
+            self.changed.send_replace(Phase::Draining);
+        }
+        self.notify_broker_draining();
+        Ok(())
     }
     fn active(&self) -> bool {
         self.phase.lock().is_ok_and(|phase| *phase == Phase::Active)

@@ -56,6 +56,8 @@ impl AppWorkerOwner {
             phase: Mutex::new(Phase::Starting),
             changed,
             cancellation: process.cancellation(),
+            broker: Arc::downgrade(&delegate),
+            broker_draining: std::sync::atomic::AtomicBool::new(false),
         });
         let (sender, registration) = oneshot::channel();
         let broker = Arc::new(StartupBroker {
@@ -184,6 +186,14 @@ struct StartupBroker {
     report: Mutex<Option<oneshot::Sender<Result<ReadyReport, AppWorkerError>>>>,
 }
 impl Broker for StartupBroker {
+    fn begin_draining(&self) {
+        // A peer closing before the owner observes it also withdraws this exact
+        // worker immediately. Admission forwards the delegate hook only once.
+        self.admission.stop();
+    }
+    fn drain(&self) -> chariox_app_runtime::worker_peer::BrokerDrainFuture {
+        self.delegate.drain()
+    }
     fn handle(&self, request: BrokerRequest) -> BrokerFuture {
         if request.method != "worker.ready" {
             if self.admission.broker_open(&request.method) {

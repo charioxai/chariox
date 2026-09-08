@@ -101,7 +101,7 @@ impl Fixture {
             runtime,
             _scratch: scratch,
         };
-        result.wait_event("fixture.ready_ack");
+        result.wait_event("worker.fixture.ready_ack");
         result
     }
     pub(super) fn service(&self) -> AppFilesBroker {

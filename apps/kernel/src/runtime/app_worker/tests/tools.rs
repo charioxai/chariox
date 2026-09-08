@@ -39,7 +39,7 @@ fn real_sdk_tool_roundtrip_is_validated_and_current_signer_revoke_prevents_enque
         broker(|_| Box::pin(async { Ok(Value::Null) })),
     );
     let (owner, handle) = activate(starting.await_registered_blocking(WAIT).unwrap(), &store);
-    event(&runtime, &mut events, "fixture.ready_ack");
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
     let lease = handle.lease("alice").unwrap();
     let invalid = store.enqueue_app_tool(
         lease.reserve_call(WAIT).unwrap(),
@@ -116,7 +116,7 @@ fn cancellation_during_real_sqlite_writer_wait_never_reaches_sdk() {
         broker(|_| Box::pin(async { Ok(Value::Null) })),
     );
     let (owner, handle) = activate(starting.await_registered_blocking(WAIT).unwrap(), &store);
-    event(&runtime, &mut events, "fixture.ready_ack");
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
     let slot = handle.lease("alice").unwrap().reserve_call(WAIT).unwrap();
     let cancelled = Arc::new(AtomicBool::new(false));
     let observe = cancelled.clone();

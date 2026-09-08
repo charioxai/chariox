@@ -126,11 +126,13 @@ where
     for active in actor.active.values() {
         active.cancel.send_replace(true);
     }
+    actor.broker.begin_draining();
     let _ = read_task.await;
     let _ = write_task.await;
     // Deliberately do not abort these futures: a broker may already be committing
     // a transaction. The kernel owner retains admission until actual completion.
     while actor.handlers.join_next().await.is_some() {}
+    actor.broker.drain().await;
     result
 }
 

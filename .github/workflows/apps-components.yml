@@ -63,6 +63,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Test package, persistence and Rust/Node wire contract
         run: cargo test --locked -p chariox-app-package -p chariox-app-runtime -- --test-threads=1
+      - name: Test actual native SDK fixture through the worker peer
+        run: cargo test --locked -p chariox-app-runtime --features test-fixtures --test worker_sdk_fixture -- --test-threads=1
       - name: Test Node SDK
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
       - name: Test runtime build planning and resource guards

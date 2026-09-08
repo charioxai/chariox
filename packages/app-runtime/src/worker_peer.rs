@@ -109,11 +109,20 @@ pub struct BrokerRequest {
 
 pub type BrokerFuture =
     Pin<Box<dyn Future<Output = std::result::Result<serde_json::Value, RemoteError>> + Send>>;
+pub type BrokerDrainFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub trait Broker: Send + Sync + 'static {
     /// One validated request, including worker.ready. No method is acknowledged
     /// automatically. The implementation retains kernel-owned identity/policy;
     /// request params carry no authenticated owner, agent, grant or generation.
     fn handle(&self, request: BrokerRequest) -> BrokerFuture;
+    /// Host-only lifecycle notification. Must be nonblocking and idempotent;
+    /// it cancels background work without releasing its resource reservations.
+    fn begin_draining(&self) {}
+    /// Joins background tasks after admitted request handlers have finished.
+    /// The process owner retains its native/domain leases through this future.
+    fn drain(&self) -> BrokerDrainFuture {
+        Box::pin(async {})
+    }
 }
 
 #[derive(Debug)]

@@ -16,14 +16,7 @@ impl AppWorkerDrain {
         let Some(admission) = self.0.upgrade() else {
             return;
         };
-        let mut phase = admission
-            .phase
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *phase == Phase::Active {
-            *phase = Phase::Draining;
-            admission.changed.send_replace(Phase::Draining);
-        }
+        let _ = admission.begin_draining();
     }
 }
 
@@ -51,23 +44,12 @@ impl AppWorkerOwner {
         }
     }
     pub(crate) fn drain_blocking(&self) -> Result<(), AppWorkerError> {
-        {
-            let mut phase = self
-                .admission
-                .phase
-                .lock()
-                .map_err(|_| AppWorkerError::Unavailable)?;
-            if !matches!(*phase, Phase::Active | Phase::Draining) {
-                return Err(AppWorkerError::Unavailable);
-            }
-            *phase = Phase::Draining;
-            self.admission.changed.send_replace(Phase::Draining);
-        }
+        self.admission.begin_draining()?;
         // Even without a registered callback, the trusted bootstrap consumes
         // this response and exits only after its channel write has drained.
         self.lifecycle_blocking("shutdown", Duration::from_secs(3))
     }
-    fn lifecycle_blocking(
+    pub(super) fn lifecycle_blocking(
         &self,
         event: &'static str,
         timeout: Duration,

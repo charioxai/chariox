@@ -167,7 +167,7 @@ try {
     launcherSha256: await fileHash(launcher), bubblewrapSha256: await fileHash(bwrap),
     systemLibraries: await Promise.all(libraries.map(async file => ({ target: file.target, sha256: await fileHash(file.source) }))),
     budget: { memoryBytes: 2147483648, swapBytes: 0, cpuPercent: 100, tasks: 128, timeoutSeconds: 180 },
-    scope: 'Historical unsigned Linux x64 embedded execution fixture; not runtime enrollment, an installer, macOS, or complete release validation.',
+    scope: 'Reviewed unsigned Linux x64 embedded execution fixture; bundle records current or historical native provenance. Not runtime enrollment, an installer, macOS, or complete release validation.',
   };
   const path = join(scratch, 'evidence/embedded-linux.json');
   await writeFile(path, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 }); await chown(path, uid, gid);

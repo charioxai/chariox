@@ -12,7 +12,7 @@ mod support;
 #[test]
 fn actual_worker_channel_routes_state_and_files_and_preserves_bytes_written_shape() {
     let mut fixture = Fixture::new(Mode::Files);
-    fixture.wait_event("fixture.files_complete");
+    fixture.wait_event("worker.fixture.files_complete");
     assert_eq!(
         fixture.observed.private_file().unwrap(),
         Some(b"\0\xfffile".to_vec())

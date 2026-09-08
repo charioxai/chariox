@@ -24,6 +24,7 @@ use tokio::{
 };
 
 const WAIT: Duration = Duration::from_secs(3);
+mod drain;
 mod identity;
 mod tools;
 struct Scratch(PathBuf);
@@ -148,7 +149,7 @@ fn native_sdk_ready_waits_for_actual_activation_and_handle_cannot_outlive_owner(
     );
     assert!(!observed.ready_was_acknowledged());
     let (owner, handle) = activate(registered, &store);
-    event(&runtime, &mut events, "fixture.ready_ack");
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
     assert!(observed.ready_was_acknowledged());
     assert_eq!(
         control
@@ -272,7 +273,7 @@ fn actual_process_and_prepared_leases_are_retained_until_broker_drain_finishes()
         release: release.clone(),
         thread: None,
     };
-    event(&runtime, &mut events, "fixture.ready_ack");
+    event(&runtime, &mut events, "worker.fixture.ready_ack");
     runtime
         .block_on(async { tokio::time::timeout(WAIT, received).await })
         .unwrap()

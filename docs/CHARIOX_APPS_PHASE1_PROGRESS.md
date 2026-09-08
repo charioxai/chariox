@@ -1070,3 +1070,17 @@ registration tests fail with `Unavailable`. Investigation is active; this is not
 a kernel contract pass. The obsolete automatic native build `34184116743` was
 cancelled after the new explicitly admitted builds began, avoiding duplicate
 compilation of a revision with the known loader validation defect.
+
+The registration failure was reproduced through an actual fixed libc worker and
+the production WorkerPeer: the fixture emitted a control event outside the
+required `worker.*` namespace, closing the peer before readiness. Test-only
+events now use `worker.fixture.*`; the focused regression changes from Protocol
+failure to passing (0.26-second compile, 0.86-second run). Production control
+event validation is unchanged. The regression runs before kernel tests in CI.
+
+The peer also exposes host-internal nonblocking cancellation and asynchronous
+broker-drain hooks. The actual process owner joins background broker tasks before
+releasing domain/preparation leases; stale callable handles hold only weak broker
+references. Three new kernel regressions cover once-only cancellation outside
+the phase lock, retained background ownership and failed-startup cleanup. These
+kernel tests still require hosted execution.
