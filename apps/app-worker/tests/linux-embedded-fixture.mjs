@@ -33,7 +33,7 @@ const active = new Map();
 const results = [];
 
 function start(kind, entry = 'runtime/main.mjs', startupTimeoutMs = 10000) {
-  const config = { version: 1, entry, declarations: { tools: ['probe'], events: [] }, startupTimeoutMs };
+  const config = { version: 1, entry, declarations: { tools: ['probe'], incomingEvents: [] }, startupTimeoutMs };
   if (entry !== 'runtime/main.mjs') config.declarations.tools = [];
   const bootstrap = `require('node:module').createRequire('/runtime/bootstrap.cjs')('/runtime/bootstrap.cjs').start(${JSON.stringify(config)});`;
   const args = ['--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup',

@@ -1,5 +1,7 @@
 use super::super::*;
-use crate::durable_state::{app_publishers::AppPublisherMutation, app_state::fixture_catalog};
+use crate::durable_state::{
+    app_publishers::AppPublisherMutation, app_state::fixture_event_catalog,
+};
 use chariox_app_runtime::{
     publisher_trust::TrustDecision,
     wire::{Channel, Message, Outcome, Sender, WIRE_VERSION},
@@ -8,10 +10,10 @@ use chariox_app_runtime::{
 use std::{path::PathBuf, time::Duration};
 use tokio::{io::DuplexStream, time::timeout};
 
-const WAIT: Duration = Duration::from_secs(2);
-struct Fixture(PathBuf);
+pub(super) const WAIT: Duration = Duration::from_secs(2);
+pub(super) struct Fixture(PathBuf);
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "chariox-app-state-broker-{:016x}",
             rand::random::<u64>()
@@ -19,7 +21,7 @@ impl Fixture {
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn open(&self) -> DurableKernelStateStore {
+    pub(super) fn open(&self) -> DurableKernelStateStore {
         DurableKernelStateStore::open_owned(self.0.join("kernel.sqlite")).unwrap()
     }
 }
@@ -28,16 +30,16 @@ impl Drop for Fixture {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
-struct Delegate(AppStateBroker);
+struct Delegate(AppStorageBroker);
 impl Broker for Delegate {
     fn handle(&self, request: BrokerRequest) -> BrokerFuture {
         let service = self.0.clone();
         Box::pin(async move { service.dispatch(request).await })
     }
 }
-fn start(
+pub(super) fn start(
     store: &DurableKernelStateStore,
-    catalog: Arc<AppCatalog>,
+    catalog: Arc<EventCatalog>,
     owner: &str,
     admission: Arc<Semaphore>,
 ) -> (
@@ -49,7 +51,7 @@ fn start(
 }
 fn start_observed(
     store: &DurableKernelStateStore,
-    catalog: Arc<AppCatalog>,
+    catalog: Arc<EventCatalog>,
     owner: &str,
     admission: Arc<Semaphore>,
     observe: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -59,7 +61,7 @@ fn start_observed(
     chariox_app_runtime::worker_peer::PeerTask,
 ) {
     let (host, worker) = tokio::io::duplex(64 * 1024);
-    let mut service = AppStateBroker::new(store.clone(), owner.into(), catalog, admission);
+    let mut service = AppStorageBroker::new(store.clone(), owner.into(), catalog, admission);
     service.budget_observer = observe;
     let broker = Arc::new(Delegate(service));
     let (peer, _events, task) = WorkerPeer::start(
@@ -74,7 +76,12 @@ fn start_observed(
         task,
     )
 }
-async fn send(worker: &mut Channel<DuplexStream>, id: &str, method: &str, params: Value) {
+pub(super) async fn send(
+    worker: &mut Channel<DuplexStream>,
+    id: &str,
+    method: &str,
+    params: Value,
+) {
     let message = Message::Request {
         version: WIRE_VERSION,
         generation: "1".into(),
@@ -89,7 +96,7 @@ async fn send(worker: &mut Channel<DuplexStream>, id: &str, method: &str, params
         .unwrap()
         .unwrap();
 }
-async fn receive(worker: &mut Channel<DuplexStream>) -> Result<Value, String> {
+pub(super) async fn receive(worker: &mut Channel<DuplexStream>) -> Result<Value, String> {
     match timeout(WAIT, worker.receive(WAIT)).await.unwrap().unwrap() {
         Message::Response {
             outcome: Outcome::Success(success),
@@ -102,7 +109,7 @@ async fn receive(worker: &mut Channel<DuplexStream>) -> Result<Value, String> {
         _ => panic!("state response required"),
     }
 }
-fn change(value: Value) -> Value {
+pub(super) fn change(value: Value) -> Value {
     json!({"schemaVersion":0,"checks":[],"writes":[{"key":"status","value":value}]})
 }
 
@@ -111,7 +118,7 @@ async fn actual_sdk_peer_uses_verified_state_and_returns_exact_shapes_without_dr
 {
     let fixture = Fixture::new();
     let store = fixture.open();
-    let catalog = fixture_catalog(&store);
+    let catalog = fixture_event_catalog(&store);
     let (peer, mut worker, task) = start(&store, catalog, "alice", Arc::new(Semaphore::new(8)));
     send(
         &mut worker,
@@ -144,11 +151,8 @@ async fn actual_sdk_peer_uses_verified_state_and_returns_exact_shapes_without_dr
     let mut occurrence = change(json!("must not commit"));
     occurrence["occurrences"] =
         json!([{"automationId":"a","occurrenceId":"event","eventVersion":1,"payload":{}}]);
-    send(&mut worker, "unsupported", "state.transaction", occurrence).await;
-    assert_eq!(
-        receive(&mut worker).await.unwrap_err(),
-        "UNSUPPORTED_OPERATION"
-    );
+    send(&mut worker, "incomplete", "state.transaction", occurrence).await;
+    assert_eq!(receive(&mut worker).await.unwrap_err(), "INVALID_ARGUMENT");
     send(
         &mut worker,
         "spoof",
@@ -176,7 +180,7 @@ async fn actual_sdk_peer_uses_verified_state_and_returns_exact_shapes_without_dr
 async fn current_publisher_and_captured_owner_are_checked_through_the_actual_peer_and_writer() {
     let fixture = Fixture::new();
     let store = fixture.open();
-    let catalog = fixture_catalog(&store);
+    let catalog = fixture_event_catalog(&store);
     let admission = Arc::new(Semaphore::new(8));
     let (wrong_peer, mut wrong_worker, wrong_task) =
         start(&store, catalog.clone(), "bob", admission.clone());
@@ -242,7 +246,8 @@ async fn shared_admission_survives_cancellation_until_the_blocked_writer_recheck
     };
     let fixture = Fixture::new();
     let store = fixture.open();
-    let catalog = fixture_catalog(&store);
+    let catalog = fixture_event_catalog(&store);
+    super::events::automations(&store, &catalog);
     let admission = Arc::new(Semaphore::new(8));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let started = Mutex::new(Some(started_tx));
@@ -262,13 +267,9 @@ async fn shared_admission_survives_cancellation_until_the_blocked_writer_recheck
     drop(held);
     let blocker = rusqlite::Connection::open(store.path()).unwrap();
     blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
-    send(
-        &mut worker,
-        "blocked",
-        "state.transaction",
-        change(json!("must not commit")),
-    )
-    .await;
+    let mut mutation = change(json!("must not commit"));
+    mutation["occurrences"] = json!([super::events::occurrence("auto-a", "cancelled-event")]);
+    send(&mut worker, "blocked", "state.transaction", mutation).await;
     // The test-only observer preserves the actual deadline/cancellation value.
     // It locates the real writer immediately before its SQLite BEGIN wait; it
     // neither changes admission nor replaces the transaction with a fake.
@@ -315,6 +316,7 @@ async fn shared_admission_survives_cancellation_until_the_blocked_writer_recheck
     )
     .await;
     assert_eq!(receive(&mut worker).await.unwrap(), Value::Null);
+    assert_eq!(super::events::count(&store), 0);
     peer.close();
     timeout(WAIT, task.join()).await.unwrap().unwrap();
 }

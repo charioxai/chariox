@@ -6,11 +6,17 @@ App supervisor supplies the installation generation and binds the channel to one
 worker. A worker-supplied generation is checked for equality, not trusted as an
 authorization claim.
 
-SDK 0.2 event payloads require kernel protocol 290. `eventVersion` must match
+SDK 0.3 event payloads require kernel protocol 291. `eventVersion` must match
 the publisher-signed event `schemaVersion`. An outgoing occurrence contains
-`automationId`, `occurrenceId`, `eventVersion`, `occurredAtMs`, `payload`, and
+`automationId`, `occurrenceId`, `eventVersion`, `occurredAtMs`, `payload`, `invocation`, and
 `scheduleRevision` for a scheduled automation. Preserve the original timestamp
 and revision in the App's durable outbox; a retry must not mint a newer envelope.
+The required invocation is `{prompt, artifacts}`. Artifact metadata uses
+`{name, mediaType, reference, sizeBytes?, digest?}`; references grant no host file,
+network, credential or kernel asset access. Unknown fields and explicit null
+optional fields are rejected. Payload/invocation limits are 64/256 KiB encoded;
+prompts are at most 64 KiB UTF-8, with 32 artifacts of bounded metadata. A batch
+has at most 16 occurrences and 512 KiB combined payload/invocation bytes.
 The kernel derives installation, owner and current automation target itself.
 The shared payload fixture is `test/event-contract.json`. Framing remains v1.
 
@@ -93,7 +99,10 @@ deduplication.
 ## Worker-to-supervisor requests
 
 `worker.ready` reports `{tools:string[],events:string[],lifecycle:string[]}` after
-registration. The supervisor compares it to the verified package. A readiness
+registration. The trusted bootstrap's `declarations.incomingEvents` contains
+only signed `incoming`/`both` event names; `outgoing` declarations require no
+handler. The supervisor compares the readiness event list to that incoming set,
+and admits only `outgoing`/`both` events to automations. A readiness
 request is not evidence that the OS sandbox is active; only the trusted bootstrap
 can establish that fact before loading App code.
 

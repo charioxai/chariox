@@ -23,6 +23,9 @@ impl EventCatalog {
         }
         let mut events = BTreeMap::new();
         for declaration in &package.declarations().events {
+            if declaration.direction == chariox_app_package::EventDirection::Incoming {
+                continue;
+            }
             let schema = serde_json_canonicalizer::to_vec(&declaration.payload_schema)
                 .map_err(|_| OutboxError::Schema)?;
             let validator = chariox_app_package::compile_schema(
@@ -41,6 +44,9 @@ impl EventCatalog {
             );
         }
         Ok(Self { catalog, events })
+    }
+    pub fn app_catalog(&self) -> &Arc<AppCatalog> {
+        &self.catalog
     }
     pub fn installation_id(&self) -> &str {
         self.catalog.installation_id()
@@ -143,9 +149,7 @@ impl VerifiedAutomation {
         Ok(())
     }
     pub(super) fn encode_payload(&self, value: &Value) -> Result<String> {
-        let mut nodes = 16_384;
-        let mut bytes = MAX_PAYLOAD_BYTES;
-        bound(value, 0, &mut nodes, &mut bytes)?;
+        let encoded = encode_bounded_payload(value)?;
         let event = self
             .catalog
             .events
@@ -154,11 +158,7 @@ impl VerifiedAutomation {
         if !event.validator.is_valid(value) {
             return Err(OutboxError::Schema);
         }
-        let encoded =
-            serde_json_canonicalizer::to_string(value).map_err(|_| OutboxError::Invalid)?;
-        if encoded.len() > MAX_PAYLOAD_BYTES {
-            return Err(OutboxError::Limit);
-        }
+
         Ok(encoded)
     }
 }
@@ -230,4 +230,15 @@ fn bound(value: &Value, depth: usize, nodes: &mut usize, bytes: &mut usize) -> R
         _ => {}
     }
     Ok(())
+}
+
+pub(super) fn encode_bounded_payload(value: &Value) -> Result<String> {
+    let mut nodes = 16_384;
+    let mut bytes = MAX_PAYLOAD_BYTES;
+    bound(value, 0, &mut nodes, &mut bytes)?;
+    let encoded = serde_json_canonicalizer::to_string(value).map_err(|_| OutboxError::Invalid)?;
+    if encoded.len() > MAX_PAYLOAD_BYTES {
+        return Err(OutboxError::Limit);
+    }
+    Ok(encoded)
 }

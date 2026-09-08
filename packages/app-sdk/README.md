@@ -40,7 +40,9 @@ registered declarations and seals registration; it does not prove containment.
 The App receives neither `ready` nor `close`. Its one entry export is the
 registration function: `export default register` for ESM, or
 `module.exports = register` for CommonJS. Registration may return a promise;
-all declared tool/event handlers must exist when it settles. The verified
+all declared tool and incoming event handlers must exist when it settles. Signed
+event declarations specify `direction: "outgoing" | "incoming" | "both"`.
+Outgoing-only events require no handler. The verified
 manifest's `runtime.entry` selects this module. No App server port or separate
 MCP transport is required. See the [trusted bootstrap contract](../../apps/app-worker/src/bootstrap.md).
 Lifecycle handlers are optional, serialized, and deadline-bound. Tool and event
@@ -88,7 +90,7 @@ const chariox = createAppSdk({
   transport: inheritedTransport(3),
   generation,
   paths,
-  declarations: { tools: verifiedToolNames, events: verifiedEventNames },
+  declarations: { tools: verifiedToolNames, incomingEvents: verifiedIncomingEventNames },
 });
 await register(chariox);
 await chariox.ready();
@@ -108,10 +110,21 @@ infinite JavaScript loop cannot be contained by JavaScript timers.
 
 ## Validation
 
-SDK 0.2 adds required original occurrence timestamps and publisher-signed event
-schema versions (kernel protocol 290). Persist `occurredAtMs` with the occurrence
-ID; scheduled occurrences also persist `scheduleRevision`. Replays preserve all
-three. The kernel validates the signed schema, current automation and target.
+SDK 0.3 requires kernel protocol 291, signed event direction/schema version and
+the complete `invocation: {prompt, artifacts}` alongside each occurrence's
+`payload`. Persist that invocation, `occurredAtMs`, occurrence ID and scheduled
+`scheduleRevision` together; exact replays preserve all of them. Artifact entries
+use `{name, mediaType, reference, sizeBytes?, digest?}` and remain untrusted
+metadata. They confer no file, network, credential or kernel attachment access.
+The kernel validates the signed schema and current automation itself.
+
+Payloads have a 64 KiB encoded limit; prompts have a 64 KiB UTF-8 limit;
+invocations have a 256 KiB encoded limit and at most 32 artifacts. A state
+transaction has at most 16 occurrences and 512 KiB combined payload/invocation
+bytes, including occurrences for different automations. State and all receipts
+commit together. `events.retry` reconciles a current, due, kernel-classified
+retryable receipt; it never resets attempts, advances backoff or restarts terminal
+work. Actual workflow handoff remains a separate kernel operation.
 The current outbox component accepts new occurrences up to 30 days old with at
 most five minutes of future clock skew. Already retained exact duplicates return
 their existing receipt; changed content conflicts. Receipt tombstones currently

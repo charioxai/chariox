@@ -25,7 +25,7 @@ require('node:module').createRequire('/runtime/bootstrap.cjs')(
 ).start({
   version: 1,
   entry: 'runtime/main.mjs',
-  declarations: { tools: ['list_issues'], events: [] },
+  declarations: { tools: ['list_issues'], incomingEvents: [] },
   startupTimeoutMs: 10000,
 });
 ```
@@ -36,6 +36,9 @@ script and enforces the existing 256 KiB native bootstrap envelope. It never
 inserts executable App source or accepts this configuration from a terminal.
 The entry and declaration allowlists come from the verified package; the kernel
 remains responsible for input/output schemas and operation authorization.
+`incomingEvents` contains only signed events with direction `incoming` or `both`.
+An outgoing-only declaration never requires a JavaScript handler or appears in
+the readiness event list. Old ambiguous `declarations.events` input is rejected.
 
 The bootstrap captures native-filtered `CHARIOX_APP_GENERATION`,
 `CHARIOX_APP_INSTALLATION`, `CHARIOX_APP_RELEASE_DIGEST`, `CHARIOX_APP_PACKAGE`,

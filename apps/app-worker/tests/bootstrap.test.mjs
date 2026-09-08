@@ -31,7 +31,7 @@ async function fixture(source, { entry = 'runtime/main.mjs', config = {}, enviro
   for (const file of ['bootstrap.cjs', 'bootstrap-config.cjs'])
     await cp(path.join(repository, 'apps/app-worker/src', file), path.join(roots.runtime, file));
   await cp(path.join(repository, 'packages/app-sdk'), path.join(roots.runtime, 'sdk'), { recursive: true });
-  const launch = { version: 1, entry, declarations: { tools: ['echo'], events: [] }, startupTimeoutMs: 2000, ...config };
+  const launch = { version: 1, entry, declarations: { tools: ['echo'], incomingEvents: [] }, startupTimeoutMs: 2000, ...config };
   // This is the exact documented LoadEnvironment bridge: its initial require
   // is used only for node:module; file loading then uses createRequire.
   const bootstrapPath = path.join(roots.runtime, 'bootstrap.cjs');
@@ -143,7 +143,8 @@ test('invalid trusted configuration and entry symlink fail before App code execu
     { environment: { CHARIOX_APP_GENERATION: '9223372036854775808' } },
     { config: { version: 2 } },
     { config: { entry: 'runtime/../runtime/main.mjs' } },
-    { config: { declarations: { tools: ['echo', 'echo'], events: [] } } },
+    { config: { declarations: { tools: ['echo', 'echo'], incomingEvents: [] } } },
+    { config: { declarations: { tools: ['echo'], events: [] } } },
   ]) {
     const prepared = await fixture(source, options);
     const result = await start(prepared).completed;
@@ -156,6 +157,15 @@ test('invalid trusted configuration and entry symlink fail before App code execu
   await cp(entry, external); await rm(entry); await symlink(external, entry);
   assert.equal((await start(prepared).completed).code, 130);
   await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+});
+
+test('a declared incoming event requires a handler even when every tool is registered', async () => {
+  const prepared = await fixture(`export default sdk => sdk.tools.register('echo', value => value);`, {
+    config: { declarations: { tools: ['echo'], incomingEvents: ['notification'] } },
+  });
+  const result = await start(prepared).completed;
+  assert.equal(result.code, 131);
+  assert.equal(result.messages.length, 0);
 });
 
 test('asynchronous registration timeout closes IPC and reports only its stable code', async () => {

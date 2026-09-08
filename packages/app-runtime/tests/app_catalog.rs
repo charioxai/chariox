@@ -27,7 +27,7 @@ impl Package {
             manifest: serde_json::from_value(json!({
                 "schema":"chariox.app.v1", "appId":"com.example.catalog", "version":"1.0.0",
                 "publisher":{"id":"com.example", "keyId":"developer", "name":"Developer"},
-                "sdkVersion":"0.2.0", "appContractVersion":1, "minKernelProtocol":500,
+                "sdkVersion":"0.3.0", "appContractVersion":1, "minKernelProtocol":500,
                 "resourcePolicy":"chariox.app.resources.v1", "runtime":{"engine":"node", "entry":"runtime/main.js"},
                 "ui":{"entry":"ui/index.html"}, "tools":"schemas/tools.json", "capabilities":{}
             })).unwrap(),

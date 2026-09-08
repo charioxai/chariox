@@ -690,3 +690,77 @@ admission after cancellation. Its full durable-writer filter passed 42 tests.
 The exact job log is `components-linux-e0a7d90d3.log`; this is ancestor evidence,
 not execution of the new protocol290/binding/outbox batch. All full Phase1
 release matrix rows remain governed by their complete release requirements.
+
+
+### Automation ownership, private macOS storage and hosted build retry
+
+Commit `c397ec345` adds bounded automation configuration on the existing kernel
+writer, exact workflow publication/endpoint/queue ownership checks, and revision
+CAS. The production kernel library check passed with peak sampled RSS
+3,297,104KiB. Seventeen runtime outbox tests passed at that point; the five new
+kernel tests were source-only locally. Hosted Linux then found five missing
+borrows in those test fixtures, which are corrected in the SDK 0.3 batch. The
+previous router fixture borrow is fixed in `731bdea2f`. Reviewer output at
+`c397ec345` found no new architecture issue and retained the App discovery cursor
+finding; its fix and a second-page/owner-isolation regression are included below.
+
+Commit `4d9650fab` adds the private production macOS storage module and a dedicated
+hosted APFS drill. Seven local offline tests pass, including identity, quota
+reservation, durable journal and failed-cleanup Drop behavior. They create no
+images and run no Apple disk commands. The guarded run peaked at 169,712KiB,
+with 47–49% host free memory. Real image quota, mount flags, persistence and
+crash recovery remain pending the hosted workflow. Worker integration and
+in-flight DiskImages service ownership remain separate acceptance requirements.
+
+The original hosted Node run `34167089795` ended at 2026-09-08 01:20 UTC with
+GNU timeout exit 124 while compiling V8. The log shows no compiler, OOM or
+resource-threshold error. Its owned scratch cleanup completed and no runtime
+artifact was uploaded. Commit `a028881fb` increases only the dedicated hosted
+profile to two Make jobs and a 300-minute command/330-minute job deadline,
+retaining hard 6GiB memory, zero swap, two CPUs and 256 PIDs. The 21 focused build
+and resource tests pass. This is a hosted resource experiment, not evidence of
+successful compilation or a change to the shared Mac's conservative guards.
+The exact retry is run `34176513092` at
+`a028881fb2a2cf487b910a439b345f2b7713ac8d`, attempt 1, Linux x64. Commit `d819d9160`
+pins the embedded fixture to that run; four artifact admission tests pass.
+Unsigned artifact execution never establishes signed runtime enrollment.
+
+### SDK 0.3 state/event transaction contract and discovery pagination
+
+The development contract now uses shared kernel protocol **291**, SDK **0.3.0**
+and worker framing version **1**. Signed event declarations distinguish incoming,
+outgoing and both directions. Outgoing-only Apps can become ready without an
+incoming handler. Every emitted occurrence contains a required canonical
+`invocation: {prompt, artifacts}` separately from its signed-schema payload.
+The App supplies its domain prompt; the kernel does not infer one from payload.
+Artifact references remain untrusted metadata and confer no filesystem, network,
+credential or provider attachment access. Actual content export still requires
+an installation-scoped grant resolver.
+
+Invocation bodies participate in deduplication and the combined 512KiB batch and
+16MiB retention limits. Pre-release pending rows without an invocation become
+terminal while retaining their receipt identity and digest, so they cannot starve
+new delivery work. The shared Rust/SDK event fixture hash is
+`f5fa63af81ab14a8abee07ebac91570f37f26ba361ec19886809df8556a144b4`.
+
+The retained EventCatalog storage delegate now handles state, emit, receipt
+status and retry. State and all occurrences, including multiple automations,
+commit in the existing writer transaction or roll back together. Retry only
+reconciles a currently eligible kernel-classified receipt; it never advances
+backoff, resets attempts or repeats an external effect. Actual workflow queue
+handoff/pumping remains the next integration step.
+
+App discovery accepts the returned cursor on the same agent tool, with a bounded
+100-installation page and authenticated owner scope. Protocol snapshots include
+that schema; a real agent-tool regression lists 102 owned installations across
+two pages and excludes another owner's interleaved installation.
+
+Validation for this batch: 23 outbox tests, 16 package contract tests, 34 SDK tests,
+10 bootstrap tests and SDK TypeScript checks pass. The shared client typecheck
+and five selected protocol/client tests pass. Production kernel library typecheck
+passes with peak sampled RSS 3,293,040KiB. New kernel broker, cursor and protocol
+tests are selected in hosted CI and were not executed locally. Evidence includes
+`app-outbox-invocation-tests-4.log`, `app-package-direction-tests.log`,
+`sdk03-bootstrap-tests.log`, `sdk03-typescript.log`, `protocol291-client-types.log`,
+`protocol291-client-tests.log`, and `kernel-app-events-sdk03-library-typecheck.log`.
+No full Phase 1 release gate is marked complete by these component results.

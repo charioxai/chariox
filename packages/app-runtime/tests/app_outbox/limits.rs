@@ -5,16 +5,23 @@ use chariox_app_runtime::app_outbox::{
 use serde_json::Value;
 
 fn sized_occurrence(id: &str, bytes: usize) -> Occurrence {
-    let overhead = serde_json::to_vec(&json!({"text":""})).unwrap().len();
+    let overhead = serde_json::to_vec(&json!({"text":""})).unwrap().len()
+        + serde_json::to_vec(&occurrence("size", "").invocation)
+            .unwrap()
+            .len();
     let value = occurrence(id, &"x".repeat(bytes.checked_sub(overhead).unwrap()));
-    assert_eq!(serde_json::to_vec(&value.payload).unwrap().len(), bytes);
+    assert_eq!(
+        serde_json::to_vec(&value.payload).unwrap().len()
+            + serde_json::to_vec(&value.invocation).unwrap().len(),
+        bytes
+    );
     value
 }
 
 fn retained_bytes(db: &Connection) -> usize {
     let bytes: i64 = db
         .query_row(
-            "SELECT coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM app_outbox",
+            "SELECT coalesce(sum(coalesce(length(CAST(payload_json AS BLOB)),0)+coalesce(length(CAST(invocation_json AS BLOB)),0)),0) FROM app_outbox",
             [],
             |row| row.get(0),
         )
@@ -70,7 +77,10 @@ fn retained_payload_limit_counts_utf8_bytes_and_terminal_cleanup_reopens_capacit
     let mut db = directory.open();
     let (_, _, catalog) = setup(&mut db);
     let authority = automation(&mut db, &catalog);
-    let overhead = serde_json::to_vec(&json!({"text":""})).unwrap().len();
+    let overhead = serde_json::to_vec(&json!({"text":""})).unwrap().len()
+        + serde_json::to_vec(&occurrence("size", "").invocation)
+            .unwrap()
+            .len();
     let text_bytes = MAX_PAYLOAD_BYTES - overhead;
     let text = format!(
         "{}{}",
@@ -79,7 +89,8 @@ fn retained_payload_limit_counts_utf8_bytes_and_terminal_cleanup_reopens_capacit
     );
     let full = occurrence("seed", &text);
     assert_eq!(
-        serde_json::to_vec(&full.payload).unwrap().len(),
+        serde_json::to_vec(&full.payload).unwrap().len()
+            + serde_json::to_vec(&full.invocation).unwrap().len(),
         MAX_PAYLOAD_BYTES
     );
     let mut tx = db.transaction().unwrap();
@@ -94,8 +105,8 @@ fn retained_payload_limit_counts_utf8_bytes_and_terminal_cleanup_reopens_capacit
     assert_eq!(slots * MAX_PAYLOAD_BYTES, MAX_RETAINED_PAYLOAD_BYTES);
     db.execute(
         "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?1)
-         INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,occurred_at_ms,schedule_revision)
-         SELECT owner_id,installation_id,'bytes-'||i,automation_id,event_version,'bytes-'||i,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,'accepted',1,0,next_attempt_at_ms,occurred_at_ms,schedule_revision FROM app_outbox,n WHERE receipt_id=?2",
+         INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,occurred_at_ms,schedule_revision,invocation_json)
+         SELECT owner_id,installation_id,'bytes-'||i,automation_id,event_version,'bytes-'||i,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,'accepted',1,0,next_attempt_at_ms,occurred_at_ms,schedule_revision,invocation_json FROM app_outbox,n WHERE receipt_id=?2",
         params![(slots - 2) as i64, seed.receipt_id],
     )
     .unwrap();
@@ -260,7 +271,7 @@ fn payload_tree_limits_precede_schema_validation_and_encoded_size_includes_escap
     for value in [
         oversized_key,
         occurrence("string", &"x".repeat(MAX_PAYLOAD_BYTES)),
-        sized_occurrence("encoded-over", MAX_PAYLOAD_BYTES + 1),
+        sized_occurrence("encoded-over", MAX_PAYLOAD_BYTES + 1 + serde_json::to_vec(&occurrence("size", "").invocation).unwrap().len()),
     ] {
         assert!(matches!(
             AppOutbox::apply_in(&mut tx, &authority, &[value], 100),

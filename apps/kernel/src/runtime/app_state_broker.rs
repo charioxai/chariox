@@ -1,9 +1,11 @@
-//! Strict SDK state operations through the existing kernel durable writer.
+//! Strict SDK state and event operations through the existing kernel durable writer.
 //! This internal delegate neither acknowledges worker readiness nor publishes a
 //! protocol endpoint. The admitted worker owns its catalog and identity.
 
 mod decode;
 mod errors;
+mod events;
+mod receipt;
 #[cfg(test)]
 mod tests;
 
@@ -12,28 +14,30 @@ use crate::durable_state::{
     app_state::{AppStateOperation, AppStateOutcome},
     DurableKernelStateStore,
 };
-use chariox_app_runtime::{app_catalog::AppCatalog, wire::RemoteError, worker_peer::BrokerRequest};
+use chariox_app_runtime::{
+    app_outbox::EventCatalog, wire::RemoteError, worker_peer::BrokerRequest,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
-pub(crate) struct AppStateBroker {
+pub(crate) struct AppStorageBroker {
     store: DurableKernelStateStore,
     owner: String,
-    catalog: Arc<AppCatalog>,
+    catalog: Arc<EventCatalog>,
     admission: Arc<Semaphore>,
     #[cfg(test)]
     budget_observer: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-impl AppStateBroker {
+impl AppStorageBroker {
     /// `admission` is AppControl's existing shared eight-operation semaphore.
     /// No new queue or per-worker permit pool is created by this delegate.
     pub(crate) fn new(
         store: DurableKernelStateStore,
         trusted_owner: String,
-        catalog: Arc<AppCatalog>,
+        catalog: Arc<EventCatalog>,
         admission: Arc<Semaphore>,
     ) -> Self {
         Self {
@@ -46,7 +50,7 @@ impl AppStateBroker {
         }
     }
 
-    /// The common worker broker calls this only for the SDK state namespace.
+    /// The common worker broker delegates the SDK state and events namespaces.
     /// Params cannot choose owner, installation, generation, path or deadline.
     pub(crate) async fn dispatch(&self, request: BrokerRequest) -> Result<Value, RemoteError> {
         let budget = AppOperationBudget::from_broker(&request);
@@ -80,7 +84,11 @@ impl AppStateBroker {
             AppStateOutcome::Value(Some(record)) => {
                 json!({"value":record.value,"version":record.version})
             }
-            AppStateOutcome::Revision(revision) => json!({"revision":revision,"receipts":[]}),
+            AppStateOutcome::Transaction { revision, receipts } => {
+                let receipts: Vec<_> = receipts.iter().map(receipt::value).collect();
+                json!({"revision":revision,"receipts":receipts})
+            }
+            AppStateOutcome::Receipt(receipt) => receipt::value(&receipt),
         })
     }
 }

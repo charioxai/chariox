@@ -43,6 +43,7 @@ pub struct Receipt {
     pub next_attempt_at_ms: u64,
     pub queued_prompt_id: Option<String>,
     pub payload: Option<String>,
+    pub invocation: Option<String>,
     pub content_digest: String,
     pub automation_revision: u64,
 }
@@ -67,7 +68,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             schedule_revision TEXT NOT NULL DEFAULT '',
             event_name TEXT NOT NULL, schema_digest TEXT NOT NULL, content_digest TEXT NOT NULL,
             automation_revision INTEGER NOT NULL, accepted_generation INTEGER NOT NULL,
-            payload_json TEXT, accepted_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
+            payload_json TEXT, invocation_json TEXT, accepted_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('accepted','queued','delivered','retryable','failed','expired')),
             revision INTEGER NOT NULL CHECK(revision>0), attempts INTEGER NOT NULL CHECK(attempts>=0 AND attempts<=8),
             next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT,
@@ -79,6 +80,25 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             WHEN (SELECT count(*) FROM app_automations WHERE owner_id=NEW.owner_id AND installation_id=NEW.installation_id)>=256
             BEGIN SELECT RAISE(ABORT,'app_automation_limit'); END;"
     )?;
+    // Pre-release protocol 290 rows have no canonical invocation. Preserve
+    // their receipts/digests; they cannot be delivered by the 291 handoff. Never
+    // infer a prompt from an event's domain payload during migration.
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_outbox') WHERE name='invocation_json')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        connection.execute_batch("ALTER TABLE app_outbox ADD COLUMN invocation_json TEXT;")?;
+    }
+    // Old pending occurrences cannot acquire an invented invocation. Retain
+    // their immutable receipt identity/digest, but release queue/payload capacity
+    // so a page of unsupported rows cannot starve current-contract deliveries.
+    connection.execute_batch(
+        "UPDATE app_outbox SET state='failed',payload_json=NULL,invocation_json=NULL,
+        revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END
+        WHERE state IN ('accepted','retryable') AND invocation_json IS NULL;",
+    )?;
     Ok(())
 }
 
@@ -87,15 +107,17 @@ pub(super) fn accept(
     automation: &VerifiedAutomation,
     occurrence: &Occurrence,
     payload: &str,
+    invocation: &str,
     now: u64,
 ) -> Result<Receipt> {
     // Stable schema/envelope version plus canonical payload. Worker generation
     // and mutable automation revision are deliberately outside occurrence identity.
     let canonical = serde_json_canonicalizer::to_vec(&serde_json::json!({
-        "contract":"chariox.app-occurrence.v1", "event":automation.binding.event_name,
+        "contract":"chariox.app-occurrence.v2", "event":automation.binding.event_name,
         "eventVersion":occurrence.event_version,"schema":automation.binding.schema_digest,
         "occurredAtMs":occurrence.occurred_at_ms,"scheduleRevision":occurrence.schedule_revision,
         "payload":serde_json::from_str::<Value>(payload).map_err(|_|OutboxError::Invalid)?,
+        "invocation":serde_json::from_str::<Value>(invocation).map_err(|_|OutboxError::Invalid)?,
     }))
     .map_err(|_| OutboxError::Invalid)?;
     let content_digest = digest(&canonical);
@@ -121,7 +143,7 @@ pub(super) fn accept(
         return Err(OutboxError::TooOld);
     }
     let (count,pending,bytes):(i64,i64,i64)=tx.query_row(
-        "SELECT count(*),coalesce(sum(state IN ('accepted','retryable')),0),coalesce(sum(length(CAST(payload_json AS BLOB))),0)
+        "SELECT count(*),coalesce(sum(state IN ('accepted','retryable')),0),coalesce(sum(coalesce(length(CAST(payload_json AS BLOB)),0)+coalesce(length(CAST(invocation_json AS BLOB)),0)),0)
          FROM app_outbox WHERE owner_id=?1 AND installation_id=?2",
         params![automation.owner,automation.installation_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     )?;
@@ -129,7 +151,7 @@ pub(super) fn accept(
         || pending >= MAX_PENDING as i64
         || bytes < 0
         || bytes
-            .checked_add(payload.len() as i64)
+            .checked_add((payload.len() + invocation.len()) as i64)
             .ok_or(OutboxError::Limit)?
             > MAX_RETAINED_PAYLOAD_BYTES as i64
     {
@@ -146,17 +168,17 @@ pub(super) fn accept(
     tx.execute(
         "INSERT INTO app_outbox (owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,event_name,
             schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,
-            state,revision,attempts,next_attempt_at_ms,occurred_at_ms,schedule_revision)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'accepted',1,0,?13,?15,?16)",
+            state,revision,attempts,next_attempt_at_ms,occurred_at_ms,schedule_revision,invocation_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'accepted',1,0,?13,?15,?16,?17)",
         params![automation.owner,automation.installation_id(),id,automation.id(),occurrence.event_version,
             occurrence.occurrence_id,automation.binding.event_name,automation.binding.schema_digest,content_digest,
             time(automation.revision())?,time(automation.catalog.generation())?,payload,time(now)?,time(expires)?,
-            time(occurrence.occurred_at_ms)?,occurrence.schedule_revision.as_deref().unwrap_or("")],
+            time(occurrence.occurred_at_ms)?,occurrence.schedule_revision.as_deref().unwrap_or(""),invocation],
     )?;
     receipt(tx, &automation.owner, automation.installation_id(), &id)
 }
 
-const COLUMNS:&str="receipt_id,automation_id,occurrence_id,event_version,state,revision,attempts,accepted_at_ms,expires_at_ms,next_attempt_at_ms,queued_prompt_id,payload_json,content_digest,automation_revision,occurred_at_ms,schedule_revision";
+const COLUMNS:&str="receipt_id,automation_id,occurrence_id,event_version,state,revision,attempts,accepted_at_ms,expires_at_ms,next_attempt_at_ms,queued_prompt_id,payload_json,content_digest,automation_revision,occurred_at_ms,schedule_revision,invocation_json";
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Receipt> {
     let positive = |index: usize| -> rusqlite::Result<u64> {
         u64::try_from(row.get::<_, i64>(index)?).map_err(|_| rusqlite::Error::InvalidQuery)
@@ -175,6 +197,7 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Receipt> {
         next_attempt_at_ms: positive(9)?,
         queued_prompt_id: row.get(10)?,
         payload: row.get(11)?,
+        invocation: row.get(16)?,
         content_digest: row.get(12)?,
         automation_revision: positive(13)?,
         occurred_at_ms: positive(14)?,
@@ -232,7 +255,7 @@ impl AppOutbox {
             return Err(OutboxError::Conflict);
         }
         let changed=tx.execute("UPDATE app_outbox SET state='queued',revision=revision+1,attempts=attempts+1,
-            queued_prompt_id=?1,payload_json=NULL WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5",
+            queued_prompt_id=?1,payload_json=NULL,invocation_json=NULL WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5",
             params![queued_prompt_id,automation.owner,automation.installation_id(),id,time(expected_revision)?])?;
         if changed != 1 {
             return Err(OutboxError::Conflict);
@@ -299,7 +322,7 @@ impl AppOutbox {
             }
             _ => return Err(OutboxError::Conflict),
         };
-        let changed=tx.execute("UPDATE app_outbox SET state=?1,revision=revision+1,payload_json=NULL WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5",
+        let changed=tx.execute("UPDATE app_outbox SET state=?1,revision=revision+1,payload_json=NULL,invocation_json=NULL WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5",
             params![target,owner,catalog.installation_id(),id,time(expected_revision)?])?;
         if changed != 1 {
             return Err(OutboxError::Conflict);
@@ -308,7 +331,7 @@ impl AppOutbox {
     }
 }
 
-fn transition_input(
+pub(super) fn transition_input(
     tx: &Transaction<'_>,
     automation: &VerifiedAutomation,
     id: &str,
@@ -323,6 +346,8 @@ fn transition_input(
         || previous.automation_id != automation.id()
         || previous.automation_revision != automation.revision()
         || previous.attempts >= MAX_ATTEMPTS
+        || previous.payload.is_none()
+        || previous.invocation.is_none()
         || !matches!(
             previous.state,
             ReceiptState::Accepted | ReceiptState::Retryable

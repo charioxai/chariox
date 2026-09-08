@@ -51,17 +51,17 @@ impl Fixture {
         let manifest:Manifest=serde_json::from_value(json!({
             "schema":"chariox.app.v1","appId":"com.example.automation","version":"1.0.0",
             "publisher":{"id":"com.example","keyId":"automation-key","name":"Developer"},
-            "sdkVersion":"0.2.0","appContractVersion":1,"minKernelProtocol":290,
+            "sdkVersion":"0.3.0","appContractVersion":1,"minKernelProtocol":291,
             "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
             "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
         })).unwrap();
         let files=BTreeMap::from([
             ("runtime/main.js".into(),b"export default function register() {}".to_vec()),
             ("ui/index.html".into(),b"<!doctype html><title>Automation</title>".to_vec()),
-            ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":1,"payloadSchema":{"type":"object","additionalProperties":false,"properties":{}}}]})).unwrap()),
+            ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":1,"direction":"outgoing","payloadSchema":{"type":"object","additionalProperties":false,"properties":{}}}]})).unwrap()),
         ]);
         let bytes = pack(&manifest, &files, &key, &Limits::default()).unwrap();
-        let verified = verify(&bytes, &VerificationPolicy::new(290, vec![publisher])).unwrap();
+        let verified = verify(&bytes, &VerificationPolicy::new(291, vec![publisher])).unwrap();
         let candidate = VerifiedInstallCandidate::from_verified(&verified, &trust).unwrap();
         let mut registry = InstallationRegistry::new(&mut db);
         let token = registry
@@ -200,7 +200,7 @@ fn normalized_target_fence_and_config_cas_use_existing_writer_and_survive_reopen
         Err(AppAutomationError::TargetChanged)
     ));
     store
-        .persist_workflow_runtime_transition(sessions.get_session(&session).unwrap(), "fixture")
+        .persist_workflow_runtime_transition(&sessions.get_session(&session).unwrap(), "fixture")
         .unwrap();
     // The query-only connection is held: the mutation must use the writer's own.
     let reader = store.connection.lock().unwrap();
@@ -295,7 +295,7 @@ fn stale_normalized_target_and_sql_failure_preserve_previous_configuration() {
         WorkflowAutomationTarget::resolve(&sessions, "local", &session, &publication, None).unwrap()
     };
     store
-        .persist_workflow_runtime_transition(sessions.get_session(&session).unwrap(), "fixture")
+        .persist_workflow_runtime_transition(&sessions.get_session(&session).unwrap(), "fixture")
         .unwrap();
     store
         .mutate_app_automation(
@@ -320,7 +320,7 @@ fn stale_normalized_target_and_sql_failure_preserve_previous_configuration() {
     ));
     store
         .persist_workflow_runtime_transition(
-            sessions.get_session(&session).unwrap(),
+            &sessions.get_session(&session).unwrap(),
             "fixture-restored",
         )
         .unwrap();
@@ -405,7 +405,7 @@ fn resolver_reuses_publication_and_endpoint_ownership_and_revocation_is_fenced()
         WorkflowAutomationTarget::resolve(&sessions, "local", &session, &publication, None)
             .unwrap();
     store
-        .persist_workflow_runtime_transition(sessions.get_session(&session).unwrap(), "fixture")
+        .persist_workflow_runtime_transition(&sessions.get_session(&session).unwrap(), "fixture")
         .unwrap();
     store
         .mutate_app_publisher(
@@ -443,7 +443,7 @@ fn cancellation_during_sqlite_wait_prevents_configuration_and_keeps_writer_usabl
         WorkflowAutomationTarget::resolve(&sessions, "local", &session, &publication, None)
             .unwrap();
     store
-        .persist_workflow_runtime_transition(sessions.get_session(&session).unwrap(), "fixture")
+        .persist_workflow_runtime_transition(&sessions.get_session(&session).unwrap(), "fixture")
         .unwrap();
     let mut blocker = Connection::open(fixture.root.join("kernel.sqlite")).unwrap();
     let held = blocker

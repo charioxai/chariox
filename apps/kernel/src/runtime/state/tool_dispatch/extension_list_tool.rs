@@ -44,6 +44,12 @@ impl KernelRuntimeState {
                 None,
             ));
         }
+        if args.apps_cursor.is_some() && !matches!(kind, "all" | "app") {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_list_extensions",
+                message: "apps_cursor requires kind app or all".into(),
+            });
+        }
 
         let mcp_registry = mcp_registry_for_workspace(session.workspace_id());
         let mcps = if matches!(kind, "all" | "mcp") {
@@ -178,7 +184,7 @@ impl KernelRuntimeState {
             let page = self
                 .owned
                 .durable_state_store
-                .list_app_installations(agent.owner_user_id(), None, 100)
+                .list_app_installations(agent.owner_user_id(), args.apps_cursor.as_deref(), 100)
                 .map_err(|_| DaemonError::LocalTransport {
                     operation: "runtime_tool_list_extensions",
                     message: "App installation inventory is unavailable".into(),

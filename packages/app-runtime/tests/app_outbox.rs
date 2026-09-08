@@ -4,7 +4,7 @@ use chariox_app_package::{pack, verify, Limits, Manifest, TrustedPublisher, Veri
 use chariox_app_runtime::{
     app_catalog::AppCatalog,
     app_outbox::{
-        AppOutbox, EventCatalog, Occurrence, OutboxError, Receipt, ReceiptState,
+        AppOutbox, EventCatalog, Invocation, Occurrence, OutboxError, Receipt, ReceiptState,
         VerifiedAutomation, MAX_FUTURE_SKEW_MS, MAX_OCCURRENCE_AGE_MS, MAX_PENDING, MAX_RECEIPTS,
         MAX_SAFE_TIMESTAMP,
     },
@@ -24,6 +24,8 @@ use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 mod configuration;
 #[path = "app_outbox/contract.rs"]
 mod contract;
+#[path = "app_outbox/invocations.rs"]
+mod invocations;
 #[path = "app_outbox/limits.rs"]
 mod limits;
 
@@ -67,13 +69,13 @@ impl Package {
         Self { manifest:serde_json::from_value(json!({
             "schema":"chariox.app.v1","appId":"com.example.events","version":"1.0.0",
             "publisher":{"id":"com.example","keyId":"developer","name":"Developer"},
-            "sdkVersion":"0.2.0","appContractVersion":1,"minKernelProtocol":500,
+            "sdkVersion":"0.3.0","appContractVersion":1,"minKernelProtocol":500,
             "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
             "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
         })).unwrap(),key:SigningKey::from_bytes(&[73;32]), files:BTreeMap::from([
             ("runtime/main.js".into(),b"export default function register() {}".to_vec()),
             ("ui/index.html".into(),b"<!doctype html><title>Outbox fixture</title>".to_vec()),
-            ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":1,"payloadSchema":{
+            ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":1,"direction":"outgoing","payloadSchema":{
                 "type":"object","additionalProperties":false,"required":["text"],
                 "properties":{"text":{"type":"string"},"count":{"type":"integer"}}
             }}]})).unwrap()),
@@ -177,6 +179,10 @@ fn occurrence(id: &str, text: &str) -> Occurrence {
         occurred_at_ms: 100,
         schedule_revision: None,
         payload: json!({"text":text}),
+        invocation: Invocation {
+            prompt: "Handle the event".into(),
+            artifacts: vec![],
+        },
     }
 }
 fn accept(db: &mut Connection, automation: &VerifiedAutomation, id: &str) -> Receipt {

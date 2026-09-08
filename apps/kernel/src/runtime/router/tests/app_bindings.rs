@@ -52,6 +52,78 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn app_discovery_consumes_its_cursor_without_exposing_another_owners_installations() {
+    let fixture = Fixture::new();
+    let (app, router, _session, _agent, auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Yolo);
+    let store = app.lock().await.durable_state_store();
+    let release = store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .active
+        .unwrap()
+        .release;
+    for (owner, id) in (0..101)
+        .map(|index| ("alice", format!("app-{index:03}")))
+        .chain(std::iter::once(("bob", "app-099-private".into())))
+    {
+        store
+            .mutate_app_installation(
+                owner,
+                crate::durable_state::apps::AppRegistryMutation::CreateAndStage {
+                    installation_id: id,
+                    release: release.clone(),
+                    now_ms: 1,
+                },
+            )
+            .unwrap();
+    }
+    let call = |arguments| {
+        router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &auth,
+                crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL,
+                arguments,
+            )
+    };
+    let first = call(serde_json::json!({"kind":"app"})).await.unwrap();
+    assert!(first.ok);
+    let first_page = first.payload["extensions"]["apps"].as_array().unwrap();
+    assert_eq!(first_page.len(), 100);
+    assert_eq!(first_page[0]["name"], "app-000");
+    let cursor = first.payload["extensions"]["apps_next_cursor"]
+        .as_str()
+        .unwrap();
+    assert_eq!(cursor, "app-099");
+    let second = call(serde_json::json!({"kind":"app","apps_cursor":cursor}))
+        .await
+        .unwrap();
+    assert!(second.ok);
+    let second_page = second.payload["extensions"]["apps"].as_array().unwrap();
+    assert_eq!(
+        second_page
+            .iter()
+            .map(|app| app["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["app-100", "installed"]
+    );
+    assert!(second.payload["extensions"]["apps_next_cursor"].is_null());
+    for arguments in [
+        serde_json::json!({"kind":"mcp","apps_cursor":cursor}),
+        serde_json::json!({"kind":"app","apps_cursor":"x".repeat(129)}),
+        serde_json::json!({"kind":"app","apps_cursor":""}),
+        serde_json::json!({"kind":"app","apps_cursor":"bad\nvalue"}),
+        serde_json::json!({"kind":"app","apps_cursor":cursor,"owner":"bob"}),
+    ] {
+        match call(arguments).await {
+            Ok(result) => assert!(!result.ok),
+            Err(_) => {}
+        }
+    }
+}
+
+#[tokio::test]
 async fn explicit_app_grant_checks_owner_and_saves_an_offline_binding() {
     let fixture = Fixture::new();
     let (_app, router, _session, agent, _auth) =

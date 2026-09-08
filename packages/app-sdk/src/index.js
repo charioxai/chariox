@@ -1,6 +1,7 @@
 import { AppError } from './errors.js';
 import { object, token } from './protocol.js';
 import { AppPeer } from './peer.js';
+import { validateOccurrence, validateOccurrences } from './occurrences.js';
 
 export { AppError } from './errors.js';
 
@@ -13,23 +14,6 @@ function name(value, label = 'name') {
 
 function record(value, label) {
   if (!object(value)) throw new AppError('INVALID_ARGUMENT', `Expected ${label}`);
-  return value;
-}
-
-// Persist the complete envelope before emission. Retry must preserve original
-// time and schedule revision; the kernel owns replay-window and target checks.
-function validateOccurrence(value) {
-  record(value, 'event occurrence');
-  const fields = ['automationId', 'occurrenceId', 'eventVersion', 'occurredAtMs', 'scheduleRevision', 'payload'];
-  if (Object.keys(value).some(key => !fields.includes(key))
-    || !Number.isSafeInteger(value.eventVersion) || value.eventVersion < 1 || value.eventVersion > 0xffffffff
-    || !Number.isSafeInteger(value.occurredAtMs) || value.occurredAtMs < 0
-    || !Object.hasOwn(value, 'payload')) {
-    throw new AppError('INVALID_ARGUMENT', 'Invalid versioned event occurrence');
-  }
-  name(value.automationId, 'automation identity');
-  name(value.occurrenceId, 'occurrence identity');
-  if (value.scheduleRevision !== undefined) name(value.scheduleRevision, 'schedule revision');
   return value;
 }
 
@@ -81,8 +65,14 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   for (const path of ['package', 'data', 'temporary']) {
     if (typeof paths?.[path] !== 'string' || paths[path].length === 0) throw new TypeError(`Missing ${path} root`);
   }
+  record(declarations, 'trusted declarations');
+  if (Object.keys(declarations).some(key => !['tools', 'incomingEvents'].includes(key))) {
+    throw new TypeError('Invalid trusted declarations');
+  }
   const tools = registry(declarations.tools ?? [], 'tool');
-  const events = registry(declarations.events ?? [], 'event');
+  // The trusted bootstrap selects incoming/both from signed declarations.
+  // Outgoing occurrences use kernel-owned automations and need no local handler.
+  const events = registry(declarations.incomingEvents ?? [], 'incoming event');
   const lifecycle = registry(lifecycleNames, 'lifecycle event');
   let lifecycleBusy = false;
   let ready = false;
@@ -131,10 +121,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       transaction(transaction, options) {
         record(transaction, 'state transaction');
         if (transaction.occurrences !== undefined) {
-          if (!Array.isArray(transaction.occurrences) || transaction.occurrences.length > 16) {
-            throw new AppError('INVALID_ARGUMENT', 'Expected at most 16 event occurrences');
-          }
-          transaction.occurrences.forEach(validateOccurrence);
+          validateOccurrences(transaction.occurrences);
         }
         return call('state.transaction', transaction, options);
       },

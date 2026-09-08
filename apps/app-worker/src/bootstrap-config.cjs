@@ -20,7 +20,7 @@ function root(value) {
 exports.configuration = function configuration(input, environment, runtime) {
   if (!object(input, ['version', 'entry', 'declarations', 'startupTimeoutMs']) || input.version !== 1
     || !Number.isSafeInteger(input.startupTimeoutMs) || input.startupTimeoutMs < 1 || input.startupTimeoutMs > 15000
-    || !object(input.declarations, ['tools', 'events'])) throw new Error('configuration');
+    || !object(input.declarations, ['tools', 'incomingEvents'])) throw new Error('configuration');
   for (const names of Object.values(input.declarations)) {
     if (!Array.isArray(names) || names.length > 1024 || new Set(names).size !== names.length
       || names.some(name => typeof name !== 'string' || !name || Buffer.byteLength(name) > 128
@@ -50,6 +50,6 @@ exports.configuration = function configuration(input, environment, runtime) {
   // The supervisor holds the entire verified package immutable thereafter.
   if (realpathSync(entry) !== entry || !statSync(entry).isFile()) throw new Error('configuration');
   return Object.freeze({ generation, entry, paths: Object.freeze(paths),
-    declarations: Object.freeze({ tools: Object.freeze([...input.declarations.tools]), events: Object.freeze([...input.declarations.events]) }),
+    declarations: Object.freeze({ tools: Object.freeze([...input.declarations.tools]), incomingEvents: Object.freeze([...input.declarations.incomingEvents]) }),
     startupTimeoutMs: input.startupTimeoutMs });
 };

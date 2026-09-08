@@ -1,6 +1,6 @@
 {
-  "minimumKernelProtocol": 290,
-  "sdkVersion": "0.2.0",
+  "minimumKernelProtocol": 291,
+  "sdkVersion": "0.3.0",
   "declaration": {
     "name": "todo_due",
     "schemaVersion": 2,
@@ -15,7 +15,8 @@
         "id"
       ],
       "additionalProperties": false
-    }
+    },
+    "direction": "outgoing"
   },
   "occurrence": {
     "automationId": "automation-1",
@@ -25,6 +26,18 @@
     "scheduleRevision": "revision-7",
     "payload": {
       "id": "todo-1"
+    },
+    "invocation": {
+      "prompt": "Review the due todo and act through its declared tools.",
+      "artifacts": [
+        {
+          "name": "Todo context",
+          "mediaType": "application/json",
+          "reference": "https://example.test/todos/todo-1",
+          "sizeBytes": 128,
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
     }
   }
 }

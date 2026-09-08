@@ -31,6 +31,20 @@ export interface EventOccurrence {
   /** Required for scheduled occurrences; persist it with the schedule. */
   scheduleRevision?: string;
   payload: Json;
+  /** Complete immutable workflow input; preserved with payload on every replay. */
+  invocation: EventInvocation;
+}
+export interface EventInvocation {
+  prompt: string;
+  /** Untrusted reference metadata. These entries confer no file, network or kernel asset access. */
+  artifacts: EventArtifact[];
+}
+export interface EventArtifact {
+  name: string;
+  mediaType: string;
+  reference: string;
+  sizeBytes?: number;
+  digest?: string;
 }
 export interface EventReceipt {
   receiptId: string;
@@ -73,9 +87,11 @@ export interface AppSdk {
   readonly paths: Readonly<{ package: string; data: string; temporary: string }>;
   readonly tools: { register<Input = Json, Output = Json | void>(name: string, handler: Handler<Input, Output>): void };
   readonly events: {
+    /** Only signed incoming/both events require a handler. */
     register<Payload = Json>(name: string, handler: Handler<Readonly<{ occurrenceId: string; payload: Payload }>>): void;
     emit(occurrence: EventOccurrence, options?: CallOptions): Promise<EventReceipt>;
     status(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+    /** Reconcile a due, kernel-classified retryable receipt; never restart a terminal operation. */
     retry(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
   };
   readonly lifecycle: { on(event: LifecycleEvent, handler: Handler): void };
@@ -121,7 +137,8 @@ export interface AppSdkOptions {
   transport: import('./internal.js').AppTransport;
   generation: string;
   paths: { package: string; data: string; temporary: string };
-  declarations?: { tools?: string[]; events?: string[] };
+  /** incomingEvents contains only signed incoming/both event declarations. */
+  declarations?: { tools?: string[]; incomingEvents?: string[] };
   limits?: { maxPending?: number; maxHandlers?: number; maxDeadlineMs?: number };
 }
 export function createAppSdk(options: AppSdkOptions): AppSdk;

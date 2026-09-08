@@ -6,6 +6,7 @@ use crate::durable_state::{
 };
 use chariox_app_package::{pack, verify, Limits, Manifest, TrustedPublisher, VerificationPolicy};
 use chariox_app_runtime::{
+    app_catalog::AppCatalog,
     installation::{
         CapabilityApproval, CapabilityDecision, InstallationRegistry, VerifiedInstallCandidate,
     },
@@ -48,7 +49,7 @@ fn decision(id: &str) -> TrustDecision {
         authority_ref: "kernel-fixture-decision".into(),
     }
 }
-pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
+pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
     store
         .mutate_app_publisher(
             "alice",
@@ -63,9 +64,9 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
     let manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":"1.0.0",
         "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
-        "sdkVersion":"0.2.0","appContractVersion":1,"minKernelProtocol":289,
+        "sdkVersion":"0.3.0","appContractVersion":1,"minKernelProtocol":291,
         "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
-        "ui":{"entry":"ui/index.html"},"capabilities":{}
+        "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
     })).unwrap();
     let files = BTreeMap::from([
         (
@@ -75,6 +76,15 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
         (
             "ui/index.html".into(),
             b"<!doctype html><title>State fixture</title>".to_vec(),
+        ),
+        (
+            "schemas/events.json".into(),
+            serde_json::to_vec(&json!({"events":[{
+                "name":"changed","direction":"outgoing","schemaVersion":1,
+                "payloadSchema":{"type":"object","additionalProperties":false,
+                    "required":["text"],"properties":{"text":{"type":"string"}}}
+            }]}))
+            .unwrap(),
         ),
     ]);
     let bytes = pack(
@@ -87,7 +97,7 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
     let trust = store
         .trusted_app_publisher("alice", "com.example", "state-key")
         .unwrap();
-    let package = verify(&bytes, &VerificationPolicy::new(289, vec![publisher()])).unwrap();
+    let package = verify(&bytes, &VerificationPolicy::new(291, vec![publisher()])).unwrap();
     let candidate = VerifiedInstallCandidate::from_verified(&package, &trust).unwrap();
     let AppRegistryOutcome::Update(record) = store
         .mutate_verified_app_installation(
@@ -139,7 +149,13 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
             },
         )
         .unwrap();
-    Arc::new(AppCatalog::compile(&package, &binding, &trust).unwrap())
+    Arc::new(
+        EventCatalog::compile(
+            &package,
+            Arc::new(AppCatalog::compile(&package, &binding, &trust).unwrap()),
+        )
+        .unwrap(),
+    )
 }
 fn budget() -> AppOperationBudget {
     AppOperationBudget::fixture(
@@ -148,8 +164,8 @@ fn budget() -> AppOperationBudget {
     )
 }
 fn put(value: i32) -> AppStateOperation {
-    AppStateOperation::Transaction(
-        StateChanges::new(
+    AppStateOperation::Transaction {
+        changes: StateChanges::new(
             0,
             vec![],
             vec![StateWrite::Put {
@@ -158,7 +174,8 @@ fn put(value: i32) -> AppStateOperation {
             }],
         )
         .unwrap(),
-    )
+        occurrences: Vec::new(),
+    }
 }
 fn read() -> AppStateOperation {
     AppStateOperation::Get {
@@ -182,7 +199,13 @@ fn state_writer_uses_its_own_connection_and_persists_verified_values() {
     let result = receive.recv_timeout(Duration::from_secs(5));
     drop(held_reader);
     worker.join().unwrap();
-    assert_eq!(result.unwrap().unwrap(), AppStateOutcome::Revision(1));
+    assert_eq!(
+        result.unwrap().unwrap(),
+        AppStateOutcome::Transaction {
+            revision: 1,
+            receipts: Vec::new()
+        }
+    );
     assert_eq!(
         store
             .execute_app_state("alice", Arc::clone(&catalog), read(), budget())
@@ -284,7 +307,10 @@ fn failed_state_head_publication_rolls_back_values_and_writer_continues() {
         store
             .execute_app_state("alice", catalog, put(2), budget())
             .unwrap(),
-        AppStateOutcome::Revision(1)
+        AppStateOutcome::Transaction {
+            revision: 1,
+            receipts: Vec::new()
+        }
     );
 }
 
@@ -340,7 +366,13 @@ fn cancelled_work_waiting_in_the_writer_queue_never_starts_a_state_change() {
         .unwrap();
     cancelled.store(true, Ordering::Release);
     drop(held);
-    assert_eq!(first.join().unwrap().unwrap(), AppStateOutcome::Revision(1));
+    assert_eq!(
+        first.join().unwrap().unwrap(),
+        AppStateOutcome::Transaction {
+            revision: 1,
+            receipts: Vec::new()
+        }
+    );
     assert!(matches!(
         receive.recv_timeout(Duration::from_secs(5)).unwrap(),
         Err(AppStateError::Stopped(AppOperationStopped::Cancelled))

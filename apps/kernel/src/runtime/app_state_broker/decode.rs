@@ -1,4 +1,4 @@
-use super::{errors, AppStateOperation};
+use super::{errors, events, AppStateOperation};
 use chariox_app_runtime::{
     managed_state::{StateChanges, StateCheck, StateWrite, MAX_CHANGES, MAX_CHECKS, MAX_KEY_BYTES},
     wire::RemoteError,
@@ -24,14 +24,10 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
                 .as_u64()
                 .and_then(|value| u32::try_from(value).ok())
                 .ok_or_else(errors::invalid)?;
-            if let Some(occurrences) = object.remove("occurrences") {
-                let Value::Array(occurrences) = occurrences else {
-                    return Err(errors::invalid());
-                };
-                if !occurrences.is_empty() {
-                    return Err(errors::unsupported_occurrences());
-                }
-            }
+            let occurrences = match object.remove("occurrences") {
+                Some(value) => events::occurrences(value)?,
+                None => Vec::new(),
+            };
             let checks = array(take(&mut object, "checks")?, MAX_CHECKS)?
                 .into_iter()
                 .map(|value| {
@@ -57,12 +53,15 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
                 })
                 .collect::<Result<Vec<_>>>()?;
             let changes = StateChanges::new(schema, checks, writes).map_err(errors::changes)?;
-            Ok(AppStateOperation::Transaction(changes))
+            Ok(AppStateOperation::Transaction {
+                changes,
+                occurrences,
+            })
         }
-        _ => Err(errors::unknown_method()),
+        _ => events::operation(method, params),
     }
 }
-fn fields(value: Value, allowed: &[&str]) -> Result<Map<String, Value>> {
+pub(super) fn fields(value: Value, allowed: &[&str]) -> Result<Map<String, Value>> {
     let Value::Object(object) = value else {
         return Err(errors::invalid());
     };
@@ -71,7 +70,7 @@ fn fields(value: Value, allowed: &[&str]) -> Result<Map<String, Value>> {
     }
     Ok(object)
 }
-fn take(object: &mut Map<String, Value>, name: &str) -> Result<Value> {
+pub(super) fn take(object: &mut Map<String, Value>, name: &str) -> Result<Value> {
     object.remove(name).ok_or_else(errors::invalid)
 }
 fn array(value: Value, limit: usize) -> Result<Vec<Value>> {
@@ -83,7 +82,7 @@ fn array(value: Value, limit: usize) -> Result<Vec<Value>> {
     }
     Ok(array)
 }
-fn key(value: Value) -> Result<String> {
+pub(super) fn key(value: Value) -> Result<String> {
     let Value::String(key) = value else {
         return Err(errors::invalid());
     };

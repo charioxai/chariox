@@ -3,8 +3,8 @@ import { test } from "node:test"
 import { abortAppPackageUploadRequest, beginAppPackageUploadRequest, getAppPackageUploadRequest, putAppPackageUploadChunkRequest, getAppInstallationJournalRequest, getAppInstallationRequest, listAppInstallationsRequest } from "./ipc-app-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("App inspection shares protocol 290 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 290)
+test("App inspection shares protocol 291 without client owner or host paths", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 291)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })

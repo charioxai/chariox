@@ -1,6 +1,7 @@
 use super::*;
 use chariox_app_runtime::managed_state::{MAX_CHANGES, MAX_CHECKS, MAX_VALUE_BYTES};
 
+mod events;
 mod integration;
 
 fn transaction() -> Value {
@@ -99,7 +100,7 @@ fn version_null_is_required_and_write_union_never_confuses_null_with_delete() {
 }
 
 #[test]
-fn occurrence_transactions_fail_explicitly_before_any_state_operation() {
+fn malformed_occurrence_transactions_fail_before_any_state_operation() {
     let mut empty = transaction();
     empty["occurrences"] = json!([]);
     assert!(decode::operation("state.transaction", empty).is_ok());
@@ -108,7 +109,7 @@ fn occurrence_transactions_fail_explicitly_before_any_state_operation() {
         json!([{"automationId":"a","occurrenceId":"o","eventVersion":1,"payload":{}}]);
     assert_eq!(
         rejection("state.transaction", nonempty).code,
-        "UNSUPPORTED_OPERATION"
+        "INVALID_ARGUMENT"
     );
     for invalid in [Value::Null, json!({}), json!("event")] {
         let mut change = transaction();

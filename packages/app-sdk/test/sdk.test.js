@@ -12,7 +12,7 @@ function setup(declarations = {}) {
 }
 
 test('only package-declared handlers register, and readiness cannot hide a missing implementation', async () => {
-  const { transport, sdk } = setup({ tools: ['create_project'], events: ['issue_created'] });
+  const { transport, sdk } = setup({ tools: ['create_project'], incomingEvents: ['issue_created'] });
   assert.throws(() => sdk.tools.register('undeclared', () => {}), { code: 'UNDECLARED_HANDLER' });
   await assert.rejects(sdk.ready(), { code: 'MISSING_HANDLER' });
   sdk.tools.register('create_project', () => {});
@@ -28,7 +28,7 @@ test('only package-declared handlers register, and readiness cannot hide a missi
 });
 
 test('App occurrences use acknowledged delivery and retain occurrence identity across replays', async () => {
-  const { transport, sdk } = setup({ events: ['issue_created'] });
+  const { transport, sdk } = setup({ incomingEvents: ['issue_created'] });
   const received = [];
   sdk.events.register('issue_created', (event) => { received.push(event); return { accepted: true }; });
   const params = { name: 'issue_created', occurrence_id: 'occ-1', payload: { issue: 'LIN-3' } };
@@ -84,7 +84,7 @@ test('state transaction forwards state and occurrence together without local per
     schemaVersion: 1,
     checks: [{ key: 'issue', version: 3 }],
     writes: [{ key: 'issue', value: { state: 'done' } }],
-    occurrences: [{ automationId: 'auto-1', occurrenceId: 'issue-revision-4', eventVersion: 1, occurredAtMs: 1000, payload: {} }],
+    occurrences: [{ automationId: 'auto-1', occurrenceId: 'issue-revision-4', eventVersion: 1, occurredAtMs: 1000, payload: {}, invocation: { prompt: 'Handle the issue', artifacts: [] } }],
   };
   const pending = sdk.state.transaction(transaction);
   assert.deepEqual(transport.sent[0].params, transaction);
@@ -97,7 +97,7 @@ test('state transaction forwards state and occurrence together without local per
 test('versioned occurrences preserve replay time and schedule revision and reject incomplete envelopes', async () => {
   const { transport, sdk } = setup();
   const event = { automationId: 'auto-1', occurrenceId: 'due-1', eventVersion: 2,
-    occurredAtMs: 123456, scheduleRevision: 'schedule-7', payload: { id: 'todo-1' } };
+    occurredAtMs: 123456, scheduleRevision: 'schedule-7', payload: { id: 'todo-1' }, invocation: { prompt: 'Handle the todo', artifacts: [] } };
   for (const patch of [{ eventVersion: 0 }, { eventVersion: 1.5 }, { eventVersion: 0x100000000 },
     { occurredAtMs: undefined }, { occurredAtMs: -1 }, { occurredAtMs: Number.MAX_SAFE_INTEGER + 1 },
     { scheduleRevision: 'bad revision' }, { owner: 'forged' }]) {
@@ -121,7 +121,7 @@ test('SDK emission matches the shared Rust event payload snapshot', async () => 
   const fixture = JSON.parse(readFileSync(new URL('./event-contract.json', import.meta.url), 'utf8'));
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(metadata.version, fixture.sdkVersion);
-  assert.equal(fixture.minimumKernelProtocol, 290);
+  assert.equal(fixture.minimumKernelProtocol, 291);
   const { transport, sdk } = setup();
   const pending = sdk.events.emit(fixture.occurrence);
   assert.deepEqual(transport.sent[0].params, fixture.occurrence);

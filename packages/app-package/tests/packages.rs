@@ -28,7 +28,7 @@ fn manifest_value() -> Value {
     json!({
         "schema":"chariox.app.v1", "appId":"com.example.todo", "version":"1.0.0",
         "publisher":{"id":"com.example","keyId":"developer-1","name":"Local Developer"},
-        "sdkVersion":"0.2.0", "appContractVersion":1, "minKernelProtocol":500,
+        "sdkVersion":"0.3.0", "appContractVersion":1, "minKernelProtocol":500,
         "resourcePolicy":"chariox.app.resources.v1",
         "runtime":{"engine":"node","entry":"runtime/main.js"}, "ui":{"entry":"ui/index.html"},
         "tools":"schemas/tools.json", "events":"schemas/events.json",
@@ -51,7 +51,7 @@ fn files() -> BTreeMap<String, Vec<u8>> {
         ("ui/index.html".to_owned(), b"<!doctype html><title>Todo</title>".to_vec()),
         ("migrations/001.js".to_owned(), b"export function migrate() {}".to_vec()),
         ("schemas/tools.json".to_owned(), serde_json::to_vec_pretty(&json!({"tools":[{"name":"create_todo","inputSchema":closed_schema(),"action":"create_todo"}]})).unwrap()),
-        ("schemas/events.json".to_owned(), serde_json::to_vec(&json!({"events":[{"name":"todo_due","schemaVersion":1,"payloadSchema":closed_schema()}]})).unwrap()),
+        ("schemas/events.json".to_owned(), serde_json::to_vec(&json!({"events":[{"name":"todo_due","schemaVersion":1,"direction":"outgoing","payloadSchema":closed_schema()}]})).unwrap()),
         ("schemas/actions.json".to_owned(), serde_json::to_vec(&json!({"actions":[{
             "name":"create_todo","inputSchema":closed_schema(),
             "criticalValidation":{"reason":"Confirm creation","userVerification":true},
@@ -120,18 +120,62 @@ fn assert_code(bytes: &[u8], expected: ErrorCode) {
 
 #[test]
 fn signed_event_versions_are_required_and_cannot_claim_an_older_kernel_contract() {
-    for version in [Value::Null, json!(0), json!(-1), json!(1.5), json!(4294967296_u64)] {
+    for version in [
+        Value::Null,
+        json!(0),
+        json!(-1),
+        json!(1.5),
+        json!(4294967296_u64),
+    ] {
         let mut payload = files();
-        let mut declaration = json!({"name":"todo_due","schemaVersion":version,"payloadSchema":closed_schema()});
-        if version.is_null() { declaration.as_object_mut().unwrap().remove("schemaVersion"); }
-        payload.insert("schemas/events.json".into(), serde_json::to_vec(&json!({"events":[declaration]})).unwrap());
-        assert_code(&raw_package(manifest_value(), payload), ErrorCode::InvalidSchema);
+        let mut declaration = json!({"name":"todo_due","schemaVersion":version,"direction":"outgoing","payloadSchema":closed_schema()});
+        if version.is_null() {
+            declaration.as_object_mut().unwrap().remove("schemaVersion");
+        }
+        payload.insert(
+            "schemas/events.json".into(),
+            serde_json::to_vec(&json!({"events":[declaration]})).unwrap(),
+        );
+        assert_code(
+            &raw_package(manifest_value(), payload),
+            ErrorCode::InvalidSchema,
+        );
     }
     let mut old = manifest_value();
     old["minKernelProtocol"] = json!(289);
     assert_code(&raw_package(old, files()), ErrorCode::InvalidSchema);
     let bytes = valid_package();
-    assert_eq!(verify(&bytes, &policy()).unwrap().declarations().events[0].schema_version, 1);
+    assert_eq!(
+        verify(&bytes, &policy()).unwrap().declarations().events[0].schema_version,
+        1
+    );
+}
+
+#[test]
+fn signed_event_direction_is_required_and_exact() {
+    for direction in [Value::Null, json!(""), json!("sideways"), json!(1)] {
+        let mut payload = files();
+        let mut declaration = json!({"name":"todo_due","schemaVersion":1,"direction":direction,"payloadSchema":closed_schema()});
+        if direction.is_null() {
+            declaration.as_object_mut().unwrap().remove("direction");
+        }
+        payload.insert(
+            "schemas/events.json".into(),
+            serde_json::to_vec(&json!({"events":[declaration]})).unwrap(),
+        );
+        assert_code(
+            &raw_package(manifest_value(), payload),
+            ErrorCode::InvalidSchema,
+        );
+    }
+    for direction in ["outgoing", "incoming", "both"] {
+        let mut payload = files();
+        payload.insert("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"todo_due","schemaVersion":1,"direction":direction,"payloadSchema":closed_schema()}]})).unwrap());
+        assert!(verify(&raw_package(manifest_value(), payload), &policy()).is_ok());
+    }
+    let mut old = manifest_value();
+    old["minKernelProtocol"] = json!(290);
+    assert_code(&raw_package(old, files()), ErrorCode::InvalidSchema);
 }
 
 #[test]

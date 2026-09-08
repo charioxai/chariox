@@ -6,7 +6,8 @@ use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
 use chariox_app_runtime::{
-    app_catalog::{AppCatalog, CatalogError},
+    app_catalog::CatalogError,
+    app_outbox::{AppOutbox, EventCatalog, Occurrence, OutboxError, Receipt},
     managed_state::{ManagedStateStore, StateChanges, StateError, StateRecord, StateScope},
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -21,24 +22,57 @@ pub(crate) enum AppStateError {
     #[error(transparent)]
     State(#[from] StateError),
     #[error(transparent)]
+    Outbox(#[from] OutboxError),
+    #[error(transparent)]
     Storage(#[from] DaemonError),
 }
 
-#[derive(Debug)]
 pub(crate) enum AppStateOperation {
-    Get { key: String },
-    Transaction(StateChanges),
+    Get {
+        key: String,
+    },
+    Transaction {
+        changes: StateChanges,
+        occurrences: Vec<Occurrence>,
+    },
+    Emit(Occurrence),
+    Status {
+        receipt_id: String,
+    },
+    Retry {
+        receipt_id: String,
+    },
+}
+impl AppStateOperation {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Get { .. } => "get",
+            Self::Transaction { .. } => "transaction",
+            Self::Emit(_) => "emit",
+            Self::Status { .. } => "status",
+            Self::Retry { .. } => "retry",
+        }
+    }
+}
+impl std::fmt::Debug for AppStateOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum AppStateOutcome {
     Value(Option<StateRecord>),
-    Revision(u64),
+    Transaction {
+        revision: u64,
+        receipts: Vec<Receipt>,
+    },
+    Receipt(Receipt),
 }
 
 pub(super) struct AppStateRequest {
     owner: String,
-    catalog: Arc<AppCatalog>,
+    catalog: Arc<EventCatalog>,
     operation: AppStateOperation,
     budget: AppOperationBudget,
     response: mpsc::Sender<Result<AppStateOutcome, AppStateError>>,
@@ -50,13 +84,7 @@ impl std::fmt::Debug for AppStateRequest {
             .debug_struct("AppStateRequest")
             .field("installation_id", &self.catalog.installation_id())
             .field("generation", &self.catalog.generation())
-            .field(
-                "operation",
-                &match self.operation {
-                    AppStateOperation::Get { .. } => "get",
-                    AppStateOperation::Transaction(_) => "transaction",
-                },
-            )
+            .field("operation", &self.operation.name())
             .finish_non_exhaustive()
     }
 }
@@ -64,11 +92,12 @@ impl std::fmt::Debug for AppStateRequest {
 impl DurableKernelStateStore {
     /// Worker-internal operation. `catalog` belongs to that admitted worker,
     /// and owner comes from kernel authentication, never an App argument.
-    /// This blocking method does not grant a capability or accept an event.
+    /// This blocking method grants no capability or workflow target. Event
+    /// receipts and structured state are acknowledged only after their commit.
     pub(crate) fn execute_app_state(
         &self,
         trusted_owner: &str,
-        catalog: Arc<AppCatalog>,
+        catalog: Arc<EventCatalog>,
         operation: AppStateOperation,
         budget: AppOperationBudget,
     ) -> Result<AppStateOutcome, AppStateError> {
@@ -80,6 +109,15 @@ impl DurableKernelStateStore {
             catalog.installation_id(),
             catalog.generation(),
         )?;
+        match &operation {
+            AppStateOperation::Transaction { occurrences, .. } if !occurrences.is_empty() => {
+                AppOutbox::validate_occurrences(occurrences)?;
+            }
+            AppStateOperation::Emit(occurrence) => {
+                AppOutbox::validate_occurrences(std::slice::from_ref(occurrence))?;
+            }
+            _ => {}
+        }
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppState(Box::new(AppStateRequest {
@@ -121,7 +159,7 @@ pub(super) fn execute(connection: &mut Connection, request: AppStateRequest) {
 fn apply(
     connection: &mut Connection,
     owner: &str,
-    catalog: &AppCatalog,
+    catalog: &Arc<EventCatalog>,
     operation: AppStateOperation,
     budget: &AppOperationBudget,
 ) -> Result<AppStateOutcome, AppStateError> {
@@ -133,7 +171,7 @@ fn apply(
         .map_err(StateError::from)?;
     // Publisher revoke/re-enroll can invalidate an otherwise unchanged active
     // generation. Hold its exact retained verification fence through commit.
-    catalog.require_current(&transaction, owner)?;
+    catalog.app_catalog().require_current(&transaction, owner)?;
     // BEGIN IMMEDIATE may itself wait for a writer lock. Check again after
     // acquiring it, immediately before state work. Once this check admits the
     // transaction, cancellation cannot promise that its commit was undone.
@@ -142,18 +180,33 @@ fn apply(
         AppStateOperation::Get { key } => {
             AppStateOutcome::Value(ManagedStateStore::read_in(&transaction, scope, &key)?)
         }
-        AppStateOperation::Transaction(changes) => AppStateOutcome::Revision(
-            ManagedStateStore::apply_in(&mut transaction, scope, &changes)?,
-        ),
+        AppStateOperation::Transaction {
+            changes,
+            occurrences,
+        } => {
+            let revision = ManagedStateStore::apply_in(&mut transaction, scope, &changes)?;
+            let receipts = events::accept(&mut transaction, catalog, owner, &occurrences)?;
+            AppStateOutcome::Transaction { revision, receipts }
+        }
+        event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
     };
     transaction.commit().map_err(StateError::from)?;
     Ok(outcome)
 }
 
+mod events;
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
-pub(crate) fn fixture_catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
+pub(crate) fn fixture_catalog(
+    store: &DurableKernelStateStore,
+) -> Arc<chariox_app_runtime::app_catalog::AppCatalog> {
+    tests::catalog(store).app_catalog().clone()
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_event_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
     tests::catalog(store)
 }

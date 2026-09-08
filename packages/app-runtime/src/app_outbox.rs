@@ -3,12 +3,15 @@
 
 mod admission;
 mod configuration;
+mod invocation;
 mod store;
+mod transactions;
 
 use crate::app_catalog::{AppCatalog, CatalogError};
 pub use admission::{EventCatalog, VerifiedAutomation};
 use chariox_app_package::VerifiedPackage;
 pub use configuration::{AutomationConfiguration, AutomationStatus, AutomationTarget};
+pub use invocation::{Artifact, Invocation, MAX_ARTIFACTS, MAX_INVOCATION_BYTES, MAX_PROMPT_BYTES};
 use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -55,7 +58,7 @@ pub type Result<T> = std::result::Result<T, OutboxError>;
 
 /// The current SDK shape. Identity and generation come from the retained
 /// worker/catalog and automation, not additional App-controlled authority fields.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Occurrence {
     pub automation_id: String,
@@ -69,6 +72,7 @@ pub struct Occurrence {
     )]
     pub schedule_revision: Option<String>,
     pub payload: Value,
+    pub invocation: Invocation,
 }
 
 fn deserialize_schedule_revision<'de, D: serde::Deserializer<'de>>(
@@ -94,47 +98,20 @@ impl AppOutbox {
         occurrences: &[Occurrence],
         kernel_now_ms: u64,
     ) -> Result<Vec<Receipt>> {
-        time(kernel_now_ms)?;
-        if occurrences.is_empty() || occurrences.len() > MAX_BATCH {
-            return Err(OutboxError::Limit);
-        }
-        let mut identities = BTreeSet::new();
-        let mut total = 0usize;
-        let prepared = occurrences
-            .iter()
-            .map(|occurrence| {
-                identifier(&occurrence.occurrence_id)?;
-                if occurrence.occurred_at_ms > MAX_SAFE_TIMESTAMP
-                    || occurrence.schedule_revision.is_some() != automation.binding.scheduled
-                {
-                    return Err(OutboxError::Invalid);
-                }
-                if let Some(revision) = &occurrence.schedule_revision {
-                    identifier(revision)?;
-                }
-                if occurrence.automation_id != automation.id()
-                    || occurrence.event_version != automation.event_version()
-                    || !identities.insert((
-                        occurrence.occurrence_id.as_str(),
-                        occurrence.schedule_revision.as_deref(),
-                    ))
-                {
-                    return Err(OutboxError::Invalid);
-                }
-                let payload = automation.encode_payload(&occurrence.payload)?;
-                total = total.checked_add(payload.len()).ok_or(OutboxError::Limit)?;
-                if total > MAX_BATCH_BYTES {
-                    return Err(OutboxError::Limit);
-                }
-                Ok((occurrence, payload))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let prepared = prepare(automation, occurrences, kernel_now_ms)?;
         automation.require_current(transaction)?;
         let savepoint = transaction.savepoint()?;
         let receipts = prepared
             .iter()
-            .map(|(occurrence, payload)| {
-                store::accept(&savepoint, automation, occurrence, payload, kernel_now_ms)
+            .map(|(occurrence, payload, invocation)| {
+                store::accept(
+                    &savepoint,
+                    automation,
+                    occurrence,
+                    payload,
+                    invocation,
+                    kernel_now_ms,
+                )
             })
             .collect::<Result<Vec<_>>>()?;
         savepoint.commit()?;
@@ -199,4 +176,50 @@ fn time(value: u64) -> Result<i64> {
 }
 fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn prepare<'a>(
+    automation: &VerifiedAutomation,
+    occurrences: &'a [Occurrence],
+    now: u64,
+) -> Result<Vec<(&'a Occurrence, String, String)>> {
+    time(now)?;
+    if occurrences.is_empty() || occurrences.len() > MAX_BATCH {
+        return Err(OutboxError::Limit);
+    }
+    let mut identities = BTreeSet::new();
+    let mut total = 0usize;
+    occurrences
+        .iter()
+        .map(|occurrence| {
+            identifier(&occurrence.occurrence_id)?;
+            if occurrence.occurred_at_ms > MAX_SAFE_TIMESTAMP
+                || occurrence.schedule_revision.is_some() != automation.binding.scheduled
+            {
+                return Err(OutboxError::Invalid);
+            }
+            if let Some(revision) = &occurrence.schedule_revision {
+                identifier(revision)?;
+            }
+            if occurrence.automation_id != automation.id()
+                || occurrence.event_version != automation.event_version()
+                || !identities.insert((
+                    occurrence.occurrence_id.as_str(),
+                    occurrence.schedule_revision.as_deref(),
+                ))
+            {
+                return Err(OutboxError::Invalid);
+            }
+            let payload = automation.encode_payload(&occurrence.payload)?;
+            let invocation = occurrence.invocation.encode()?;
+            total = total
+                .checked_add(payload.len())
+                .and_then(|size| size.checked_add(invocation.len()))
+                .ok_or(OutboxError::Limit)?;
+            if total > MAX_BATCH_BYTES {
+                return Err(OutboxError::Limit);
+            }
+            Ok((occurrence, payload, invocation))
+        })
+        .collect()
 }
