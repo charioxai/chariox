@@ -1203,3 +1203,10 @@ attachment authorization remains unchanged.
 
 Cloud review `5137480142` of `4ad7cb1c0` reports no actionable finding. It did
 not execute the locally recorded tests or browser validation.
+
+The `c5963855a` Linux job passes package/runtime/SDK checks and stops at the full
+shared client build: one existing agent-interaction test helper accepted the
+entire new subject union. Its overrides are now restricted to the agent variant.
+The full kernel-client and referenced tool-display source graph passes no-emit
+TypeScript validation with external dependency paths and a 1,536 MiB heap cap.
+This check includes test files omitted by the earlier focused CLI graph.
