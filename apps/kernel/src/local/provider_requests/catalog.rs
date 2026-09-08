@@ -1216,6 +1216,58 @@ mod tests {
     }
 
     #[test]
+    fn provider_auth_status_reports_claude_launcher_failure_without_login_advice() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-auth-failure-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).expect("fixture root should create");
+        struct Cleanup(std::path::PathBuf, Option<std::ffi::OsString>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                match self.1.take() {
+                    Some(value) => std::env::set_var("CHARIOX_CLAUDE_BIN", value),
+                    None => std::env::remove_var("CHARIOX_CLAUDE_BIN"),
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone(), std::env::var_os("CHARIOX_CLAUDE_BIN"));
+        let executable = root.join("claude");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'private-fixture-marker launcher failed\\n' >&2\nexit 1\n",
+        )
+        .expect("synthetic launcher should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("synthetic launcher should be executable");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("fixture registry should open");
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .expect("fixture profiles should create");
+
+        let result = provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "claude-headless".to_string(),
+                account_profile: "default".to_string(),
+            },
+        );
+        let error = result.expect_err("launcher failure must not become a logged-out status");
+        let message = error.to_string();
+        assert!(message.contains("verification"), "{message}");
+        assert!(!message.contains("private-fixture-marker"));
+        assert!(!message.contains("Run `claude auth login`"));
+    }
+
+    #[test]
     fn provider_auth_status_accepts_claude_provider_modes() {
         let _guard = crate::env_lock::lock();
         let path =
