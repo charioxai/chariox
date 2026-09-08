@@ -92,13 +92,18 @@ metadata; its process/resource watch is monitoring, not an OS hard limit.
 The first hosted run, [34176513133](https://github.com/charioxai/chariox/actions/runs/34176513133),
 caught the original size-unit error: `67108864b` requested 32 GiB instead of
 64 MiB. The post-create size check rejected that oversized image before any App
-ran; its recovery journal was retained on the disposable runner. The corrected
-explicit-MiB path still needs the hosted creation/mount/recovery drill to pass.
+ran; its recovery journal was retained on the disposable runner.
 Run [34177429718](https://github.com/charioxai/chariox/actions/runs/34177429718)
 confirmed a correctly sized image, APFS UUID, required mount flags, exact device
 and mountpoint, and successful cleanup. Its remaining rejection was the new
 APFS root's 0755 mode despite `hdiutil -mode0700`. Preparation now applies 0700
 and fsync to the verified same-owner mounted descriptor before worker admission.
+Run [34177801710](https://github.com/charioxai/chariox/actions/runs/34177801710)
+then passed the complete dedicated storage drill at commit `27c2472d3`: each
+image occupied exactly 67,108,864 bytes and exhausted writable space after
+63,963,136 bytes. Required mount flags and denied execution, persistent data and
+UUID, temporary-data reset, process-exit recovery, and final cleanup passed.
+The real storage test completed in 22.10 seconds; eight offline tests also passed.
 This is also why a post-create length check is not a hard precreation bound.
 An inherited process file-size limit would cover only writers that actually
 inherit it; DiskImages service ownership must be observed before asserting that

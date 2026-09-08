@@ -36,8 +36,22 @@ impl Drop for Attributes {
 pub(super) fn launch(
     program: &CString,
     arguments: &[CString],
-    files: &[&File; 5],
+    files: &[&File],
 ) -> io::Result<libc::pid_t> {
+    if !(5..=7).contains(&files.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "worker descriptor count",
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if files.len() != 5 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "worker descriptor count",
+        ));
+    }
+    let boundary = files.len() as i32;
     let mut raw_actions = MaybeUninit::uninit();
     let mut raw_attributes = MaybeUninit::uninit();
     unsafe {
@@ -66,7 +80,7 @@ pub(super) fn launch(
         // an earlier dup2 action and accidentally alias SDK/control/log streams.
         let mut sources = Vec::<OwnedFd>::new();
         for (target, file) in files.iter().enumerate() {
-            let source = libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 5);
+            let source = libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, boundary);
             if source < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -80,7 +94,7 @@ pub(super) fn launch(
         #[cfg(target_os = "linux")]
         checked(libc::posix_spawn_file_actions_addclosefrom_np(
             &mut actions.0,
-            5,
+            boundary,
         ))?;
 
         let mut empty = MaybeUninit::<libc::sigset_t>::uninit();

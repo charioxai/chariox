@@ -10,6 +10,8 @@
 //! cancellation clone is nonblocking; cancellation does not release admission.
 
 mod monitor;
+#[cfg(target_os = "linux")]
+mod platform_linux;
 mod record;
 mod spawn;
 #[cfg(target_os = "macos")]
@@ -47,6 +49,12 @@ pub struct PreparedWorker {
 /// WorkerProcess. Linux must own its exact cgroup + bundled bubblewrap namespace
 /// domain; a process group alone cannot contain bubblewrap's nested session.
 trait ResourceDomain: Send {
+    /// Trusted setup only: Linux inherits cgroup.procs at FD5 and the pinned
+    /// bubblewrap executable at FD6. Both close before native App main. Ordinary
+    /// workers and macOS Apple-tool launches retain the original FD0..4 ABI.
+    fn setup_descriptors(&self) -> &[File] {
+        &[]
+    }
     // Verification must be bounded and all cleanup methods nonpanicking.
     fn verify_before_continue(&mut self, launcher_pid: libc::pid_t) -> Result<(), WorkerError>;
     /// Bounded ongoing domain/aggregate check on the owning thread. The default
@@ -188,12 +196,10 @@ impl WorkerProcess {
         let sdk_file = File::from(std::os::fd::OwnedFd::from(child_sdk));
         let control_file = File::from(std::os::fd::OwnedFd::from(child_control));
         let deadline = Instant::now() + limits.startup_timeout;
-        let pid = spawn::launch(
-            &prepared.program,
-            &prepared.arguments,
-            &[&input, &stdout_file, &stderr_file, &sdk_file, &control_file],
-        )
-        .map_err(|_| WorkerError::Spawn)?;
+        let mut files = vec![&input, &stdout_file, &stderr_file, &sdk_file, &control_file];
+        files.extend(prepared.domain.setup_descriptors());
+        let pid = spawn::launch(&prepared.program, &prepared.arguments, &files)
+            .map_err(|_| WorkerError::Spawn)?;
         let child = monitor::Child::new(pid, prepared);
         drop((input, stdout_file, stderr_file, sdk_file, control_file));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
