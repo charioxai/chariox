@@ -4,6 +4,35 @@
 //! policy/signature reverification after restart.
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod lease;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use lease::VerifiedReleaseLease;
+
+/// The installer/helper and kernel share this naming rule. The path is still
+/// required to come from trusted kernel configuration or root enrollment.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn root_for_database(
+    database: &std::path::Path,
+) -> std::result::Result<std::path::PathBuf, ReleaseStoreError> {
+    use sha2::{Digest, Sha256};
+    use std::{os::unix::ffi::OsStrExt, path::Component};
+    if !database.is_absolute()
+        || database.as_os_str().len() > 1024
+        || database
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(ReleaseStoreError::InvalidRoot);
+    }
+    let parent = database.parent().ok_or(ReleaseStoreError::InvalidRoot)?;
+    let name = database.file_name().ok_or(ReleaseStoreError::InvalidRoot)?;
+    Ok(parent.join(format!(
+        "app-releases-{:x}",
+        Sha256::digest(name.as_bytes())
+    )))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use crate::private_fs::{
         check, entry_metadata, publish, remove_contents_preserving, same_entry, Dir, FsError,
@@ -23,7 +52,7 @@ mod unix {
     const ARCHIVE: &str = "envelope.cxapp";
     const PAYLOAD: &str = "payload";
     const MARKER: &str = ".chariox-stage";
-    const MAGIC: &str = "chariox.app.release-stage.v1\n";
+    pub(super) const MAGIC: &str = "chariox.app.release-stage.v1\n";
     const MAX_TREE_ENTRIES: usize = 131_072;
     static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
@@ -128,24 +157,12 @@ mod unix {
         /// in one state parent. Anchored creation checks ownership, rejects
         /// symlinks and syncs the child and its parent before returning.
         pub fn open_or_create(kernel_database_path: &Path) -> Result<Self> {
-            if !kernel_database_path.is_absolute() {
-                return Err(ReleaseStoreError::InvalidRoot);
-            }
-            let parent = kernel_database_path
-                .parent()
-                .ok_or(ReleaseStoreError::InvalidRoot)?;
-            let database_name = kernel_database_path
-                .file_name()
-                .ok_or(ReleaseStoreError::InvalidRoot)?;
-            let name = format!(
-                "app-releases-{:x}",
-                Sha256::digest(database_name.as_bytes())
-            );
-            let root = Dir::open_or_create_private_child(parent, OsStr::new(&name))?;
-            Ok(Self {
-                root,
-                path: parent.join(name),
-            })
+            let path = super::root_for_database(kernel_database_path)?;
+            let root = Dir::open_or_create_private_child(
+                path.parent().ok_or(ReleaseStoreError::InvalidRoot)?,
+                path.file_name().ok_or(ReleaseStoreError::InvalidRoot)?,
+            )?;
+            Ok(Self { root, path })
         }
 
         pub fn stage(
@@ -155,6 +172,16 @@ mod unix {
             budget: StageBudget,
         ) -> Result<StagedRelease> {
             self.stage_with_checkpoint(package, archive, budget, |_| Ok(()))
+        }
+
+        /// Reverify an existing published tree and retain shared ownership for
+        /// worker preparation. This performs no extraction or App execution.
+        pub fn lease_verified(
+            &self,
+            package: &VerifiedPackage<'_>,
+            archive: &[u8],
+        ) -> Result<super::VerifiedReleaseLease> {
+            super::lease::verified(&self.root, package, archive)
         }
 
         /// Conservative bytes the kernel must reserve before starting this
@@ -429,7 +456,7 @@ mod unix {
         }
     }
 
-    struct ExpectedTree<'a> {
+    pub(super) struct ExpectedTree<'a> {
         files: BTreeMap<String, &'a [u8]>,
         directories: BTreeSet<String>,
     }
@@ -457,7 +484,7 @@ mod unix {
     }
 
     impl<'a> ExpectedTree<'a> {
-        fn new(
+        pub(super) fn new(
             package: &'a VerifiedPackage<'_>,
             archive: &'a [u8],
             marker: &'a [u8],
@@ -552,12 +579,12 @@ mod unix {
     }
 
     #[derive(Clone, Copy)]
-    enum RootMode {
+    pub(super) enum RootMode {
         Publishing,
         Sealed,
     }
 
-    fn verify_tree(root: &Dir, tree: &ExpectedTree<'_>, mode: RootMode) -> Result<()> {
+    pub(super) fn verify_tree(root: &Dir, tree: &ExpectedTree<'_>, mode: RootMode) -> Result<()> {
         let mut actual = BTreeSet::new();
         let mut remaining = MAX_TREE_ENTRIES;
         inspect_tree(root, "", &mut actual, &mut remaining, mode)?;
@@ -659,7 +686,7 @@ mod unix {
         }
         Ok(parts)
     }
-    fn digest_name(digest: &str) -> Result<&str> {
+    pub(super) fn digest_name(digest: &str) -> Result<&str> {
         let name = digest
             .strip_prefix("sha256:")
             .ok_or(ReleaseStoreError::ArchiveMismatch)?;

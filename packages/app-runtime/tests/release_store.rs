@@ -99,6 +99,67 @@ fn budget() -> StageBudget {
         host_reserve_bytes: 1024 * 1024,
     }
 }
+
+#[test]
+fn verified_worker_lease_retains_shared_publication_lock_until_last_consumer_drains() {
+    use std::os::fd::AsRawFd;
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    let staged = store.stage(&package, &archive, budget()).unwrap();
+    let first = store.lease_verified(&package, &archive).unwrap();
+    let second = store.lease_verified(&package, &archive).unwrap();
+    assert_eq!(first.package_digest(), package.package_digest());
+    assert_eq!(first.manifest(), package.manifest());
+    assert_eq!(first.declarations(), package.declarations());
+    let observer = fs::File::open(&staged.path).unwrap();
+    let exclusive = || unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_ne!(exclusive(), 0);
+    assert!(matches!(
+        store.stage(&package, &archive, budget()),
+        Err(ReleaseStoreError::Busy)
+    ));
+    drop(first);
+    assert_ne!(exclusive(), 0);
+    drop(second);
+    assert_eq!(exclusive(), 0);
+    assert!(matches!(
+        store.lease_verified(&package, &archive),
+        Err(ReleaseStoreError::Busy)
+    ));
+}
+
+#[test]
+fn worker_lease_rejects_archive_mismatch_payload_tampering_and_symlink_substitution() {
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    let staged = store.stage(&package, &archive, budget()).unwrap();
+    let mut wrong_archive = archive.clone();
+    wrong_archive[0] ^= 1;
+    assert!(matches!(
+        store.lease_verified(&package, &wrong_archive),
+        Err(ReleaseStoreError::ArchiveMismatch)
+    ));
+    let entry = staged.path.join("payload/runtime/main.js");
+    permissions(&entry, 0o600);
+    fs::write(&entry, b"unverified runtime entry").unwrap();
+    permissions(&entry, 0o400);
+    assert!(matches!(
+        store.lease_verified(&package, &archive),
+        Err(ReleaseStoreError::InvalidExisting)
+    ));
+    permissions(entry.parent().unwrap(), 0o700);
+    fs::remove_file(&entry).unwrap();
+    symlink("../../envelope.cxapp", &entry).unwrap();
+    permissions(entry.parent().unwrap(), 0o500);
+    assert!(matches!(
+        store.lease_verified(&package, &archive),
+        Err(ReleaseStoreError::UnsafeEntry)
+    ));
+}
 fn names(root: &Path) -> Vec<String> {
     let mut entries: Vec<_> = fs::read_dir(root)
         .unwrap()

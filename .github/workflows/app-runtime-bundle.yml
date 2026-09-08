@@ -10,6 +10,8 @@ on:
       - 'packages/app-sdk/**'
       - 'scripts/package-app-runtime*.mjs'
       - 'scripts/app-runtime-bundle*.mjs'
+      - 'scripts/app-runtime-release*.mjs'
+      - 'scripts/sign-app-runtime-release*.mjs'
       - '.github/workflows/app-runtime-bundle.yml'
 
 permissions:
@@ -33,3 +35,5 @@ jobs:
           node-version: '24.20.0'
       - name: Verify deterministic inventory and tampering cases
         run: node --test --test-concurrency=1 scripts/package-app-runtime.test.mjs
+      - name: Verify external builder authority and signed release inventory
+        run: node --test --test-concurrency=1 scripts/sign-app-runtime-release.test.mjs

@@ -178,3 +178,115 @@ fn actual_file_digest_modes_links_extra_entries_and_manifest_duplicates_are_reje
     fixture.sign(inventory);
     assert!(matches!(fixture.open(), Err(EnrollmentError::Contract)));
 }
+
+#[test]
+fn linux_platform_contract_rejects_missing_foreign_or_executable_libraries() {
+    for target in ["linux-x64", "linux-arm64"] {
+        let files: Vec<_> = manifest::expected_paths(target)
+            .unwrap()
+            .into_iter()
+            .map(|path| {
+                json!({"executable":manifest::executable(&path),"path":path,
+                    "size":1,"sha256":"a".repeat(64)})
+            })
+            .collect();
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file["path"].as_str().unwrap().starts_with("platform/"))
+                .count(),
+            8
+        );
+        assert!(files.len() <= 40);
+        let inventory = json!({"schema":"chariox.app-runtime-inventory.v1","target":target,
+            "runtimeVersion":"0.1.0","workerAbi":1,"nodeVersion":"24.20.0","nodeModuleAbi":137,
+            "sdkVersion":chariox_app_package::SUPPORTED_SDK_VERSION,"sourceCommit":"a".repeat(40),"files":files});
+        let validate = |value: Value| {
+            serde_json::from_value::<manifest::Inventory>(value)
+                .unwrap()
+                .validate(target)
+        };
+        assert!(validate(inventory.clone()).is_ok());
+        for expected in inventory["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|file| file["path"].as_str().unwrap().starts_with("platform/"))
+        {
+            let mut missing = inventory.clone();
+            missing["files"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|file| file["path"] != expected["path"]);
+            assert!(matches!(validate(missing), Err(EnrollmentError::Contract)));
+        }
+        let mut wrong_loader = inventory.clone();
+        let loader = wrong_loader["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| {
+                file["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("platform/ld-linux")
+            })
+            .unwrap();
+        loader["path"] = json!(if target == "linux-x64" {
+            "platform/ld-linux-aarch64.so.1"
+        } else {
+            "platform/ld-linux-x86-64.so.2"
+        });
+        assert!(matches!(
+            validate(wrong_loader),
+            Err(EnrollmentError::Contract)
+        ));
+        let mut executable_library = inventory.clone();
+        executable_library["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == "platform/libc.so.6")
+            .unwrap()["executable"] = json!(true);
+        assert!(matches!(
+            validate(executable_library),
+            Err(EnrollmentError::Contract)
+        ));
+        let mut host_path = inventory;
+        host_path["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == "platform/libc.so.6")
+            .unwrap()["path"] = json!("/lib/x86_64-linux-gnu/libc.so.6");
+        assert!(matches!(
+            validate(host_path),
+            Err(EnrollmentError::Contract)
+        ));
+    }
+    for target in ["darwin-x64", "darwin-arm64"] {
+        assert!(!manifest::expected_paths(target)
+            .unwrap()
+            .iter()
+            .any(|path| path.starts_with("platform/")));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn signed_platform_library_bytes_and_exact_graph_are_verified_before_admission() {
+    let fixture = Fixture::new();
+    let path = "platform/libc.so.6";
+    assert!(fixture.open().unwrap().file(path).is_some());
+    let original = fs::read(fixture.runtime.join(path)).unwrap();
+    fixture.write(path, b"substituted host library", 0o444);
+    assert!(matches!(fixture.open(), Err(EnrollmentError::Identity)));
+    fixture.write(path, &original, 0o444);
+    let mut inventory = fixture.inventory();
+    inventory["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|file| file["path"] != path);
+    fixture.sign(inventory);
+    assert!(matches!(fixture.open(), Err(EnrollmentError::Contract)));
+}

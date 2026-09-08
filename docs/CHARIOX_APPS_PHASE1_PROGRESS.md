@@ -880,3 +880,35 @@ Actual acquisition then found that root-owned search-only directories need
 O_PATH traversal in the client. The next hosted drill verifies that correction;
 full ext4 capacity/recovery evidence is still pending. No privileged helper,
 mount operation or Node compilation ran on this shared Mac.
+
+### Executed ext4 storage and signed release assembly (2026-09-08)
+
+Hosted Linux storage run `34182187733` at `3d3bf1ff2` passed seven offline tests
+and the actual production-helper drill. Data reached ENOSPC after 491,782,144
+bytes within the fixed 536,870,912-byte image; temporary storage reached
+58,720,256 bytes within its 67,108,864-byte image. No-execute, remount/data
+persistence and temporary reset passed. The helper and kernel namespaces had
+different mount IDs while matching the exact device/inode identity, as required
+for propagated mounts. Actual helper SIGKILL and client termination recovered
+fsynced data. Final owned mount/loop inventories were empty. The primary drill
+took 1.46 seconds and abrupt-exit recovery 0.11 seconds. The managed supervisor
+main was a fixed sleep fixture; this does not yet validate full Node/App startup.
+
+`sign-app-runtime-release.mjs` now requires an external builder signature and
+private release key, verifies the exact bundle/launcher/platform graph and
+committed/current source hashes, then produces the signed runtime inventory.
+The launcher has a separate attested source set so security-source changes
+cannot reuse its old provenance without invalidating the expensive Node cache.
+Each streamed copy is bounded by its signed size as well as the aggregate
+512 MiB ceiling. Five signing/provenance tests pass in 3.87 seconds. These use
+text artifacts and temporary keys, with no native execution or root enrollment.
+
+The installed runtime verifier and signer agree on the fixed eight-file Linux
+guest library graph. Four verifier tests pass (3.17-second compile,
+0.03-second execution, peak 406,128 KiB). A sealed `VerifiedReleaseLease` reuses
+the existing archive/tree verifier and holds a shared publication lock for the
+entire worker/broker lifetime. Two real filesystem regressions pass for shared
+lease ownership, archive/payload tampering and symlink substitution (3.73-second
+compile, 0.09-second execution, peak 472,464 KiB). Installer enrollment, complete
+platform factory assembly and production signed artifacts remain integration
+work. Evidence is under the existing task evidence root; no evidence is in Git.

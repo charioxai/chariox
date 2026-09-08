@@ -105,6 +105,26 @@ pub(super) fn expected_paths(target: &str) -> Result<BTreeSet<String>> {
                 ]
                 .map(str::to_owned),
             );
+            paths.insert(format!(
+                "platform/{}",
+                if target == "linux-x64" {
+                    "ld-linux-x86-64.so.2"
+                } else {
+                    "ld-linux-aarch64.so.1"
+                }
+            ));
+            paths.extend(
+                [
+                    "libc.so.6",
+                    "libm.so.6",
+                    "libstdc++.so.6",
+                    "libgcc_s.so.1",
+                    "libpthread.so.0",
+                    "libdl.so.2",
+                    "librt.so.1",
+                ]
+                .map(|name| format!("platform/{name}")),
+            );
         }
         "darwin-x64" | "darwin-arm64" => {
             paths.extend(["libnode.137.dylib", "libchariox-app-runtime.dylib"].map(str::to_owned));
