@@ -169,6 +169,21 @@ fn publisher_conflict_preserves_adjacent_ordinary_writer_events() {
 }
 
 #[test]
+fn fenced_writer_blocks_publisher_snapshot_reads() {
+    let database = Database::new();
+    let store = database.open();
+    store
+        .mutate_app_publisher("alice", enroll("initial", 0))
+        .unwrap();
+    assert_eq!(store.list_app_publishers("alice").unwrap().len(), 1);
+    store.fence_writer().unwrap();
+    assert!(store.list_app_publishers("alice").is_err());
+    assert!(store
+        .trusted_app_publisher("alice", "local.developer", "development")
+        .is_err());
+}
+
+#[test]
 fn cancelled_publisher_write_cannot_commit_after_waiting_for_sqlite() {
     use std::sync::{
         atomic::{AtomicBool, Ordering},

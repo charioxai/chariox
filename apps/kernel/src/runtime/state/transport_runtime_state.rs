@@ -49,6 +49,7 @@ impl KernelRuntimeState {
             return;
         }
         self.owned.sweep_kernel_operation_interactions(false);
+        self.app_control().publishers().pump(self).await;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -376,6 +377,16 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        {
+            let publishers = self.app_control().publishers().clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || publishers.shutdown_blocking(runtime))
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_publisher_shutdown",
+                    message: "App publisher tasks did not drain".into(),
+                })?;
+        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
             let installs = self.app_control().installs().clone();

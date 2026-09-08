@@ -25,6 +25,7 @@ pub(crate) mod app_installation_staging;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_installation_operations;
 pub(crate) mod app_publishers;
+pub(crate) mod app_publisher_operations;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
@@ -146,6 +147,7 @@ enum DurableWriterRequest {
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
     AppPublisher(Box<app_publishers::AppPublisherRequest>),
+    AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
@@ -329,6 +331,7 @@ impl DurableKernelStateStore {
             })?;
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;
+        app_publisher_operations::initialize(&connection)?;
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
         app_worker_lifecycle::initialize(&connection)?;
@@ -1375,6 +1378,16 @@ fn run_durable_writer(
                 app_publishers::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppPublisherOperation(request) => {
+                if matches!(
+                    app_publisher_operations::execute(&mut connection, *request, &health.fatal),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
+                    health.fatal.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
             DurableWriterRequest::VerifiedApp(request) => {
                 app_installation_staging::execute(&mut connection, *request);
                 continue;
@@ -1464,6 +1477,7 @@ fn run_durable_writer(
                 Ok(
                     request @ (DurableWriterRequest::App(_)
                     | DurableWriterRequest::AppPublisher(_)
+                    | DurableWriterRequest::AppPublisherOperation(_)
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
                     | DurableWriterRequest::AppBinding(_)

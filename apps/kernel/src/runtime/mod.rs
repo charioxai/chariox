@@ -13,6 +13,7 @@ pub(crate) mod app_lock;
 pub(crate) mod app_operation_budget;
 mod app_package_preparation;
 mod app_package_upload_control;
+pub(crate) mod app_publisher_control;
 mod app_state_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_backend_broker;

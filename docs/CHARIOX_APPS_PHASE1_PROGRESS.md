@@ -1370,3 +1370,22 @@ Protocol constants and shape assertions move together to 295. SDK 0.6 retains
 its actual minimum protocol 294 because this increment changes terminal install
 control, not the worker contract. The normal file-install terminal flow and
 publisher enrollment interface remain follow-on integration work.
+
+### Retained publisher enrollment decisions (2026-09-08)
+
+Publisher enrollment stores immutable review input and commits the human
+approval, enrolled key and historical receipt together on the existing writer.
+Recovery arms a fresh challenge; replaying an approved receipt cannot undo later
+key revocation. The kernel pump owns bounded consent waits and request jobs;
+shutdown joins pending work, including an admitted cancellation's negative write.
+Commit uncertainty marks the writer unhealthy before publishing its response,
+then stops the writer so no subsequent snapshot can treat uncertain trust as
+healthy state.
+
+Two actual package savepoint/transaction tests pass (5.09-second compile,
+under 0.01-second execution, sampled peak 301,904 KiB). Sixteen kernel regression
+sources cover the durable operations, zero-agent human decisions, ownership,
+recovery, fairness, disconnected requests and the uncertainty fence. They are
+selected for hosted validation and have not yet compiled or executed. Public
+terminal enrollment requests and the normal publisher-file flow remain to be
+connected; this internal controller adds no new protocol shape.

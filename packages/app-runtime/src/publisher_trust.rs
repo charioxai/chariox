@@ -6,7 +6,9 @@
 //! App-supplied decision string cannot enroll themselves. Library trust is out
 //! of scope. No private signing key is stored here.
 
+mod enrollment;
 mod store;
+pub use enrollment::enroll_in;
 
 use chariox_app_package::TrustedPublisher;
 use rusqlite::{Connection, TransactionBehavior};

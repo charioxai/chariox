@@ -33,6 +33,7 @@ pub(crate) struct AppControlService {
     preparation: super::app_package_preparation::AppPackagePreparation,
     admission: Arc<Semaphore>,
     event_pump: super::app_event_pump::AppEventPump,
+    publishers: super::app_publisher_control::AppPublisherControl,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -48,6 +49,10 @@ impl AppControlService {
         );
         let admission = Arc::new(Semaphore::new(8));
         let event_pump = super::app_event_pump::AppEventPump::new();
+        let publishers = super::app_publisher_control::AppPublisherControl::new(
+            store.clone(),
+            admission.clone(),
+        );
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         let workers = workers::ActiveWorkers::default();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -75,6 +80,7 @@ impl AppControlService {
             store,
             admission,
             event_pump,
+            publishers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -94,6 +100,10 @@ impl AppControlService {
 
     pub(crate) fn schedule_maintenance(&self) {
         self.uploads.schedule_maintenance(&self.admission);
+    }
+
+    pub(crate) fn publishers(&self) -> &super::app_publisher_control::AppPublisherControl {
+        &self.publishers
     }
 
     pub(crate) fn event_pump(&self) -> &super::app_event_pump::AppEventPump {

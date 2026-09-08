@@ -103,8 +103,11 @@ impl DurableKernelStateStore {
         trusted_owner: &str,
     ) -> Result<Vec<PublisherTrustEntry>, AppPublisherError> {
         validate_owner(trusted_owner)?;
+        self.require_writer_healthy()?;
         let mut connection = self.lock_connection("durable_state.list_app_publishers")?;
-        Ok(PublisherTrustRegistry::new(&mut connection).list(trusted_owner)?)
+        let entries = PublisherTrustRegistry::new(&mut connection).list(trusted_owner)?;
+        self.require_writer_healthy()?;
+        Ok(entries)
     }
 
     /// Verification input only. The installer must recheck this snapshot in the
@@ -116,14 +119,15 @@ impl DurableKernelStateStore {
         key_id: &str,
     ) -> Result<TrustedPublisherSnapshot, AppPublisherError> {
         validate_owner(trusted_owner)?;
+        self.require_writer_healthy()?;
         let mut connection = self.lock_connection("durable_state.read_app_publisher")?;
-        Ok(
-            PublisherTrustRegistry::new(&mut connection).trusted_publisher(
-                trusted_owner,
-                publisher_id,
-                key_id,
-            )?,
-        )
+        let snapshot = PublisherTrustRegistry::new(&mut connection).trusted_publisher(
+            trusted_owner,
+            publisher_id,
+            key_id,
+        )?;
+        self.require_writer_healthy()?;
+        Ok(snapshot)
     }
 }
 
