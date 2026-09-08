@@ -1,5 +1,6 @@
 import { AppError } from './errors.js';
 import { object } from './protocol.js';
+import { createFetch } from './fetch.js';
 
 const CHUNK = 64 * 1024;
 const BUFFERED = 512 * 1024;
@@ -136,5 +137,5 @@ export function createHttp(call) {
       if (streamId) await http.cancel(streamId, { timeoutMs: 1000 }).catch(() => {});
     }
   }
-  return Object.freeze(http);
+  return Object.freeze({ ...http, fetch: createFetch(http) });
 }

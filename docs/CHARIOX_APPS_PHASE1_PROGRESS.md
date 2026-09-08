@@ -1371,6 +1371,42 @@ its actual minimum protocol 294 because this increment changes terminal install
 control, not the worker contract. The normal file-install terminal flow and
 publisher enrollment interface remain follow-on integration work.
 
+### Actual confined Linux Node execution (2026-09-08)
+
+Hosted run `34194246935` on `efd555a5c` executes the retained Node 24.20.0/
+ABI 137 artifact through the production native launcher after independent
+sandbox inspection. SDK 0.6 registers and serves its tool; ESM/CJS, private
+read/write/copy/watch and crypto pass. Host/escaped reads, package writes,
+ambient descriptors, subprocesses, native add-ons and raw TCP/UDP are denied.
+Separate channel-disconnect and stalled-registration cases terminate correctly.
+The three cases run under 2 GiB RAM, no swap, one CPU, 128 tasks and 180 seconds.
+
+The bundle's native inputs match the current source and its digest is
+`sha256:6f6423f4dd4e800ffba42a0f1f4bcf7c9b2c58fec676c6c451bbb82913d9e870`.
+Evidence is retained in artifact `10043293708`; only its small logs/identity
+records were downloaded locally. This is actual confined execution of the
+unsigned build, not signed installer enrollment or macOS runtime acceptance.
+
+### Fetch adapter and SDK 0.7 / protocol 296 (2026-09-08)
+
+The trusted bootstrap installs global Fetch before importing App code; the same
+adapter is available through `chariox.http.fetch`. Native Request, Response,
+Headers, FormData and body streams retain their value semantics while all
+network work uses the five kernel HTTP operations. Redirects recheck each
+destination and retain the original lifetime. Immutable bodies can be replayed;
+arbitrary consumed Request/stream bodies cannot. Gzip, deflate and Brotli decoding
+is streamed with bounded stages and decoded-byte limits. Cancellation tears down
+the exact retained stream, including early responses during blocked uploads.
+
+Fifty-seven SDK tests pass after the coordinated version pins. Eighteen runtime
+bundle/signing tests pass in 66.97 seconds, including the four new SDK modules
+in the exact signed inventory without changing native compilation inputs.
+The implementation also has eleven bootstrap tests, including actual FD3 Fetch
+with ambient networking trapped, and three pinned Octokit/SSE client tests with
+isolated, script-disabled dependencies. These use broker fixtures; actual
+SDK 0.7 embedded execution and kernel HTTP tests remain hosted gates. Credential
+connections, cookies and protected-operation receipts remain separate work.
+
 ### Retained publisher enrollment decisions (2026-09-08)
 
 Publisher enrollment stores immutable review input and commits the human

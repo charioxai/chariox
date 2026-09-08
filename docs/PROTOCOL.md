@@ -1040,6 +1040,11 @@ Workflow trigger and deployment direction:
   implicitly. Buffered SDK requests compose the stream operations under one
   original deadline and size bound. Cancellation and failed response publication
   dispose of the exact stream; a lost body chunk cannot be silently retried.
+- protocol 296 pairs SDK 0.7 with worker-global `fetch` and `chariox.http.fetch`.
+  Native Web value objects and body streams use the existing five kernel HTTP
+  operations; each redirect opens a newly authorized destination under the
+  original lifetime. The shared Fetch fixture pins response behavior and limits.
+  Raw HTTP and event wire fixtures retain their unchanged protocol-294 floor.
 - protocol 295 adds `BeginAppInstall`, `GetAppInstallOperation` and
   `CancelAppInstallOperation` on the existing authenticated terminal path.
   Begin durably binds a retry ID, session, opaque upload and package digest

@@ -6,6 +6,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/pr
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { encodeFrame, FrameDecoder } from '../../../packages/app-sdk/src/protocol.js';
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
@@ -219,6 +220,47 @@ test('kernel readiness rejection and failed App shutdown terminate with bounded 
   assert.ok(reply.error);
   assert.ok(!JSON.stringify(reply).includes('secret'));
   assert.equal(result.stderr, 'app_worker_bootstrap_failed:135\n');
+});
+
+test('global Fetch is installed before App import and uses only the actual inherited SDK channel', async () => {
+  const prepared = await fixture(`
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+    if (descriptor.writable || descriptor.configurable) throw new Error('mutable global transport');
+    export default sdk => sdk.tools.register('echo', async () => {
+      if (globalThis.fetch !== sdk.http.fetch) throw new Error('wrong global transport');
+      const response = await fetch(new Request('https://api.example.test/fixture'));
+      const value = await response.json();
+      return { value, url: response.url, bodyUsed: response.bodyUsed,
+        nativeValues: response instanceof Response && response.headers instanceof Headers };
+    });
+  `);
+  prepared.script = `globalThis.fetch = () => { throw new Error('ambient network fetch was invoked'); };\n${prepared.script}`;
+  const running = start(prepared);
+  await running.ready();
+  running.request('fetch-call', 'tools.invoke', { name: 'echo', input: null });
+  const open = await running.receive(message => message.method === 'http.open');
+  assert.equal(open.params.url, 'https://api.example.test/fixture');
+  assert.equal(open.params.hasBody, false);
+  const streamId = '00000000-0000-4000-8000-000000000001';
+  running.send({ kind: 'response', id: open.id, result: { streamId } });
+  const head = await running.receive(message => message.method === 'http.headers');
+  running.send({ kind: 'response', id: head.id, result: { pending: false, status: 200,
+    headers: [['content-type', 'application/json'], ['content-encoding', 'gzip']], url: open.params.url } });
+  const read = await running.receive(message => message.method === 'http.read');
+  running.send({ kind: 'response', id: read.id, result: { pending: false, done: false,
+    chunkBase64: gzipSync(Buffer.from('{"through":"kernel"}')).toString('base64') } });
+  const end = await running.receive(message => message.method === 'http.read' && message.id !== read.id);
+  running.send({ kind: 'response', id: end.id, result: { pending: false, done: true, chunkBase64: '' } });
+  const cancel = await running.receive(message => message.method === 'http.cancel');
+  assert.equal(cancel.params.streamId, streamId);
+  running.send({ kind: 'response', id: cancel.id, result: null });
+  const result = await running.receive(message => message.id === 'fetch-call');
+  assert.deepEqual(result.result, { value: { through: 'kernel' }, url: open.params.url, bodyUsed: true, nativeValues: true });
+  running.request('shutdown-fetch', 'lifecycle.dispatch', { event: 'shutdown' });
+  const completed = await running.completed;
+  assert.equal(completed.code, 0, JSON.stringify(completed));
+  assert.equal(completed.malformed, undefined);
+  assert.equal(completed.stderr, '');
 });
 
 test('fatal asynchronous App exceptions terminate without exposing exception text', async () => {

@@ -74,6 +74,9 @@ function start(input) {
     };
     sdk = createAppSdk({ transport, generation: config.generation,
       paths: config.paths, declarations: config.declarations });
+    // Preserve Node's Web value objects while routing every global Fetch call
+    // through the actual worker SDK channel before loading any App module.
+    Object.defineProperty(globalThis, 'fetch', { value: sdk.http.fetch, writable: false, configurable: false });
     const { ready, close, ...api } = sdk;
     void ready; void close;
     const app = await import(pathToFileURL(config.entry).href);

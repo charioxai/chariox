@@ -113,6 +113,8 @@ export interface AppSdk {
     export(path: string, options?: CallOptions): Promise<{ operationId: string }>;
   };
   readonly http: {
+    /** Same adapter installed as worker-global fetch. Network access stays in the kernel. */
+    fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
     /** Anonymous HTTPS only; no automatic redirects, decoding or body retries. */
     open(request: HttpOpenRequest, options?: CallOptions): Promise<{ streamId: string }>;
     /** At most 64 KiB; only one write may be in flight. Empty chunks require end=true. */

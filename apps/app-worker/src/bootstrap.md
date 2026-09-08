@@ -73,3 +73,11 @@ Seatbelt probe. Signed/hardened macOS validation remains required, including the
 documented unsigned file-map-to-executable observation.
 
 Primary reference: [Node 24.20 embedder entry and createRequire](https://github.com/nodejs/node/blob/v24.20.0/doc/api/embedding.md).
+
+SDK 0.7 installs a fixed global `fetch` from the broker SDK before importing App
+code. It preserves native Web value objects and routes every Fetch network
+operation over FD3; the inherited-channel test replaces ambient Fetch with a
+trap and completes a gzip exchange through the broker messages. Bootstrap/SDK
+changes belong to the versioned bundle graph, not the native compiler inputs.
+See [the Fetch contract](../../../packages/app-sdk/FETCH.md) for its precise
+supported subset and remaining integrated validation.

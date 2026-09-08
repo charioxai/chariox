@@ -21,6 +21,7 @@ on:
       - 'deploy/managed-kernel/**'
       - 'scripts/*managed-kernel-release*'
       - 'scripts/build-app-runtime*'
+      - 'scripts/test-app-fetch-clients.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'package.json'
@@ -59,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24.20.0'
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Test package, persistence and Rust/Node wire contract
         run: cargo test --locked -p chariox-app-package -p chariox-app-runtime -- --test-threads=1
@@ -67,6 +68,8 @@ jobs:
         run: cargo test --locked -p chariox-app-runtime --features test-fixtures --test worker_sdk_fixture -- --test-threads=1
       - name: Test Node SDK
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
+      - name: Test pinned Fetch clients through the broker adapter
+        run: node scripts/test-app-fetch-clients.mjs
       - name: Test runtime build planning and resource guards
         run: node --test scripts/build-app-runtime.test.mjs
       - name: Test signed managed release helper packaging

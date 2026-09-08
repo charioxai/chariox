@@ -71,10 +71,11 @@ The SDK does not expose transcripts, a second prompt area, provider credentials,
 raw kernel requests, or an approval-resolution method. Conversation placement
 belongs to the separate App-view/terminal integration.
 
-Inline file and HTTP bodies currently support at most 512 KiB. The streaming,
-multipart, SSE and global `fetch` adapter required by Phase 1 still need the
-kernel stream broker contract and its transport conformance tests. This package
-does not label the bounded `http.request` interface as fetch-compatible. Typed
+Inline file and buffered HTTP bodies support at most 512 KiB. SDK 0.7 adds a
+separate streaming Fetch adapter over the kernel stream broker, including
+multipart, SSE consumption, redirects and bounded decompression. Its supported
+contract and evidence limits are described in [FETCH.md](FETCH.md). The bounded
+`http.request` helper remains a separate convenience interface. Typed
 workflow/agent asset methods and consented output callback registration also
 remain integration work. No broker operation is complete merely because its
 forwarding method exists here.
@@ -177,3 +178,7 @@ write with unknown completion must never be retried. Always cancel a stream when
 finished or abandoning it. `http.request` is a 512 KiB buffered convenience using
 one original deadline, at most 30 seconds, across its component operations.
 This subset does not claim Fetch conformance.
+
+SDK 0.7 supplies `chariox.http.fetch` and the worker-global Fetch adapter above
+these operations. See [the supported Fetch contract](FETCH.md) for streaming,
+redirect/decompression behavior, pinned client tests and remaining exclusions.

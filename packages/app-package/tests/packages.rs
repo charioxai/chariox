@@ -28,7 +28,7 @@ fn manifest_value() -> Value {
     json!({
         "schema":"chariox.app.v1", "appId":"com.example.todo", "version":"1.0.0",
         "publisher":{"id":"com.example","keyId":"developer-1","name":"Local Developer"},
-        "sdkVersion":"0.6.0", "appContractVersion":1, "minKernelProtocol":500,
+        "sdkVersion":"0.7.0", "appContractVersion":1, "minKernelProtocol":500,
         "resourcePolicy":"chariox.app.resources.v1",
         "runtime":{"engine":"node","entry":"runtime/main.js"}, "ui":{"entry":"ui/index.html"},
         "tools":"schemas/tools.json", "events":"schemas/events.json",

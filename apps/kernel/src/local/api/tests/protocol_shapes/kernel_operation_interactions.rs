@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn kernel_operation_interaction_subject_is_versioned_and_uses_the_existing_reply() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 296);
     let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
         "decision",
         "operation",
