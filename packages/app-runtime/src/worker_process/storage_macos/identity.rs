@@ -211,6 +211,16 @@ pub(super) fn mounted(dir: &Dir, mount: &Path, attachment: &Attachment) -> Resul
     }
     let stat = unsafe { stat.assume_init() };
     let required = (libc::MNT_NOEXEC | libc::MNT_NODEV | libc::MNT_NOSUID) as u32;
+    #[cfg(test)]
+    eprintln!(
+        "storage_mount_observation flags={} required={} ignore_ownership={} apfs={} device_matches={} mountpoint_matches={}",
+        stat.f_flags,
+        required,
+        stat.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0,
+        unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) }.to_bytes() == b"apfs",
+        unsafe { CStr::from_ptr(stat.f_mntfromname.as_ptr()) }.to_bytes() == attachment.volume.as_bytes(),
+        unsafe { CStr::from_ptr(stat.f_mntonname.as_ptr()) }.to_bytes() == mount.as_os_str().as_encoded_bytes(),
+    );
     if stat.f_flags & required != required
         || stat.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0
         || unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) }.to_bytes() != b"apfs"

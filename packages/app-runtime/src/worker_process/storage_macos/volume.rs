@@ -129,6 +129,14 @@ impl MountedStorage {
                 return Err(Error::Identity);
             }
             let metadata = dir.0.metadata()?;
+            #[cfg(test)]
+            eprintln!(
+                "storage_root_observation role={} uid={} expected_uid={} mode={:o}",
+                self.journal.images[index].role,
+                metadata.uid(),
+                unsafe { libc::geteuid() },
+                metadata.mode() & 0o7777,
+            );
             if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7777 != 0o700 {
                 return Err(Error::Identity);
             }
