@@ -1,10 +1,63 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {randomBytes} from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {openCookieImportJournal} from './cookie-import-journal.mjs';
 import { applyCookieImport } from './cookie-import-transaction.mjs';
 
 const source = [{name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, hostOnly:true, session:true, sameSite:'lax', storeId:'source'}];
 const scope = {approvedDomains:['example.test'], sourceStoreId:'source'};
+
+test('executor death during write leaves a recovery record that blocks a restarted import', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),'chariox-import-crash-'));
+  const key = Buffer.alloc(32,73); // Synthetic fixture key, never a user credential.
+  const binding = {userId:'user',roomId:'room',environmentId:'environment'};
+  let journal;
+  try {
+    const script = `
+      import {applyCookieImport} from ${JSON.stringify(new URL('./cookie-import-transaction.mjs',import.meta.url).href)};
+      import {openCookieImportJournal} from ${JSON.stringify(new URL('./cookie-import-journal.mjs',import.meta.url).href)};
+      const journal = await openCookieImportJournal({directory:process.argv[1],key:Buffer.alloc(32,73),binding:${JSON.stringify(binding)}});
+      await applyCookieImport({source:${JSON.stringify(source)},scope:${JSON.stringify(scope)},journal,
+        authorize:async()=>true,runExclusive:async fn=>fn(),
+        store:{read:async()=>[],write:async()=>process.exit(86),remove:async()=>{throw Error('unexpected rollback');}}});
+    `;
+    await assert.rejects(promisify(execFile)(process.execPath,
+      ['--input-type=module','-e',script,directory],{timeout:5000,maxBuffer:8192}),
+      error => error.code === 86 && !error.killed);
+    journal = await openCookieImportJournal({directory,key,binding});
+    const pending = await journal.read();
+    assert.ok(pending);
+    try {
+      const record = JSON.parse(pending.bytes.toString());
+      assert.equal(record.schema,1);
+      assert.deepEqual(record.before,[]);
+      assert.equal(record.imported[0].value,'fixture-only');
+    } finally { pending.bytes.fill(0); }
+    const {options,writes} = fixture();
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),0);
+  } finally {
+    await journal?.close();
+    key.fill(0);
+    await rm(directory,{recursive:true,force:true});
+  }
+});
+
+async function withJournal(operation) {
+  const directory = await mkdtemp(path.join(tmpdir(),'chariox-cookie-transaction-'));
+  const key = randomBytes(32);
+  const journal = await openCookieImportJournal({directory,key,
+    binding:{userId:'user',roomId:'room',environmentId:'environment'}});
+  try { await operation(journal); }
+  finally { await journal.close(); key.fill(0); await rm(directory,{recursive:true,force:true}); }
+}
 const stored = (changes = {}) => ({name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, session:true, expires:-1, sameSite:'Lax', ...changes});
 function fixture(initial = []) {
@@ -36,6 +89,92 @@ test('publishes a verified import while leaving unrelated cookies untouched', as
   const after = await store.read();
   assert.deepEqual(after.find(c => c.domain === 'other.test'), unrelated);
   assert.equal(after.find(c => c.domain === 'example.test').httpOnly, true);
+});
+
+test('encrypted recovery record is durable before the first cookie write and retained after verification', async () => {
+  await withJournal(async journal => {
+    const {options,store} = fixture();
+    const write = store.write;
+    store.write = async cookies => {
+      const pending = await journal.read();
+      assert.ok(pending);
+      try {
+        const record = JSON.parse(pending.bytes.toString());
+        assert.equal(record.schema,1);
+        assert.deepEqual(record.before,[]);
+        assert.equal(record.imported.length,1);
+      } finally { pending.bytes.fill(0); }
+      await write(cookies);
+    };
+    await applyCookieImport({...options,journal});
+    const pending = await journal.read();
+    assert.ok(pending);
+    pending.bytes.fill(0);
+  });
+});
+
+test('unresolved journal blocks another import without changing cookies', async () => {
+  await withJournal(async journal => {
+    await journal.prepare(Buffer.from('retained encrypted recovery'));
+    const {options,writes} = fixture();
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),0);
+  });
+});
+
+test('uncertain mutation failure retains encrypted recovery state', async () => {
+  await withJournal(async journal => {
+    const {options,store} = fixture();
+    store.write = async () => { throw Error('private controller payload'); };
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_failed',recoveryRequired:true});
+    const pending = await journal.read();
+    assert.ok(pending);
+    pending.bytes.fill(0);
+  });
+});
+
+test('revocation during journal preparation does not mutate the cookie store', async () => {
+  await withJournal(async journal => {
+    const {options,store,writes} = fixture();
+    let allowed = true;
+    let removals = 0;
+    store.remove = async () => { removals++; };
+    const guardedJournal = {...journal, prepare:async bytes => {
+      const receipt = await journal.prepare(bytes);
+      allowed = false;
+      return receipt;
+    }};
+    await assert.rejects(applyCookieImport({...options,journal:guardedJournal,
+      authorize:async () => allowed}), {code:'cookie_import_denied',recoveryRequired:false});
+    assert.equal(writes(),0);
+    assert.equal(removals,0);
+    assert.equal(await journal.read(),null);
+  });
+});
+
+test('failed journal preparation prevents mutation and preserves recovery classification', async () => {
+  const {options,writes} = fixture();
+  await assert.rejects(applyCookieImport({...options,journal:{
+    read:async () => null,
+    prepare:async () => { throw Object.assign(Error('private storage details'),{recoveryRequired:true}); },
+  }}), {code:'cookie_import_failed',message:'cookie_import_failed',recoveryRequired:true});
+  assert.equal(writes(),0);
+});
+
+test('verified application does not clear recovery state or permit subsequent imports', async () => {
+  await withJournal(async journal => {
+    const {options,store,writes} = fixture();
+    await applyCookieImport({...options,journal:{...journal,
+      discard:async () => assert.fail('readback cannot authorize journal deletion'),
+    }});
+    assert.equal(writes(),1);
+    assert.equal((await store.read())[0].value,'fixture-only');
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),1);
+  });
 });
 
 test('requires a fresh exclusive authorization and explicit overwrite before mutation', async () => {

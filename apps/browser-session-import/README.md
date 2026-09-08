@@ -288,16 +288,25 @@ read looks correct, because a lost acknowledgement can hide a late mutation.
 Rollback failure and unrelated-cookie loss also set it. The kernel must quarantine
 that Environment until recovery verifies it. Fixed error codes never include
 original transport errors or cookies. These recovery flags are not yet wired to
-kernel lifecycle state. Snapshots are in memory, not a crash-safe journal, so
-process death or browser restart during import remains unhandled. This must not
+kernel lifecycle state. Without the optional journal, snapshots remain in memory.
+Recovery replay after process death or browser restart remains unhandled. This must not
 be advertised as durable atomic import.
 
 ### Internal recovery storage
 
 `openCookieImportJournal({directory,key,binding})` provides encrypted pending-record
-storage for the future Environment executor. It is not connected to
-`applyCookieImport`, kernel lifecycle state, the source connector or a transport
-endpoint. It does not authorize import or establish a second credential vault.
+storage for the future Environment executor. `applyCookieImport` accepts it as an
+optional `journal` dependency: pending records block another import, the encrypted
+snapshot and intended cookies are synced before mutation, and uncertain failures
+retain the record. Verified application retains it for durable kernel completion;
+verified rollback clears it. Revocation
+during preparation clears it without touching the browser. This is internal
+transaction integration only, not kernel lifecycle, connector or transport wiring.
+It does not authorize import or establish a second credential vault.
+
+Successful browser readback is not a durable browser commit. The product executor
+still needs durable outcome/quarantine state and recovery replay before this
+adapter can safely serve real imports across browser or machine crashes.
 
 The kernel must provide a private, local-filesystem Environment directory under
 its own state root, with trusted ancestors, owned by the current Unix user and
@@ -350,10 +359,10 @@ write under an OS file-size limit. Fixtures contain no real credentials and are
 removed afterward. These are process-crash storage tests, not a power-loss,
 browser rollback, Web/TUI, or managed-machine acceptance result. Key provisioning,
 recovery payload validation, executor serialization, durable quarantine and
-transaction integration remain required before real sign-in import.
+product transaction integration remain required before real sign-in import.
 
 Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
-for ten destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
+for the destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
 `cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
 sign-in, cancellation rollback and an untouched partitioned control cookie.
 `cookie-import-cdp.test.mjs` covers seven deadline, context and uncertain-transport cases.

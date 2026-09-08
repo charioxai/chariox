@@ -62,7 +62,7 @@ export async function createCdpCookieStore({browserCdp, pageCdp, timeoutMs = 500
 }
 
 // Internal destination operation. No transport endpoint or authority is granted here.
-export async function applyCookieImport({source, scope, store, runExclusive, authorize, signal, overwrite = false}) {
+export async function applyCookieImport({source, scope, store, runExclusive, authorize, signal, overwrite = false, journal}) {
   const batch = prepareChromeCookieBatch(source, scope);
   if (typeof runExclusive !== 'function' || typeof authorize !== 'function') fail('cookie_import_denied');
   const check = async () => {
@@ -71,8 +71,16 @@ export async function applyCookieImport({source, scope, store, runExclusive, aut
     if (signal?.aborted) fail('cookie_import_cancelled');
   };
   let mutationStarted = false;
+  let receipt;
   try { return await runExclusive(async () => {
     await check();
+    if (journal) {
+      const pending = await journal.read();
+      if (pending) {
+        pending.bytes.fill(0);
+        fail('cookie_import_recovery_required',true);
+      }
+    }
     if (!batch.cookies.length) return batch.summary;
     const before = await store.read();
     validateSnapshot(before);
@@ -80,7 +88,13 @@ export async function applyCookieImport({source, scope, store, runExclusive, aut
     if (overwrite !== true && before.some(c => keys.has(identity(c)))) fail('cookie_import_conflict');
     const replaced = before.filter(c => keys.has(identity(c)));
     await check();
+    if (journal) {
+      const bytes = Buffer.from(JSON.stringify({schema:1,before,imported:batch.cookies}));
+      try { receipt = await journal.prepare(bytes); }
+      finally { bytes.fill(0); }
+    }
     try {
+      await check();
       mutationStarted = true;
       await store.write(batch.cookies);
       await check();
@@ -92,18 +106,24 @@ export async function applyCookieImport({source, scope, store, runExclusive, aut
       await check();
     } catch (error) {
       let recoveryRequired = !(error instanceof CookieImportError) || error.recoveryRequired;
-      try {
+      if (mutationStarted) try {
         await store.remove(batch.cookies.map(c => ({...c, domain:c.domain ?? new URL(c.url).hostname})));
         if (replaced.length) await store.write(replaced.map(restoreParams));
         const restored = await store.read();
         recoveryRequired ||= fingerprint(restored) !== fingerprint(before);
       } catch { recoveryRequired = true; }
+      if (receipt && !recoveryRequired) {
+        try { await journal.discard(receipt); }
+        catch { recoveryRequired = true; }
+      }
       fail(error instanceof CookieImportError ? error.code : 'cookie_import_failed', recoveryRequired);
     }
+    // Browser readback is not durable completion. The kernel must record the
+    // outcome before clearing the retained journal and releasing quarantine.
     return batch.summary;
   }); } catch (error) {
     if (error instanceof CookieImportError) throw error;
-    fail('cookie_import_failed', mutationStarted);
+    fail('cookie_import_failed', mutationStarted || error?.recoveryRequired === true);
   }
 }
 
