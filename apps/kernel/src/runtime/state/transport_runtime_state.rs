@@ -383,6 +383,11 @@ impl KernelRuntimeState {
                 .map_err(|_| DaemonError::LocalTransport {
                     operation: "runtime.app_worker_shutdown",
                     message: "App worker shutdown did not complete".into(),
+                })?
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_worker_stop_persistence",
+                    message: "App workers were reaped but a requested stop could not be persisted"
+                        .into(),
                 })?;
         }
         self.with_app_side_effect(|app| app.shutdown_cleanup())

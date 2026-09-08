@@ -15,6 +15,8 @@ pub(super) struct Context {
     pub recovery: bool,
     #[cfg(test)]
     pub fixture: Option<start::FixturePlatform>,
+    #[cfg(test)]
+    pub claim_checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 struct Completion(Arc<Control>);
 impl Drop for Completion {
@@ -30,15 +32,31 @@ pub(super) fn run(
 ) {
     let _completion = Completion(context.control.clone());
     let _live = live;
+    let claim_budget = context.control.budget();
+    #[cfg(test)]
+    let claim_budget = match &context.claim_checkpoint {
+        Some(observe) => claim_budget.fixture_observe_checks(observe.clone()),
+        None => claim_budget,
+    };
     let admission = match context.store.claim_active_app_start(
         &context.owner,
         &context.installation,
         &context.attempt,
         context.recovery,
-        context.control.budget(),
+        claim_budget,
     ) {
         Ok(value) => value,
-        Err(_) => return,
+        Err(_) => {
+            // Keep the initial claim's App permit until the requested stop is written.
+            let _ = manual_stop::persist(
+                &context.store,
+                &context.owner,
+                &context.installation,
+                &context.control,
+                AppOperationBudget::from_supervisor(|| false),
+            );
+            return;
+        }
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         serve(&context, &admission, preparation, operation)
@@ -66,13 +84,17 @@ pub(super) fn run(
     };
     // Cleanup records must still be writable after the stop flag/revocation;
     // exact attempt CAS prevents a late old owner overwriting a replacement.
-    let _ = context.store.record_app_worker(
+    let manual_requested = context.control.manual.load(Ordering::Acquire);
+    let recorded = context.store.record_app_worker(
         &admission,
         phase,
-        !context.control.manual.load(Ordering::Acquire),
+        !manual_requested,
         failure.as_deref(),
         AppOperationBudget::from_supervisor(|| false),
     );
+    if recorded.is_ok() && manual_requested {
+        context.control.confirm_manual_stop();
+    }
 }
 fn serve(
     context: &Context,

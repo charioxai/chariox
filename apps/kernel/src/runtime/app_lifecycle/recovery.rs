@@ -25,6 +25,7 @@ impl AppLifecycleService {
         let task_runtime = runtime.clone();
         runtime.spawn_blocking(move || {
             let _permit = permit;
+            service.persist_pending_manual_stops();
             service.reap_finished();
             let rows = service.0.store.app_worker_recovery_candidates(
                 cursor

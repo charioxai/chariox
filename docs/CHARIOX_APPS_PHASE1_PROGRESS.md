@@ -1084,3 +1084,19 @@ releasing domain/preparation leases; stale callable handles hold only weak broke
 references. Three new kernel regressions cover once-only cancellation outside
 the phase lock, retained background ownership and failed-startup cleanup. These
 kernel tests still require hosted execution.
+
+### Retain manual stop through startup contention (2026-09-08)
+
+The reviews of `f87007ad5` and `d91e60833` identified a stop request lost when
+the initial claim occupied the final App operation permit. A cancelled claim
+now keeps that permit through stop persistence; failed writes retain the
+finished owner for bounded maintenance retry before recovery. Confirmation uses
+the same captured flag as the durable write. Shutdown reports failed persistence
+and retains intent for an explicit retry. Two new kernel regressions exercise
+actual SQLite contention, reopening, recovery and an injected SQL failure.
+These tests await hosted execution.
+
+The rejected-startup drain fixture also retains its control-event receiver until
+the expected readiness error, as requested by the latest review. The latest
+Linux component run has passed the actual native SDK fixture; full kernel
+filters are still running.

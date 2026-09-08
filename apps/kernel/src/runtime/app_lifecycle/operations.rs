@@ -42,6 +42,9 @@ impl AppLifecycleService {
                 attempt: entry.attempt.clone(),
             });
         }
+        if entries.len() >= LIVE_LIMIT {
+            return Err(LifecycleError::Busy);
+        }
         let live = self
             .0
             .live
@@ -84,6 +87,13 @@ impl AppLifecycleService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
+            #[cfg(test)]
+            claim_checkpoint: self
+                .0
+                .claim_checkpoint
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
         };
         // No thread retains Inner/AppControl. Its final owner can always cancel
         // and join every child, including when an awaiting caller disappears.
@@ -107,7 +117,9 @@ impl AppLifecycleService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let keys: Vec<_> = entries
                 .iter()
-                .filter(|(_, entry)| entry.control.finished())
+                .filter(|(_, entry)| {
+                    entry.control.finished() && !entry.control.pending_manual_stop()
+                })
                 .map(|(key, _)| key.clone())
                 .collect();
             keys.into_iter()
@@ -167,16 +179,18 @@ impl AppLifecycleService {
             .cloned();
         if let Some(entry) = entry {
             entry.control.cancel(true);
+            if result.is_ok() {
+                entry.control.confirm_manual_stop();
+            }
             entry.join();
             let mut entries = self
                 .0
                 .entries
                 .lock()
                 .map_err(|_| LifecycleError::Supervisor)?;
-            if entries
-                .get(&key)
-                .is_some_and(|current| Arc::ptr_eq(current, &entry))
-            {
+            if entries.get(&key).is_some_and(|current| {
+                Arc::ptr_eq(current, &entry) && !entry.control.pending_manual_stop()
+            }) {
                 entries.remove(&key);
             }
         }
@@ -192,7 +206,7 @@ impl AppLifecycleService {
     }
     /// Must be called from bounded blocking shutdown ownership before runtime
     /// teardown. A Drop fallback retains the same no-orphan guarantee.
-    pub(crate) fn shutdown_blocking(&self) {
-        self.0.shutdown();
+    pub(crate) fn shutdown_blocking(&self) -> Result<()> {
+        self.0.shutdown()
     }
 }

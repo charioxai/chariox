@@ -1,5 +1,6 @@
 //! Retained owners for already approved active App generations. First-install
 //! commits and data migrations are deliberately outside this restart service.
+mod manual_stop;
 mod operations;
 mod owner;
 mod ownership;
@@ -83,6 +84,8 @@ struct Inner {
     maintenance: Mutex<Maintenance>,
     #[cfg(test)]
     fixture: Mutex<Option<start::FixturePlatform>>,
+    #[cfg(test)]
+    claim_checkpoint: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 struct Maintenance {
     running: bool,
@@ -97,6 +100,7 @@ struct Entry {
 struct Control {
     stop: AtomicBool,
     manual: AtomicBool,
+    manual_committed: AtomicBool,
     done: Mutex<bool>,
     wake: Condvar,
     drain: Mutex<Option<crate::runtime::app_worker::AppWorkerDrain>>,
@@ -128,6 +132,8 @@ impl AppLifecycleService {
             }),
             #[cfg(test)]
             fixture: Mutex::new(None),
+            #[cfg(test)]
+            claim_checkpoint: Mutex::new(None),
         }))
     }
 }

@@ -175,8 +175,8 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
     let first = service.clone();
     let second = service.clone();
     std::thread::scope(|scope| {
-        scope.spawn(move || first.shutdown_blocking());
-        scope.spawn(move || second.shutdown_blocking());
+        scope.spawn(move || first.shutdown_blocking().unwrap());
+        scope.spawn(move || second.shutdown_blocking().unwrap());
     });
     assert!(all_reaped(&observations));
     assert!(
@@ -200,7 +200,7 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
         .lifecycle()
         .stop_blocking("alice", "installed")
         .unwrap();
-    control.lifecycle().shutdown_blocking();
+    control.lifecycle().shutdown_blocking().unwrap();
     drop(control);
     drop(store);
     let store = scratch.store();
@@ -251,7 +251,7 @@ fn revocation_stops_actual_owner_and_failed_generation_does_not_autoregrant() {
         .app_worker_recovery_candidates(None)
         .unwrap()
         .is_empty());
-    control.lifecycle().shutdown_blocking();
+    control.lifecycle().shutdown_blocking().unwrap();
 }
 
 #[test]
@@ -298,8 +298,141 @@ fn per_installation_operation_guard_and_shared_admission_prevent_duplicate_prepa
             .is_some_and(|v| v.phase == WorkerPhase::Failed)
     });
     assert!(control.active_app_lease("alice", "installed").is_none());
-    service.shutdown_blocking();
+    service.shutdown_blocking().unwrap();
     assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
     assert_eq!(service.0.preparation.available_permits(), 1);
     assert_eq!(service.0.admission.available_permits(), 8);
+}
+
+#[test]
+fn one_saturated_stop_during_initial_claim_survives_recovery_and_reopen() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    let control = AppControlService::new(store.clone());
+    let service = control.lifecycle();
+    let (entered, received) = std::sync::mpsc::channel();
+    let entered = Mutex::new(Some(entered));
+    *service.0.claim_checkpoint.lock().unwrap() = Some(Arc::new(move || {
+        // The writer has dequeued Claim and sampled cancellation=false. Its
+        // next BEGIN IMMEDIATE is blocked by the actual held SQLite writer.
+        if let Some(sender) = entered.lock().unwrap().take() {
+            sender.send(()).unwrap();
+        }
+    }));
+    let others = service
+        .0
+        .admission
+        .clone()
+        .try_acquire_many_owned(7)
+        .unwrap();
+    let mut blocked = rusqlite::Connection::open(store.path()).unwrap();
+    let transaction = blocked
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    service
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(service.0.admission.available_permits(), 0);
+    // Exactly one user stop. Busy cannot discard the stop merely because the
+    // initial claim itself owns the eighth permit and no worker exists yet.
+    assert!(matches!(
+        service.stop_blocking("alice", "installed"),
+        Err(LifecycleError::Busy)
+    ));
+    drop(transaction);
+    drop(others);
+    wait(|| {
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .is_some_and(|status| status.phase == WorkerPhase::Stopped && !status.desired_running)
+    });
+    service.schedule_recovery(runtime.handle().clone());
+    wait(|| !service.0.maintenance.lock().unwrap().running);
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(store
+        .app_worker_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+    service.shutdown_blocking().unwrap();
+    drop(control);
+    drop(store);
+    let reopened = scratch.store();
+    assert!(
+        !reopened
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+    assert!(reopened
+        .app_worker_recovery_candidates(None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
+    let scratch = Scratch::new();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    let control = AppControlService::new(store.clone());
+    let service = control.lifecycle();
+    store
+        .claim_active_app_start(
+            "alice",
+            "installed",
+            "finished",
+            false,
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    // Represents an already joined owner; no test process or unchecked native
+    // preparation is constructed. The durable Starting row predates its stop.
+    let cancellation = Arc::new(Control::new());
+    cancellation.cancel(true);
+    cancellation.complete();
+    service.0.entries.lock().unwrap().insert(
+        ("alice".into(), "installed".into()),
+        Arc::new(Entry {
+            attempt: "finished".into(),
+            control: cancellation.clone(),
+            thread: Mutex::new(None),
+        }),
+    );
+    let database = rusqlite::Connection::open(store.path()).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER fail_manual_stop BEFORE UPDATE ON app_worker_lifecycle
+        BEGIN SELECT RAISE(ABORT,'fixture stop persistence failure'); END;",
+        )
+        .unwrap();
+    assert!(matches!(
+        service.shutdown_blocking(),
+        Err(LifecycleError::Storage)
+    ));
+    assert!(cancellation.pending_manual_stop());
+    assert_eq!(service.0.entries.lock().unwrap().len(), 1);
+    assert!(
+        store
+            .app_worker_status("alice", "installed")
+            .unwrap()
+            .unwrap()
+            .desired_running
+    );
+    database
+        .execute_batch("DROP TRIGGER fail_manual_stop;")
+        .unwrap();
+    service.shutdown_blocking().unwrap();
+    assert!(!cancellation.pending_manual_stop());
+    assert!(service.0.entries.lock().unwrap().is_empty());
+    let status = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.phase, WorkerPhase::Stopped);
+    assert!(!status.desired_running);
 }

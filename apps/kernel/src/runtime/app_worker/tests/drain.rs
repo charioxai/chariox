@@ -142,7 +142,7 @@ fn rejected_startup_also_drains_host_resources_before_returning_failure() {
     let runtime = runtime();
     let fixture = NativeFixture::compile().unwrap();
     let probe = Probe::new(Arc::new(Semaphore::new(1)));
-    let (starting, _, observed) = start(
+    let (starting, _events, observed) = start(
         &fixture,
         Mode::WrongHandlers,
         &runtime,
