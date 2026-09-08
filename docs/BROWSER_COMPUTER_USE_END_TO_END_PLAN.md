@@ -568,6 +568,62 @@ The managed-machine drill must prove:
 12. The entire drill can tear down the slice and managed machine without
     residue in Cloud, OpenShip, the relay registry, or the host.
 
+### Milestone 9a: Git credentials at launch and after launch
+
+Validate initial provisioning independently from the new post-launch operation.
+The September 8 investigation found that the original test machine was created
+with Git credential transfer explicitly disabled. A missing helper on that
+machine does not prove that selected credentials were lost during transfer.
+
+Initial provisioning acceptance must start through the Web waiting room with
+an authenticated, connected source kernel. Explicitly select its GitHub
+credential, verify that the persisted launch plan contains that selection,
+and verify the remote agent can push a task-owned branch through the installed
+helper. Do not inject a token or edit Git configuration manually to pass this
+test. Also prove that selecting None produces no credential transfer and that
+a missing or disconnected source cannot silently become a successful transfer.
+
+Add a separate, explicitly authorized operation to transfer selected Git
+credentials to an existing ready managed kernel. Users must not need to wipe
+their kernel, workspaces, or running sessions because they initially selected
+None. Reuse the existing encrypted kernel-to-kernel transfer, source export,
+and target materialization/rollback code. Cloud authorizes and records the
+operation; it must not receive credential payloads. Do not weaken or rewrite
+the immutable bootstrap plan to implement this operation.
+
+Use isolated OSS and Cloud PRs for this feature. Commit and push each completed
+subtask with GitHub CI suppressed until the program's final readiness gate.
+Address exact-head reviewer findings. Follow the protocol version, snapshot,
+client minimum-version, and compatibility-drill rules for new serialized
+messages. Implement the kernel/shared contract before client-specific controls;
+exercise Web, local TUI, and remote TUI against the same operation.
+
+Required validation matrix:
+
+| Case | Required evidence |
+| --- | --- |
+| Initial Git selection | Picker selection survives request serialization, Cloud persistence, encrypted export, target receipt, helper setup, and a real scoped push. |
+| Initial None | No credential component or helper is installed; public Git use still works. |
+| Add after launch | A previously credential-free ready kernel gains selected Git access without changing its bootstrap digest, workspace files, agent identities, or running sessions. |
+| Consent and identity | Wrong owner, realm, source/target kernel, key thumbprint, or operation purpose is rejected before export or materialization. |
+| Restricted contents | Supplemental transfer admits only explicitly selected Git credential components, never provider accounts, workspace archives, or kernel context. |
+| Retry and replay | Same operation is idempotent; conflicting IDs, changed selection, expired tickets, and replay against another target fail closed. |
+| Existing authentication | Unmanaged or conflicting authentication is not overwritten; exact prior completion returns the existing receipt. |
+| Failure and rollback | Export, transport, helper setup, credential verification, and completion failures preserve prior working authentication and report failure accurately. |
+| Resiliency | Disconnect/reconnect, source or target restart, and interruption between materialization and acknowledgement recover without duplicate imports or false success. |
+| Security | Tokens never enter model context, terminal output, logs, history, Cloud storage, or evidence; target files and helpers retain restrictive permissions. |
+| Client parity | Web and both TUIs show the same kernel-owned state and actionable errors, including unsupported-version rejection. |
+| Cleanup | Disposable grants, credentials, branches, test processes, and recovery artifacts are cleaned after their evidence is verified. |
+
+Use synthetic credentials and fake official helper executables for local
+failure tests. Complete live initial and post-launch transfer drills separately
+on a Chariox-managed machine before declaring the feature accepted. Neither
+source tests nor an authenticated source account substitute for the remote push.
+
+Before any kernel replacement, recover and verify its unpushed commits,
+uncommitted source, and validation evidence. Administrative recovery is allowed
+for this defect; resume normal delegation through the Web terminal afterward.
+
 ### Milestone 10: public benchmarks and score-driven optimization
 
 This milestone starts only after Milestone 9 and every local and remote
