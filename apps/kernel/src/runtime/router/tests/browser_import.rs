@@ -104,6 +104,20 @@ async fn consent_round_trip() {
         dispatch(&router, &caller, prepare.clone()).await.is_err(),
         "durable recovery state must block new consent"
     );
+    let action = || {
+        crate::session::EnvironmentActionRequest::computer_mutation(
+            "fixture-actor",
+            environment.runtime_generation,
+            "click",
+            None,
+        )
+    };
+    assert_eq!(
+        state
+            .submit_room_environment_action(session.id(), action())
+            .unwrap_err(),
+        crate::session::EnvironmentError::ImportRecoveryRequired
+    );
     database
         .execute(
             "UPDATE durable_browser_import SET recovery_required = 0",
@@ -114,10 +128,19 @@ async fn consent_round_trip() {
         dispatch(&router, &caller, prepare.clone()).await.is_err(),
         "verified recovery still blocks until journal cleanup"
     );
+    assert_eq!(
+        state
+            .submit_room_environment_action(session.id(), action())
+            .unwrap_err(),
+        crate::session::EnvironmentError::ImportRecoveryRequired
+    );
     database
         .execute("DELETE FROM durable_browser_import", [])
         .unwrap();
     drop(database);
+    assert!(state
+        .ensure_no_pending_environment_import(session.id())
+        .is_ok());
     let mut unverified = caller.clone();
     unverified.public_key_thumbprint = None;
     assert!(dispatch(&router, &unverified, prepare.clone())

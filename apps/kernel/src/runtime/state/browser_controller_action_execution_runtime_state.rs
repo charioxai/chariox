@@ -369,6 +369,14 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let started = Instant::now();
         loop {
+            if let Err(error) = self.ensure_no_pending_environment_import(session_id) {
+                let _ = self.finish_room_environment_action(
+                    session_id,
+                    action_id,
+                    EnvironmentActionTerminal::Cancelled,
+                );
+                return Err(action_environment_error(error));
+            }
             let environment = self
                 .room_environment_snapshot(session_id)
                 .map_err(action_environment_error)?;
