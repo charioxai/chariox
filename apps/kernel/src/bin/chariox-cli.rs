@@ -57,7 +57,12 @@ fn run() -> Result<ExitCode, String> {
     ensure_bun_available(&bun)?;
     ensure_cli_built(&workspace_root, &bun)?;
 
+    // Preserve the captured terminal cwd for user-selected local files. An
+    // inherited value cannot override the cwd observed by this launcher.
+    let terminal_cwd = env::current_dir()
+        .map_err(|error| format!("failed to read terminal working directory: {error}"))?;
     let status = Command::new(&bun)
+        .env("CHARIOX_CLI_ORIGINAL_CWD", terminal_cwd)
         .arg(cli_dir.join("dist/index.js"))
         .args(args)
         .current_dir(&workspace_root)

@@ -1435,3 +1435,21 @@ deadline before asserting the original target count. The bounded Content-Length
 parser remains intact. The live rerun of this correction is pending; the prior
 successful execution does not erase this later cleanup failure. The review
 reports no other actionable finding through the HTTP/install increment.
+
+### Attached TUI file installation (2026-09-08)
+
+`/app install "FILE.cxapp"` reads the selected file on the terminal's machine,
+uses the current session, and sends bounded upload/install requests to its
+connected kernel. One held descriptor and per-chunk hashes detect replacement
+or mutation. The terminal retains operation IDs and upload offsets across
+reconnects, shows progress, and supports `/app operation` and `/app cancel`.
+Normal exit joins terminal work before detaching; an already submitted install
+remains kernel-owned. The Rust launcher preserves the terminal's original cwd.
+
+Forty-one selected CLI tests pass in 3.08 seconds, using actual temporary files
+and a shared-protocol fixture. Focused strict TypeScript checking also passes
+with a 1,536 MiB heap ceiling. The hosted CLI gate includes these tests. This does
+not establish live local/relay TUI acceptance, standalone `chariox app install`,
+OS file associations, command-catalog discoverability or browser file selection.
+Publisher enrollment remains a prerequisite; installation cannot trust its own
+package-provided key. No provider or App process ran in these terminal tests.

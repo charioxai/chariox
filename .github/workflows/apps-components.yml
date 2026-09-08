@@ -11,6 +11,13 @@ on:
       - 'packages/kernel-client/**'
       - 'packages/tool-display/**'
       - 'apps/cli/src/app-*.ts'
+      - 'apps/cli/src/app-install-file/**'
+      - 'apps/cli/src/cli-app-root.tsx'
+      - 'apps/cli/src/cli-command-action-composition.ts'
+      - 'apps/cli/src/cli-session-lifecycle-composition.ts'
+      - 'apps/cli/src/cli-exit-controller*.ts'
+      - 'apps/cli/src/commands*.ts'
+      - 'apps/cli/src/prompt-input-history-controller*.ts'
       - 'apps/cli/src/cli-options.ts'
       - 'apps/cli/src/cli-types.ts'
       - 'apps/cli/src/ipc.ts'
@@ -84,7 +91,7 @@ jobs:
           --child-concurrency 1 --network-concurrency 4
       - name: Build shared command contracts
         run: pnpm build:kernel-client
-      - name: Typecheck and test selected App developer commands
+      - name: Typecheck and test App developer and terminal installation commands
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -97,14 +104,20 @@ jobs:
               declaration: false, declarationMap: false, sourceMap: false,
               typeRoots: [join(root, 'node_modules/@types'), join(root, 'apps/cli/node_modules/@types')],
             },
-            include: ['app-developer.ts', 'app-developer.test.ts', 'app-command.ts', 'app-command.test.ts']
+            include: ['app-developer.ts', 'app-developer.test.ts', 'app-command.ts', 'app-command.test.ts',
+              'app-install-file.test.ts', 'app-command-handler.test.ts', 'commands.test.ts',
+              'cli-exit-controller.test.ts', 'prompt-input-history-controller.test.ts']
               .map(name => join(root, 'apps/cli/src', name)),
           }));
           NODE
           # Emit only this dependency graph to the normal package output so ESM
           # resolves the installed workspace dependencies without custom links.
           pnpm exec tsc -p "$RUNNER_TEMP/app-developer-tsconfig.json"
-          node --test --test-concurrency=1 apps/cli/dist/app-developer.test.js apps/cli/dist/app-command.test.js
+          node --test --test-concurrency=1 \
+            apps/cli/dist/app-developer.test.js apps/cli/dist/app-command.test.js \
+            apps/cli/dist/app-install-file.test.js apps/cli/dist/app-command-handler.test.js \
+            apps/cli/dist/commands.test.js apps/cli/dist/cli-exit-controller.test.js \
+            apps/cli/dist/prompt-input-history-controller.test.js
       - name: Remove developer command build output
         if: always()
         shell: bash

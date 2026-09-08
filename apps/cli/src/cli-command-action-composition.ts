@@ -1,3 +1,4 @@
+import type { AppFileInstaller } from "./app-install-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
@@ -181,6 +182,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  appFileInstaller?: AppFileInstaller
   client: BootstrapState["client"]
   options: BootstrapState["options"]
   preferencesState: AnyFn
@@ -441,6 +443,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     appendNotice,
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
+    currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>
