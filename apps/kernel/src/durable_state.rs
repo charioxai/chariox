@@ -1770,6 +1770,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn import_recovery_survives_verified_checkpoint_pruning() {
+        let directory = std::env::temp_dir().join(format!("chariox-import-checkpoint-{}", rand_suffix()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("kernel.db");
+        {
+            let store = DurableKernelStateStore::open(path.clone()).unwrap();
+            store.begin_browser_import_recovery("environment", "request", "user", "room").unwrap();
+            let event = store.append_event("session.updated", Some("room".into()),
+                serde_json::json!({"id":"room"})).unwrap();
+            store.migrate_legacy_workflow_history_chunk("owner", &[], true).unwrap();
+            store.save_entity_checkpoint("owner", event.sequence, vec![DurableCheckpointEntity {
+                kind: "sessions".into(), id: "room".into(),
+                payload_json: serde_json::json!({"id":"room"}).to_string(),
+            }]).unwrap();
+            assert!(store.load_events_by_kind("session.updated").unwrap().is_empty());
+            assert!(store.browser_import_pending("environment").unwrap());
+        }
+        {
+            let store = DurableKernelStateStore::open(path).unwrap();
+            assert!(store.browser_import_pending("environment").unwrap());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn durable_writer_groups_concurrent_acknowledged_events() {
         let path = std::env::temp_dir().join(format!(
             "chariox-durable-state-batch-{}-{}.db",
