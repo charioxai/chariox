@@ -127,9 +127,12 @@ fn stalled_readiness_is_bounded_and_reaped() {
 #[test]
 fn stalled_completion_is_bounded_and_reaped() {
     let mut command = Command::new("/bin/sh");
-    command.args(["-c", "printf 'READY\\n'; exec /bin/sleep 30"]);
-    let mut probe = Probe::start(&mut command, Duration::from_millis(200));
+    command.args(["-c", "sleep 0.25; printf 'READY\\n'; exec /bin/sleep 30"]);
+    let mut probe = Probe::start(&mut command, Duration::from_secs(2));
     probe.poll(true).unwrap();
+    // Measure the completion stall only after readiness, not shell scheduling.
+    // The real namespace test retains its single end-to-end deadline.
+    probe.deadline = Instant::now() + Duration::from_millis(100);
     assert_eq!(
         probe.poll(false).unwrap_err(),
         "acceptance child deadline exceeded"
