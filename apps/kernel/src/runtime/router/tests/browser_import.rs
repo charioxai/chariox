@@ -3,14 +3,23 @@ use serde_json::{json, Value};
 
 #[test]
 fn browser_import_consent_requires_verified_owner_and_unchanged_selection() {
+    run_consent_round_trip(false);
+}
+
+#[test]
+fn browser_import_destination_claim_requires_verified_owner() {
+    run_consent_round_trip(true);
+}
+
+fn run_consent_round_trip(test_destination: bool) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(consent_round_trip());
+                .block_on(consent_round_trip(test_destination));
         })
         .unwrap()
         .join()
@@ -24,7 +33,7 @@ impl Drop for Scratch {
     }
 }
 
-async fn consent_round_trip() {
+async fn consent_round_trip(test_destination: bool) {
     let config = DaemonConfig::for_tests();
     let database_path = config.user_config.state.path.clone().unwrap();
     let _scratch = Scratch(
@@ -89,7 +98,7 @@ async fn consent_round_trip() {
     };
     let prepare = json!({"PrepareBrowserImport": {"selection": selection}});
     // Seed durable state directly to model a prior executor/kernel restart.
-    let database = rusqlite::Connection::open(database_path).unwrap();
+    let database = rusqlite::Connection::open(&database_path).unwrap();
     database
         .execute(
             "INSERT INTO durable_browser_import VALUES (?1, 'prior-request', ?2, ?3, 1)",
@@ -257,6 +266,42 @@ async fn consent_round_trip() {
     assert!(dispatch(&router, &denied_caller, authorize.clone())
         .await
         .is_err());
+    if test_destination {
+        let destination_selection = serde_json::from_value(selection.clone()).unwrap();
+        let destination_request: LocalDaemonRequest =
+            serde_json::from_value(authorize.clone()).unwrap();
+        let destination_command = |identity: KernelCaller| {
+            KernelCommand::from_local_request_with_caller(
+                "destination-test",
+                KernelCommandSource::RelayClient,
+                identity,
+                None,
+                None,
+                &destination_request,
+            )
+        };
+        assert!(state
+            .claim_browser_import_destination(
+                &destination_command(denied_caller.clone()),
+                &destination_selection,
+                id,
+            )
+            .await
+            .is_err());
+        let destination_guard = state
+            .claim_browser_import_destination(
+                &destination_command(caller.clone()),
+                &destination_selection,
+                id,
+            )
+            .await
+            .unwrap();
+        assert!(state
+            .ensure_no_pending_environment_import(session.id())
+            .is_err());
+        drop(destination_guard);
+        return;
+    }
     let cancel = json!({"CancelBrowserImport": {"session_id": session.id(), "attachment_id": attachment.id(), "request_id": id}});
     assert_eq!(
         dispatch(&router, &caller, cancel).await.unwrap()["BrowserImportConsent"]["status"],

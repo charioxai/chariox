@@ -12,6 +12,38 @@ use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSour
 use crate::session::{EnvironmentLifecycle, DEFAULT_LOCAL_USER_ID};
 
 impl KernelRuntimeState {
+    /// Destination entry point. Revalidate consent after draining room actions,
+    /// then acknowledge durable recovery state before permitting cookie mutation.
+    pub(crate) async fn claim_browser_import_destination(
+        &self,
+        command: &KernelCommand,
+        selection: &BrowserImportSelection,
+        request_id: &str,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, DaemonError> {
+        let guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(&selection.session_id)
+            .write_owned()
+            .await;
+        let binding = self.browser_import_binding(command, selection).await?;
+        let id = ImportRequestId::from_wire(request_id).map_err(|_| denied())?;
+        self.owned
+            .browser_import_admission
+            .claim(&id, &binding, Instant::now())
+            .map_err(|_| denied())?;
+        self.owned
+            .durable_state_store
+            .begin_browser_import_recovery(
+                &binding.environment_id,
+                id.as_str(),
+                &binding.user_id,
+                &binding.room_id,
+            )
+            .map_err(|_| denied())?;
+        Ok(guard)
+    }
+
     /// Terminal consent only. No cookie payload, controller write or agent turn.
     pub(crate) async fn execute_browser_import_consent(
         &self,

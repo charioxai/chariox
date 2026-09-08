@@ -23,6 +23,7 @@ impl EnvironmentExecutionGates {
     }
 }
 
+#[cfg(test)]
 impl super::KernelRuntimeState {
     /// The destination executor must retain this guard through recovery and journal cleanup.
     /// This drains kernel actions; it does not suspend autonomous page/network writers.
@@ -54,6 +55,7 @@ impl super::KernelRuntimeState {
     }
 }
 
+#[cfg(test)]
 fn denied() -> crate::error::DaemonError {
     crate::error::DaemonError::LocalTransport {
         operation: "browser_import",
