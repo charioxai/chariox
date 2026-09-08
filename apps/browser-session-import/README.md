@@ -99,6 +99,12 @@ zeroized by this module.
 
 ## Supported conversion
 
+The internal `applyControllerCookieImport` bridge requires a trusted encrypted
+journal dependency before resolving a browser target. It forwards that journal
+to the transaction and retains pending state after readback. Its disposable
+Chrome test verifies retained recovery data and rejection when the journal is
+missing. This does not provide kernel key provisioning or durable completion.
+
 - Exact approved cookie domains and one exact source store. Approval does not
   automatically cover subdomains. Domain cookies retain domain scope, while
   host-only cookies use a URL without a domain attribute.
