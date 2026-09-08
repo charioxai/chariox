@@ -682,6 +682,7 @@ fn relay_receipt(
                 .into_iter()
                 .map(|repository| {
                     Ok(RelayManagedContextImportedRepository {
+                        workspace_kind: repository.workspace_kind,
                         repository_id: repository.repository_id,
                         role: repository.role,
                         target_directory: repository.target_directory,

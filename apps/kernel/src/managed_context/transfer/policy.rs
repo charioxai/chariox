@@ -275,12 +275,19 @@ fn validate_launch_target_development(
             for repository in repositories {
                 validate_identifier(&repository.repository_id, "launch target repository")?;
                 validate_identifier(&repository.target_directory, "launch target directory")?;
-                if !matches!(repository.head_sha.len(), 40 | 64)
-                    || !repository
-                        .head_sha
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit())
-                {
+                let valid_head = match repository.workspace_kind {
+                    crate::managed_context::development::DevelopmentWorkspaceKind::Git => {
+                        matches!(repository.head_sha.len(), 40 | 64)
+                            && repository
+                                .head_sha
+                                .bytes()
+                                .all(|byte| byte.is_ascii_hexdigit())
+                    }
+                    crate::managed_context::development::DevelopmentWorkspaceKind::Directory => {
+                        repository.head_sha.is_empty()
+                    }
+                };
+                if !valid_head {
                     return Err(transfer_error(
                         "managed context launch target HEAD is invalid",
                     ));

@@ -208,7 +208,7 @@ fn reject_symlink_ancestors(worktree: &Path, path: &str) -> Result<(), DaemonErr
     Ok(())
 }
 
-fn store_overlay_object(
+pub(super) fn store_overlay_object(
     repository_id: &str,
     bytes: Vec<u8>,
     executable: bool,
@@ -245,7 +245,7 @@ fn store_overlay_object(
     })
 }
 
-fn validate_overlay_file_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
+pub(super) fn validate_overlay_file_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     reject_lfs_pointer(bytes)?;
     if path == ".gitattributes" || path.ends_with("/.gitattributes") {
         reject_lfs_attributes(path, bytes)?;
@@ -384,6 +384,10 @@ fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonEr
             ".charioxignore grew beyond {MAX_CONTEXT_IGNORE_BYTES} bytes while exporting"
         )));
     }
+    parse_context_ignore_patterns(bytes)
+}
+
+pub(super) fn parse_context_ignore_patterns(bytes: Vec<u8>) -> Result<Vec<String>, DaemonError> {
     let contents = String::from_utf8(bytes)
         .map_err(|_| context_error(".charioxignore must contain valid UTF-8"))?;
     let patterns = contents
@@ -407,7 +411,7 @@ fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonEr
     Ok(patterns)
 }
 
-fn file_state_manifest_bytes(state: &DevelopmentFileState) -> usize {
+pub(super) fn file_state_manifest_bytes(state: &DevelopmentFileState) -> usize {
     match state {
         DevelopmentFileState::Absent => 32,
         DevelopmentFileState::File {
@@ -443,7 +447,7 @@ fn normalize_ignore_pattern(line: &str) -> Option<String> {
     Some(pattern)
 }
 
-fn user_ignore_pattern_matches_any(patterns: &[String], path: &str) -> bool {
+pub(super) fn user_ignore_pattern_matches_any(patterns: &[String], path: &str) -> bool {
     patterns.iter().any(|pattern| {
         if pattern.contains('/') {
             wildcard_match(pattern, path)

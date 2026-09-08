@@ -6,9 +6,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[test]
 fn exports_plain_workspace_without_creating_git_metadata() {
     let root = test_root("plain-workspace");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
     let workspace = root.join("office");
-    fs::create_dir_all(&workspace).expect("create plain workspace");
+    fs::create_dir_all(workspace.join("documents/empty")).expect("create plain workspace");
     fs::write(workspace.join("notes.txt"), "office notes\n").expect("write plain file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            workspace.join("notes.txt"),
+            fs::Permissions::from_mode(0o750),
+        )
+        .expect("make plain file executable");
+    }
+    fs::write(workspace.join(".env.local"), "EXCLUDED=fixture").unwrap();
+    fs::write(workspace.join(".charioxignore"), "private.txt\n").unwrap();
+    fs::write(workspace.join("private.txt"), "excluded fixture").unwrap();
     let result = export_development_context(DevelopmentContextExportRequest {
         project_id: "plain-project".to_string(),
         repositories: vec![DevelopmentRepositorySelection {
@@ -18,10 +31,258 @@ fn exports_plain_workspace_without_creating_git_metadata() {
             role: DevelopmentRepositoryRole::Primary,
         }],
         archive_path: root.join("plain.tar.gz"),
-    });
+    })
+    .expect("plain workspace export");
     assert!(!workspace.join(".git").exists());
-    fs::remove_dir_all(&root).expect("clean plain workspace fixture");
-    assert!(result.is_ok(), "plain workspace export failed: {result:?}");
+    assert_eq!(result.manifest.schema_version, 3);
+    assert_eq!(
+        result.manifest.repositories[0].workspace_kind,
+        DevelopmentWorkspaceKind::Directory
+    );
+    assert!(result.manifest.repositories[0].bundle_path.is_empty());
+    let request = DevelopmentContextImportRequest {
+        archive_path: result.archive_path.clone(),
+        expected_archive_sha256: result.archive_sha256,
+        expected_project_id: "plain-project".into(),
+        expected_source_repositories: None,
+        destination_root: root.join("managed/plain-publication"),
+    };
+    let receipt =
+        import_development_context_with_publication(request.clone(), "plain-publication".into())
+            .unwrap();
+    let destination = &receipt.repositories[0].destination_path;
+    assert_eq!(
+        fs::read_to_string(destination.join("notes.txt")).unwrap(),
+        "office notes\n"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(
+            fs::metadata(destination.join("notes.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+    }
+    assert!(destination.join("documents/empty").is_dir());
+    for excluded in [".git", ".env.local", "private.txt"] {
+        assert!(!destination.join(excluded).exists());
+    }
+    assert_eq!(receipt.schema_version, 3);
+    assert!(
+        recover_development_context_publication(&request, "plain-publication")
+            .unwrap()
+            .is_some()
+    );
+    fs::remove_file(&result.archive_path).unwrap();
+    let source = vec![DevelopmentSourceRepositoryBinding {
+        role: DevelopmentRepositoryRole::Primary,
+        workspace_id: workspace.display().to_string(),
+        worktree_id: None,
+    }];
+    assert!(recover_pruned_mutable_development_context_publication(
+        &root.join("managed"),
+        "plain-project",
+        &source
+    )
+    .unwrap()
+    .is_some());
+}
+
+#[test]
+fn exports_and_imports_git_and_directory_workspaces_together() {
+    let root = test_root("mixed-workspaces");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let repository = root.join("source-repository");
+    let directory = root.join("source-directory");
+    init_repository(&repository, "tracked.txt", "tracked fixture\n");
+    fs::create_dir_all(directory.join("nested/empty")).expect("create directory workspace");
+    fs::write(directory.join("nested/plain.txt"), "plain fixture\n")
+        .expect("write directory workspace");
+    let repository_head = git_text_test(&repository, &["rev-parse", "HEAD"]);
+
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "mixed-project".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "git-workspace".into(),
+                worktree_id: None,
+                worktree_path: repository,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "directory-workspace".into(),
+                worktree_id: None,
+                worktree_path: directory,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: root.join("mixed.tar.gz"),
+    })
+    .expect("export mixed workspaces");
+    assert_eq!(exported.manifest.schema_version, 3);
+    assert_eq!(
+        exported
+            .manifest
+            .repositories
+            .iter()
+            .map(|entry| entry.workspace_kind)
+            .collect::<Vec<_>>(),
+        vec![
+            DevelopmentWorkspaceKind::Git,
+            DevelopmentWorkspaceKind::Directory
+        ]
+    );
+
+    let request = DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "mixed-project".into(),
+        expected_source_repositories: Some(vec![
+            DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Primary,
+                workspace_id: "git-workspace".into(),
+                worktree_id: None,
+            },
+            DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Supporting,
+                workspace_id: "directory-workspace".into(),
+                worktree_id: None,
+            },
+        ]),
+        destination_root: root.join("managed/mixed-publication"),
+    };
+    let receipt =
+        import_development_context_with_publication(request.clone(), "mixed-publication".into())
+            .expect("import mixed workspaces");
+    assert_eq!(receipt.schema_version, 3);
+    let imported_git = receipt
+        .repositories
+        .iter()
+        .find(|entry| entry.workspace_kind == DevelopmentWorkspaceKind::Git)
+        .expect("imported Git workspace");
+    assert_eq!(imported_git.head_sha, repository_head);
+    assert!(imported_git.destination_path.join(".git").is_dir());
+    assert_eq!(
+        fs::read_to_string(imported_git.destination_path.join("tracked.txt")).unwrap(),
+        "tracked fixture\n"
+    );
+    let imported_directory = receipt
+        .repositories
+        .iter()
+        .find(|entry| entry.workspace_kind == DevelopmentWorkspaceKind::Directory)
+        .expect("imported directory workspace");
+    assert!(imported_directory.head_sha.is_empty());
+    assert!(!imported_directory.destination_path.join(".git").exists());
+    assert!(imported_directory
+        .destination_path
+        .join("nested/empty")
+        .is_dir());
+    assert_eq!(
+        fs::read_to_string(imported_directory.destination_path.join("nested/plain.txt")).unwrap(),
+        "plain fixture\n"
+    );
+    assert_eq!(
+        recover_development_context_publication(&request, "mixed-publication")
+            .expect("recover mixed publication"),
+        Some(receipt)
+    );
+}
+
+struct PlainWorkspaceCleanup(PathBuf);
+impl Drop for PlainWorkspaceCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn plain_workspace_rejects_symlinks_and_special_files_without_publishing() {
+    let root = test_root("plain-unsafe");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let workspace = root.join("office");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(root.join("outside"), "outside fixture").unwrap();
+    for (index, link_target) in [root.join("outside"), root.clone()].iter().enumerate() {
+        let link = workspace.join("linked");
+        std::os::unix::fs::symlink(link_target, &link).unwrap();
+        let request = DevelopmentContextExportRequest {
+            project_id: "plain".into(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "office".into(),
+                worktree_id: None,
+                worktree_path: workspace.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: root.join(format!("unsafe-{index}.tar.gz")),
+        };
+        assert!(export_development_context(request.clone()).is_err());
+        assert!(!request.archive_path.exists());
+        fs::remove_file(link).unwrap();
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let fifo = std::ffi::CString::new(workspace.join("special").as_os_str().as_bytes()).unwrap();
+    // A FIFO exercises special-file rejection without macOS's short socket-path limit.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert!(one_repo_export(&root, &workspace, "special").is_err());
+    fs::remove_file(workspace.join("special")).unwrap();
+    File::create(workspace.join("oversized"))
+        .unwrap()
+        .set_len(MAX_OVERLAY_FILE_BYTES + 1)
+        .unwrap();
+    let oversized_archive = root.join("oversized.tar.gz");
+    assert!(one_repo_export(&root, &workspace, "oversized").is_err());
+    assert!(!oversized_archive.exists());
+}
+
+#[test]
+fn plain_workspace_manifest_rejects_git_state_and_unsafe_directories() {
+    let root = test_root("plain-manifest");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let workspace = root.join("office");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("notes.txt"), "notes").unwrap();
+    let exported = one_repo_export(&root, &workspace, "plain-manifest").unwrap();
+    let unpacked = root.join("unpacked");
+    unpack_archive(&exported.archive_path, &unpacked);
+    fs::remove_file(unpacked.join("manifest.json")).unwrap();
+    for case in 0..5 {
+        let mut manifest = exported.manifest.clone();
+        match case {
+            0 => manifest.schema_version = 2,
+            1 => manifest.repositories[0].head_sha = "a".repeat(40),
+            2 => manifest.repositories[0]
+                .directories
+                .push("../outside".into()),
+            3 => manifest.repositories[0].directories.push(".git".into()),
+            _ => {
+                manifest.repositories[0].overlay[0].index =
+                    manifest.repositories[0].overlay[0].worktree.clone()
+            }
+        }
+        let archive = root.join(format!("malformed-{case}.tar.gz"));
+        write_archive(
+            &archive,
+            private_create_new(&archive).unwrap(),
+            &unpacked,
+            &manifest,
+        )
+        .unwrap();
+        let destination = root.join(format!("managed/case-{case}"));
+        assert!(import_development_context(DevelopmentContextImportRequest {
+            expected_archive_sha256: sha256_file(&archive).unwrap(),
+            archive_path: archive,
+            expected_project_id: manifest.project_id,
+            expected_source_repositories: None,
+            destination_root: destination.clone(),
+        })
+        .is_err());
+        assert!(!destination.exists());
+    }
 }
 
 #[test]
