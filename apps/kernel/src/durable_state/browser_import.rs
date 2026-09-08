@@ -4,6 +4,13 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use super::{DurableKernelStateStore, DurableWriteOperation};
 use crate::error::DaemonError;
 
+pub(crate) struct PendingBrowserImport {
+    pub request_id: String,
+    pub user_id: String,
+    pub room_id: String,
+    pub recovery_required: bool,
+}
+
 pub(crate) enum ImportStateWrite {
     Begin {
         environment_id: String,
@@ -30,6 +37,14 @@ impl std::fmt::Debug for ImportStateWrite {
 impl DurableKernelStateStore {
     /// A recovered row still blocks admission until journal cleanup is complete.
     pub(crate) fn browser_import_pending(&self, environment_id: &str) -> Result<bool, DaemonError> {
+        self.pending_browser_import(environment_id)
+            .map(|row| row.is_some())
+    }
+
+    pub(crate) fn pending_browser_import(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<PendingBrowserImport>, DaemonError> {
         let connection = self
             .connection
             .lock()
@@ -39,12 +54,19 @@ impl DurableKernelStateStore {
             })?;
         connection
             .query_row(
-                "SELECT 1 FROM durable_browser_import WHERE environment_id = ?1",
+                "SELECT request_id, user_id, room_id, recovery_required
+                 FROM durable_browser_import WHERE environment_id = ?1",
                 params![environment_id],
-                |_| Ok(()),
+                |row| {
+                    Ok(PendingBrowserImport {
+                        request_id: row.get(0)?,
+                        user_id: row.get(1)?,
+                        room_id: row.get(2)?,
+                        recovery_required: row.get(3)?,
+                    })
+                },
             )
             .optional()
-            .map(|row| row.is_some())
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "browser_import.read",
                 message: "state read failed".into(),
@@ -174,6 +196,11 @@ mod tests {
         {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
             assert!(store.browser_import_pending("env").unwrap());
+            let pending = store.pending_browser_import("env").unwrap().unwrap();
+            assert_eq!(pending.request_id, "request");
+            assert_eq!(pending.user_id, "user");
+            assert_eq!(pending.room_id, "room");
+            assert!(pending.recovery_required);
             assert!(store
                 .clear_recovered_browser_import("env", "request")
                 .is_err());
@@ -187,6 +214,13 @@ mod tests {
             store
                 .mark_browser_import_recovered("env", "request")
                 .unwrap();
+            assert!(
+                !store
+                    .pending_browser_import("env")
+                    .unwrap()
+                    .unwrap()
+                    .recovery_required
+            );
             assert!(store
                 .begin_browser_import_recovery("env", "new", "user", "room")
                 .is_err());
