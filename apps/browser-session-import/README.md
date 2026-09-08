@@ -24,6 +24,13 @@ worker does not independently own the home kernel's recovery record. No public
 destination command, profile/key provisioning or end-to-end import is enabled by
 this barrier.
 
+The internal controller bridge requires a trusted recovery journal and forwards
+it into the cookie transaction. It refuses a missing journal, blocks existing
+recovery, waits for journal preparation before the first cookie write, and retains
+the encrypted record after successful browser readback. This connects the real
+controller adapter to journal storage; it does not supply the kernel's durable
+acknowledgement, consent transport or exclusive browser-writer ownership.
+
 ## Trusted confirmation flow
 
 `prepareChromeCookieImport` composes the internal reader with kernel consent and
