@@ -5,6 +5,25 @@ not wired to a user's profile or product Environment. The source
 reader uses Chrome's extension APIs when called by a trusted connector. It does
 not request permissions, transmit cookies or register a web-accessible endpoint.
 
+## Kernel recovery execution barrier
+
+The kernel checks durable pending-import metadata by Room before admitting an
+Environment Action or dispatching a browser/controller command. This also blocks
+when the current Environment has not been restored, when its identity differs
+from the recorded import, or when the durable read fails. Marking recovery verified
+does not reopen execution; acknowledged journal cleanup must remove the row first.
+Queued human and agent dispatch waiters recheck this barrier. Active cancellable
+executors request cancellation through the existing controller path. Controller
+release and execution cancellation remain available while execution is blocked.
+
+This is an execution check, not an atomic import coordinator. The destination
+still must acquire exclusive ownership, drain or fence previously dispatched
+work, stop independent browser writers, and create the durable record before
+changing cookies. Passive display streams are not fenced by this check. The
+worker does not independently own the home kernel's recovery record. No public
+destination command, profile/key provisioning or end-to-end import is enabled by
+this barrier.
+
 ## Trusted confirmation flow
 
 `prepareChromeCookieImport` composes the internal reader with kernel consent and

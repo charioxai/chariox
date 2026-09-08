@@ -213,7 +213,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn wait_for_human_action_admission(
+    pub(super) async fn wait_for_human_action_admission(
         &self,
         session_id: &str,
         actor: &EnvironmentActor,
@@ -221,6 +221,10 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let started = Instant::now();
         loop {
+            if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
+                let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
+                return Err(human_action_environment_error(error));
+            }
             let environment = self
                 .room_environment_snapshot(session_id)
                 .map_err(human_action_environment_error)?;
