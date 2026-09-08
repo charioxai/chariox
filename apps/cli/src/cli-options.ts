@@ -250,7 +250,7 @@ function printUsage() {
     "  /machine forget <m>   forget a registered remote machine",
     "  /machine rename <m> <alias> rename and approve a remote machine",
     "  /slice list           list slices owned by this kernel",
-    "  /slice create <n>     create a slice inventory entry (--headed|--headless)",
+    "  /slice create <n>     create a slice (--headed [--display-backend selkies|novnc]|--headless)",
     "  /slice status [s]     show a slice, defaulting to focused agent slice",
     "  /slice doctor [s]     check slice worker, scope, display, operation, and auth health",
     "  /slice logs [s]       show slice worker and lifecycle logs (--tail n)",

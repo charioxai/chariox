@@ -57,13 +57,14 @@ export async function executeSliceCommand(
     }
     case "create": {
       if (!first) {
-        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
+        return { ok: false, message: "usage: slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
       }
       let workerKernelRef: string | undefined
       let displayUrl: string | undefined
       let fromSavedState: string | undefined
       let base: "default" | "clean" | undefined
       let displayMode: "headless" | "headed" | undefined
+      let displayBackend: "novnc" | "selkies" | undefined
       for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index]
         const value = rest[index + 1]
@@ -80,6 +81,12 @@ export async function executeSliceCommand(
           displayMode = "headed"
         } else if (arg === "--headless" || arg === "--no-display") {
           displayMode = "headless"
+        } else if (arg === "--display-backend") {
+          if (value !== "selkies" && value !== "novnc") {
+            return { ok: false, message: "usage: slice create <name> --headed --display-backend selkies|novnc" }
+          }
+          displayBackend = value
+          index += 1
         } else if (arg === "--clean") {
           base = "clean"
         } else if (arg === "--default") {
@@ -87,12 +94,16 @@ export async function executeSliceCommand(
         } else if (arg?.startsWith("--")) {
           return { ok: false, message: `unknown or incomplete slice create option: ${arg}` }
         } else if (arg) {
-          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
+          return { ok: false, message: "usage: slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
         }
+      }
+      if (displayBackend !== undefined && displayMode !== "headed") {
+        return { ok: false, message: "--display-backend requires --headed" }
       }
       const response = await deps.client.send(createSliceRequest({
         name: first,
         ...(displayMode ? { displayMode } : {}),
+        ...(displayBackend ? { displayBackend } : {}),
         workspaceId: context.workspace,
         worktreeId: context.worktree,
         workspaceMount: context.worktree,

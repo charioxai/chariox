@@ -100,7 +100,7 @@ export async function handleSliceSlashCommand(
     await startSliceAuthLogin(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [create] [slice-ref] [--name <name>] | /slice backup restore [slice-ref] <backup-ref> | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [create] [slice-ref] [--name <name>] | /slice backup restore [slice-ref] <backup-ref> | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -570,6 +570,7 @@ function parseSliceCreateOptions(
   workspaceId?: string | null
   worktreeId?: string | null
   displayMode?: "headless" | "headed"
+  displayBackend?: "novnc" | "selkies"
   fromSavedState?: string | null
   base?: "default" | "clean" | null
   error?: string
@@ -582,6 +583,7 @@ function parseSliceCreateOptions(
   let worktreeId: string | null | undefined = deps.currentWorktreeTarget()
   let workspaceMount: string | null | undefined = deps.currentWorktreeTarget()
   let displayMode: "headless" | "headed" | undefined
+  let displayBackend: "novnc" | "selkies" | undefined
   let fromSavedState: string | null | undefined
   let base: "default" | "clean" | null | undefined
   let error: string | undefined
@@ -590,7 +592,7 @@ function parseSliceCreateOptions(
     const value = args[index + 1]
     if (arg === "--backend") {
       if (value !== "local_docker" && value !== "ssh_docker") {
-        error = "usage: /slice create <name> [--headed|--headless] [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
+        error = "usage: /slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
         break
       }
       backend = value
@@ -603,6 +605,15 @@ function parseSliceCreateOptions(
     }
     if (arg === "--headless" || arg === "--no-display") {
       displayMode = "headless"
+      continue
+    }
+    if (arg === "--display-backend") {
+      if (value !== "selkies" && value !== "novnc") {
+        error = "usage: /slice create <name> --headed --display-backend selkies|novnc"
+        break
+      }
+      displayBackend = value
+      index += 1
       continue
     }
     if (arg === "--kernel") {
@@ -653,6 +664,9 @@ function parseSliceCreateOptions(
     error = `unknown /slice create option ${arg}`
     break
   }
+  if (!error && displayBackend !== undefined && displayMode !== "headed") {
+    error = "--display-backend requires --headed"
+  }
   return {
     ...(name !== undefined ? { name } : {}),
     ...(backend !== undefined ? { backend } : {}),
@@ -662,6 +676,7 @@ function parseSliceCreateOptions(
     ...(worktreeId !== undefined ? { worktreeId } : {}),
     ...(workspaceMount !== undefined ? { workspaceMount } : {}),
     ...(displayMode !== undefined ? { displayMode } : {}),
+    ...(displayBackend !== undefined ? { displayBackend } : {}),
     ...(fromSavedState !== undefined ? { fromSavedState } : {}),
     ...(base !== undefined ? { base } : {}),
     ...(error !== undefined ? { error } : {}),
@@ -688,13 +703,14 @@ async function createSlice(
   }
   const parsed = parseSliceCreateOptions(deps, args)
   if (!parsed.name || parsed.error) {
-    deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
+    deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
     return
   }
   const createOptions = {
     name: parsed.name,
     ...(parsed.backend !== undefined ? { backend: parsed.backend } : {}),
     ...(parsed.displayMode !== undefined ? { displayMode: parsed.displayMode } : {}),
+    ...(parsed.displayBackend !== undefined ? { displayBackend: parsed.displayBackend } : {}),
     ...(parsed.workspaceId !== undefined ? { workspaceId: parsed.workspaceId } : {}),
     ...(parsed.worktreeId !== undefined ? { worktreeId: parsed.worktreeId } : {}),
     ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),

@@ -7,6 +7,7 @@ import type {
   SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { SliceDisplayBackend } from "@chariox/kernel-client/kernel-types"
 import {
   createSliceBackupRequest,
   createSliceRequest,
@@ -40,6 +41,7 @@ export async function createSlice(
     backend?: "local_docker" | "ssh_docker"
     os?: string
     displayMode?: "headless" | "headed"
+    displayBackend?: SliceDisplayBackend
     workspaceId?: string | null
     worktreeId?: string | null
     workspaceMount?: string | null

@@ -1,4 +1,5 @@
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
+import type { SliceDisplayBackend } from "@chariox/kernel-client/kernel-types"
 import type {
   SliceBackupRecord,
   SliceDisplayEndpoint,
@@ -14,6 +15,7 @@ export type SliceCreateOptions = {
   backend?: "local_docker" | "ssh_docker"
   os?: string
   displayMode?: "headless" | "headed"
+  displayBackend?: SliceDisplayBackend
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
