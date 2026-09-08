@@ -868,9 +868,15 @@ mod tests {
             std::env::temp_dir().join(format!("chariox-empty-slice-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(root).unwrap();
-        let mut config = crate::config::DaemonConfig::for_tests();
+        let mut config = crate::config::DaemonConfig::for_tests()
+            .with_session_history_root(root.join("history"));
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.history.operational.path =
+            Some(root.join("history.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
         config.user_config.slices.root = Some(root.join("slices").display().to_string());
-        let (app, runtime, _, _, _) = slice_runtime_with_config(config).await;
+        let (app, runtime, _, _, _) = slice_runtime_with_config(config.clone()).await;
         let slice = runtime
             .create_slice(crate::local::CreateSliceRequest {
                 name: "empty-publication".into(),
@@ -899,11 +905,24 @@ mod tests {
             .join(&slice.id)
             .join("development/workspace");
         let actual_mount = materialized.workspace_mount.clone();
+        drop(runtime);
+        drop(app);
         if actual_mount.as_deref() == expected.to_str() {
             assert_eq!(std::fs::read_dir(&expected).unwrap().count(), 0);
             std::fs::write(expected.join("notes.txt"), "preserved office work").unwrap();
+            let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+            let runtime = owned_runtime_state(&app).await;
+            let restored = runtime.resolve_slice(&slice.id).unwrap();
+            assert_eq!(
+                restored.development_storage_root,
+                materialized.development_storage_root
+            );
+            assert_eq!(
+                restored.development_publication,
+                materialized.development_publication
+            );
             let recovered = runtime
-                .materialize_slice_development_context(&materialized)
+                .materialize_slice_development_context(&restored)
                 .unwrap();
             assert_eq!(
                 recovered.development_publication,
@@ -918,9 +937,9 @@ mod tests {
                 .cleanup_slice_development_context(&recovered)
                 .unwrap();
             assert!(!expected.exists());
+            drop(runtime);
+            drop(app);
         }
-        drop(runtime);
-        drop(app);
         std::fs::remove_dir_all(root).unwrap();
         assert_eq!(
             actual_mount.as_deref(),
