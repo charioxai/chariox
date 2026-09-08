@@ -268,7 +268,8 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     let upload = validation_state
         .upload_browser_environment_files(
             &session_id,
-            "00000000000000000000000000000001",
+            // Distinct mutations must not replay the download-setup receipt.
+            "00000000000000000000000000000004",
             &first_snapshot.dom_nodes[0].element_ref,
             vec![std::path::PathBuf::from("/workspace/report.txt")],
         )
