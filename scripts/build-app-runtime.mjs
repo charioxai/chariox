@@ -2,21 +2,21 @@
 
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { constants, createReadStream, createWriteStream } from 'node:fs';
+import { constants, createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rm, statfs, writeFile } from 'node:fs/promises';
 import { totalmem } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { availableBuildMemory, checkArtifactBudget, validateCiProfile } from './app-runtime-ci-resources.mjs';
-import { NATIVE_BUILD_INPUTS } from './app-runtime-ci-receipt.mjs';
+import { availableBuildMemory, checkArtifactBudget, validateCiProfile, validateMacProfile } from './app-runtime-ci-resources.mjs';
+import { nativeBuildInputs } from './app-runtime-ci-receipt.mjs';
+import { buildAdmission } from './app-runtime-build-admission.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_PATH = join(REPOSITORY, 'apps/app-worker/runtime.lock.json');
-const SOURCE_PATHS = NATIVE_BUILD_INPUTS;
 const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
-const USAGE = 'build-app-runtime.mjs plan|build --target <target> --scratch <new-empty-directory-outside-repositories> [--jobs 1|2] [--resource-profile default|github-linux] [--source-archive <cached-tar.xz>|--download-source] [--cc <path> --cxx <path> --python <path>]';
+const USAGE = 'build-app-runtime.mjs plan|build --target <target> --scratch <new-empty-directory-outside-repositories> [--jobs 1|2] [--resource-profile default|github-linux|github-macos] [--source-archive <cached-tar.xz>|--download-source] [--cc <path> --cxx <path> --python <path>]';
 
 export function parseOptions(argv) {
   const mode = argv[0];
@@ -94,8 +94,12 @@ export function createPlan(options, lock, repository = REPOSITORY) {
   const target = lock.targets[options.target];
   if (!target) throw new Error('unsupported runtime target');
   const resourceProfile = options.resourceProfile ?? 'default';
-  if (!['default', 'github-linux'].includes(resourceProfile) || resourceProfile === 'github-linux' && target.platform !== 'linux') throw new Error('unsupported resource profile for target');
-  const resourceBounds = resourceProfile === 'github-linux' ? { ...lock.build, ...lock.dedicatedCi.resourceBounds } : lock.build;
+  if (!['default', 'github-linux', 'github-macos'].includes(resourceProfile)
+      || resourceProfile === 'github-linux' && target.platform !== 'linux'
+      || resourceProfile === 'github-macos' && options.target !== 'darwin-arm64') throw new Error('unsupported resource profile for target');
+  const ciProfile = resourceProfile === 'github-linux' ? lock.dedicatedCi : resourceProfile === 'github-macos'
+    ? validateMacProfile(JSON.parse(readFileSync(join(REPOSITORY, 'apps/app-worker/macos-build-profile.json'), 'utf8'))) : null;
+  const resourceBounds = ciProfile ? { ...lock.build, ...ciProfile.resourceBounds } : lock.build;
   if (!Number.isInteger(options.jobs) || options.jobs < 1 || options.jobs > resourceBounds.maxJobs) throw new Error('jobs exceed resource profile limit');
   const scratch = absoluteBuildPath(options.scratch, 'scratch');
   if (inside(repository, scratch) || inside(scratch, repository)) throw new Error('scratch must be separate from the source repository');
@@ -121,7 +125,7 @@ export function createPlan(options, lock, repository = REPOSITORY) {
     tools: { cc, cxx, python, make: '/usr/bin/make', tar: '/usr/bin/tar' },
     toolchain: lock.toolchains[target.toolchain], requiresNativeHost: true,
     sourceProvenance: lock.node, resourceBounds, resourceProfile,
-    ciProfile: resourceProfile === 'github-linux' ? lock.dedicatedCi : null,
+    ciProfile,
     commands: [
       { program: python, args: ['./configure', ...lock.node.configure, `--dest-cpu=${target.arch}`], cwd: source },
       { program: '/usr/bin/make', args: ['-C', 'out', 'BUILDTYPE=Release', `-j${options.jobs}`, 'libnode'], cwd: source },
@@ -203,6 +207,10 @@ async function downloadSource(url, destination, maxBytes) {
 }
 
 export async function runCommand(command, environment, plan) {
+  if (plan.resourceProfile === 'github-macos') {
+    const { runMacCommand } = await import('./app-runtime-macos-command.mjs');
+    return runMacCommand(command, environment, plan, plan.macSession);
+  }
   const child = spawn(command.program, command.args, { cwd: command.cwd, env: environment, stdio: 'inherit', detached: true });
   let resourceFailure;
   let checking = false;
@@ -257,7 +265,9 @@ export function checkDependencies(platform, text, target) {
       if (!dependency.startsWith('/usr/lib/') && !dependency.startsWith('/System/Library/Frameworks/') && !allowed.has(dependency)) throw new Error(`unbundled runtime dependency: ${dependency}`);
     }
   } else {
-    const allowed = new Set([target.nodeLibrary, 'libstdc++.so.6', 'libgcc_s.so.1', 'libm.so.6', 'libc.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libatomic.so.1']);
+    const loader = { x64: 'ld-linux-x86-64.so.2', arm64: 'ld-linux-aarch64.so.1' }[target.arch];
+    if (!loader) throw new Error('unsupported Linux runtime architecture');
+    const allowed = new Set([target.nodeLibrary, loader, 'libstdc++.so.6', 'libgcc_s.so.1', 'libm.so.6', 'libc.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libatomic.so.1']);
     for (const match of text.matchAll(/\(NEEDED\).*\[([^\]]+)\]/g)) if (!allowed.has(match[1])) throw new Error(`unbundled runtime dependency: ${match[1]}`);
     for (const match of text.matchAll(/\((?:RUNPATH|RPATH)\).*\[([^\]]*)\]/g)) if (match[1] !== '$ORIGIN') throw new Error('runtime RPATH must remain inside its artifact directory');
   }
@@ -269,14 +279,19 @@ export async function buildRuntime(plan, lock) {
   let ancestor = dirname(plan.scratch);
   while (!await lstat(ancestor).catch(() => null)) ancestor = dirname(ancestor);
   checkBuildResources(plan.resourceBounds, { totalMemoryBytes: totalmem(), freeMemoryBytes: await availableBuildMemory(plan), freeDiskBytes: await freeDisk(ancestor) });
+  const mac = plan.resourceProfile === 'github-macos' ? await import('./app-runtime-macos-build.mjs') : null;
+  const macSession = mac?.prepareMacBuild(plan, checkedOutput);
+  const commandPlan = mac ? { ...plan, macSession } : plan;
   const environment = {
     PATH: [...new Set([...Object.values(plan.tools).map(dirname), '/usr/bin', '/bin'])].join(':'),
-    HOME: process.env.HOME, LANG: 'C', LC_ALL: 'C', TZ: 'UTC', SOURCE_DATE_EPOCH: String(lock.build.sourceDateEpoch),
+    HOME: plan.buildHome ?? process.env.HOME, LANG: 'C', LC_ALL: 'C', TZ: 'UTC', SOURCE_DATE_EPOCH: String(lock.build.sourceDateEpoch),
     CC: plan.tools.cc, CXX: plan.tools.cxx, PYTHON: plan.tools.python,
     CFLAGS: `-ffile-prefix-map=${plan.scratch}=/chariox-build -fdebug-prefix-map=${plan.scratch}=/chariox-build`,
     CXXFLAGS: `-ffile-prefix-map=${plan.scratch}=/chariox-build -fdebug-prefix-map=${plan.scratch}=/chariox-build`,
     CCACHE_DISABLE: '1',
     ...(plan.targetContract.deploymentTarget ? { MACOSX_DEPLOYMENT_TARGET: plan.targetContract.deploymentTarget } : {}),
+    ...(mac ? { DEVELOPER_DIR: plan.ciProfile.developerDirectory,
+      SDKROOT: `${plan.ciProfile.developerDirectory}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX${plan.ciProfile.sdkVersion}.sdk` } : {}),
   };
   const observed = {
     cc: checkedOutput(plan.tools.cc, [process.platform === 'darwin' ? '--version' : '-dumpfullversion'], environment),
@@ -284,12 +299,18 @@ export async function buildRuntime(plan, lock) {
     python: checkedOutput(plan.tools.python, ['--version'], environment),
     make: checkedOutput(plan.tools.make, ['--version'], environment),
     ...(process.platform === 'darwin' ? { xcode: checkedOutput('/usr/bin/xcodebuild', ['-version'], environment) } : {}),
+    ...(mac ? { sdkVersion: checkedOutput('/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-version'], environment),
+      sdkPath: checkedOutput('/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-path'], environment),
+      developerDirectory: checkedOutput('/usr/bin/xcode-select', ['-p'], environment) } : {}),
   };
   checkToolchainVersions(plan.toolchain, observed, process.platform);
+  mac?.checkMacTools(plan.ciProfile, observed, plan.tools);
+  const SOURCE_PATHS = nativeBuildInputs(plan.target);
   const git = args => checkedOutput('/usr/bin/git', ['-C', REPOSITORY, ...args], environment);
   if (git(['status', '--porcelain', '--', ...SOURCE_PATHS])) throw new Error('commit runtime build inputs before creating a provenance artifact');
   const sourceCommit = git(['rev-parse', 'HEAD']);
   const sourceTree = git(['rev-parse', 'HEAD^{tree}']);
+  const admission = plan.ciProfile ? buildAdmission(process.env, sourceCommit) : null;
   const buildInputs = await Promise.all(SOURCE_PATHS.map(async path => ({ path, sha256: await digestFile(join(REPOSITORY, path)) })));
   const toolInputs = await Promise.all(Object.entries(plan.tools).map(async ([name, path]) => ({ name, path: await realpath(path), sha256: await digestFile(path) })));
 
@@ -319,10 +340,10 @@ export async function buildRuntime(plan, lock) {
     sourceOwned = true;
     await mkdir(plan.output, { mode: 0o700 });
     outputOwned = true;
-    await runCommand({ program: plan.tools.tar, args: ['-xJf', archive, '--strip-components=1', '-C', plan.source], cwd: plan.scratch }, environment, plan);
+    await runCommand({ program: plan.tools.tar, args: ['-xJf', archive, '--strip-components=1', '-C', plan.source], cwd: plan.scratch }, environment, commandPlan);
     await mkdir(join(plan.source, 'chariox'), { mode: 0o700 });
     for (const file of ['node_runtime.cc', 'runtime.h']) await copyFile(join(REPOSITORY, 'apps/app-worker/src', file), join(plan.source, 'chariox', file), constants.COPYFILE_EXCL);
-    for (const command of plan.commands) await runCommand(command, environment, plan);
+    for (const command of plan.commands) await runCommand(command, environment, commandPlan);
     await copyFile(join(plan.source, 'out/Release', plan.targetContract.nodeLibrary), join(plan.output, plan.targetContract.nodeLibrary), constants.COPYFILE_EXCL);
     await copyFile(join(plan.source, 'LICENSE'), join(plan.output, 'NODE-LICENSE'), constants.COPYFILE_EXCL);
     const artifactFiles = [plan.targetContract.runtimeLibrary, plan.targetContract.nodeLibrary, 'NODE-LICENSE'];
@@ -330,21 +351,29 @@ export async function buildRuntime(plan, lock) {
     for (const name of artifactFiles.slice(0, 2)) {
       dependencies[name] = checkedOutput(process.platform === 'darwin' ? '/usr/bin/otool' : '/usr/bin/readelf', process.platform === 'darwin' ? ['-L', join(plan.output, name)] : ['-d', join(plan.output, name)], environment);
       checkDependencies(process.platform, dependencies[name], plan.targetContract);
+      if (mac) mac.checkMachO(plan.targetContract,
+        checkedOutput('/usr/bin/lipo', ['-archs', join(plan.output, name)], environment),
+        checkedOutput('/usr/bin/otool', ['-D', join(plan.output, name)], environment).split('\n')[1]?.trim(), name);
     }
     const files = await Promise.all(artifactFiles.map(async path => ({ path, size: (await lstat(join(plan.output, path))).size, sha256: await digestFile(join(plan.output, path)) })));
+    if (mac) await mac.finalMacBuildCheck(plan, macSession);
     const manifest = {
       schema: 'chariox.app-runtime-artifact.v1', runtimeVersion: lock.runtimeVersion, workerAbi: lock.workerAbi,
       target: plan.target, nodeVersion: lock.node.version, nodeModuleAbi: lock.node.moduleAbi,
       source: { url: lock.node.url, sha256: lock.node.sha256 }, sourceCommit, sourceTree, buildInputs, toolInputs,
+      ...(admission ? { buildAdmission: admission } : {}),
       toolchain: observed, commands: plan.commands, dependencies,
       files, resourceProfile: plan.resourceProfile, resourceBounds: plan.resourceBounds, builderProfile: plan.ciProfile,
+      ...(mac ? { resourceObservation: { ...macSession.evidence, completed: true } } : {}),
       signing: { status: 'unsigned', notarization: 'not-performed' },
       validation: { nativeBuild: 'completed', runtimeExecution: 'not-performed', containment: 'not-performed', reproducibility: 'not-compared' },
       loading: lock.loading,
     };
     const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
     checkArtifactBudget(plan.ciProfile, [...files.map(file => file.size), Buffer.byteLength(manifestText)]);
+    if (mac && performance.now() >= macSession.deadline) throw new Error('macOS build deadline reached before artifact publication');
     await writeFile(join(plan.output, 'artifact-manifest.json'), manifestText, { flag: 'wx', mode: 0o600 });
+    if (mac && performance.now() >= macSession.deadline) throw new Error('macOS build deadline reached during artifact publication');
     succeeded = true;
     return manifest;
   } finally {
@@ -352,6 +381,7 @@ export async function buildRuntime(plan, lock) {
     if (archiveOwned) await rm(archive, { force: true });
     if (!succeeded && outputOwned) await rm(plan.output, { recursive: true, force: true });
     await rm(marker, { force: true });
+    if (mac) await mac.recordMacBuild(plan, macSession, succeeded);
   }
 }
 

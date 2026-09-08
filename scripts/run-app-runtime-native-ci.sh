@@ -9,6 +9,7 @@ if [[ ! "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ || ! "${GITHUB_RUN_ATTEMPT:-}" =~ ^[0-9
   echo 'Missing hosted run identity.' >&2
   exit 1
 fi
+[[ "${CHARIOX_NATIVE_BUILD_CONFIRMED:-}" == true && "${NATIVE_ADMITTED_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
 
 ci_workspace="$(realpath -e -- "$GITHUB_WORKSPACE")"
 ci_temp="$(realpath -e -- "$RUNNER_TEMP")"
@@ -43,6 +44,8 @@ timeout --signal=TERM --kill-after=10s 300m docker run --rm --init \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m \
   --user "$(id -u):$(id -g)" \
   --env GITHUB_ACTIONS=true --env RUNNER_ENVIRONMENT=github-hosted --env HOME=/build-scratch/home \
+  --env CHARIOX_NATIVE_BUILD_CONFIRMED=true --env "NATIVE_ADMITTED_SHA=$NATIVE_ADMITTED_SHA" \
+  --env "NATIVE_ADMISSION_EVENT=$NATIVE_ADMISSION_EVENT" --env "NATIVE_ADMISSION_ACTOR=$NATIVE_ADMISSION_ACTOR" \
   --mount "type=bind,source=$ci_workspace,target=/workspace,readonly" \
   --mount "type=bind,source=$ci_scratch,target=/build-scratch" \
   --workdir /workspace --entrypoint /usr/local/bin/node "$ci_image" \

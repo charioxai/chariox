@@ -60,10 +60,32 @@ export async function readCiCgroup() {
 }
 
 export async function availableBuildMemory(plan) {
+  if (plan.resourceProfile === 'github-macos') {
+    validateMacProfile(plan.ciProfile);
+    if (process.platform !== 'darwin' || typeof process.availableMemory !== 'function') throw new Error('macOS available-memory telemetry is required');
+    return process.availableMemory();
+  }
   if (plan.resourceProfile !== 'github-linux') return freemem();
   const [cgroup, meminfo] = await Promise.all([readCiCgroup(), readFile('/proc/meminfo', 'utf8')]);
   const available = checkCiIsolation(plan.ciProfile, cgroup, process.env);
   return Math.min(hostAvailableMemory(meminfo), available);
+}
+
+export function validateMacProfile(profile) {
+  const expected = {
+    schema: 'chariox.app-runtime-macos-builder.v1', name: 'github-macos', target: 'darwin-arm64', runner: 'macos-15',
+    developerDirectory: '/Applications/Xcode_16.4.app/Contents/Developer', xcodeBuild: '16F6', sdkVersion: '15.5',
+    compilerBuild: 'clang-1700.0.13.5',
+    resourceBounds: { maxJobs: 1, minTotalMemoryBytes: 7 * GiB, minFreeMemoryBytes: 3 * GiB,
+      minFreeDiskBytes: 24 * GiB, minimumRemainingMemoryBytes: GiB, minimumRemainingDiskBytes: 4 * GiB },
+    observedGroupRssBytes: 4 * GiB, observedGroupProcesses: 128, additionalSwapBytes: 256 * MiB,
+    sampleIntervalMs: 1000, sampleTimeoutMs: 3000, maxDurationMs: 300 * 60 * 1000,
+    maxArtifactBytes: 512 * MiB, enforcement: 'monitored-disposable-vm-not-hard-memory-cpu-or-swap-caps',
+  };
+  const sorted = value => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+  if (JSON.stringify(sorted(profile)) !== JSON.stringify(sorted(expected))) throw new Error('invalid dedicated macOS profile; observed limits cannot be weakened');
+  return profile;
 }
 
 export function hostAvailableMemory(meminfo) {

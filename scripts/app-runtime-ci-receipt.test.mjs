@@ -3,7 +3,7 @@ import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { fingerprint, NATIVE_BUILD_INPUTS, readReceipt, receiptKey, RECEIPT_MAX_AGE_MS, RECEIPT_MAX_BYTES, validReceipt, verifyReceipt } from './app-runtime-ci-receipt.mjs';
+import { fingerprint, nativeBuildInputs, NATIVE_BUILD_INPUTS, readReceipt, receiptKey, RECEIPT_MAX_AGE_MS, RECEIPT_MAX_BYTES, validReceipt, verifyReceipt } from './app-runtime-ci-receipt.mjs';
 
 const repository = 'charioxai/chariox';
 const now = 1_800_000_000_000;
@@ -118,4 +118,23 @@ test('restored receipt bytes are bounded and symlinks are never followed', async
     await writeFile(file, ' '.repeat(RECEIPT_MAX_BYTES + 1));
     await assert.rejects(readReceipt(file), /invalid receipt|exceeded/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Mac-only source changes leave Linux receipts unchanged and target evidence cannot cross workflows', async () => {
+  const macEntries = nativeBuildInputs('darwin-arm64').map((path, index) => ({ path, type: 'blob', mode: '100644', sha: (index + 1).toString(16).padStart(40, '0') }));
+  const macHash = fingerprint(macEntries, 'darwin-arm64');
+  const changed = structuredClone(macEntries);
+  changed.find(entry => entry.path === 'scripts/app-runtime-macos-command.py').sha = 'e'.repeat(40);
+  assert.notEqual(fingerprint(changed, 'darwin-arm64'), macHash);
+  assert.equal(fingerprint([...entries, ...changed.filter(entry => !NATIVE_BUILD_INPUTS.includes(entry.path))]), inputHash);
+  assert.notEqual(receiptKey(macHash, now, 'darwin-arm64'), receiptKey(macHash, now, 'linux-x64'));
+  const f = fixture();
+  f.receipt.target = 'darwin-arm64'; f.receipt.input_hash = macHash;
+  f.run.path = '.github/workflows/app-runtime-macos-native.yml';
+  f.artifact.name = `UNSIGNED-NONRELEASE-darwin-arm64-${f.receipt.head_sha}`;
+  f.tree.tree = macEntries;
+  assert.equal(await verifyReceipt(f.receipt, repository, macHash, now, f.get, 'darwin-arm64'), true);
+  assert.equal(await verifyReceipt(f.receipt, repository, macHash, now, f.get, 'linux-x64'), false);
+  f.run.path = '.github/workflows/app-runtime-native.yml';
+  assert.equal(await verifyReceipt(f.receipt, repository, macHash, now, f.get, 'darwin-arm64'), false);
 });

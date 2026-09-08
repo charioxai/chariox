@@ -6,6 +6,11 @@ on:
     paths:
       - 'scripts/app-runtime-macos-preflight*'
       - 'scripts/app-runtime-macos-watch*'
+      - 'scripts/app-runtime-macos-command*'
+      - 'scripts/app-runtime-macos-build*'
+      - 'scripts/run-app-runtime-macos-ci.mjs'
+      - 'apps/app-worker/macos-build-profile.json'
+      - '.github/workflows/app-runtime-macos-native.yml'
       - '.github/workflows/app-runtime-macos-preflight.yml'
 
 permissions:
@@ -39,6 +44,8 @@ jobs:
           node --test --test-concurrency=1
           scripts/app-runtime-macos-preflight.test.mjs
           scripts/app-runtime-macos-watch.test.mjs
+          scripts/app-runtime-macos-build.test.mjs
+          scripts/app-runtime-macos-command.test.mjs
       - name: Measure resource and toolchain facts without native compilation
         id: preflight
         env:

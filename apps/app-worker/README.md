@@ -71,11 +71,15 @@ libraries and escaping Linux runpaths without executing either library.
 ## Dedicated hosted Linux build
 
 `app-runtime-native.yml` builds the initial Linux x64 target on a disposable
-`ubuntu-24.04` GitHub runner when native build inputs change in a PR. Later
-unrelated commits can reuse recent successful compilation evidence; manual
-dispatch is also available once the workflow exists on the default branch. Only
-one build runs at a time for that PR,
-with one matrix target and one Make job. No source/object cache, repository
+`ubuntu-24.04` GitHub runner after explicit manual admission. Before these
+workflows are merged, adding the exact PR label `app-runtime-build-linux`
+admits that labeled event's head commit. After merge, `workflow_dispatch` with
+`confirm_build=true` is also available. Admission verifies a same-repository
+head and the initiating actor's current write/maintain/admin permission through
+GitHub. An ordinary PR push, synchronize event or label already present cannot
+admit compilation; those updates run lightweight tests. Later manually admitted runs can reuse recent
+successful compilation evidence. One build runs at a time for that ref,
+with one matrix target and two Make jobs. No source/object cache, repository
 secrets, signing key, release upload, or automatic installation is involved.
 
 The only cache entry is a JSON receipt smaller than 4 KiB, written after a
@@ -86,7 +90,8 @@ checks its full current fingerprint, so that cannot skip unbuilt native edits.
 Receipts and their original artifacts must be less than five days old. Before
 reusing a PR-scoped receipt, the workflow checks GitHub's original successful
 run, retained artifact and committed input tree. Missing, forged, expired or
-unverifiable evidence causes a fresh build. The receipt records the original run
+unverifiable evidence causes a fresh build only inside an explicitly admitted
+workflow. The receipt records the original run
 and artifact link; it cannot enroll a runtime or stand in for signed release
 verification. No binaries, source trees or compiler objects enter this cache.
 
@@ -120,12 +125,72 @@ and profile change alter the exact native-input fingerprint, so an earlier
 receipt cannot authorize reuse. macOS and ordinary shared-host defaults are
 unchanged.
 
+The two-job [run 34176513092](https://github.com/charioxai/chariox/actions/runs/34176513092)
+finished compiling Node and the embedder on September 8 at 03:47 UTC within
+those hard limits. Artifact inspection then rejected the exact x64 ELF loader
+`ld-linux-x86-64.so.2`, already part of the signed platform graph. The validator
+now permits only the loader matching its target architecture. That run remains
+failed: its outputs were deleted and no usable artifact or execution evidence
+was retained. A fresh explicitly admitted build is required.
+
 On success, the workflow retains at most 512 MiB of explicitly
 `UNSIGNED-NONRELEASE` libraries, license and provenance for seven days. These
 artifacts are publicly accessible CI evidence in the public repository. They
 are never enrolled as a trusted runtime release. A Debian 12 build does not
 establish compatibility with an older glibc distribution; that release baseline
 and native macOS/arm64 builders still need validation.
+
+## Dedicated hosted macOS build
+
+`app-runtime-macos-native.yml` accepts only an explicit `app-runtime-build-macos`
+labeled event with the same permission/head checks, or a post-merge dispatch
+with `confirm_build=true`. It checks out and records that exact admitted SHA;
+an unrelated later push does not change the admitted source. The separate `macos-build-profile.json` selects macOS 15
+arm64, Xcode 16.4 build 16F6, SDK 15.5, Apple clang 17.0.0
+(`clang-1700.0.13.5`), Python 3.11.9 and one Make job. The command budget is
+300 minutes across the whole build; the job has 330 minutes for artifact
+handling and cleanup. No Xcode deletion, signing or notarization occurs.
+
+The [observed preflight](https://github.com/charioxai/chariox/actions/runs/34172680900)
+reported 7 GiB total RAM, 3.12 GiB available RAM and 42.23 GiB free disk on
+image `20260829.0321.1`. Its free-RAM value was only 230 MiB: admission uses
+Node's available-memory measurement on this profile. It requires 7 GiB total,
+3 GiB available and 24 GiB free disk. During compilation, the existing watcher
+samples every second and stops on less than 1 GiB available RAM, less than
+4 GiB disk, over 4 GiB summed process-group RSS, over 128 group processes,
+over 256 MiB additional swap, telemetry failure or the deadline. Telemetry
+has a three-second bound. These are monitored reserves on a disposable VM;
+they are not hard RAM, CPU or swap limits. Summed RSS may count shared pages
+more than once. First compilation must establish whether Node and linking fit.
+The laptop's 16/8/32 GiB admission defaults are unchanged.
+
+A fixed Python owner retains the build process-group leader until the JS owner
+acknowledges command completion, after a fresh sample proves no descendant
+remains. A private bounded status channel closes on parent failure, terminating
+that group. Controlled cancellation and failed commands terminate the group
+and reap the owner before scratch cleanup. If an external actor kills the
+owner itself first, signaling authority is withdrawn immediately; cleanup of
+any surviving descendants then relies on disposal of the hosted VM. No local
+descendant-cleanup proof is claimed for that exceptional case. No GitHub token or runner home
+is passed to compiler children. Resource extrema and runner-image identity are
+retained separately from the four-member unsigned native artifact. Mach-O
+architecture, install names and external dependencies are inspected without
+loading the resulting libraries. Host available memory, disk and swap are
+checked again after artifact copy/hash/inspection before success is published.
+
+Native receipts and artifact provenance select target-specific input graphs:
+Mac workflow/profile/watcher changes do not invalidate Linux receipts. This
+introduction changes the common driver and receipt code, so it changes the
+Linux fingerprint once. The already admitted Linux retry remains evidence for
+its exact historical source; it is not relabeled as a new-source build. Neither
+cached receipts nor successful compilation supplies release trust.
+
+Shipping on macOS still requires Developer ID Application signing of the final
+launcher and libraries, hardened runtime with the required JIT entitlement on
+the executable, enabled library validation, a secure timestamp, notarization,
+stapling and actual signed execution/containment tests. Apple Development or
+ad-hoc signing can support development tests but cannot satisfy that release
+gate. Signing credentials stay outside the repository and unsigned build jobs.
 
 ## Remaining release integration
 

@@ -167,3 +167,13 @@ test('dependency inspection rejects Homebrew, external crypto and escaping rpath
   assert.throws(() => checkDependencies('linux', ' 0x1 (NEEDED) Shared library: [libssl.so.3]', linux), /unbundled/);
   assert.throws(() => checkDependencies('linux', ' 0x1 (RPATH) Library rpath: [/tmp/untrusted]', linux), /RPATH/);
 });
+
+test('Linux permits only its exact enrolled platform loader, including observed libnode dependency', () => {
+  const x64 = lock.targets['linux-x64']; const arm64 = lock.targets['linux-arm64'];
+  const dependency = name => `0x0000000000000001 (NEEDED) Shared library: [${name}]`;
+  checkDependencies('linux', dependency('ld-linux-x86-64.so.2'), x64);
+  checkDependencies('linux', dependency('ld-linux-aarch64.so.1'), arm64);
+  assert.throws(() => checkDependencies('linux', dependency('ld-linux-aarch64.so.1'), x64), /unbundled/);
+  assert.throws(() => checkDependencies('linux', dependency('ld-linux-x86-64.so.2'), arm64), /unbundled/);
+  assert.throws(() => checkDependencies('linux', dependency('/tmp/ld-linux-x86-64.so.2'), x64), /unbundled/);
+});

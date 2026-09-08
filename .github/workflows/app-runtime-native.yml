@@ -2,12 +2,20 @@ name: App runtime native build (unsigned)
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_build:
+        description: 'Explicitly admit a bounded Linux native compilation (up to 300 minutes)'
+        type: boolean
+        required: true
+        default: false
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'apps/app-worker/runtime.lock.json'
       - 'apps/app-worker/src/runtime.h'
       - 'apps/app-worker/src/node_runtime.cc'
       - 'scripts/build-app-runtime*'
+      - 'scripts/app-runtime-build-admission*'
       - 'scripts/app-runtime-ci-resources*'
       - 'scripts/app-runtime-ci-receipt*'
       - 'scripts/run-app-runtime-native-ci.sh'
@@ -18,11 +26,52 @@ permissions:
   actions: read
 
 concurrency:
-  group: app-runtime-native-${{ github.event.pull_request.number || github.ref }}
+  # Only this target's explicit admission may occupy its heavyweight queue.
+  group: app-runtime-native-linux-x64-${{ ((github.event_name == 'workflow_dispatch' && inputs.confirm_build == true) || (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'app-runtime-build-linux' && github.event.pull_request.head.repo.full_name == github.repository)) && 'build' || 'checks' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Check resource guards and exact input provenance without compilation
+        run: node --test --test-concurrency=1 scripts/build-app-runtime.test.mjs scripts/app-runtime-ci-resources.test.mjs scripts/app-runtime-ci-receipt.test.mjs scripts/app-runtime-macos-build.test.mjs scripts/app-runtime-build-admission.test.mjs
+  admission:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.confirm_build == true) ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+       github.event.label.name == 'app-runtime-build-linux' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      confirmed: ${{ steps.admit.outputs.confirmed }}
+      source_sha: ${{ steps.admit.outputs.source_sha }}
+      actor: ${{ steps.admit.outputs.actor }}
+      admission_event: ${{ steps.admit.outputs.admission_event }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Verify explicit target event and current repository write permission
+        id: admit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/app-runtime-build-admission.mjs linux-x64
   build:
+    if: needs.admission.outputs.confirmed == 'true'
+    needs: [checks, admission]
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     strategy:
@@ -34,7 +83,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ needs.admission.outputs.source_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24.20.0'
@@ -59,12 +108,17 @@ jobs:
       - name: Compile Node and embedder in bounded container
         if: steps.reuse.outputs.reuse != 'true'
         id: native
+        env:
+          CHARIOX_NATIVE_BUILD_CONFIRMED: ${{ needs.admission.outputs.confirmed }}
+          NATIVE_ADMITTED_SHA: ${{ needs.admission.outputs.source_sha }}
+          NATIVE_ADMISSION_ACTOR: ${{ needs.admission.outputs.actor }}
+          NATIVE_ADMISSION_EVENT: ${{ needs.admission.outputs.admission_event }}
         run: bash scripts/run-app-runtime-native-ci.sh
       - uses: actions/upload-artifact@v4
         if: success() && steps.reuse.outputs.reuse != 'true'
         id: artifact
         with:
-          name: UNSIGNED-NONRELEASE-${{ matrix.target }}-${{ github.event.pull_request.head.sha || github.sha }}
+          name: UNSIGNED-NONRELEASE-${{ matrix.target }}-${{ needs.admission.outputs.source_sha }}
           path: ${{ steps.native.outputs.artifact_path }}
           if-no-files-found: error
           compression-level: 0

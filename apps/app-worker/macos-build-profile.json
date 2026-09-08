@@ -1,0 +1,26 @@
+{
+  "schema": "chariox.app-runtime-macos-builder.v1",
+  "name": "github-macos",
+  "target": "darwin-arm64",
+  "runner": "macos-15",
+  "developerDirectory": "/Applications/Xcode_16.4.app/Contents/Developer",
+  "xcodeBuild": "16F6",
+  "sdkVersion": "15.5",
+  "compilerBuild": "clang-1700.0.13.5",
+  "resourceBounds": {
+    "maxJobs": 1,
+    "minTotalMemoryBytes": 7516192768,
+    "minFreeMemoryBytes": 3221225472,
+    "minFreeDiskBytes": 25769803776,
+    "minimumRemainingMemoryBytes": 1073741824,
+    "minimumRemainingDiskBytes": 4294967296
+  },
+  "observedGroupRssBytes": 4294967296,
+  "observedGroupProcesses": 128,
+  "additionalSwapBytes": 268435456,
+  "sampleIntervalMs": 1000,
+  "sampleTimeoutMs": 3000,
+  "maxDurationMs": 18000000,
+  "maxArtifactBytes": 536870912,
+  "enforcement": "monitored-disposable-vm-not-hard-memory-cpu-or-swap-caps"
+}

@@ -991,3 +991,32 @@ fixture raced Type=simple service startup before namespace setup; the fixture
 now uses Type=exec, bounded PID/namespace observation and failure-line diagnostics.
 Production isolation assertions are unchanged. These hosted corrections need a
 fresh run; prior successful storage evidence remains recorded separately.
+
+
+### Explicit native build admission on both release platforms (2026-09-08)
+
+Linux run `34176513092` completed its pinned Node and embedder compiler commands
+under the unchanged 6 GiB/no-swap/two-CPU container limits. Final dependency
+inspection rejected the already-declared x64 loader name; the run failed and
+cleanup removed its outputs. No retained artifact or runtime execution pass is
+claimed. The validator now accepts only the target's exact signed-platform
+loader, with opposite-architecture and absolute-path regressions.
+
+A manually admitted macOS arm64 builder now uses the existing monitored profile
+on a disposable macos-15 runner: one Make job, initial 3 GiB available memory and
+24 GiB disk, remaining 1 GiB/4 GiB floors, observed group RSS at most 4 GiB,
+128 processes, at most 256 MiB additional swap, and a 300-minute build deadline.
+The retained command owner preserves signal authority through descendant cleanup;
+final host reserves are checked before artifact publication. These are observed
+limits, not Linux-style hard RAM/CPU/swap isolation. Developer ID signing,
+notarization and actual signed runtime validation remain separate release gates.
+
+Heavy compilation now requires an explicit target event. Before merge, a fresh
+same-repository PR label event verifies the actor's current write permission and
+pins the event's exact head. Retained labels and routine pushes cannot admit
+another build. Post-merge workflow_dispatch uses an explicit confirmation. Wrong
+target events have separate cheap concurrency groups so they cannot replace a
+pending build admission. The target-specific provenance graph includes all guard,
+owner, profile, workflow and admission sources. Forty-five focused tooling tests
+and sixteen concurrency-routing cases pass. New native builds have not yet run
+at this source revision.

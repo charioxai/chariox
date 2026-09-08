@@ -6,58 +6,73 @@ import { appendFile, mkdir, open, realpath, rename, writeFile } from 'node:fs/pr
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const NATIVE_BUILD_INPUTS = [
-  '.github/workflows/app-runtime-native.yml',
+const COMMON_INPUTS = [
   'apps/app-worker/runtime.lock.json',
   'apps/app-worker/src/runtime.h',
   'apps/app-worker/src/node_runtime.cc',
   'scripts/build-app-runtime.mjs',
   'scripts/build-app-runtime.test.mjs',
+  'scripts/app-runtime-build-admission.mjs', 'scripts/app-runtime-build-admission.test.mjs',
   'scripts/app-runtime-ci-resources.mjs',
   'scripts/app-runtime-ci-resources.test.mjs',
   'scripts/app-runtime-ci-receipt.mjs',
   'scripts/app-runtime-ci-receipt.test.mjs',
-  'scripts/run-app-runtime-native-ci.sh',
-].sort();
+];
+export function nativeBuildInputs(target = 'linux-x64') {
+  if (!['linux-x64', 'linux-arm64', 'darwin-arm64', 'darwin-x64'].includes(target)) throw new Error('unsupported native input target');
+  return [...COMMON_INPUTS, ...(target.startsWith('linux-') ? [
+    '.github/workflows/app-runtime-native.yml', 'scripts/run-app-runtime-native-ci.sh',
+  ] : [
+    '.github/workflows/app-runtime-macos-native.yml', 'apps/app-worker/macos-build-profile.json',
+    'scripts/run-app-runtime-macos-ci.mjs', 'scripts/app-runtime-macos-build.mjs', 'scripts/app-runtime-macos-build.test.mjs',
+    'scripts/app-runtime-macos-command.mjs', 'scripts/app-runtime-macos-command.py', 'scripts/app-runtime-macos-command.test.mjs',
+    'scripts/app-runtime-macos-preflight.mjs', 'scripts/app-runtime-macos-preflight.test.mjs',
+    'scripts/app-runtime-macos-watch.mjs', 'scripts/app-runtime-macos-watch.test.mjs',
+  ])].sort();
+}
+// Historical callers without a target still select the Linux source graph.
+export const NATIVE_BUILD_INPUTS = nativeBuildInputs('linux-x64');
 export const RECEIPT_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000;
 export const RECEIPT_MAX_BYTES = 4096;
-const WORKFLOW = '.github/workflows/app-runtime-native.yml';
+const WORKFLOWS = { 'linux-x64': '.github/workflows/app-runtime-native.yml', 'darwin-arm64': '.github/workflows/app-runtime-macos-native.yml' };
 const SHA = /^[a-f0-9]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const ID = /^[1-9][0-9]{0,19}$/;
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-export function fingerprint(entries) {
-  const selected = entries.filter(entry => NATIVE_BUILD_INPUTS.includes(entry.path));
+export function fingerprint(entries, target = 'linux-x64') {
+  const inputs = nativeBuildInputs(target);
+  const selected = entries.filter(entry => inputs.includes(entry.path));
   selected.sort((a, b) => a.path.localeCompare(b.path, 'en'));
-  if (selected.length !== NATIVE_BUILD_INPUTS.length
-      || new Set(selected.map(entry => entry.path)).size !== NATIVE_BUILD_INPUTS.length
+  if (selected.length !== inputs.length
+      || new Set(selected.map(entry => entry.path)).size !== inputs.length
       || selected.some(entry => entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode) || !SHA.test(entry.sha))) {
     throw new Error('missing, duplicate or non-regular native build input');
   }
   return createHash('sha256').update(JSON.stringify(selected.map(({ path, mode, sha }) => ({ path, mode, sha })))).digest('hex');
 }
 
-export function currentInputs(repository = REPOSITORY) {
+export function currentInputs(repository = REPOSITORY, target = 'linux-x64') {
+  const inputs = nativeBuildInputs(target);
   const git = args => execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8', maxBuffer: 256 * 1024, timeout: 10_000 });
-  if (git(['status', '--porcelain', '--', ...NATIVE_BUILD_INPUTS])) throw new Error('native build inputs must be committed');
-  const entries = git(['ls-tree', '-r', '-z', 'HEAD', '--', ...NATIVE_BUILD_INPUTS]).split('\0').filter(Boolean).map(line => {
+  if (git(['status', '--porcelain', '--', ...inputs])) throw new Error('native build inputs must be committed');
+  const entries = git(['ls-tree', '-r', '-z', 'HEAD', '--', ...inputs]).split('\0').filter(Boolean).map(line => {
     const match = /^(\d{6}) (blob) ([a-f0-9]{40})\t(.+)$/.exec(line);
     if (!match) throw new Error('invalid native input tree');
     return { mode: match[1], type: match[2], sha: match[3], path: match[4] };
   });
-  return { input_hash: fingerprint(entries), head_sha: git(['rev-parse', 'HEAD']).trim() };
+  return { input_hash: fingerprint(entries, target), head_sha: git(['rev-parse', 'HEAD']).trim() };
 }
 
-export function receiptKey(inputHash, now) {
-  if (!/^[a-f0-9]{64}$/.test(inputHash) || !Number.isSafeInteger(now) || now < 0) throw new Error('invalid receipt key input');
+export function receiptKey(inputHash, now, target = 'linux-x64') {
+  if (!Object.hasOwn(WORKFLOWS, target) || !/^[a-f0-9]{64}$/.test(inputHash) || !Number.isSafeInteger(now) || now < 0) throw new Error('invalid receipt key input');
   // Immutable cache entries refresh before their seven-day artifacts expire.
-  return `app-runtime-linux-x64-v1-${inputHash}-${Math.floor(now / RECEIPT_MAX_AGE_MS)}`;
+  return `app-runtime-${target}-v1-${inputHash}-${Math.floor(now / RECEIPT_MAX_AGE_MS)}`;
 }
 
-export function validReceipt(receipt, repository, inputHash, now) {
+export function validReceipt(receipt, repository, inputHash, now, target = 'linux-x64') {
   return receipt?.schema === 'chariox.unsigned-native-build-receipt.v1'
-    && receipt.target === 'linux-x64' && receipt.evidence === 'unsigned-compilation-only'
+    && Object.hasOwn(WORKFLOWS, target) && receipt.target === target && receipt.evidence === 'unsigned-compilation-only'
     && REPO.test(repository) && receipt.repository === repository && receipt.input_hash === inputHash
     && /^[a-f0-9]{64}$/.test(inputHash) && SHA.test(receipt.head_sha)
     && ID.test(receipt.run_id) && ID.test(receipt.run_attempt) && ID.test(receipt.artifact_id)
@@ -69,25 +84,25 @@ export function validReceipt(receipt, repository, inputHash, now) {
 // A PR cache can be populated by PR code. Verify the original GitHub run,
 // retained artifact and exact committed workflow/build tree before trusting a
 // receipt even as compilation evidence. Never load cached source or binaries.
-export async function verifyReceipt(receipt, repository, inputHash, now, get) {
-  if (!validReceipt(receipt, repository, inputHash, now)) return false;
+export async function verifyReceipt(receipt, repository, inputHash, now, get, target = 'linux-x64') {
+  if (!validReceipt(receipt, repository, inputHash, now, target)) return false;
   const root = `/repos/${repository}`;
   const run = await get(`${root}/actions/runs/${receipt.run_id}`);
   if (String(run.id) !== receipt.run_id || String(run.run_attempt) !== receipt.run_attempt
-      || run.status !== 'completed' || run.conclusion !== 'success' || run.path !== WORKFLOW
+      || run.status !== 'completed' || run.conclusion !== 'success' || run.path !== WORKFLOWS[target]
       || run.repository?.full_name !== repository || run.head_sha !== receipt.head_sha) return false;
   const artifact = await get(`${root}/actions/artifacts/${receipt.artifact_id}`);
   const created = Date.parse(artifact.created_at);
   if (String(artifact.id) !== receipt.artifact_id || artifact.expired !== false
       || artifact.workflow_run?.id !== run.id || artifact.workflow_run?.head_sha !== receipt.head_sha
-      || artifact.name !== `UNSIGNED-NONRELEASE-linux-x64-${receipt.head_sha}`
+      || artifact.name !== `UNSIGNED-NONRELEASE-${target}-${receipt.head_sha}`
       || !Number.isFinite(created) || created > now || now - created >= RECEIPT_MAX_AGE_MS
       || !Number.isFinite(Date.parse(artifact.expires_at)) || Date.parse(artifact.expires_at) <= now) return false;
   const commit = await get(`${root}/git/commits/${receipt.head_sha}`);
   if (commit.sha !== receipt.head_sha || !SHA.test(commit.tree?.sha)) return false;
   const tree = await get(`${root}/git/trees/${commit.tree.sha}?recursive=1`);
   if (tree.truncated !== false || !Array.isArray(tree.tree)) return false;
-  return fingerprint(tree.tree) === inputHash;
+  return fingerprint(tree.tree, target) === inputHash;
 }
 
 async function getGithub(path) {
@@ -124,20 +139,22 @@ async function main(mode) {
     throw new Error('receipt tooling requires its hosted workflow');
   }
   const repository = process.env.GITHUB_REPOSITORY;
-  const { input_hash, head_sha } = currentInputs();
-  const directory = join(await realpath(process.env.RUNNER_TEMP), 'chariox-native-build-receipt');
+  const target = process.env.NATIVE_TARGET ?? 'linux-x64';
+  if (!Object.hasOwn(WORKFLOWS, target)) throw new Error('unsupported hosted target');
+  const { input_hash, head_sha } = currentInputs(REPOSITORY, target);
+  const directory = join(await realpath(process.env.RUNNER_TEMP), `chariox-native-build-receipt-${target}`);
   const path = join(directory, 'receipt.json');
   if (mode === 'key') {
     if (!ID.test(process.env.GITHUB_RUN_ID) || !ID.test(process.env.GITHUB_RUN_ATTEMPT)) throw new Error('missing hosted run identity');
     await mkdir(directory, { mode: 0o700 });
-    const prefix = `${receiptKey(input_hash, Date.now())}-`;
+    const prefix = `${receiptKey(input_hash, Date.now(), target)}-`;
     await appendFile(process.env.GITHUB_OUTPUT,
       `key=${prefix}${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}\nprefix=${prefix}\npath=${path}\n`);
   } else if (mode === 'check') {
     let receipt; let reuse = false;
     try {
       receipt = await readReceipt(path);
-      reuse = await verifyReceipt(receipt, repository, input_hash, Date.now(), getGithub);
+      reuse = await verifyReceipt(receipt, repository, input_hash, Date.now(), getGithub, target);
     } catch { /* Missing, stale, corrupt or unverifiable evidence means rebuild. */ }
     await appendFile(process.env.GITHUB_OUTPUT, `reuse=${reuse}\n`);
     if (reuse) {
@@ -147,11 +164,11 @@ async function main(mode) {
   } else {
     const receipt = {
       schema: 'chariox.unsigned-native-build-receipt.v1', evidence: 'unsigned-compilation-only',
-      target: 'linux-x64', repository, input_hash, head_sha, completed_at_ms: Date.now(),
+      target, repository, input_hash, head_sha, completed_at_ms: Date.now(),
       run_id: process.env.GITHUB_RUN_ID, run_attempt: process.env.GITHUB_RUN_ATTEMPT,
       artifact_id: process.env.NATIVE_ARTIFACT_ID, artifact_url: process.env.NATIVE_ARTIFACT_URL,
     };
-    if (!validReceipt(receipt, repository, input_hash, receipt.completed_at_ms)) throw new Error('invalid successful artifact identity');
+    if (!validReceipt(receipt, repository, input_hash, receipt.completed_at_ms, target)) throw new Error('invalid successful artifact identity');
     const bytes = `${JSON.stringify(receipt)}\n`;
     if (Buffer.byteLength(bytes) > RECEIPT_MAX_BYTES) throw new Error('receipt exceeded size bound');
     // Replace a rejected restored receipt without following its possible symlink.

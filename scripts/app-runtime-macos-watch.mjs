@@ -1,5 +1,5 @@
 // Dedicated builder monitoring only. Not a hard RAM/CPU/swap quota and not an
-// App sandbox. Not wired into the native build driver until separately reviewed.
+// App sandbox. The explicit github-macos builder uses this after admission.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { statfs } from 'node:fs/promises';
@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { processGroup, PROPOSED_BOUNDS, swapUsage } from './app-runtime-macos-preflight.mjs';
 
 const execute = promisify(execFile);
-const MAX_DURATION_MS = 165 * 60 * 1000;
+const MAX_DURATION_MS = 300 * 60 * 1000;
 
 function unsigned(value) { return Number.isSafeInteger(value) && value >= 0; }
 
@@ -33,14 +33,24 @@ export async function readMacBuildSample(leaderPid, scratch, signal) {
   assert.equal(typeof process.availableMemory, 'function');
   const options = { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
     env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', LC_ALL: 'C' }, signal };
-  const [processes, swap, disk] = await Promise.all([
+  const [processes, host] = await Promise.all([
     execute('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,rss='], options),
-    execute('/usr/sbin/sysctl', ['-n', 'vm.swapusage'], { ...options, maxBuffer: 4096 }),
-    statfs(scratch, { bigint: true }),
+    readMacHostResources(scratch, signal),
   ]);
   const group = processGroup(processes.stdout, leaderPid);
+  return { ...host, groupRssBytes: group.rssBytes, groupProcesses: group.processCount };
+}
+
+export async function readMacHostResources(scratch, signal) {
+  assert.equal(process.platform, 'darwin'); assert.ok(isAbsolute(scratch));
+  assert.equal(typeof process.availableMemory, 'function');
+  const [swap, disk] = await Promise.all([
+    execute('/usr/sbin/sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8', timeout: 2000,
+      killSignal: 'SIGKILL', maxBuffer: 4096, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', LC_ALL: 'C' }, signal }),
+    statfs(scratch, { bigint: true }),
+  ]);
   return { availableMemoryBytes: process.availableMemory(), freeDiskBytes: Number(disk.bavail * disk.bsize),
-    groupRssBytes: group.rssBytes, groupProcesses: group.processCount, swapBytes: swapUsage(swap.stdout.trim()).usedBytes };
+    swapBytes: swapUsage(swap.stdout.trim()).usedBytes };
 }
 
 /** The command owner supplies a synchronous stop(reason) callback that requests
