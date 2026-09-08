@@ -17,6 +17,7 @@ use crate::error::DaemonError;
 
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_publishers;
+pub(crate) mod app_state;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
@@ -127,6 +128,7 @@ enum DurableWriterRequest {
     App(Box<apps::AppRegistryRequest>),
     AppPublisher(Box<app_publishers::AppPublisherRequest>),
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
+    AppState(Box<app_state::AppStateRequest>),
 }
 
 #[derive(Debug)]
@@ -293,6 +295,7 @@ impl DurableKernelStateStore {
             })?;
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;
+        app_state::initialize(&mut connection)?;
         let writer = DurableStateWriter::start(&path)?;
         connection
             .pragma_update(None, "query_only", true)
@@ -1316,6 +1319,10 @@ fn run_durable_writer(
                 app_installation_staging::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppState(request) => {
+                app_state::execute(&mut connection, *request);
+                continue;
+            }
         };
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
@@ -1328,7 +1335,8 @@ fn run_durable_writer(
                 Ok(
                     request @ (DurableWriterRequest::App(_)
                     | DurableWriterRequest::AppPublisher(_)
-                    | DurableWriterRequest::VerifiedApp(_)),
+                    | DurableWriterRequest::VerifiedApp(_)
+                    | DurableWriterRequest::AppState(_)),
                 ) => {
                     pending = Some(request);
                     break;

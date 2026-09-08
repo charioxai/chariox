@@ -87,12 +87,22 @@ impl<'a> ManagedStateStore<'a> {
     /// Admission and the read share one SQLite snapshot. Update quiescence or
     /// a generation switch cannot fall between them.
     pub fn get(&mut self, scope: StateScope<'_>, key: &str) -> Result<Option<StateRecord>> {
-        changes::key(key)?;
         let transaction = self.connection.transaction()?;
-        store::active(&transaction, scope)?;
-        let result = store::read(&transaction, scope.installation, key)?;
+        let result = Self::read_in(&transaction, scope, key)?;
         transaction.commit()?;
         Ok(result)
+    }
+
+    /// Compose an authenticated publisher/worker check and state read in the
+    /// same existing kernel transaction. This does not end that transaction.
+    pub fn read_in(
+        transaction: &Transaction<'_>,
+        scope: StateScope<'_>,
+        key: &str,
+    ) -> Result<Option<StateRecord>> {
+        changes::key(key)?;
+        store::active(transaction, scope)?;
+        store::read(transaction, scope.installation, key)
     }
 
     /// Standalone structured mutation. Returning success means SQLite commit
