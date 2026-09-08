@@ -207,6 +207,26 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_catalog_advertises_explicit_slice_display_backends() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let slice_create = catalog
+            .nodes
+            .iter()
+            .flat_map(|node| node.children.iter())
+            .find(|node| node.id == "slice-create")
+            .expect("slice create command should be present");
+
+        assert!(slice_create
+            .children
+            .iter()
+            .any(|node| node.value == "/slice create --headed --display-backend selkies "));
+        assert!(slice_create
+            .children
+            .iter()
+            .any(|node| node.value == "/slice create --headed --display-backend novnc "));
+    }
+
+    #[test]
     fn terminal_command_catalog_includes_room_environment_status() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let mut nodes = Vec::new();

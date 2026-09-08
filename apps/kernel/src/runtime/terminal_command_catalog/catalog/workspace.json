@@ -33,6 +33,18 @@
             "value": "/slice create --headed "
           },
           {
+            "id": "slice-create-headed-selkies",
+            "label": "Selkies display",
+            "description": "Create a visible Linux slice with the product display backend; append a slice name",
+            "value": "/slice create --headed --display-backend selkies "
+          },
+          {
+            "id": "slice-create-headed-novnc",
+            "label": "noVNC display",
+            "description": "Create a visible Linux slice with the legacy display backend; append a slice name",
+            "value": "/slice create --headed --display-backend novnc "
+          },
+          {
             "id": "slice-create-clean",
             "label": "clean",
             "description": "Create a clean slice base; append a slice name",
