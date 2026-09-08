@@ -354,12 +354,53 @@ impl DaemonApp {
         let options = crate::slice::LocalDockerSliceOptions::from_config(&self.config);
         for transaction in transactions {
             let slice = self.slices.resolve(&transaction.source_slice_id)?;
-            crate::slice::recover_local_docker_snapshot_pause(&slice, &options)?;
-            let generation = crate::slice::recover_pending_local_docker_slice_backup_restore(
-                &slice,
-                &options,
-                &transaction,
-            )?;
+            let recovery = crate::slice::recover_local_docker_snapshot_pause(&slice, &options)
+                .and_then(|()| {
+                    crate::slice::recover_pending_local_docker_slice_backup_restore(
+                        &slice,
+                        &options,
+                        &transaction,
+                    )
+                });
+            let generation = match recovery {
+                Ok(generation) => generation,
+                Err(error) => {
+                    // Keep the durable intent and rollback artifacts. The pending
+                    // transaction blocks this slice's operations, not other Rooms.
+                    let now_ms = crate::session::unix_epoch_ms();
+                    self.slices.set_status(
+                        &slice.id,
+                        crate::slice::SliceStatus::Unhealthy,
+                        now_ms,
+                    )?;
+                    let slice = self.slices.set_operation_diagnostics(
+                        &slice.id,
+                        "slice.backup.restore",
+                        crate::slice::SliceOperationStatus::Failed,
+                        Some(&format!(
+                            "interrupted backup restore rollback is pending; repair the archive or Docker availability, then restart the kernel to retry. Cause: {error}"
+                        )),
+                        now_ms,
+                    )?;
+                    // Durable-store errors remain fatal; only backend recovery
+                    // failures are isolated to their slice.
+                    self.durable_state.append_event(
+                        "slice.updated",
+                        Some(slice.id.clone()),
+                        serde_json::json!({ "slice": &slice }),
+                    )?;
+                    crate::logging::warn_with_fields(
+                        "slice.backup.restore",
+                        "slice rollback remains pending; kernel startup will continue",
+                        serde_json::json!({
+                            "transaction_id": transaction.id,
+                            "slice_id": slice.id,
+                            "error": slice.last_error,
+                        }),
+                    );
+                    continue;
+                }
+            };
             let state = generation.state.clone();
             self.durable_state.with_projection_transition_lock(|| {
                 self.slices.resolve_backup_restore_transactionally(
