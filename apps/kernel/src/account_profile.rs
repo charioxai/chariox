@@ -1020,8 +1020,10 @@ impl ProviderAccountProfileRegistry {
         let mut environment = locator.environment();
         // Preserve Claude's provider-native default credential scope. Injecting the
         // conventional config directory can select a different credential store, including
-        // a scoped Keychain service on macOS.
+        // a scoped Keychain service on macOS. Managed isolation changes HOME, so it
+        // must retain the explicit directory to bind the selected credential profile.
         if provider == "claude"
+            && !crate::provider::managed_provider_isolation_required()
             && origin == ProviderAccountProfileOrigin::Default
             && matches!(
                 locator,
