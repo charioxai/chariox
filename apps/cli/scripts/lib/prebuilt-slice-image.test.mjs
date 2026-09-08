@@ -32,4 +32,7 @@ test("room drill validates prebuilt identity before starting fixture or relay", 
   assert.ok(check < source.indexOf("fixture = await startFixture()"))
   assert.ok(check < source.indexOf("const relay = spawn("))
   assert.ok(source.includes("slice image must contain the exact current runtime source"), "retain post-start validation")
+  assert.match(source, /prebuiltSliceImageId = await validatePrebuiltSliceImage/)
+  assert.match(source, /docker_image = \$\{JSON.stringify\(prebuiltSliceImageId\)\}/)
+  assert.doesNotMatch(source, /JSON.stringify\(process.env.CHARIOX_ROOM_DRILL_IMAGE/)
 })

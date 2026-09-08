@@ -200,6 +200,7 @@ let secretAgent = null
 let secretProviderRun = null
 let sourceIdentity = null
 let sliceRuntimeIdentity = null
+let prebuiltSliceImageId = null
 let fixtureWorkspace = repoRoot
 
 const interruption = createDrillInterruption()
@@ -230,7 +231,7 @@ async function run() {
   const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
   const relayBinary = await resolveRuntimeBinary("chariox-relay")
   sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
-  await validatePrebuiltSliceImage(process.env.CHARIOX_ROOM_DRILL_IMAGE, sourceIdentity,
+  prebuiltSliceImageId = await validatePrebuiltSliceImage(process.env.CHARIOX_ROOM_DRILL_IMAGE, sourceIdentity,
     async image => JSON.parse((await docker(["image", "inspect", image])).stdout))
   resources.push(await resourceSnapshot("before"))
   fixture = await startFixture()
@@ -2088,8 +2089,8 @@ async function seedConfig(tempRoot) {
     // This opt-in case runs real providers inside the production Bubblewrap
     // boundary. Docker's outer default profile prevents that boundary starting.
     ...(realProviderOptions ? ["allow_unconfined_seccomp = true"] : []),
-    ...(process.env.CHARIOX_ROOM_DRILL_IMAGE?.trim()
-      ? [`docker_image = ${JSON.stringify(process.env.CHARIOX_ROOM_DRILL_IMAGE.trim())}`, "build_image = \"never\""]
+    ...(prebuiltSliceImageId
+      ? [`docker_image = ${JSON.stringify(prebuiltSliceImageId)}`, "build_image = \"never\""]
       : ["build_image = \"auto\""]),
     `memory_mb = ${sliceMemoryMb}`,
     "cpus = \"1\"",
