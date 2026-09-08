@@ -37,6 +37,28 @@ const sliceProvisionerUrl = new URL(
   import.meta.url,
 )
 
+test("managed image explicitly installs Buildx without recommendations", async () => {
+  const prepare = await readFile(scriptUrl, "utf8")
+  const install = prepare.match(/apt-get install -y --no-install-recommends [\s\S]*?\n\n/)?.[0]
+  assert.ok(install)
+  // Model a clean host: no recommendations, user plugins or fallback binary.
+  // Execute the real package request rather than matching a comment or probe.
+  const result = spawnSync("/bin/bash", ["-c", `
+set -eu
+PATH=/nonexistent
+installed=no
+apt-get() {
+  for package in "$@"; do
+    if [ "$package" = docker-buildx ]; then installed=yes; fi
+  done
+}
+fail() { printf '%s\\n' "$*" >&2; exit 1; }
+${install}
+[ "$installed" = yes ] || fail "Docker Buildx is required to build the slice runtime image"
+`], { encoding: "utf8", timeout: 5000 })
+  assert.equal(result.status, 0, result.stderr)
+})
+
 test("Hetzner image preparation is pinned, guarded, and leaves no runtime identity", async () => {
   const script = await readFile(scriptUrl, "utf8")
 
@@ -391,6 +413,9 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(broker, /CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock/)
   assert.match(rootlessNamespace, /nsenter --target "\$child_pid" --user --mount/)
   assert.doesNotMatch(rootlessNamespace, /nsenter[^\n]*--net/)
+  const preparation = await readFile(scriptUrl, "utf8")
+  assert.match(preparation, /runuser -u chariox-docker -- env -i \\\n  HOME=\/var\/lib\/chariox-docker\/home \\\n  PATH=\/usr\/local\/bin:\/usr\/bin:\/bin \\\n  docker buildx version/)
+  assert.match(preparation, /fail "Docker Buildx is unavailable to the slice broker user"/)
   assert.doesNotMatch(installer, /usermod --append --groups chariox-slice chariox-docker/)
   assert.match(installer, /setfacl -P -m "u:chariox-docker:--x" -- "\$install_root\/var\/lib\/chariox-slice-share"/)
   assert.match(installer, /install -d -o chariox-docker -g chariox-slice -m 2710/)
