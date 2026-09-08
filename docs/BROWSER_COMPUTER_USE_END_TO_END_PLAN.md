@@ -227,8 +227,9 @@ while the PR is still evolving. Keep the PR out of the ready-to-merge CI path
 until its exact head has passed focused validation and the independent reviewer
 has no remaining comments.
 
-Run GitHub CI once for that final, reviewer-clean head immediately before
-merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
+Defer GitHub CI until the goal's implementation and functional validation are
+ready for the final gate, as requested by the user. Then run it for each final,
+reviewer-clean head immediately before merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
 exact-head reviewer loop, and then run the final CI gate again. Do not treat a
 successful run for an older SHA as evidence for a changed head.
 
@@ -245,12 +246,19 @@ agent performing review. Do not send it messages, ask it for status, direct its
 work, interrupt it, or use it as an implementation sub-agent. Review must remain
 independent and arrive through the established reviewer and PR-comment path.
 
-The independent reviewer services and state under `~/.chariox-reviewer` are
-shared infrastructure owned outside this implementation program. The
-implementation agent is not responsible for operating, diagnosing, repairing,
-restarting, stopping, pruning, or modifying that infrastructure. Do not touch it
-unless the user explicitly changes this instruction and assigns reviewer repair
-as a separate task.
+The user subsequently assigned reviewer health to the implementation agent.
+Inspect reviewer health and repair verified reviewer faults when needed, while
+preserving independent review decisions. Services and state under
+`~/.chariox-reviewer` remain shared infrastructure: do not stop, restart, or
+prune them for resource cleanup. A repair must address an observed reviewer
+fault, preserve queued work, and include verification that reviews resume.
+
+Do not use built-in sub-agents or coordinate with unrelated agents. The user's
+later authorization specifically permits delegating implementation and heavy
+validation to remote Chariox agents through the Web terminal. Use that product
+path for assignments and results; direct administrative access is an exception
+for diagnosed product faults or management unavailable through the product.
+Keep those implementation assignments separate from independent review.
 
 If the reviewer is delayed, unavailable, or temporarily stops posting comments,
 record the exact commit SHA awaiting review and continue useful independent work
@@ -567,6 +575,70 @@ The managed-machine drill must prove:
 11. Multiple viewers and slices respect admission and resource budgets.
 12. The entire drill can tear down the slice and managed machine without
     residue in Cloud, OpenShip, the relay registry, or the host.
+
+### Milestone 9a: Git credentials at launch and after launch
+
+Validate initial provisioning independently from the new post-launch operation.
+The September 8 investigation found that the original test machine was created
+with Git credential transfer explicitly disabled. A missing helper on that
+machine does not prove that selected credentials were lost during transfer.
+
+Initial provisioning acceptance must start through the Web waiting room with
+an authenticated, connected source kernel. Explicitly select its GitHub
+credential, verify that the persisted launch plan contains that selection,
+and verify the remote agent can push a task-owned branch through the installed
+helper. Do not inject a token or edit Git configuration manually to pass this
+test. Also prove that selecting None produces no credential transfer and that
+a missing or disconnected source cannot silently become a successful transfer.
+
+Copying an existing local kernel must carry its available Git credential
+selection along with the copied context and vault, with the selection visible
+before launch and an explicit opt-out. Do not treat the current independently
+defaulted None selection as meeting this expectation. Preserve source binding
+and explicit consent in the launch plan; never resolve credentials from a
+different connected kernel or silently omit them when inventory is unavailable.
+
+Add a separate, explicitly authorized operation to transfer selected Git
+credentials to an existing ready managed kernel. Users must not need to wipe
+their kernel, workspaces, or running sessions because they initially selected
+None. Reuse the existing encrypted kernel-to-kernel transfer, source export,
+and target materialization/rollback code. Cloud authorizes and records the
+operation; it must not receive credential payloads. Do not weaken or rewrite
+the immutable bootstrap plan to implement this operation.
+
+Use isolated OSS and Cloud PRs for this feature. Commit and push each completed
+subtask with GitHub CI suppressed until the program's final readiness gate.
+Address exact-head reviewer findings. Follow the protocol version, snapshot,
+client minimum-version, and compatibility-drill rules for new serialized
+messages. Implement the kernel/shared contract before client-specific controls;
+exercise Web, local TUI, and remote TUI against the same operation.
+
+Required validation matrix:
+
+| Case | Required evidence |
+| --- | --- |
+| Initial Git selection | Picker selection survives request serialization, Cloud persistence, encrypted export, target receipt, helper setup, and a real scoped push. |
+| Initial None | No credential component or helper is installed; public Git use still works. |
+| Copy local kernel | Available source Git credentials are selected with the copied context and vault; the launch summary exposes that choice, explicit opt-out is honored, and source changes or unavailable inventory cannot silently omit or substitute credentials. |
+| Add after launch | A previously credential-free ready kernel gains selected Git access without changing its bootstrap digest, workspace files, agent identities, or running sessions. |
+| Consent and identity | Wrong owner, realm, source/target kernel, key thumbprint, or operation purpose is rejected before export or materialization. |
+| Restricted contents | Supplemental transfer admits only explicitly selected Git credential components, never provider accounts, workspace archives, or kernel context. |
+| Retry and replay | Same operation is idempotent; conflicting IDs, changed selection, expired tickets, and replay against another target fail closed. |
+| Existing authentication | Unmanaged or conflicting authentication is not overwritten; exact prior completion returns the existing receipt. |
+| Failure and rollback | Export, transport, helper setup, credential verification, and completion failures preserve prior working authentication and report failure accurately. |
+| Resiliency | Disconnect/reconnect, source or target restart, and interruption between materialization and acknowledgement recover without duplicate imports or false success. |
+| Security | Tokens never enter model context, terminal output, logs, history, Cloud storage, or evidence; target files and helpers retain restrictive permissions. |
+| Client parity | Web and both TUIs show the same kernel-owned state and actionable errors, including unsupported-version rejection. |
+| Cleanup | Disposable grants, credentials, branches, test processes, and recovery artifacts are cleaned after their evidence is verified. |
+
+Use synthetic credentials and fake official helper executables for local
+failure tests. Complete live initial and post-launch transfer drills separately
+on a Chariox-managed machine before declaring the feature accepted. Neither
+source tests nor an authenticated source account substitute for the remote push.
+
+Before any kernel replacement, recover and verify its unpushed commits,
+uncommitted source, and validation evidence. Administrative recovery is allowed
+for this defect; resume normal delegation through the Web terminal afterward.
 
 ### Milestone 10: public benchmarks and score-driven optimization
 
