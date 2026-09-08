@@ -224,6 +224,9 @@ impl Client {
                         return Err(Error::Io); // close the consumed connection
                     }
                     Err(error) => {
+                        // Fixed classification only, no paths, IDs, package or
+                        // request payloads. Useful when owned cleanup is pending.
+                        eprintln!("app_storage_release failed: {error}");
                         wire::send(&mut self.stream, &Reply::failed(error))?;
                     }
                 }

@@ -7,6 +7,7 @@ use std::{
         fd::AsRawFd,
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     },
+    time::{Duration, Instant},
 };
 
 // Linux UAPI include/uapi/linux/loop.h: identical fixed-width ABI on x64/arm64.
@@ -179,10 +180,19 @@ impl Device {
             ..
         } = self;
         drop(file);
-        if Self::find(&image, capacity)?.is_some() {
-            return Err(Error::RecoveryRequired);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Self::find(&image, capacity)?.is_none() {
+                return Ok(());
+            }
+            // LOOP_CLR_FD may defer actual teardown while another kernel or
+            // udev reference drains. Retain ownership and inspect the same
+            // backing identity; do not detach another loop or acknowledge early.
+            if Instant::now() >= deadline {
+                return Err(Error::RecoveryRequired);
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        Ok(())
     }
 }
 
