@@ -51,13 +51,19 @@ pub(crate) fn materialize_inline_prompt_attachments(
                 operation: "validate inline prompt attachment directory",
                 message: error.to_string(),
             };
-            let expected = std::env::temp_dir()
+            let temp_root = std::env::temp_dir();
+            let relative =
+                root.strip_prefix(&temp_root)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "validate inline prompt attachment directory",
+                        message: format!(
+                            "attachment root is outside the current temp directory: {error}"
+                        ),
+                    })?;
+            let expected = temp_root
                 .canonicalize()
                 .map_err(validate_error)?
-                .join(
-                    root.strip_prefix(std::env::temp_dir())
-                        .expect("attachment root is beneath temp directory"),
-                );
+                .join(relative);
             if root.canonicalize().map_err(validate_error)? != expected {
                 return Err(DaemonError::LocalTransport {
                     operation: "validate inline prompt attachment directory",
