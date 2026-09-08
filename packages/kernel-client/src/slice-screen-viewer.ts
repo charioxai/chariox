@@ -6,6 +6,12 @@ export type ScopedSliceViewerTarget = {
   sliceId: string
 }
 
+export function buildHostedCloudViewUrl(apiUrl: string, target: ScopedSliceViewerTarget): string {
+  const url = new URL("/view", apiUrl)
+  url.searchParams.set("view_target", `${target.sessionId}:${target.agentId}:${target.sliceId}`)
+  return url.toString()
+}
+
 export function scopedSliceViewerTarget(options: {
   sessionId?: string | null
   attachmentId?: string | null
