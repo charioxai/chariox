@@ -292,6 +292,66 @@ kernel lifecycle state. Snapshots are in memory, not a crash-safe journal, so
 process death or browser restart during import remains unhandled. This must not
 be advertised as durable atomic import.
 
+### Internal recovery storage
+
+`openCookieImportJournal({directory,key,binding})` provides encrypted pending-record
+storage for the future Environment executor. It is not connected to
+`applyCookieImport`, kernel lifecycle state, the source connector or a transport
+endpoint. It does not authorize import or establish a second credential vault.
+
+The kernel must provide a private, local-filesystem Environment directory under
+its own state root, with trusted ancestors, owned by the current Unix user and
+inaccessible to group/other users. The final directory and record cannot be
+symlinks. The kernel must retain the 32-byte encryption key through its existing
+protected key lifecycle so a replacement executor can recover the record.
+The module neither generates nor persists a key. It copies the caller's key and
+clears that copy on `close()`; callers retain ownership of their input buffers.
+This adapter supports macOS and Linux, not Windows or network filesystems.
+
+The interface has four operations:
+
+- `prepare(bytes)` encrypts one nonempty Buffer of at most 8 MiB with AES-256-GCM,
+  a random nonce, and authenticated `userId`, `roomId`, and `environmentId`.
+  It creates a mode-0600 pending file exclusively and syncs the file and directory
+  before returning a receipt. An existing record is never overwritten, including
+  an incomplete write. Browser mutation must not begin before this succeeds.
+- `read()` returns `null` only for an absent record, or authenticated
+  `{bytes,receipt}`. The caller must clear the returned plaintext Buffer after
+  use. Corrupt, oversized, non-private, multiply linked, or incorrectly bound
+  records require recovery instead of returning cookie bytes.
+- `discard(receipt)` removes only a matching authenticated record and syncs the
+  directory. The caller may invoke it only after verified browser recovery or a
+  durably recorded successful outcome. A receipt is a record identifier, not
+  authorization. Missing, invalid, or stale receipts do not delete a record.
+- `close()` clears the owned key and closes the directory handle. It is
+  idempotent, but rejects while an operation on that handle is pending.
+
+Same-process operations on the same directory inode reject overlap. Exclusive
+file creation also prevents competing processes from overwriting a pending
+record. **This is not a cross-process executor lock.** The kernel must serialize
+the complete snapshot/apply/recover/discard transaction across processes and
+worker threads and stop the previous executor before transferring ownership.
+It must also prevent pages, service workers, network responses, and other actors
+from changing cookies while recovery is being verified. A private directory
+does not defend against a malicious process with the same operating-system UID.
+
+Filesystem I/O failures disable the affected handle. Do not treat reopening an
+empty journal as permission to resume an Environment after an uncertain cleanup.
+The kernel must retain durable quarantine/outcome state independently and verify
+the browser before lifting it. Errors expose fixed codes and a
+`recoveryRequired` flag, not file paths, cookies, or underlying OS errors.
+Explicit buffers are cleared where ownership permits; JavaScript and native
+crypto internals cannot promise complete process-memory erasure.
+
+`cookie-import-journal.test.mjs` exercises real files, wrong keys/bindings,
+tampering, size/permission/link checks, concurrent handles and writer processes,
+receipt protection, failure disabling, abrupt writer death, and an interrupted
+write under an OS file-size limit. Fixtures contain no real credentials and are
+removed afterward. These are process-crash storage tests, not a power-loss,
+browser rollback, Web/TUI, or managed-machine acceptance result. Key provisioning,
+recovery payload validation, executor serialization, durable quarantine and
+transaction integration remain required before real sign-in import.
+
 Run `node --test apps/browser-session-import/cookie-import-transaction.test.mjs`
 for ten destination tests. With `PLAYWRIGHT_MODULE` set, run the matching
 `cookie-import-transaction.browser-test.mjs` for disposable Chrome validation of
