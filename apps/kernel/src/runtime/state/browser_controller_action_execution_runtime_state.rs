@@ -41,6 +41,12 @@ impl KernelRuntimeState {
         agent_id: &str,
         input: RoomComputerInputAction,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        let _execution_guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .read_owned()
+            .await;
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
@@ -231,6 +237,12 @@ impl KernelRuntimeState {
     where
         F: Future<Output = Result<T, DaemonError>>,
     {
+        let _execution_guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .read_owned()
+            .await;
         let actor_id = request.actor_id.clone();
         let runtime_generation = request.runtime_generation;
         let tab_preconditions = request.tab_preconditions.clone();
@@ -470,15 +482,26 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn same_tab_controller_mutations_execute_in_ledger_order() {
-        queued_mutation_scenario(false).await;
+        queued_mutation_scenario(ImportScenario::None).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pending_import_cancels_already_queued_controller_mutation() {
-        queued_mutation_scenario(true).await;
+        queued_mutation_scenario(ImportScenario::PendingRecovery).await;
     }
 
-    async fn queued_mutation_scenario(interrupt_for_import: bool) {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exclusive_import_drains_controller_actions_before_recording_recovery() {
+        queued_mutation_scenario(ImportScenario::ExclusiveStart).await;
+    }
+
+    enum ImportScenario {
+        None,
+        PendingRecovery,
+        ExclusiveStart,
+    }
+
+    async fn queued_mutation_scenario(import_scenario: ImportScenario) {
         let test_root = TestRoot::new("browser-action-ledger");
         let test_root_path = test_root.path().to_string_lossy().into_owned();
         let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -615,7 +638,46 @@ mod tests {
             ]
         );
 
-        if interrupt_for_import {
+        if matches!(import_scenario, ImportScenario::ExclusiveStart) {
+            let mut import = Box::pin(runtime.begin_exclusive_browser_import(
+                &session_id,
+                "fixture-import",
+                "fixture-user",
+            ));
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut import)
+                .await
+                .is_err());
+            assert!(!runtime
+                .owned
+                .durable_state_store
+                .browser_import_pending(&queued.environment_id)
+                .unwrap());
+            release_first_tx.send(()).unwrap();
+            first.await.unwrap().unwrap();
+            second.await.unwrap().unwrap();
+            let guard = tokio::time::timeout(Duration::from_secs(2), import)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(runtime
+                .owned
+                .durable_state_store
+                .browser_import_pending(&queued.environment_id)
+                .unwrap());
+            assert!(runtime
+                .owned
+                .environment_execution_gates
+                .for_room(&session_id)
+                .try_read()
+                .is_err());
+            drop(guard);
+            assert!(runtime
+                .ensure_no_pending_environment_import(&session_id)
+                .is_err());
+            return;
+        }
+
+        if matches!(import_scenario, ImportScenario::PendingRecovery) {
             runtime
                 .owned
                 .durable_state_store
