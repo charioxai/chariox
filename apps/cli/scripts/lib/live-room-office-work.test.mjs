@@ -19,7 +19,11 @@ for (const boundary of ["office-installing", "office-mailing"]) {
     ].map((name) => [`${name}Request`, (...args) => ({ name, args })]))
     const input = {
       requests, sessionId: "room", agentId: "agent", options: { provider: "codex", model: "fixture" },
-      checkpoint: async ({ phase }) => { if (phase === boundary) live.clear() },
+      checkpoint: async ({ phase, office }) => {
+        assert.match(office.document, /^\/home\/slice\/Downloads\/office-[a-f0-9-]+\.txt$/,
+          "office document must remain inside the default browser upload roots")
+        if (phase === boundary) live.clear()
+      },
       screenshot: async () => {}, waitForTuis: async () => {},
       withTimeout: async (promise) => promise,
       waitFor: async (check) => {
