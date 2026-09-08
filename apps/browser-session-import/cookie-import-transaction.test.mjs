@@ -4,12 +4,52 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomBytes} from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {openCookieImportJournal} from './cookie-import-journal.mjs';
 import { applyCookieImport } from './cookie-import-transaction.mjs';
 
 const source = [{name:'session', value:'fixture-only', domain:'example.test', path:'/',
   secure:true, httpOnly:true, hostOnly:true, session:true, sameSite:'lax', storeId:'source'}];
 const scope = {approvedDomains:['example.test'], sourceStoreId:'source'};
+
+test('executor death during write leaves a recovery record that blocks a restarted import', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),'chariox-import-crash-'));
+  const key = Buffer.alloc(32,73); // Synthetic fixture key, never a user credential.
+  const binding = {userId:'user',roomId:'room',environmentId:'environment'};
+  let journal;
+  try {
+    const script = `
+      import {applyCookieImport} from ${JSON.stringify(new URL('./cookie-import-transaction.mjs',import.meta.url).href)};
+      import {openCookieImportJournal} from ${JSON.stringify(new URL('./cookie-import-journal.mjs',import.meta.url).href)};
+      const journal = await openCookieImportJournal({directory:process.argv[1],key:Buffer.alloc(32,73),binding:${JSON.stringify(binding)}});
+      await applyCookieImport({source:${JSON.stringify(source)},scope:${JSON.stringify(scope)},journal,
+        authorize:async()=>true,runExclusive:async fn=>fn(),
+        store:{read:async()=>[],write:async()=>process.exit(86),remove:async()=>{throw Error('unexpected rollback');}}});
+    `;
+    await assert.rejects(promisify(execFile)(process.execPath,
+      ['--input-type=module','-e',script,directory],{timeout:5000,maxBuffer:8192}),
+      error => error.code === 86 && !error.killed);
+    journal = await openCookieImportJournal({directory,key,binding});
+    const pending = await journal.read();
+    assert.ok(pending);
+    try {
+      const record = JSON.parse(pending.bytes.toString());
+      assert.equal(record.schema,1);
+      assert.deepEqual(record.before,[]);
+      assert.equal(record.imported[0].value,'fixture-only');
+    } finally { pending.bytes.fill(0); }
+    const {options,writes} = fixture();
+    await assert.rejects(applyCookieImport({...options,journal}),
+      {code:'cookie_import_recovery_required',recoveryRequired:true});
+    assert.equal(writes(),0);
+  } finally {
+    await journal?.close();
+    key.fill(0);
+    await rm(directory,{recursive:true,force:true});
+  }
+});
+
 async function withJournal(operation) {
   const directory = await mkdtemp(path.join(tmpdir(),'chariox-cookie-transaction-'));
   const key = randomBytes(32);
