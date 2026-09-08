@@ -242,6 +242,17 @@ test("slice command screen fails closed without slice metadata lookup", async ()
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
+test("slice command screen scopes Selkies returned after stale slice metadata", async () => {
+  const harness = sliceHarness({
+    slices: [slice({ id: "slice-1", name: "linux-dev" })],
+    endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
+  })
+  await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
+  assert.deepEqual(harness.viewerTargets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(harness.openedUrls, [])
+  assert.doesNotMatch(JSON.stringify([harness.notices, harness.footers]), /secret/)
+})
+
 test("slice command screen routes Selkies through the scoped Cloud viewer target", async () => {
   const harness = sliceHarness({
     slices: [slice({
