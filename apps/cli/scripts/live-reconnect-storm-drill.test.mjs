@@ -16,6 +16,12 @@ test("reconnect storm drill plans concurrent recovery and slow-subscriber pressu
   assert.equal(plan.clientCount, 32)
   assert.equal(plan.cycles, 5)
   assert.equal(plan.slowEvents, 4_096)
+  assert.equal(plan.relayOutgoingQueueCapacity, 64)
+  assert.equal(plan.slowFloodBatchSize, 8)
+  assert.ok(
+    Math.ceil(plan.slowEvents / plan.slowFloodBatchSize)
+      >= plan.relayOutgoingQueueCapacity * 8,
+  )
   assert.equal(plan.release, true)
   assert.equal(path.isAbsolute(plan.cargoTargetDir), true)
   assert.equal(plan.buildProfile, "release")
@@ -89,7 +95,7 @@ test("reconnect storm drill requires isolated slow-lane closure", async () => {
   assert.match(source, /peakKernelRssMb <= 1_024/)
   assert.match(source, /\["SIGINT", "SIGTERM"\]/)
   assert.match(source, /appendNativeProviderOutputBatchRequest/)
-  assert.match(source, /CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: "64"/)
+  assert.match(source, /CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: String\(relayOutgoingQueueCapacity\)/)
   assert.match(source, /terminateOwnedTree/)
   assert.match(source, /requireExecutable\(kernelBinary/)
   assert.match(source, /requireExecutable\(relayBinary/)

@@ -13,6 +13,12 @@ const clientCount = numberArg("--clients", 32)
 const cycles = numberArg("--cycles", 5)
 const slowEvents = numberArg("--slow-events", 4_096)
 const timeoutMs = numberArg("--timeout-ms", 30_000)
+const relayOutgoingQueueCapacity = 64
+const slowFloodQueueTurns = 8
+const slowFloodBatchSize = Math.max(
+  1,
+  Math.floor(slowEvents / (relayOutgoingQueueCapacity * slowFloodQueueTurns)),
+)
 const output = reconnectStormEvidencePath(stringArg("--output"))
 const cargoTargetDir = reconnectStormCargoTargetDir()
 const buildProfile = reconnectStormBuildProfile()
@@ -33,6 +39,8 @@ if (dryRun) {
     clientCount,
     cycles,
     slowEvents,
+    relayOutgoingQueueCapacity,
+    slowFloodBatchSize,
     timeoutMs,
     output,
     cargoTargetDir,
@@ -202,7 +210,7 @@ try {
         await healthyProbeStarted
         healthyProbeStartedObserved = true
       }
-      const count = Math.min(healthyProbeSettled ? 64 : 4, slowEvents - offset)
+      const count = Math.min(healthyProbeSettled ? slowFloodBatchSize : 4, slowEvents - offset)
       await withDeadline(control.send(requests.appendNativeProviderOutputBatchRequest(
         slowContext.sessionId,
         slowContext.attachmentId,
@@ -370,6 +378,8 @@ try {
     clientCount,
     cycles,
     slowEvents,
+    relayOutgoingQueueCapacity,
+    slowFloodBatchSize,
     reconnectLatenciesMs,
     reconnectP95Ms: percentile([...reconnectLatenciesMs].sort((left, right) => left - right), 0.95),
     healthySubscribers: clientCount - 1,
@@ -483,7 +493,7 @@ function relayEnv() {
     CHARIOX_RELAY_HOST: "127.0.0.1",
     CHARIOX_RELAY_PORT: String(ports.relay),
     CHARIOX_RELAY_TOKEN: relayToken,
-    CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: "64",
+    CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: String(relayOutgoingQueueCapacity),
   }
 }
 function kernelEnv() {
