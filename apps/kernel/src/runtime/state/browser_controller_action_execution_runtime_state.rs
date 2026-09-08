@@ -470,6 +470,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn same_tab_controller_mutations_execute_in_ledger_order() {
+        queued_mutation_scenario(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_import_cancels_already_queued_controller_mutation() {
+        queued_mutation_scenario(true).await;
+    }
+
+    async fn queued_mutation_scenario(interrupt_for_import: bool) {
         let test_root = TestRoot::new("browser-action-ledger");
         let test_root_path = test_root.path().to_string_lossy().into_owned();
         let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -605,6 +614,36 @@ mod tests {
                 EnvironmentActionState::Queued
             ]
         );
+
+        if interrupt_for_import {
+            runtime
+                .owned
+                .durable_state_store
+                .begin_browser_import_recovery(
+                    &queued.environment_id,
+                    "fixture-import",
+                    "fixture-user",
+                    &session_id,
+                )
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(2), second)
+                .await
+                .expect("queued task must settle")
+                .expect("queued task must join");
+            assert!(result.is_err());
+            assert!(
+                second_started_rx.await.is_err(),
+                "queued execution must not run"
+            );
+            let blocked = runtime.room_environment_snapshot(&session_id).unwrap();
+            assert_eq!(
+                blocked.actions.last().unwrap().state,
+                EnvironmentActionState::Cancelled
+            );
+            release_first_tx.send(()).unwrap();
+            first.await.unwrap().unwrap();
+            return;
+        }
 
         release_first_tx
             .send(())
