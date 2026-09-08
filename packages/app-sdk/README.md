@@ -108,9 +108,17 @@ cancelled inbound handler retains its concurrency slot until it actually ends;
 the supervisor must terminate a worker that ignores its execution budget. An
 infinite JavaScript loop cannot be contained by JavaScript timers.
 
+SDK 0.5 adds the optional `health_check` lifecycle callback. The kernel runs it
+before first-install activation, with a maximum three-second budget. Use it for
+local checks of the loaded code and declared configuration; all kernel broker
+effects remain unavailable during this check (`APP_NOT_READY`). An absent
+handler succeeds with `null`, and a throwing handler fails the check. The kernel
+owns readiness acknowledgment and activation. `startup` remains a separate
+post-activation callback with its existing ten-second lifecycle budget.
+
 ## Validation
 
-SDK 0.4 requires kernel protocol 292, signed event direction/schema version and
+SDK 0.5 requires kernel protocol 293, signed event direction/schema version and
 the complete `invocation: {prompt, artifacts}` alongside each occurrence's
 `payload`. Persist that invocation, `occurredAtMs`, occurrence ID and scheduled
 `scheduleRevision` together; exact replays preserve all of them. Artifact entries

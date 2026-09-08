@@ -215,7 +215,7 @@ number is illustrative; the selected SDK/runtime must supply its actual floor):
   "appId": "com.example.todo",
   "version": "1.0.0",
   "publisher": {"id": "com.example", "keyId": "developer-1", "name": "Local Developer"},
-  "sdkVersion": "0.4.0",
+  "sdkVersion": "0.5.0",
   "appContractVersion": 1,
   "minKernelProtocol": 500,
   "resourcePolicy": "chariox.app.resources.v1",

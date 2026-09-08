@@ -130,6 +130,11 @@ jobs:
           cargo test --locked -p chariox-kernel --lib runtime::app_files_broker::tests:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::app_worker:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::app_lifecycle:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::router::tests::session_actor_projection::kernel_operation_interactions:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::router::tests::session_actor_projection::runtime_interactions:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::native_interaction_bridge::tests:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib runtime::state::runtime_interaction_owned_state:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib session::runtime_interactions::subject_tests:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::router::tests::app_tools:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::state::provider_reload::tests:: -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib runtime::state::provider_output_runtime_tests::mcp_catalog_reload:: -- --test-threads=1

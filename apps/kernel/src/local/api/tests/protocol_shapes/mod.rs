@@ -5,12 +5,13 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
-mod apps;
 mod app_events;
+mod apps;
 mod core;
 mod credential_enrollment;
 mod event_publication;
 mod extension_apps;
+mod kernel_operation_interactions;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;

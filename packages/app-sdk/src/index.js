@@ -6,7 +6,7 @@ import { validateOccurrence, validateOccurrences } from './occurrences.js';
 export { AppError } from './errors.js';
 export { occurrenceId } from './occurrences.js';
 
-const lifecycleNames = ['startup', 'suspend', 'resume', 'shutdown', 'prepare_update', 'configuration_change'];
+const lifecycleNames = ['health_check', 'startup', 'suspend', 'resume', 'shutdown', 'prepare_update', 'configuration_change'];
 
 function name(value, label = 'name') {
   if (!token(value)) throw new AppError('INVALID_ARGUMENT', `Invalid ${label}`);

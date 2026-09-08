@@ -39,10 +39,13 @@ fn outgoing_only_registration_needs_no_incoming_handler_and_is_single_use() {
     assert_eq!(contract.tools().collect::<Vec<_>>(), vec!["echo"]);
     assert_eq!(contract.incoming_events().count(), 0);
     let registration = contract
-        .accept(json!({"tools":["echo"],"events":[],"lifecycle":["startup","shutdown"]}))
+        .accept(
+            json!({"tools":["echo"],"events":[],"lifecycle":["health_check","startup","shutdown"]}),
+        )
         .unwrap();
     assert!(Arc::ptr_eq(registration.catalog(), &catalog));
     assert!(registration.supports_lifecycle("shutdown"));
+    assert!(registration.supports_lifecycle("health_check"));
     assert!(!registration.supports_lifecycle("configuration_change"));
     assert!(matches!(
         contract.accept(json!({"tools":["echo"],"events":[],"lifecycle":[]})),

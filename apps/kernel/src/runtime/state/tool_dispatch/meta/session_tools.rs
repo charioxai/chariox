@@ -22,11 +22,14 @@ impl KernelRuntimeState {
             .active_interactions()
             .iter()
             .filter(|interaction| {
-                interaction.agent_id() != agent.id()
+                let Some(agent_id) = interaction.agent_id() else {
+                    return false;
+                };
+                agent_id != agent.id()
                     && self
                         .owned
                         .agent_store
-                        .get_agent(interaction.agent_id())
+                        .get_agent(agent_id)
                         .is_ok_and(|target| {
                             !target.is_metaagent()
                                 && target.controlled_by_metaagent_id() == Some(agent.id())
@@ -309,7 +312,13 @@ impl KernelRuntimeState {
                 }),
             });
         };
-        if interaction.agent_id() == metaagent.id() {
+        let Some(agent_id) = interaction.agent_id() else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({"error": "Kernel operation decisions require the user"}),
+            });
+        };
+        if agent_id == metaagent.id() {
             return Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
@@ -318,7 +327,7 @@ impl KernelRuntimeState {
                 }),
             });
         }
-        let target = match self.owned.agent_store.get_agent(interaction.agent_id()) {
+        let target = match self.owned.agent_store.get_agent(agent_id) {
             Ok(agent) => agent,
             Err(error) => {
                 return Ok(RuntimeToolResult {

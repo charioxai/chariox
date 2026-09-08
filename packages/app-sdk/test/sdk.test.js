@@ -78,6 +78,36 @@ test('lifecycle callbacks cannot overlap, including a callback ignoring cancella
   sdk.close();
 });
 
+test('local health checks run before readiness ACK, default to null and preserve handler failure', async () => {
+  for (const mode of ['absent', 'healthy', 'failed']) {
+    const { transport, sdk } = setup();
+    let called = false;
+    if (mode !== 'absent') sdk.lifecycle.on('health_check', (_data, context) => {
+      called = true;
+      assert.equal(context.signal.aborted, false);
+      if (mode === 'failed') throw new Error('private health diagnostic');
+      return null;
+    });
+    const ready = sdk.ready();
+    const report = transport.sent[0];
+    assert.deepEqual(report.params.lifecycle, mode === 'absent' ? [] : ['health_check']);
+    let acknowledged = false;
+    const readiness = ready.then(() => { acknowledged = true; });
+    transport.receive(request('health', 'lifecycle.dispatch', { event: 'health_check', data: null }));
+    await flush();
+    const result = transport.sent.find(item => item.id === 'health');
+    assert.equal(acknowledged, false, 'A health callback cannot acknowledge activation');
+    assert.equal(called, mode !== 'absent');
+    if (mode === 'failed') {
+      assert.deepEqual(result.error, { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
+    } else assert.equal(result.result, null);
+    assert.equal(transport.sent.length, 2, 'A local health callback performs no implicit SDK operation');
+    transport.receive(response(report.id, null));
+    await readiness;
+    sdk.close();
+  }
+});
+
 test('state transaction forwards state and occurrence together without local persistence', async () => {
   const { transport, sdk } = setup();
   const transaction = {
@@ -121,7 +151,7 @@ test('SDK emission matches the shared Rust event payload snapshot', async () => 
   const fixture = JSON.parse(readFileSync(new URL('./event-contract.json', import.meta.url), 'utf8'));
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(metadata.version, fixture.sdkVersion);
-  assert.equal(fixture.minimumKernelProtocol, 292);
+  assert.equal(fixture.minimumKernelProtocol, 293);
   const { transport, sdk } = setup();
   const pending = sdk.events.emit(fixture.occurrence);
   assert.deepEqual(transport.sent[0].params, fixture.occurrence);

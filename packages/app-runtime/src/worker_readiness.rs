@@ -10,7 +10,8 @@ use chariox_app_package::{EventDirection, VerifiedPackage};
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc};
 
-const LIFECYCLE: [&str; 6] = [
+const LIFECYCLE: [&str; 7] = [
+    "health_check",
     "startup",
     "suspend",
     "resume",

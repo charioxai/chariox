@@ -1,6 +1,6 @@
 {
-  "minimumKernelProtocol": 292,
-  "sdkVersion": "0.4.0",
+  "minimumKernelProtocol": 293,
+  "sdkVersion": "0.5.0",
   "declaration": {
     "name": "todo_due",
     "schemaVersion": 2,

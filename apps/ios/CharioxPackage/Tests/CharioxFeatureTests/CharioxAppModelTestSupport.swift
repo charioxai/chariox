@@ -123,6 +123,7 @@ extension RuntimeInteraction {
         RuntimeInteraction(
             id: id,
             agentID: agentID,
+            kernelOperationID: nil,
             kind: "permission",
             level: "warning",
             title: nil,

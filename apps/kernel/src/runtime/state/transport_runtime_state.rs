@@ -48,6 +48,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        self.owned.sweep_kernel_operation_interactions(false);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .lifecycle()
@@ -373,6 +374,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.owned.sweep_kernel_operation_interactions(true);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
             let lifecycle = self.app_control().lifecycle().clone();

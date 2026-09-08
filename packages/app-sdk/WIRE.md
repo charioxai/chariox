@@ -6,7 +6,13 @@ App supervisor supplies the installation generation and binds the channel to one
 worker. A worker-supplied generation is checked for equality, not trusted as an
 authorization claim.
 
-SDK 0.4 event payloads require kernel protocol 292. `eventVersion` must match
+SDK 0.5 requires kernel protocol 293 and adds `health_check` to the declared
+lifecycle names in `worker.ready` and `lifecycle.dispatch`. It uses the existing
+request/response framing; the kernel dispatches this bounded local check before
+acknowledging readiness, with broker effects still denied. An absent handler
+returns `null`; a failed handler returns the existing redacted error shape.
+
+`eventVersion` must match
 the publisher-signed event `schemaVersion`. An outgoing occurrence contains
 `automationId`, `occurrenceId`, `eventVersion`, `occurredAtMs`, `payload`, `invocation`, and
 `scheduleRevision` for a scheduled automation. Preserve the original timestamp

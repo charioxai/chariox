@@ -57,6 +57,7 @@ export type WorkspaceLayoutProps = {
   onStatusIndicatorBoxRef: RefHandler
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
+  onKernelApprovalBoxRef: RefHandler
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
@@ -357,6 +358,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         left={0}
         top={0}
       />
+      <box ref={props.onKernelApprovalBoxRef} position="absolute" left={0} top={0} />
     </box>
   )
 }

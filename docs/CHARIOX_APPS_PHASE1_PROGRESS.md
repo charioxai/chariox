@@ -1100,3 +1100,49 @@ The rejected-startup drain fixture also retains its control-event receiver until
 the expected readiness error, as requested by the latest review. The latest
 Linux component run has passed the actual native SDK fixture; full kernel
 filters are still running.
+
+### Kernel decisions and terminal presentation (2026-09-08)
+
+Protocol 293 adds a kernel-operation subject to the existing RuntimeInteraction
+contract. It supports zero-agent sessions, authenticates the operation owner at
+terminal admission and resolution, and has no default approval or separate prompt
+area. Existing agent decisions retain their subject and provider bridge. The
+shared protocol snapshots and client type are versioned together.
+
+The web terminal and TUI present these decisions through the existing response
+path. The TUI requires opening its approval panel before keyboard selection and
+confirmation; stale rendered mouse choices are tied to the displayed interaction.
+The web panel is a terminal-owned component outside the App iframe. These UI
+checks do not prove App origin/IPC isolation, human-presence step-up or an installed
+App running through a live kernel.
+
+Verification completed: 40 focused TUI/controller/input tests, four tests using
+the actual OpenTUI renderer and keyboard/mouse input, 14 shared protocol tests,
+36 web projection/controller/DOM/React tests, and focused TypeScript checks.
+Three Rust subject tests pass in an actual-source harness. Two Swift decoder
+compatibility tests pass in a focused package containing the production model
+and tests (8.57-second build, 0.007-second test run). Native App viewers remain
+Phase 2; this Swift change preserves decoding existing terminal sessions.
+Screenshots and native terminal frames are retained outside both repositories.
+
+SDK 0.5 declares the local precommit health callback; 38 SDK tests pass. Bundle
+metadata and verifier fixtures use the same version; 13 bundle tests pass after
+the bump. The worker-frame version remains 1. First-install control and activation
+are still in progress; no installation execution claim follows from these tests.
+Hosted CI selects the new kernel decision, cleanup and existing provider
+interaction tests. Those full-kernel tests have not yet executed on this source.
+
+Hosted Linux job `101939738238` on `d91e60833` now passes all seven private-file
+tests and eight of nine worker tests. The sole remaining worker failure is the
+event receiver lifetime already fixed in `99bb7c933`. Review `5137448914` confirms
+the earlier fixes and identifies a deferred-stop/foreground-start race; that
+correction is being implemented with the existing lifecycle operation guard.
+
+A source review also found that the existing process-global pending-response
+store could mix approval quotas and cleanup across kernel instances. Pending
+interactions now carry a weak identity for the owning session store; cloned
+routers share that identity. Quota checks and cleanup filter ownership before
+applying limits, and resolution cannot cross kernels even with equal restored
+session IDs. Dead kernel-operation owners are pruned without changing ordinary
+agent responder cleanup. Three new cross-kernel regressions join the three
+expiry, abandoned-response and failed-projection tests in hosted validation.

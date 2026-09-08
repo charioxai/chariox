@@ -441,6 +441,18 @@ Current pushed event contract:
 - `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
 - `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
 - `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts
+  - protocol 293 gives each interaction exactly one subject: existing `agent_id`
+    or `kernel_operation_id`. Kernel decisions work in sessions with zero agents;
+    they neither focus an agent nor create another prompt area.
+  - both subjects use the existing `RespondToInteraction` request and terminal
+    projection. Only the authenticated terminal user who owns a kernel operation
+    may answer its decision. Provider, agent-tool and remote-kernel paths cannot
+    approve it; the subject is assigned by the kernel, not accepted from an App.
+  - kernel decisions have explicit choices, no custom reply and no automatic
+    choice. Timeout, abandoned operation and shutdown cancel the pending decision.
+    The same monotonic deadline applies when resolving after a queued session lock.
+    Decisions are single-use and bounded to eight per owner and 32 per kernel.
+    Terminal presentation remains outside App content and App-controlled input.
 - `waiting_room_inventory_changed` carries only `inventory_version` and requires clients to refetch the full waiting-room snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
 - `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
 - `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog

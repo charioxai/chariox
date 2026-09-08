@@ -30,6 +30,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
+  kernelApprovalOwnsInput?: () => boolean
   client: any
   options: any
   appLogger: any
@@ -495,6 +497,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
+    handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
@@ -526,6 +529,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const handlePromptKeyDown = (
     event: Parameters<typeof promptKeyDownController.handleKeyDown>[0],
   ) => {
+    if (deps.kernelApprovalOwnsInput?.()) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return true
+    }
     if (
       pendingProjectRenameId
       && event.eventType !== "release"
@@ -649,6 +657,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,

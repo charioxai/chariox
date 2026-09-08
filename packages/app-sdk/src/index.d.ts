@@ -14,7 +14,7 @@ export interface InvocationContext {
 }
 export type Handler<Input = Json, Output = Json | void> =
   (input: Input, context: InvocationContext) => Output | Promise<Output>;
-export type LifecycleEvent = 'startup' | 'suspend' | 'resume' | 'shutdown' | 'prepare_update' | 'configuration_change';
+export type LifecycleEvent = 'health_check' | 'startup' | 'suspend' | 'resume' | 'shutdown' | 'prepare_update' | 'configuration_change';
 
 export class AppError extends Error {
   readonly code: string;

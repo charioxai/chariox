@@ -351,6 +351,7 @@ impl SessionRuntimeStore {
     pub(super) async fn respond_to_interaction(
         &self,
         request: RespondToInteractionRequest,
+        terminal_user_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -364,11 +365,12 @@ impl SessionRuntimeStore {
         let custom_reply = custom_reply.map(zeroize::Zeroizing::new);
         let result = match self
             .state
-            .resolve_runtime_interaction(
+            .resolve_terminal_runtime_interaction(
                 &session_id,
                 &interaction_id,
                 &choice_id,
                 custom_reply.as_deref().map(String::as_str),
+                terminal_user_id.as_deref(),
             )
             .await
         {

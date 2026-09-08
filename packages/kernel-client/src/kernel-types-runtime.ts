@@ -105,9 +105,12 @@ export type AgentForkPayload = {
   session: RuntimeSession
 }
 
-export type RuntimeInteraction = {
+export type RuntimeInteractionSubject =
+  | { agent_id: string; kernel_operation_id?: never }
+  | { kernel_operation_id: string; agent_id?: never }
+
+export type RuntimeInteraction = RuntimeInteractionSubject & {
   id: string
-  agent_id: string
   kind: "choice" | "permission"
   level: "info" | "warning" | "critical"
   title?: string | null

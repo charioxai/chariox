@@ -24,6 +24,7 @@ import {
   createCliAppWorkflowProjectionComposition,
 } from "./cli-app-workflow-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
+import { createCliKernelApprovalComposition } from "./cli-kernel-approval-composition.js"
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createCliResponseShellComposition } from "./cli-response-shell-composition.js"
@@ -660,6 +661,14 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
   })
   const applySessionState = sessionStateApplyController.apply
+  const kernelApprovals = createCliKernelApprovalComposition({
+    client, renderer, session: sessionState, dimensions, themeRevision,
+    connected: () => isAttached() && !daemonDisconnected(),
+    currentFocus: currentFocusedRenderable,
+    promptFocus: promptInputRefController.currentOrNull,
+    closeOtherDialog: closeActiveDialogOverlay,
+    applySession: applySessionState,
+  })
 
   const runUiBatch = uiBatchController.run
 
@@ -886,6 +895,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openWorkflowNodeInstructionsEditor: workflowActions.openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
+    handleKernelApprovalKey: kernelApprovals.handleKey,
+    kernelApprovalOwnsInput: kernelApprovals.ownsInput,
     dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
@@ -983,7 +994,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={retainPromptFocus}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
@@ -995,6 +1006,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignStatusIndicatorBox={assignStatusIndicatorBox}
       assignFooterSummaryBox={assignFooterSummaryBox}
       assignDialogOverlayBox={assignDialogOverlayBox}
+      assignKernelApprovalBox={kernelApprovals.assignBox}
+      kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}
       focusedAgentInteraction={focusedAgentInteraction}
