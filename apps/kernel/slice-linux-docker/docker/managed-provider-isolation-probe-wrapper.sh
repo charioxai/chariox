@@ -7,11 +7,21 @@ real_provider="${CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER:?real provider executab
 unselected="${CHARIOX_MANAGED_ISOLATION_PROBE_UNSELECTED_REPOSITORY:?unselected repository is required}"
 account="${CODEX_HOME:-}"
 
-[[ "${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE:-}" == "1" ]]
-[[ "$HOME" == "/home/chariox" ]]
-[[ -d "$workspace" && -w "$workspace" ]]
-[[ -n "$account" && -d "$account" && -r "$account" && -w "$account" ]]
-[[ -x "$real_provider" ]]
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+
+[[ "${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE:-}" == "1" ]] \
+  || fail "managed provider isolation marker is unavailable"
+[[ "$HOME" == "/home/chariox" ]] \
+  || fail "managed provider sandbox HOME is incorrect"
+[[ -d "$workspace" && -w "$workspace" ]] \
+  || fail "probe workspace is unavailable or not writable"
+[[ -n "$account" && -d "$account" && -r "$account" && -w "$account" ]] \
+  || fail "probe provider account is unavailable or not writable"
+[[ -x "$real_provider" ]] \
+  || fail "real provider executable is unavailable"
 
 for denied in \
   /var/lib/chariox \
@@ -20,7 +30,7 @@ for denied in \
   /proc/1/root/var/lib/chariox \
   "$unselected"
 do
-  [[ ! -e "$denied" ]]
+  [[ ! -e "$denied" ]] || fail "a denied host path is visible in the provider sandbox"
 done
 
 for secret_name in \
@@ -30,7 +40,7 @@ for secret_name in \
   CHARIOX_SLICE_DOCKER_BROKER_SOCKET \
   CHARIOX_SLICE_DOCKER_BROKER_FD
 do
-  [[ -z "${!secret_name:-}" ]]
+  [[ -z "${!secret_name:-}" ]] || fail "a denied control credential is visible in the provider sandbox"
 done
 
 account_probe="$account/.chariox-isolation-account-$$"

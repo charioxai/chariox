@@ -172,12 +172,11 @@ try {
   const providerRun = launched.ProviderRunLaunched?.provider_run ??
     launched.ProviderRunLaunchAccepted.provider_run
 
+  await waitForProviderRunRunning(providerRun.id)
   const result = await readProbeResult()
   assert.match(result, /^managed_provider_isolation=ok$/m)
   assert.match(result, /^real_provider=\//m)
   assert.match(result, new RegExp(`^workspace=${escapeRegExp(workspace)}$`, "m"))
-  await waitForProviderRunRunning(providerRun.id)
-
   process.stdout.write(`${JSON.stringify({
     authenticated: true,
     provider: "codex",
