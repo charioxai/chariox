@@ -48,7 +48,7 @@ fn decision(id: &str) -> TrustDecision {
         authority_ref: "kernel-fixture-decision".into(),
     }
 }
-fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
+pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
     store
         .mutate_app_publisher(
             "alice",
@@ -141,6 +141,12 @@ fn catalog(store: &DurableKernelStateStore) -> Arc<AppCatalog> {
         .unwrap();
     Arc::new(AppCatalog::compile(&package, &binding, &trust).unwrap())
 }
+fn budget() -> AppOperationBudget {
+    AppOperationBudget::fixture(
+        tokio::time::Instant::now() + Duration::from_secs(30),
+        || false,
+    )
+}
 fn put(value: i32) -> AppStateOperation {
     AppStateOperation::Transaction(
         StateChanges::new(
@@ -170,7 +176,8 @@ fn state_writer_uses_its_own_connection_and_persists_verified_values() {
     let worker_catalog = Arc::clone(&catalog);
     let (send, receive) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let _ = send.send(worker_store.execute_app_state("alice", worker_catalog, put(7)));
+        let _ =
+            send.send(worker_store.execute_app_state("alice", worker_catalog, put(7), budget()));
     });
     let result = receive.recv_timeout(Duration::from_secs(5));
     drop(held_reader);
@@ -178,7 +185,7 @@ fn state_writer_uses_its_own_connection_and_persists_verified_values() {
     assert_eq!(result.unwrap().unwrap(), AppStateOutcome::Revision(1));
     assert_eq!(
         store
-            .execute_app_state("alice", Arc::clone(&catalog), read())
+            .execute_app_state("alice", Arc::clone(&catalog), read(), budget())
             .unwrap(),
         AppStateOutcome::Value(Some(StateRecord {
             value: json!(7),
@@ -186,13 +193,13 @@ fn state_writer_uses_its_own_connection_and_persists_verified_values() {
         }))
     );
     assert!(store
-        .execute_app_state("bob", Arc::clone(&catalog), put(8))
+        .execute_app_state("bob", Arc::clone(&catalog), put(8), budget())
         .is_err());
     drop(store);
     let reopened = fixture.open();
     assert_eq!(
         reopened
-            .execute_app_state("alice", catalog, read())
+            .execute_app_state("alice", catalog, read(), budget())
             .unwrap(),
         AppStateOutcome::Value(Some(StateRecord {
             value: json!(7),
@@ -207,7 +214,7 @@ fn revoked_signer_blocks_state_reads_and_writes_without_changing_generation_or_d
     let store = fixture.open();
     let catalog = catalog(&store);
     store
-        .execute_app_state("alice", Arc::clone(&catalog), put(7))
+        .execute_app_state("alice", Arc::clone(&catalog), put(7), budget())
         .unwrap();
     store
         .mutate_app_publisher(
@@ -222,10 +229,10 @@ fn revoked_signer_blocks_state_reads_and_writes_without_changing_generation_or_d
         )
         .unwrap();
     assert!(store
-        .execute_app_state("alice", Arc::clone(&catalog), read())
+        .execute_app_state("alice", Arc::clone(&catalog), read(), budget())
         .is_err());
     assert!(store
-        .execute_app_state("alice", Arc::clone(&catalog), put(8))
+        .execute_app_state("alice", Arc::clone(&catalog), put(8), budget())
         .is_err());
     assert_eq!(
         store
@@ -246,7 +253,7 @@ fn revoked_signer_blocks_state_reads_and_writes_without_changing_generation_or_d
         )
         .unwrap();
     assert!(store
-        .execute_app_state("alice", Arc::clone(&catalog), read())
+        .execute_app_state("alice", Arc::clone(&catalog), read(), budget())
         .is_err());
     let connection = store.connection.lock().unwrap();
     let saved: (String,i64)=connection.query_row("SELECT value_json,version FROM app_state_values WHERE installation_id='installed' AND key='count'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
@@ -261,12 +268,12 @@ fn failed_state_head_publication_rolls_back_values_and_writer_continues() {
     let connection = Connection::open(store.path()).unwrap();
     connection.execute_batch("CREATE TRIGGER fail_app_state_head BEFORE INSERT ON app_state_heads BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;").unwrap();
     assert!(matches!(
-        store.execute_app_state("alice", Arc::clone(&catalog), put(1)),
+        store.execute_app_state("alice", Arc::clone(&catalog), put(1), budget()),
         Err(AppStateError::State(StateError::Database(_)))
     ));
     assert_eq!(
         store
-            .execute_app_state("alice", Arc::clone(&catalog), read())
+            .execute_app_state("alice", Arc::clone(&catalog), read(), budget())
             .unwrap(),
         AppStateOutcome::Value(None)
     );
@@ -274,7 +281,125 @@ fn failed_state_head_publication_rolls_back_values_and_writer_continues() {
         .execute_batch("DROP TRIGGER fail_app_state_head;")
         .unwrap();
     assert_eq!(
-        store.execute_app_state("alice", catalog, put(2)).unwrap(),
+        store
+            .execute_app_state("alice", catalog, put(2), budget())
+            .unwrap(),
         AppStateOutcome::Revision(1)
+    );
+}
+
+#[test]
+fn cancelled_work_waiting_in_the_writer_queue_never_starts_a_state_change() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let catalog = catalog(&store);
+    let mut blocker = Connection::open(store.path()).unwrap();
+    let held = blocker
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let (started, receive_started) = mpsc::channel();
+    let checks = AtomicUsize::new(0);
+    let first_budget = AppOperationBudget::fixture(
+        tokio::time::Instant::now() + Duration::from_secs(30),
+        move || {
+            if checks.fetch_add(1, Ordering::SeqCst) == 1 {
+                let _ = started.send(());
+            }
+            false
+        },
+    );
+    let first_store = store.clone();
+    let first_catalog = Arc::clone(&catalog);
+    let first = std::thread::spawn(move || {
+        first_store.execute_app_state("alice", first_catalog, put(7), first_budget)
+    });
+    // The writer has dequeued its first request and is about to wait for the
+    // actual SQLite lock. Hold that lock while adding and cancelling the next.
+    let started = receive_started.recv_timeout(Duration::from_secs(5));
+    if started.is_err() {
+        drop(held);
+        first.join().unwrap().unwrap();
+        panic!("writer did not start within fixture deadline");
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancelled);
+    let (response, receive) = mpsc::channel();
+    store
+        .writer
+        .enqueue(DurableWriterRequest::AppState(Box::new(AppStateRequest {
+            owner: "alice".into(),
+            catalog: Arc::clone(&catalog),
+            operation: put(9),
+            budget: AppOperationBudget::fixture(
+                tokio::time::Instant::now() + Duration::from_secs(30),
+                move || flag.load(Ordering::Acquire),
+            ),
+            response,
+        })))
+        .unwrap();
+    cancelled.store(true, Ordering::Release);
+    drop(held);
+    assert_eq!(first.join().unwrap().unwrap(), AppStateOutcome::Revision(1));
+    assert!(matches!(
+        receive.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Err(AppStateError::Stopped(AppOperationStopped::Cancelled))
+    ));
+    assert_eq!(
+        store
+            .execute_app_state("alice", catalog, read(), budget())
+            .unwrap(),
+        AppStateOutcome::Value(Some(StateRecord {
+            value: json!(7),
+            version: 1
+        }))
+    );
+}
+
+#[test]
+fn expired_after_sqlite_admission_does_not_change_state() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let catalog = catalog(&store);
+    let mut blocker = Connection::open(store.path()).unwrap();
+    let held = blocker
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let (started, receive_started) = mpsc::channel();
+    let checks = AtomicUsize::new(0);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let request_budget = AppOperationBudget::fixture(deadline, move || {
+        if checks.fetch_add(1, Ordering::SeqCst) == 1 {
+            let _ = started.send(());
+        }
+        false
+    });
+    let writer_store = store.clone();
+    let writer_catalog = Arc::clone(&catalog);
+    let writer = std::thread::spawn(move || {
+        writer_store.execute_app_state("alice", writer_catalog, put(1), request_budget)
+    });
+    let started = receive_started.recv_timeout(Duration::from_secs(5));
+    if started.is_err() {
+        drop(held);
+        let _ = writer.join();
+        panic!("writer did not reach SQLite admission within fixture deadline");
+    }
+    // This is a real SQLite wait. The kernel's second expiry check must reject
+    // after BEGIN succeeds, even though the writer had admitted a live request.
+    std::thread::sleep(
+        deadline.saturating_duration_since(tokio::time::Instant::now()) + Duration::from_millis(5),
+    );
+    drop(held);
+    assert!(matches!(
+        writer.join().unwrap(),
+        Err(AppStateError::Stopped(AppOperationStopped::Deadline))
+    ));
+    assert_eq!(
+        store
+            .execute_app_state("alice", catalog, read(), budget())
+            .unwrap(),
+        AppStateOutcome::Value(None)
     );
 }
