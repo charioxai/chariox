@@ -4,13 +4,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::{
-    generate_manifest, inspect_archive, keygen, pack_directory, read_manifest, read_publisher,
-    validate_archive, write_manifest, ManifestOptions,
+    create_scaffold, generate_manifest, inspect_archive, keygen, pack_directory, read_manifest,
+    read_publisher, validate_archive, write_manifest, ManifestOptions,
 };
 use crate::{ErrorCode, Limits, NetworkDestination, PackageError, Result};
 
 pub fn usage() -> &'static str {
-    "chariox-app-package keygen --publisher-id ID --publisher-name NAME --key-out PRIVATE --trust-out PUBLIC\nchariox-app-package manifest --app-id ID --version SEMVER --publisher PUBLIC --kernel-protocol N --output FILE [--runtime-entry PATH --ui-entry PATH --tools PATH --events PATH --actions PATH --information-sets PATH --network GET,POST=https://api.example.com]\nchariox-app-package pack --bundle DIR --manifest FILE --key PRIVATE --output FILE --kernel-protocol N\nchariox-app-package validate ARCHIVE --trust PUBLIC --kernel-protocol N\nchariox-app-package inspect ARCHIVE"
+    "chariox-app-package create DIR --app-id ID --publisher PUBLIC --kernel-protocol N [--version SEMVER]\nchariox-app-package keygen --publisher-id ID --publisher-name NAME --key-out PRIVATE --trust-out PUBLIC\nchariox-app-package manifest --app-id ID --version SEMVER --publisher PUBLIC --kernel-protocol N --output FILE [--runtime-entry PATH --ui-entry PATH --tools PATH --events PATH --actions PATH --information-sets PATH --network GET,POST=https://api.example.com]\nchariox-app-package pack --bundle DIR --manifest FILE --key PRIVATE --output FILE --kernel-protocol N\nchariox-app-package validate ARCHIVE --trust PUBLIC --kernel-protocol N\nchariox-app-package inspect ARCHIVE"
 }
 
 fn arguments_error() -> PackageError {
@@ -91,7 +91,15 @@ fn output(value: impl Serialize) -> Result<Value> {
 /// Returns the JSON result value. The executable wraps it as `{ok:true,result}`;
 /// shared clients can consume the same result without spawning another process.
 pub fn run_cli(args: &[String]) -> Result<Value> {
-    if args == ["--help"] || args == ["help"] {
+    if args == ["--help"]
+        || args == ["help"]
+        || (args.len() == 2
+            && args[1] == "--help"
+            && matches!(
+                args[0].as_str(),
+                "create" | "keygen" | "manifest" | "pack" | "validate" | "inspect"
+            ))
+    {
         return Ok(json!({"usage":usage()}));
     }
     let Some(command) = args.first() else {
@@ -100,6 +108,22 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
     let limits = Limits::default();
     let rest = &args[1..];
     match command.as_str() {
+        "create" => {
+            let args = Arguments::parse(
+                rest,
+                &["--app-id", "--publisher", "--kernel-protocol", "--version"],
+                1,
+            )?;
+            let publisher = read_publisher(Path::new(args.required("--publisher")?), &limits)?;
+            output(create_scaffold(
+                Path::new(args.positional[0]),
+                args.required("--app-id")?,
+                args.flags.get("--version").copied().unwrap_or("0.1.0"),
+                &publisher,
+                args.protocol()?,
+                &limits,
+            )?)
+        }
         "keygen" => {
             let args = Arguments::parse(
                 rest,

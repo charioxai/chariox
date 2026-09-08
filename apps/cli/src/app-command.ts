@@ -1,5 +1,6 @@
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { defaultKernelEndpoint, parseArgs } from "./cli-options.js"
+import { isAppDeveloperCommand, runAppDeveloperCommand, type AppDeveloperDeps } from "./app-developer.js"
 import { LocalIpcClient } from "./ipc.js"
 
 type AppCommandClient = {
@@ -16,6 +17,7 @@ type ConnectionOptions = {
 type AppCommandDeps = {
   createClient: (endpoint: string, options: ConnectionOptions) => AppCommandClient
   write: (message: string) => void
+  developer?: AppDeveloperDeps
 }
 
 const connectionFlags = new Set([
@@ -31,6 +33,7 @@ export async function runAppCommand(
   },
 ): Promise<boolean> {
   if (argv[0] !== "app") return false
+  if (isAppDeveloperCommand(argv[1])) return runAppDeveloperCommand(argv.slice(1), deps.developer)
   const args: string[] = []
   const connectionArgs: string[] = []
   const seen = new Set<string>()

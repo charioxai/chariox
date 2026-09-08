@@ -32,6 +32,7 @@ node scripts/package-managed-kernel-release.mjs \
   --kernel <build-output>/chariox-kernel \
   --supervisor <build-output>/chariox-managed-bootstrap \
   --relay <build-output>/chariox-relay \
+  --app-package <build-output>/chariox-app-package \
   --builder-attestation <build-output>/build-attestation.json \
   --builder-attestation-signature <build-output>/build-attestation.sig \
   --trusted-builder-public-key <openship-builder-public-key> \

@@ -69,6 +69,7 @@ node "$script_root/verify-image-release.mjs" "$image_root" "$expected_release_di
 
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
 require_regular_file "$image_root/usr/local/bin/chariox-managed-bootstrap"
+require_regular_file "$image_root/usr/local/bin/chariox-app-package"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.json"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.sig"
 require_regular_file "$image_root/usr/lib/chariox/release-public-key"
@@ -205,6 +206,7 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
+  install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.json" "$pending_release/usr/lib/chariox/release-manifest.json"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.sig" "$pending_release/usr/lib/chariox/release-manifest.sig"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-public-key" "$pending_release/usr/lib/chariox/release-public-key"
@@ -221,6 +223,7 @@ fi
 
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
+atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$install_root/usr/local/bin/chariox-app-package"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-managed-bootstrap.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service" "$install_root/etc/systemd/system/chariox-rootless-docker.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-broker.service" "$install_root/etc/systemd/system/chariox-slice-broker.service"

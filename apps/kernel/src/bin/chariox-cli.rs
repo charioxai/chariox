@@ -7,6 +7,9 @@ use std::time::SystemTime;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+#[path = "chariox-cli/app_developer.rs"]
+mod app_developer;
+
 fn main() -> ExitCode {
     let _ = chariox_kernel::logging::init_process_logger("cli-launcher");
     match run() {
@@ -26,11 +29,16 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode, String> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(result) =
+        app_developer::dispatch(&args, chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+    {
+        return result;
+    }
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .map_err(|error| format!("failed to locate workspace root: {error}"))?;
-    let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("serve") {
         return run_serve_command(&workspace_root, &args[1..]);
     }

@@ -4,6 +4,7 @@
 mod cli;
 mod fs;
 mod keys;
+mod scaffold;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +20,7 @@ use crate::{
 
 pub use cli::{run_cli, usage};
 pub use keys::{keygen, read_publisher, KeygenReport, PublisherFile};
+pub use scaffold::{create_scaffold, ScaffoldReport};
 
 /// The shared Chariox CLI supplies its real kernel protocol constant. The
 /// standalone command requires it explicitly; this crate never guesses a

@@ -455,3 +455,60 @@ pub(crate) fn outside_bundle(bundle: &Directory, directory: &Directory) -> Resul
     }
     Ok(())
 }
+
+/// Writes a fixed, bounded source scaffold beneath a newly created directory.
+/// Every descendant is reached through held descriptors. Existing destinations
+/// are never opened for writing or adopted, even when they are empty.
+pub(crate) fn create_source_tree(
+    destination: &Path,
+    files: &std::collections::BTreeMap<&str, Vec<u8>>,
+) -> Result<()> {
+    let (parent, leaf) = parent(destination)?;
+    parent.require_owned_output()?;
+    if unsafe { libc::mkdirat(parent.0.as_raw_fd(), leaf.as_ptr(), 0o700) } != 0 {
+        return Err(PackageError::new(
+            ErrorCode::Io,
+            "scaffold destination must not exist and its parent must be writable",
+        ));
+    }
+    let root = parent.child(&leaf)?;
+    let mut directories = std::collections::BTreeMap::new();
+    directories.insert(String::new(), root);
+    for (path, bytes) in files {
+        let mut prefix = String::new();
+        let mut components = path.split('/').peekable();
+        while let Some(component) = components.next() {
+            if component.is_empty() || matches!(component, "." | "..") {
+                return Err(invalid_path());
+            }
+            let encoded = name(OsStr::new(component))?;
+            let current = directories.get(&prefix).ok_or_else(io_error)?;
+            if components.peek().is_none() {
+                let mut output = current.create(&encoded)?;
+                output
+                    .write_all(bytes)
+                    .and_then(|_| output.sync_all())
+                    .map_err(|_| io_error())?;
+            } else {
+                let next = if prefix.is_empty() {
+                    component.into()
+                } else {
+                    format!("{prefix}/{component}")
+                };
+                if !directories.contains_key(&next) {
+                    if unsafe { libc::mkdirat(current.0.as_raw_fd(), encoded.as_ptr(), 0o700) } != 0
+                    {
+                        return Err(io_error());
+                    }
+                    let child = current.child(&encoded)?;
+                    directories.insert(next.clone(), child);
+                }
+                prefix = next;
+            }
+        }
+    }
+    for directory in directories.values().rev() {
+        directory.sync()?;
+    }
+    parent.sync()
+}

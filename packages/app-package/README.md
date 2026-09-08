@@ -8,39 +8,66 @@ consume only a `VerifiedPackage` when staging files.
 
 ## Local developer commands
 
-The `chariox-app-package` binary and reusable `developer` module provide local
-`keygen`, `manifest`, `pack`, `validate`, and `inspect` commands on macOS/Linux.
-They use the same parser, packer, and verifier described below. They never run
-an App, install dependencies, run package scripts, contact a kernel, or alter
-the kernel's enrolled publisher store.
+The shared CLI supports `chariox app create`, `keygen`, `manifest`, `pack`,
+`validate`, and `inspect` on macOS/Linux. Both the Rust launcher and direct
+TypeScript CLI dispatch to the same `chariox-app-package` executable. Developer
+commands preserve the caller's working directory, do not connect to a kernel,
+and never start an App, install dependencies or run package scripts.
 
-An already built bundle contains `runtime/main.js` and `ui/index.html` by
-default. Keep the generated manifest, signing key, and resulting archive
-outside that directory. For example, after preparing `dist/`:
+Build the small helper explicitly when working from source:
 
 ```sh
-mkdir -m 700 "$HOME/.chariox/dev/app-publisher"
-chariox-app-package keygen --publisher-id com.example --publisher-name Developer \
-  --key-out "$HOME/.chariox/dev/app-publisher/private" --trust-out publisher.json
-chariox-app-package manifest --app-id com.example.todo --version 1.0.0 \
-  --publisher publisher.json --kernel-protocol 285 --output app-manifest.json \
-  --network GET,POST=https://api.example.com
-chariox-app-package pack --bundle dist --manifest app-manifest.json \
-  --key "$HOME/.chariox/dev/app-publisher/private" --output todo.cxapp \
-  --kernel-protocol 285
-chariox-app-package inspect todo.cxapp
-chariox-app-package validate todo.cxapp --trust publisher.json --kernel-protocol 285
+cargo build --locked -p chariox-app-package --bin chariox-app-package
 ```
 
-The standalone tool requires the selected kernel protocol explicitly; the
-shared Chariox CLI will supply its actual protocol constant when integrated.
-The example number is not a claim that the complete App runtime is available
-at that protocol. `manifest` supplies the supported SDK/App/resource contracts
-and accepts optional runtime/UI entry and declaration paths. Repeat
-`--network METHODS=ORIGIN` for another exact origin. Capabilities start empty;
-generation adds only explicitly declared destinations and grants no permissions.
-JS scaffolding and a richer capability editor remain separate developer-tooling
-work. There is no handwritten manifest required for this basic flow.
+The Rust launcher locates the helper beside its own executable, or at the
+managed installation's `/usr/local/bin/chariox-app-package`. The TypeScript CLI
+also recognizes its own checkout's `CARGO_TARGET_DIR` and `target` outputs.
+`CHARIOX_APP_PACKAGE_BIN` selects an absolute executable explicitly. Neither path
+searches the current directory or `PATH`, or starts Cargo automatically. The
+managed Linux release includes the helper in its signed build attestation and
+release inventory; its installer verifies and exposes that exact executable.
+This does not imply that the managed image ships the full TUI. A separate
+native client installer is not implemented here.
+
+Generate a developer identity once, outside your project, then create an App:
+
+```sh
+mkdir -p "$HOME/.chariox/dev"
+mkdir -m 700 "$HOME/.chariox/dev/app-publisher"
+chariox app keygen --publisher-id com.example --publisher-name Developer \
+  --key-out "$HOME/.chariox/dev/app-publisher/private" \
+  --trust-out "$HOME/.chariox/dev/app-publisher/publisher.json"
+chariox app create my-app --app-id com.example.greeting \
+  --publisher "$HOME/.chariox/dev/app-publisher/publisher.json"
+chariox app pack --bundle my-app/bundle --manifest my-app/app.json \
+  --key "$HOME/.chariox/dev/app-publisher/private" --output my-app.cxapp
+chariox app inspect my-app.cxapp
+chariox app validate my-app.cxapp --trust my-app/publisher.json
+```
+
+`create` currently requires an existing public publisher file. It creates
+`app.json`, a public `publisher.json`, an ESM `greet` handler and matching closed
+schemas, a basic accessible HTML view, `.gitignore`, and a short README. Version
+defaults to `0.1.0`; `--version` selects another version. It generates or copies no
+private key and embeds no machine-specific paths in the project. Its destination
+must not exist, including an empty directory or symlink. Validation precedes
+creation; an I/O error can leave an incomplete new scaffold and never overwrites
+or removes user files. Every write uses anchored directory descriptors.
+
+The shared CLI supplies its actual protocol constant for create/manifest/pack/
+validate; it rejects a user override. The standalone tool requires
+`--kernel-protocol N` explicitly for callers selecting another compatibility
+contract. This number is not a claim that the complete App runtime is available.
+`manifest` also supplies the supported SDK/App/resource contracts and accepts
+optional runtime/UI entries, declarations and repeated `--network METHODS=ORIGIN`.
+Capabilities start empty; declaring one does not grant permission. A richer
+capability editor remains separate work.
+
+Keep the manifest, signing key and package output outside the input `bundle/`
+directory. Paths may be absolute or relative to the original caller directory;
+parent components (`..`), symlinks and special files are rejected. Use an
+absolute path for an external key when packaging from inside your project.
 
 `keygen` uses OS randomness. The private file contains exactly 32 raw Ed25519
 seed bytes, is created with mode `0600`, and requires a current-user private
@@ -76,10 +103,11 @@ The completed archive passes the shared verifier before publication. Signing
 keys and outputs cannot sit inside their own input bundle, including through
 macOS case aliases.
 
-Every CLI result is one JSON record on stdout: `{ "ok": true, "result": ... }`
+Every standalone/Rust-launcher CLI result is one JSON record on stdout: `{ "ok": true, "result": ... }`
 or `{ "ok": false, "error": { "code": ..., "message": ... } }`. Exit codes are
 `0` success, `2` invalid arguments, `3` rejected content/key/compatibility, and `4`
-filesystem/output failure. `inspect` always reports `untrusted-claims-only`;
+filesystem/output failure. The direct TypeScript CLI prints the successful result
+object and treats helper failure as command failure. `inspect` always reports `untrusted-claims-only`;
 it does not authenticate signatures or payloads. `validate` reports
 `verified-against-explicit-publisher-file`, never installed or activated.
 

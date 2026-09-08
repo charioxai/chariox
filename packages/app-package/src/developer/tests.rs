@@ -124,3 +124,122 @@ fn public_output_rejects_a_directory_writable_by_other_users() {
     );
     assert_eq!(disk::read_dir(&scratch.0).unwrap().count(), 0);
 }
+
+#[test]
+fn created_scaffold_packs_and_validates_with_no_signing_secret_or_machine_path() {
+    let scratch = Scratch::new();
+    let keys_dir = scratch.0.join("keys");
+    disk::DirBuilder::new()
+        .mode(0o700)
+        .create(&keys_dir)
+        .unwrap();
+    let key = keys_dir.join("signing.key");
+    let public = scratch.0.join("public.json");
+    super::keygen("com.example", "Developer", &key, &public).unwrap();
+    let project = scratch.0.join("my-app");
+    let args = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let created = super::run_cli(&args(&[
+        "create",
+        project.to_str().unwrap(),
+        "--app-id",
+        "com.example.greeting",
+        "--publisher",
+        public.to_str().unwrap(),
+        "--kernel-protocol",
+        "500",
+    ]))
+    .unwrap();
+    assert_eq!(created["status"], "created-locally");
+    assert_eq!(created["manifest"]["version"], "0.1.0");
+    assert_eq!(created["manifest"]["minKernelProtocol"], 500);
+    let manifest = super::read_manifest(&project.join("app.json"), &Limits::default()).unwrap();
+    assert_eq!(manifest.runtime.entry, "runtime/main.mjs");
+    let seed = disk::read(&key).unwrap();
+    fn verify_source(path: &std::path::Path, seed: &[u8], external_path: &str) -> usize {
+        let mut files = 0;
+        for entry in disk::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                files += verify_source(&entry.path(), seed, external_path);
+            } else {
+                let bytes = disk::read(entry.path()).unwrap();
+                assert!(!bytes.windows(seed.len()).any(|window| window == seed));
+                assert!(!String::from_utf8_lossy(&bytes).contains(external_path));
+                files += 1;
+            }
+        }
+        files
+    }
+    assert_eq!(
+        verify_source(&project, &seed, scratch.0.to_str().unwrap()),
+        7
+    );
+    let archive = scratch.0.join("greeting.cxapp");
+    let report = super::pack_directory(
+        &project.join("bundle"),
+        &manifest,
+        &key,
+        &archive,
+        500,
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(report.file_count, Some(3));
+    let publisher =
+        super::read_publisher(&project.join("publisher.json"), &Limits::default()).unwrap();
+    let verified = super::validate_archive(&archive, &publisher, 500, &Limits::default()).unwrap();
+    assert_eq!(verified.package_digest, report.package_digest);
+}
+
+#[test]
+fn scaffold_never_overwrites_existing_empty_populated_or_linked_destinations() {
+    let scratch = Scratch::new();
+    let key = scratch.0.join("key");
+    let public = scratch.0.join("publisher.json");
+    super::keygen("com.example", "Developer", &key, &public).unwrap();
+    let publisher = super::read_publisher(&public, &Limits::default()).unwrap();
+    let empty = scratch.0.join("empty");
+    let populated = scratch.0.join("populated");
+    disk::create_dir(&empty).unwrap();
+    disk::create_dir(&populated).unwrap();
+    disk::write(populated.join("keep.txt"), "user source").unwrap();
+    let linked = scratch.0.join("linked");
+    std::os::unix::fs::symlink(&empty, &linked).unwrap();
+    for destination in [&empty, &populated, &linked] {
+        assert!(super::create_scaffold(
+            destination,
+            "com.example.test",
+            "0.1.0",
+            &publisher,
+            500,
+            &Limits::default()
+        )
+        .is_err());
+    }
+    assert_eq!(disk::read_dir(&empty).unwrap().count(), 0);
+    assert_eq!(
+        disk::read(populated.join("keep.txt")).unwrap(),
+        b"user source"
+    );
+    assert_eq!(disk::read_dir(&populated).unwrap().count(), 1);
+    assert!(disk::symlink_metadata(&linked)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let invalid = scratch.0.join("invalid");
+    assert!(super::create_scaffold(
+        &invalid,
+        "invalid app ID",
+        "0.1.0",
+        &publisher,
+        500,
+        &Limits::default()
+    )
+    .is_err());
+    assert!(!invalid.exists());
+}
