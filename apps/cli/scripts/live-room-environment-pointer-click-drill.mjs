@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict"
+import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -199,6 +200,7 @@ let secretAgent = null
 let secretProviderRun = null
 let sourceIdentity = null
 let sliceRuntimeIdentity = null
+let prebuiltSliceImageId = null
 let fixtureWorkspace = repoRoot
 
 const interruption = createDrillInterruption()
@@ -226,13 +228,15 @@ async function run() {
     await chmod(fixtureWorkspace, 0o777)
   }
   await assertDockerReady()
+  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
+  const relayBinary = await resolveRuntimeBinary("chariox-relay")
+  sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
+  prebuiltSliceImageId = await validatePrebuiltSliceImage(process.env.CHARIOX_ROOM_DRILL_IMAGE, sourceIdentity,
+    async image => JSON.parse((await docker(["image", "inspect", image])).stdout))
   resources.push(await resourceSnapshot("before"))
   fixture = await startFixture()
   await seedConfig(tempRoot)
 
-  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
-  const relayBinary = await resolveRuntimeBinary("chariox-relay")
-  sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
   const relayLog = createWriteStream(path.join(evidenceRoot, "relay.log"), { flags: "a" })
   const relay = spawn(relayBinary, [], {
     cwd: repoRoot,
@@ -2085,8 +2089,8 @@ async function seedConfig(tempRoot) {
     // This opt-in case runs real providers inside the production Bubblewrap
     // boundary. Docker's outer default profile prevents that boundary starting.
     ...(realProviderOptions ? ["allow_unconfined_seccomp = true"] : []),
-    ...(process.env.CHARIOX_ROOM_DRILL_IMAGE?.trim()
-      ? [`docker_image = ${JSON.stringify(process.env.CHARIOX_ROOM_DRILL_IMAGE.trim())}`, "build_image = \"never\""]
+    ...(prebuiltSliceImageId
+      ? [`docker_image = ${JSON.stringify(prebuiltSliceImageId)}`, "build_image = \"never\""]
       : ["build_image = \"auto\""]),
     `memory_mb = ${sliceMemoryMb}`,
     "cpus = \"1\"",
