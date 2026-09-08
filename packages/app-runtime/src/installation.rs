@@ -604,7 +604,7 @@ fn stage_release(
     Ok(record)
 }
 
-fn load_installation(connection: &Connection, id: &str) -> Result<Installation> {
+pub(crate) fn load_installation(connection: &Connection, id: &str) -> Result<Installation> {
     let row = connection
         .query_row(
             "SELECT app_id, owner_id, generation, active_json, pending_generation,

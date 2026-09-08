@@ -5,6 +5,7 @@
 //! establish confinement before executing any App code.
 
 pub mod installation;
+pub mod managed_state;
 pub mod publisher_trust;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod package_upload;
