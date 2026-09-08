@@ -43,6 +43,7 @@ mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod browser_import_consent;
+mod browser_import_execution_gate;
 mod event_delivery_runtime_state;
 mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;

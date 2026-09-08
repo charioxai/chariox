@@ -256,6 +256,7 @@ impl KernelRuntimeState {
         session_id: &str,
         request: EnvironmentActionRequest,
     ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.ensure_browser_import_execution_allowed(session_id)?;
         self.owned
             .session_store
             .submit_room_environment_action(session_id, request)

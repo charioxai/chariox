@@ -143,6 +143,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod browser_import_execution_gate;
 mod cleanup_liveness;
 mod completion_settlement;
 mod detached_provider_run;

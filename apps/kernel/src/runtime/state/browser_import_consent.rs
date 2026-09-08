@@ -88,6 +88,8 @@ impl KernelRuntimeState {
         let environment = self
             .room_environment_snapshot(&selection.session_id)
             .map_err(|_| denied())?;
+        self.ensure_browser_import_execution_allowed(&selection.session_id)
+            .map_err(|_| denied())?;
         if environment.lifecycle != EnvironmentLifecycle::Ready
             || environment.environment_id != selection.environment_id
             || environment.runtime_generation != selection.runtime_generation

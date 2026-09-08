@@ -4,8 +4,11 @@ import {applyCookieImport,createCdpCookieStore} from './cookie-import-transactio
 // Internal bridge only. The kernel caller must supply live consent and exclusive
 // Environment ownership; no wire-supplied approval flag is accepted here.
 export async function applyControllerCookieImport({controller,browserGeneration,targetId,documentId,
-  source,scope,overwrite=false}, {authorize,runExclusive,signal} = {}) {
-  if (typeof authorize !== 'function' || typeof runExclusive !== 'function') fail('cookie_import_denied');
+  source,scope,overwrite=false}, {authorize,runExclusive,signal,journal} = {}) {
+  if (typeof authorize !== 'function' || typeof runExclusive !== 'function'
+      || !journal || ['read','prepare','discard'].some(method => typeof journal[method] !== 'function')) {
+    fail('cookie_import_denied');
+  }
   if (!Number.isSafeInteger(browserGeneration) || browserGeneration < 1
       || typeof targetId !== 'string' || !targetId || typeof documentId !== 'string' || !documentId) {
     fail('cookie_import_target_stale');
@@ -40,7 +43,7 @@ export async function applyControllerCookieImport({controller,browserGeneration,
       browserCdp:{send:(method,params) => connection.send(method,params)},
       pageCdp:{send:(method,params) => connection.send(method,params,sessionId)},
     });
-    return applyCookieImport({source:selectedSource,scope:selectedScope,store,overwrite,signal,
+    return applyCookieImport({source:selectedSource,scope:selectedScope,store,overwrite,signal,journal,
       authorize:check,runExclusive:operation => operation()});
   });
 }
