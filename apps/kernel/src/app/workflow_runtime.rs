@@ -1467,6 +1467,54 @@ mod tests {
             .get_run(&ordinary_provider_run_again_id)
             .expect("replacement ordinary provider run should resolve")
             .workflow_event_actions_enabled());
+
+        // An App automation can choose the same opaque ID as the legacy
+        // binding, but its source must not inherit that binding's authority.
+        let mut app_invocation = run.publication_invocation().unwrap().clone();
+        app_invocation.transport = "app_event".into();
+        app_invocation.invocation_id = "app-receipt-collision".into();
+        app_invocation.artifacts = vec![
+            serde_json::json!({"name":"host","media_type":"text/plain","reference":"file:///private/does-not-exist-app-artifact"}),
+            serde_json::json!({"name":"url","media_type":"text/plain","reference":"https://ambient-credentials.invalid/private"}),
+            serde_json::json!({"name":"other","media_type":"text/plain","reference":"artifact:other-installation"}),
+        ];
+        let app_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint_with_publication_invocation(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("Review the App event".into()),
+                Some(app_invocation),
+            )
+            .unwrap();
+        let app_node = &app_run.node_runs()[0];
+        let outcome = app
+            .prompt_owner_submit_workflow_prompt(
+                session.id(),
+                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(app_run.id()),
+                agent.id(),
+                app_run.id(),
+                app_node.id(),
+                "Review the App event",
+            )
+            .unwrap();
+        let app_prompt = match outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt }
+            | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
+        };
+        assert_eq!(
+            workflow_event_capabilities_for_prompt_from_runtime(&app, session.id(), &app_prompt)
+                .unwrap(),
+            (false, false, false)
+        );
+        assert!(app_prompt.attachments().is_empty());
+        assert!(app
+            .serialize_remote_prompt_attachments(app_prompt.attachments())
+            .unwrap()
+            .is_empty());
+        assert!(!app_prompt.prompt().contains("does-not-exist-app-artifact"));
+        assert_eq!(app_run.publication_invocation().unwrap().artifacts.len(), 3);
     }
 
     #[test]

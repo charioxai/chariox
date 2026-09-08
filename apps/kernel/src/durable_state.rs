@@ -17,6 +17,7 @@ use crate::error::DaemonError;
 
 pub(crate) mod app_bindings;
 pub(crate) mod app_automations;
+pub(crate) mod app_event_delivery;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_publishers;
 pub(crate) mod app_state;
@@ -133,6 +134,7 @@ enum DurableWriterRequest {
     AppState(Box<app_state::AppStateRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
+    AppEventQueue(Box<app_event_delivery::AppEventQueueRequest>),
 }
 
 #[derive(Debug)]
@@ -1211,6 +1213,14 @@ impl DurableStateWriter {
                 operation: "durable_state.writer_wal",
                 message: error.to_string(),
             })?;
+        // Workflow handoff and uncertain-commit recovery acknowledge durable
+        // WAL commits. Do not depend on a bundled SQLite compile-time default.
+        connection
+            .pragma_update(None, "synchronous", "FULL")
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.writer_synchronous",
+                message: error.to_string(),
+            })?;
         let (sender, receiver) = mpsc::sync_channel(DURABLE_WRITE_QUEUE_CAPACITY);
         let health = Arc::new(DurableWriterHealth::default());
         let worker_health = Arc::clone(&health);
@@ -1336,6 +1346,18 @@ fn run_durable_writer(
                 app_automations::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppEventQueue(request) => {
+                if matches!(
+                    app_event_delivery::execute(&mut connection, *request),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
+                    // Drop queued replies and the receiver so stale sessions
+                    // cannot overwrite an uncertain commit. Restart reloads
+                    // authoritative state before the kernel accepts writes.
+                    break;
+                }
+                continue;
+            }
         };
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
@@ -1351,7 +1373,8 @@ fn run_durable_writer(
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
                     | DurableWriterRequest::AppBinding(_)
-                    | DurableWriterRequest::AppAutomation(_)),
+                    | DurableWriterRequest::AppAutomation(_)
+                    | DurableWriterRequest::AppEventQueue(_)),
                 ) => {
                     pending = Some(request);
                     break;

@@ -764,3 +764,33 @@ tests are selected in hosted CI and were not executed locally. Evidence includes
 `sdk03-bootstrap-tests.log`, `sdk03-typescript.log`, `protocol291-client-types.log`,
 `protocol291-client-tests.log`, and `kernel-app-events-sdk03-library-typecheck.log`.
 No full Phase 1 release gate is marked complete by these component results.
+
+
+### Workflow queue handoff and macOS hosted correction
+
+The App event handoff prepares a tentative workflow-session clone, then commits
+its normalized queue state, existing workflow delivery receipt and outbox queued
+transition in the sole writer transaction. It promotes the clone only after
+acknowledgement. Current signer, automation revision, target and prior durable
+state are rechecked. Canonical artifact metadata is not converted into provider
+attachments; kernel-owned `app_event` transport cannot inherit legacy event-hook
+capabilities through a colliding App-chosen automation ID.
+
+An uncertain commit receives an authoritative reread and a fresh FULL-synchronous
+writer fence. If that cannot establish the outcome, the writer stops and drops
+queued/future writes; stale session memory cannot overwrite the uncertain queue.
+A duplicate receipt also round-trips through that writer before acknowledgement.
+The writer explicitly configures SQLite synchronous=FULL. Independent review
+caught and resolved the original string-only failure path. Seven handoff tests
+and the extended actual workflow/provider-attachment regression are selected for
+hosted execution; they have not been run locally. The production kernel library
+check passed in28.83s with peak2,448,128KiB before the explicit pragma addition.
+
+The first real APFS drill found that hdiutil's `b` suffix means512-byte sectors.
+The intended64MiB fixture requested32GiB and was rejected as oversized before any
+App ran. The disposable runner retained failed recovery state until teardown.
+Commit `66f885949` changes creation to explicit `-megabytes64`/`512`, rejects
+misaligned capacities and checks both exact command variants. Seven offline tests
+pass (2.59s compile/0.05s execution; peak442,384KiB). Corrected hosted verification
+remains pending; no claim is made that a per-process limit constrains an external
+DiskImages service. These results do not advance the complete storage release gate.

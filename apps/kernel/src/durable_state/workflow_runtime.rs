@@ -854,7 +854,7 @@ fn delete_missing_delivery_receipts(
     Ok(())
 }
 
-fn encode_workflow_session(
+pub(super) fn encode_workflow_session(
     session: &RuntimeSession,
 ) -> Result<DurableWorkflowSessionWrite, DaemonError> {
     Ok(DurableWorkflowSessionWrite {

@@ -125,6 +125,7 @@ impl AppOutbox {
             || now < receipt.accepted_at_ms
             || now < receipt.next_attempt_at_ms
             || now >= receipt.expires_at_ms
+            || receipt.payload.is_none()
             || receipt.invocation.is_none()
         {
             return Err(OutboxError::Conflict);

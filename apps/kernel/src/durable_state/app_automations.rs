@@ -102,7 +102,14 @@ impl WorkflowAutomationTarget {
             entities,
         })
     }
-    fn require_current(&self, tx: &Transaction<'_>, owner: &str) -> Result<(), AppAutomationError> {
+    pub(crate) fn target(&self) -> &AutomationTarget {
+        &self.target
+    }
+    pub(crate) fn require_current(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &str,
+    ) -> Result<(), AppAutomationError> {
         if self.owner != owner {
             return Err(AppAutomationError::NotOwner);
         }

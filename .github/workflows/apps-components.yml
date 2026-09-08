@@ -129,6 +129,7 @@ jobs:
           cargo test --locked -p chariox-kernel --lib app_binding_parser_preserves_meta_self_access -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib app_upload_maximum_chunk -- --test-threads=1
           cargo test --locked -p chariox-kernel --lib durable_state:: -- --test-threads=1
+          cargo test --locked -p chariox-kernel --lib queued_event_prompt_derives_reply_and_context_capabilities_independently -- --test-threads=1
       - name: Test native CLI developer dispatch
         run: >-
           cargo test --locked -p chariox-kernel --bin chariox-cli app_developer::tests:: -- --test-threads=1
