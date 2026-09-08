@@ -61,8 +61,8 @@ fn command_plan_uses_fixed_capacity_private_owner_and_no_overwrite_or_sparse_opt
         &args[..11],
         [
             "create",
-            "-size",
-            "67108864b",
+            "-megabytes",
+            "64",
             "-type",
             "UDIF",
             "-layout",
@@ -78,6 +78,20 @@ fn command_plan_uses_fixed_capacity_private_owner_and_no_overwrite_or_sparse_opt
         .iter()
         .any(|v| matches!(v.as_str(), "-ov" | "SPARSE" | "SPARSEBUNDLE" | "-force")));
     assert_eq!(args.last().unwrap(), "/private/owned/data.dmg");
+    let production = volume::create_arguments(
+        Path::new("/private/owned/data.dmg"),
+        "cx-data-nonce",
+        CAPACITIES[0],
+    )
+    .unwrap();
+    assert_eq!(&production[1..3], ["-megabytes", "512"]);
+    assert!(volume::create_arguments(
+        Path::new("/private/owned/data.dmg"),
+        "cx-data-nonce",
+        64 * 1024 * 1024 + 1
+    )
+    .is_err());
+    assert!(!args.iter().any(|arg| arg == "-size" || arg.ends_with('b')));
 }
 
 #[test]

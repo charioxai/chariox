@@ -15,7 +15,9 @@ calling `recover_all_blocking`, the kernel must quiesce those previous workers
 and requests. Storage recovery cannot decide whether a worker is still running.
 
 The candidate policy provides a 512 MiB data image and a separate 64 MiB temporary
-image per installation. Data survives generations; temporary storage is replaced
+image per installation. Creation uses Apple's explicit `-megabytes` option with
+the validated integer 64 or 512; the `-size` suffix `b` means 512-byte sectors and
+must never be used as a byte suffix. Data survives generations; temporary storage is replaced
 only after the previous image has been identified and detached. Both images are
 fixed UDRW files containing APFS, with no sparse-image or automatic growth mode.
 Filesystem metadata reduces usable capacity. The journal reserves another 2 MiB
@@ -87,7 +89,17 @@ wrapper deletes its images. Failed recovery retains the images and journals
 until disposal of that dedicated runner. The wrapper records bounded logs and
 metadata; its process/resource watch is monitoring, not an OS hard limit.
 
-Real APFS observations are still pending that hosted run. In-flight tool/service
+The first hosted run, [34176513133](https://github.com/charioxai/chariox/actions/runs/34176513133),
+caught the original size-unit error: `67108864b` requested 32 GiB instead of
+64 MiB. The post-create size check rejected that oversized image before any App
+ran; its recovery journal was retained on the disposable runner. The corrected
+explicit-MiB path still needs the hosted creation/mount/recovery drill to pass.
+This is also why a post-create length check is not a hard precreation bound.
+An inherited process file-size limit would cover only writers that actually
+inherit it; DiskImages service ownership must be observed before asserting that
+such a limit constrains image creation.
+
+In-flight tool/service
 ownership across a kernel crash also needs validation before factory integration;
 if FD inheritance cannot provide it, a trusted supervised guardian is required.
 This component does

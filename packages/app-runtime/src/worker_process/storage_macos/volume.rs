@@ -279,10 +279,15 @@ pub(super) fn create_arguments(
     volume_name: &str,
     capacity: u64,
 ) -> Result<Vec<String>> {
+    // Apple's -size suffix 'b' means 512-byte sectors, NOT bytes. Select the
+    // explicit MiB option, and reject values outside our closed quota policy.
+    if ![64 * 1024 * 1024, 512 * 1024 * 1024].contains(&capacity) {
+        return Err(Error::Capacity);
+    }
     Ok(commands::strings(&[
         "create",
-        "-size",
-        &format!("{capacity}b"),
+        "-megabytes",
+        &(capacity / (1024 * 1024)).to_string(),
         "-type",
         "UDIF",
         "-layout",
