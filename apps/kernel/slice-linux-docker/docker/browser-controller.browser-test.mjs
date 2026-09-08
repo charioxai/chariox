@@ -1017,12 +1017,24 @@ async function withController(run, clientOptions = {}) {
   let browser;
   try {
     context = await chromium.launchPersistentContext(profile, {
-      channel: "chrome", headless: true, args: ["--remote-debugging-port=0", "--site-per-process"],
+      channel: "chrome", headless: true, chromiumSandbox: true,
+      args: ["--remote-debugging-port=0", "--site-per-process", "--enable-automation"],
     });
     const port = Number((await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
     assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
     browser = new BrowserCdpClient({ ...clientOptions, debuggerEndpoint: `http://127.0.0.1:${port}` });
     const page = context.pages()[0] ?? await context.newPage();
+    const launchSession = await context.newCDPSession(page);
+    try {
+      const { arguments: launchArguments } = await launchSession.send("Browser.getBrowserCommandLine");
+      const unsafeFlags = launchArguments.filter((argument) => [
+        "--no-sandbox", "--disable-setuid-sandbox", "--disable-seccomp-filter-sandbox",
+        "--disable-web-security", "--unsafely-treat-insecure-origin-as-secure",
+      ].includes(argument.split("=")[0]));
+      assert.deepEqual(unsafeFlags, [], "real-browser validation must not bypass sandbox or origin security");
+    } finally {
+      await launchSession.detach();
+    }
     page.setDefaultTimeout(10_000);
     let nextId = 0;
     const request = (method, params) => handleBrowserControllerRequest({ id: ++nextId, method, params }, { browser });
