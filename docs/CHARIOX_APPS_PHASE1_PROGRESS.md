@@ -521,3 +521,90 @@ explicitly records `fullKernelMigrationValidated=false` and
 containers, live Google acceptance, App-origin isolation and shared-viewer
 input/accessibility remain separate release requirements. The complete browser
 persistence or Phase 1 release gate is not marked passed by this fixture.
+
+## Implementation progress: structured state, tool catalogs and developer flow
+
+Commits `94b8675f5`, `ae522ae65`, `1a50837c9`, `552b7b24b` and `74f6fbb67`
+add the following prerequisites. Full release-matrix rows remain unverified.
+
+- Uploaded packages now pass through a bounded kernel preparation service,
+  using authenticated upload ownership, the exact enrolled signing key and
+  anchored durable release publication. Preparation retains admission during
+  blocking work. It does not install, approve or activate the prepared package.
+- Structured App state uses the existing SQLite connection, bounded JSON values,
+  compare-and-swap checks and monotonic versions. Savepoints roll back partial
+  mutations and permit composition with a future durable outbox transaction.
+  Owner, active generation, schema and update-pause checks fence reads/writes.
+  These transactions do not include ordinary `node:fs` operations, and the
+  outbox itself is not implemented by this increment.
+- Verified tool catalogs retain package declarations and active signer
+  provenance. They bound and validate input/output schemas, correlate response
+  identity/generation/deadline, and accept only kernel-provided caller context.
+  Revocation or re-enrollment invalidates the old catalog even when its App
+  generation has not changed. Binding, effective operation permissions and
+  dispatch through the production MCP catalog remain integration work.
+- Structured reads and mutations now run on the kernel's existing durable
+  writer. Its transaction repeats the exact catalog/enrollment fence before
+  accessing state and committing. The catalog and owner are trusted worker
+  inputs, never fields supplied by an App. The runtime SDK broker, worker
+  activation and full cancellation/admission integration remain outstanding.
+- Both CLI entry paths dispatch `chariox app create/keygen/manifest/pack/validate/
+  inspect` to the same package helper, preserving the caller's original working
+  directory and protocol compatibility. Scaffolding creates the registration
+  function, schemas, basic view and manifest without manual JSON; it takes an
+  explicit public publisher file and never copies the signing key. The managed
+  Linux release recipe includes the helper in its builder attestation and
+  signed release inventory. `dev`, installation/activation and managed App-view
+  execution are not supplied by this developer increment.
+
+Six real SQLite state tests passed locally, covering concurrent CAS, deletion
+and recreation, savepoint/outer rollback, exact limits and generation fencing.
+Eight catalog tests and twelve verified-installation tests passed. The package
+suite passed 28 tests, the focused TypeScript command suite passed ten, and
+the managed-release fixture suite passed sixteen. A tiny harness importing the
+production native CLI helper passed two unit tests and seven executable checks;
+it did not build the full CLI or start a kernel.
+
+The guarded `cargo check -p chariox-kernel --bin chariox-cli` passed in 30.26
+seconds, peaking at 2,258,480 KiB sampled process-group RSS. The three new kernel
+state-writer tests have source coverage but were not executed locally; their
+execution is assigned to hosted CI. Evidence in the existing directory:
+`managed-state-tests.log`, `app-catalog-tests.log`,
+`app-developer-scaffold-package-tests.log`, `app-developer-cli-tests-fixed.log`,
+`app-helper-managed-release-tests-fixed.log`,
+`app-developer-native-launcher-tests.log` and
+`kernel-state-developer-final-typecheck.log`, with the associated resource logs.
+Earlier failed fixture/tooling attempts are retained separately.
+
+## Hosted macOS builder preflight and embedded-runtime status
+
+[Preflight run 34172680900](https://github.com/charioxai/chariox/actions/runs/34172680900)
+passed on `890be0f607701ad9018ca95e1325eb7d44bde832`. The ARM64 runner used
+macOS 15.7.9, image `20260829.0321.1`, Xcode 16.4, SDK 15.5, Apple clang
+17.0.0, Python 3.11.9, Node 24.20.0 and GNU Make 3.81. It measured three CPUs,
+7 GiB total RAM, approximately 3.12 GiB available RAM, 230 MiB free RAM,
+42.23 GiB free disk and zero configured/used swap. Available and free RAM are
+different measurements; the available figure meets the proposed 3 GiB start
+threshold. No Xcode removal was necessary or performed.
+
+This was metadata collection only: no native compilation, App execution,
+signing or enforced memory/swap quota. It establishes actual pinned toolchain
+availability and initial headroom, not the compiler's peak memory or successful
+build admission. Evidence and tool fingerprints are retained in
+`macos-preflight-34172680900/{run.json,workflow.log,preflight.json}` under the
+existing evidence directory.
+
+The separate Linux embedded-runtime fixture is committed in `5c9a852e0`.
+It checks the exact historical native-build provenance and archive digest before
+bounded extraction, then exercises the real embedder/bootstrap/SDK through the
+production launcher inside the disposable provisioned sandbox. Its first
+[run 34172250902](https://github.com/charioxai/chariox/actions/runs/34172250902)
+stopped with `native_pending` before loading any runtime or App. At
+2026-09-08 00:23 UTC, the allowlisted
+[native build 34167089795](https://github.com/charioxai/chariox/actions/runs/34167089795)
+on `65a71638909ea27b390f6ae15938c2a3aa0acba3` was still compiling. This is an
+unexecuted compatibility gate, not a containment pass or a demonstrated runtime
+failure. The exact failed preparation log is retained in
+`embedded-pending-34172250902/workflow-failed.log`. The artifact remains
+historical unsigned evidence; production signing, installer provisioning and
+the full runtime/resource acceptance matrix remain required.
