@@ -92,6 +92,12 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.doesNotMatch(script, /usermod .*--groups docker chariox/)
   assert.doesNotMatch(script, /enable --now docker\.service/)
   assert.match(script, /cloud-init clean --logs --machine-id --seed/)
+  assert.match(script, /passwd --lock root/)
+  assert.match(script, /chage -d "\$\(date -u \+%Y-%m-%d\)" -M 99999 -I -1 -E -1 root/)
+  assert.match(script, /PasswordAuthentication no/)
+  assert.match(script, /KbdInteractiveAuthentication no/)
+  assert.match(script, /PermitRootLogin prohibit-password/)
+  assert.match(script, /sshd -T/)
   assert.match(
     script,
     /rm -rf \/var\/lib\/apt\/lists\/\* \/tmp\/chariox-managed-release \/root\/\.cache \/root\/\.npm \/root\/\.ssh/,
