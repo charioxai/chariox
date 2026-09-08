@@ -4,6 +4,7 @@
 //! A successful handshake is not proof of OS confinement. The launcher must
 //! establish confinement before executing any App code.
 
+pub mod app_catalog;
 pub mod installation;
 pub mod managed_state;
 pub mod publisher_trust;

@@ -148,11 +148,55 @@ impl StageTrustBinding {
         trusted_owner: &str,
         current_trust: &TrustedPublisherSnapshot,
     ) -> Result<()> {
+        self.require_binding(transaction, trusted_owner)?;
+        current_update(transaction, &self.token)?;
+        self.require_signer(transaction, trusted_owner, current_trust)?;
+        Ok(())
+    }
+
+    /// Admission for an already active worker/catalog. Keep this in the SAME
+    /// transaction as each broker read/mutation: an unchanged App generation
+    /// does not imply its publisher key is still enrolled. The supervisor must
+    /// separately cancel/fence in-flight work when any of these facts changes.
+    pub fn require_active(
+        &self,
+        transaction: &Transaction<'_>,
+        trusted_owner: &str,
+        current_trust: &TrustedPublisherSnapshot,
+    ) -> Result<ActiveGeneration> {
+        self.require_binding(transaction, trusted_owner)?;
+        self.require_signer(transaction, trusted_owner, current_trust)?;
+        let installation = load_installation(transaction, &self.token.installation_id)?;
+        if installation.generation != self.token.generation {
+            return Err(InstallationError::Conflict.into());
+        }
+        if installation.admission_paused {
+            return Err(InstallationError::AdmissionPaused.into());
+        }
+        let active = installation.active.ok_or(InstallationError::Inactive)?;
+        if active.generation != self.token.generation
+            || active.release.package_digest != self.package_digest
+            || active.release.publisher_id != self.publisher_id
+        {
+            return Err(InstallationError::Conflict.into());
+        }
+        Ok(active)
+    }
+
+    fn require_binding(&self, transaction: &Transaction<'_>, trusted_owner: &str) -> Result<()> {
         let current = load_binding(transaction, trusted_owner, &self.token)?;
         if current != *self {
             return Err(InstallationError::Conflict.into());
         }
-        current_update(transaction, &self.token)?;
+        Ok(())
+    }
+
+    fn require_signer(
+        &self,
+        transaction: &Transaction<'_>,
+        trusted_owner: &str,
+        current_trust: &TrustedPublisherSnapshot,
+    ) -> Result<()> {
         current_trust.require_current(transaction, trusted_owner)?;
         let publisher = current_trust.publisher();
         if self.publisher_id != publisher.publisher_id

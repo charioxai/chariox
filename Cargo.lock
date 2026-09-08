@@ -377,6 +377,7 @@ version = "0.1.0"
 dependencies = [
  "chariox-app-package",
  "ed25519-dalek",
+ "jsonschema",
  "libc",
  "rusqlite",
  "serde",
