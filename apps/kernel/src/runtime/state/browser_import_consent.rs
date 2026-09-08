@@ -14,8 +14,9 @@ use crate::session::{EnvironmentLifecycle, DEFAULT_LOCAL_USER_ID};
 /// Cannot be constructed from a caller-supplied identity or detached from its lock.
 pub(crate) struct BrowserImportDestination {
     runtime: KernelRuntimeState,
-    binding: ImportBinding,
+    environment_id: String,
     id: ImportRequestId,
+    verified: bool,
     _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
@@ -28,12 +29,14 @@ impl BrowserImportDestination {
         F: std::future::Future<Output = Result<(), DaemonError>>,
     {
         let store = &self.runtime.owned.durable_state_store;
-        store
-            .mark_browser_import_recovered(&self.binding.environment_id, self.id.as_str())
-            .map_err(|_| denied())?;
+        if !self.verified {
+            store
+                .mark_browser_import_recovered(&self.environment_id, self.id.as_str())
+                .map_err(|_| denied())?;
+        }
         cleanup.await.map_err(|_| denied())?;
         store
-            .clear_recovered_browser_import(&self.binding.environment_id, self.id.as_str())
+            .clear_recovered_browser_import(&self.environment_id, self.id.as_str())
             .map_err(|_| denied())?;
         self.runtime
             .owned
@@ -44,6 +47,52 @@ impl BrowserImportDestination {
 }
 
 impl KernelRuntimeState {
+    /// Resume cleanup only when verification was durably acknowledged. This
+    /// does not authorize replay of cookie writes or treat missing state as success.
+    pub(crate) async fn resume_browser_import_cleanup(
+        &self,
+        command: &KernelCommand,
+        session_id: &str,
+        attachment_id: &str,
+        request_id: &str,
+    ) -> Result<BrowserImportDestination, DaemonError> {
+        self.browser_import_human(command, session_id, attachment_id)
+            .await?;
+        let guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .write_owned()
+            .await;
+        let (user_id, _) = self
+            .browser_import_human(command, session_id, attachment_id)
+            .await?;
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|_| denied())?;
+        let pending = self
+            .owned
+            .durable_state_store
+            .pending_browser_import(&environment.environment_id)
+            .map_err(|_| denied())?
+            .ok_or_else(denied)?;
+        if pending.recovery_required
+            || pending.user_id != user_id
+            || pending.room_id != session_id
+            || pending.request_id != request_id
+        {
+            return Err(denied());
+        }
+        let id = ImportRequestId::from_wire(request_id).map_err(|_| denied())?;
+        Ok(BrowserImportDestination {
+            runtime: self.clone(),
+            environment_id: environment.environment_id,
+            id,
+            verified: true,
+            _guard: guard,
+        })
+    }
+
     /// Destination entry point. Revalidate consent after draining room actions,
     /// then acknowledge durable recovery state before permitting cookie mutation.
     pub(crate) async fn claim_browser_import_destination(
@@ -75,8 +124,9 @@ impl KernelRuntimeState {
             .map_err(|_| denied())?;
         Ok(BrowserImportDestination {
             runtime: self.clone(),
-            binding,
+            environment_id: binding.environment_id,
             id,
+            verified: false,
             _guard: guard,
         })
     }

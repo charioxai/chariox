@@ -334,7 +334,33 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
             assert!(state
                 .ensure_no_pending_environment_import(session.id())
                 .is_err());
-            assert!(dispatch(&router, &caller, prepare).await.is_err());
+            assert!(dispatch(&router, &caller, prepare.clone()).await.is_err());
+            assert!(state
+                .resume_browser_import_cleanup(
+                    &destination_command(caller.clone()),
+                    session.id(),
+                    attachment.id(),
+                    &"b".repeat(32),
+                )
+                .await
+                .is_err());
+            let resumed = state
+                .resume_browser_import_cleanup(
+                    &destination_command(caller.clone()),
+                    session.id(),
+                    attachment.id(),
+                    id,
+                )
+                .await
+                .unwrap();
+            resumed
+                .complete_after_verification(async { Ok(()) })
+                .await
+                .unwrap();
+            assert!(state
+                .ensure_no_pending_environment_import(session.id())
+                .is_ok());
+            assert!(dispatch(&router, &caller, prepare).await.is_ok());
             return;
         }
         completion.unwrap();
