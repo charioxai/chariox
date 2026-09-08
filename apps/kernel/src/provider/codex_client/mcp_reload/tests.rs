@@ -20,6 +20,9 @@ fn refresh_deadline_bounds_stalled_handshake_initialize_and_reload_io() {
                     Err(error) => panic!("accept fixture: {error}"),
                 }
             };
+            // Accepted sockets inherit nonblocking mode on macOS. This
+            // synchronous fixture uses explicit I/O deadlines on both hosts.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
@@ -121,6 +124,7 @@ fn native_mcp_reload_uses_only_the_official_hook_and_propagates_rejection() {
                     Err(error) => panic!("fixture accept: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

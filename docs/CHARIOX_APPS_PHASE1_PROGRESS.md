@@ -1318,3 +1318,31 @@ SDK peer tests pass (11.43-second compile, 1.62-second execution, sampled peak
 407,248 KiB), including the generated-ID regression. The full lifecycle health
 cases still require their hosted rerun. Review `5137907144` reports no actionable
 finding through the earlier UI asset/controller increment.
+
+### Hosted browser acceptance and native artifacts (2026-09-08)
+
+Chromium run `34193432289` passes on `db5e7f682`. Eleven controller source tests
+and the live exact-target test pass; the latter completes in 0.82 seconds. The
+production launcher retains its sandbox through profile restore, preserving
+the fixture's authentication cookie, localStorage, IndexedDB and tabs. Server
+revocation and an empty profile produce the expected negative results. This
+validates the controller adapter and profile fixture; full terminal projection,
+kernel migration and real Google authentication remain separate release gates.
+
+The Linux native build `34185809490` also succeeds for frozen source
+`28904c4f61e4df56d939a9e7b156373cc612c031`, after 127 minutes of bounded hosted
+compilation. Its retained unsigned artifact is `10043108123`, with archive
+SHA-256 `97430fcd14a0d8499d97b15a0de69d03518a593bdd011dd07ceecb714678468b`.
+Both native platforms now have compilation evidence; actual signed runtime
+enrollment and execution remain required. No native archive was downloaded or
+executed on the shared development Mac.
+
+Linux component job `101954705291` on `7a1fbe59a` confirms both corrected
+workflow fixtures pass. Only the two first-install native health fixtures fail
+there; that revision predates their generated-identity correction. The earlier
+macOS component run additionally exposes two synchronous MCP fixture sockets
+inheriting nonblocking mode from their listeners. The accepted fixture sockets
+now explicitly use blocking mode with their existing strict I/O deadlines;
+production provider behavior and close/deadline assertions are unchanged. The
+macOS rerun of this fixture correction is pending. Review `5137998384` reports
+no actionable findings through the workflow fixture increment.
