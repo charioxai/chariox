@@ -2,7 +2,6 @@ use std::fmt;
 #[cfg(unix)]
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Mutex, MutexGuard};
 
 use fs2::FileExt;
@@ -287,14 +286,6 @@ fn docker_success(args: &[&str], operation: &'static str) -> Result<(), DaemonEr
             String::from_utf8_lossy(&output.stderr).trim()
         )))
     }
-}
-
-fn remove_helper_best_effort(helper: &str) {
-    let _ = docker_command()
-        .args(["rm", "-f", helper])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 fn host_available_space(path: &Path) -> Result<u64, DaemonError> {
