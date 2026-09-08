@@ -37,6 +37,7 @@ use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
 mod app_runtime_state;
+mod app_automation_owned_state;
 mod config_runtime_state;
 mod provider_output_deadline_store;
 mod provider_reload;

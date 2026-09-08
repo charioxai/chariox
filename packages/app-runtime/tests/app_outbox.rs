@@ -20,6 +20,8 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::json;
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 
+#[path = "app_outbox/configuration.rs"]
+mod configuration;
 #[path = "app_outbox/contract.rs"]
 mod contract;
 #[path = "app_outbox/limits.rs"]

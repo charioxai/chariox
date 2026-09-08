@@ -936,7 +936,7 @@ impl SessionService {
         }
     }
 
-    fn validate_workflow_runnable(
+    pub(crate) fn validate_workflow_runnable(
         &self,
         session_id: &str,
         workflow: &WorkflowDefinition,

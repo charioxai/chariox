@@ -2,11 +2,13 @@
 //! This is receipt persistence, not workflow dispatch or automation permission.
 
 mod admission;
+mod configuration;
 mod store;
 
 use crate::app_catalog::{AppCatalog, CatalogError};
 pub use admission::{EventCatalog, VerifiedAutomation};
 use chariox_app_package::VerifiedPackage;
+pub use configuration::{AutomationConfiguration, AutomationStatus, AutomationTarget};
 use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

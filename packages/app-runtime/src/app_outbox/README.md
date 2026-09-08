@@ -14,11 +14,15 @@ inside the same transaction. Changing any retained binding field invalidates a
 previous snapshot, even if an erroneous configuration writer omitted its revision
 bump. Loading a record checks existing authority; it grants none.
 
-The automation table intentionally has no public enrollment API. The SDK 0.2
-event declaration supplies a signed `schemaVersion`; both the durable binding
-and each occurrence must match it. Target selection and automation authorization
-remain kernel responsibilities. Test fixtures seed target records directly;
-they are not installation or consent evidence.
+The Rust configuration API accepts explicit trusted kernel operations. The kernel
+resolves existing workflow publication, endpoint and queue ownership, retains its
+workflow/session guards, and checks those exact normalized records in the same
+writer transaction as configuration CAS. Every change increments the binding
+revision; reactivation repeats target authorization. Deactivation cannot grant
+active access. No public App/terminal permission request path is provided here.
+The SDK 0.2 event declaration supplies a signed `schemaVersion`; both the durable
+binding and each occurrence must match it. Directly seeded target rows in storage
+fixtures are not installation or consent evidence.
 
 `apply_in` accepts at most 16 occurrences for one admitted automation in a
 savepoint. A larger state transaction may compose multiple such batches, but its

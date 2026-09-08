@@ -163,7 +163,12 @@ impl VerifiedAutomation {
     }
 }
 
-fn load(connection: &Connection, owner: &str, installation: &str, id: &str) -> Result<Binding> {
+pub(super) fn load(
+    connection: &Connection,
+    owner: &str,
+    installation: &str,
+    id: &str,
+) -> Result<Binding> {
     let binding = connection.query_row(
         "SELECT automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled
          FROM app_automations WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",

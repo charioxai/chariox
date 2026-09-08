@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 
 pub(crate) mod app_bindings;
+pub(crate) mod app_automations;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_publishers;
 pub(crate) mod app_state;
@@ -131,6 +132,7 @@ enum DurableWriterRequest {
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
+    AppAutomation(Box<app_automations::AppAutomationRequest>),
 }
 
 #[derive(Debug)]
@@ -298,6 +300,7 @@ impl DurableKernelStateStore {
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;
         app_state::initialize(&mut connection)?;
+        app_automations::initialize(&mut connection)?;
         let writer = DurableStateWriter::start(&path)?;
         connection
             .pragma_update(None, "query_only", true)
@@ -1329,6 +1332,10 @@ fn run_durable_writer(
                 app_bindings::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppAutomation(request) => {
+                app_automations::execute(&mut connection, *request);
+                continue;
+            }
         };
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
@@ -1343,7 +1350,8 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppPublisher(_)
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
-                    | DurableWriterRequest::AppBinding(_)),
+                    | DurableWriterRequest::AppBinding(_)
+                    | DurableWriterRequest::AppAutomation(_)),
                 ) => {
                     pending = Some(request);
                     break;
