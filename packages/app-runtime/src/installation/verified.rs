@@ -14,6 +14,8 @@ use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+mod first_install;
+
 #[derive(Debug, thiserror::Error)]
 pub enum VerifiedStageError {
     #[error(transparent)]
@@ -287,6 +289,13 @@ impl InstallationRegistry<'_> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let supervised: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_installation_supervised_stages WHERE installation_id=?1 AND generation=?2)",
+            params![token.installation_id, sql_generation(token.generation)?], |row| row.get(0),
+        )?;
+        if supervised {
+            return Err(InstallationError::Invalid("supervised activation required").into());
+        }
         let binding = load_binding(&transaction, trusted_owner, token)?;
         binding.require_current(&transaction, trusted_owner, current_trust)?;
         let active = commit_generation(&transaction, token, now_ms)?;

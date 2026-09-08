@@ -7,7 +7,8 @@
 static int fixture_sdk_mode(const char* mode) {
   return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
       !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
-      !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files");
+      !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files") ||
+      !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health");
 }
 
 static int fixture_sdk_io(void* buffer, size_t size, int writing, int64_t deadline) {
@@ -104,6 +105,8 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
   return 117;
 }
 
+#include "fixture_health.h"
+
 static int fixture_sdk_run(const struct cx_launch_record* record, const char* mode) {
   const int flags = fcntl(3, F_GETFL);
   if (flags < 0 || fcntl(3, F_SETFL, flags | O_NONBLOCK)) return 94;
@@ -119,10 +122,24 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   }
   const char* report = !strcmp(mode, "sdk_wrong_handlers") ?
       "{\"tools\":[\"undeclared\"],\"events\":[],\"lifecycle\":[]}" :
+      fixture_health_mode(mode) ? "{\"tools\":[],\"events\":[],\"lifecycle\":[\"health_check\",\"startup\"]}" :
       !strcmp(mode, "sdk_tool") ? "{\"tools\":[\"echo\"],\"events\":[],\"lifecycle\":[]}" :
       "{\"tools\":[],\"events\":[],\"lifecycle\":[]}";
   if (fixture_sdk_request("ready", "worker.ready", report) != 1) return 99;
-  const int received = fixture_sdk_receive(response, cx_monotonic_ms() + 5000);
+  if (fixture_health_mode(mode)) {
+    if (fixture_health_before(mode, response) != 1) return 121;
+    if (!strcmp(mode, "sdk_bad_health")) return fixture_sdk_receive(response, cx_monotonic_ms()+5000)==0 ? 0 : 122;
+  }
+  char startup[8193] = {0};
+  int received = fixture_sdk_receive(response, cx_monotonic_ms() + 5000);
+  if (received==1 && fixture_health_mode(mode) && strstr(response,"\"method\":\"lifecycle.dispatch\"")) {
+    char id[129];
+    if (fixture_health_parse(response,"startup",id)!=1) return 124;
+    // Activation's ready ACK and outgoing startup request share one actor but
+    // can become writable in either order. Preserve the already validated call.
+    memcpy(startup,response,strlen(response)+1);
+    received=fixture_sdk_receive(response,cx_monotonic_ms()+5000);
+  }
   if (received == 0) return 0;
   if (received != 1) return 100;
   static const char accepted[] = "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"ready\",\"result\":null}";
@@ -134,6 +151,7 @@ static int fixture_sdk_run(const struct cx_launch_record* record, const char* mo
   if (file < 0) return 103;
   if (fsync(file) || close(file)) return 104;
   if (fixture_sdk_event("worker.fixture.ready_ack") != 1) return 105;
+  if (fixture_health_mode(mode)) return fixture_health_after(response,startup)==1 ? 0 : 123;
   if (!strcmp(mode, "sdk_files")) {
     /* Exercise both namespaces on the exact inherited production peer. */
     if (fixture_sdk_request("files-state", "state.get", "{\"key\":\"fixture\"}") != 1 ||

@@ -16,6 +16,16 @@ pub(crate) struct CommittedAppActivation {
     catalog: Arc<EventCatalog>,
 }
 impl CommittedAppActivation {
+    /// Used only inside the first-install activation/operation commit. The
+    /// returned value must not escape until that same transaction is durable.
+    pub(super) fn first_committed_in(
+        transaction: &rusqlite::Transaction<'_>,
+        owner: &str,
+        catalog: Arc<EventCatalog>,
+    ) -> Result<Self> {
+        catalog.app_catalog().require_current(transaction, owner)?;
+        Ok(Self { owner: owner.into(), catalog })
+    }
     pub(crate) fn owner(&self) -> &str {
         &self.owner
     }

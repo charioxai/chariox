@@ -12,6 +12,7 @@ impl Drop for Operation<'_> {
 impl Control {
     pub(super) fn new() -> Self {
         Self {
+            first_request: None,
             stop: AtomicBool::new(false),
             manual: AtomicBool::new(false),
             manual_committed: AtomicBool::new(false),

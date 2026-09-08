@@ -21,6 +21,10 @@ mod workers;
 pub(crate) use workers::AppWorkerPublisher;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod catalog;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod first_install;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) use first_install::FirstInstallControlError;
 
 #[derive(Clone)]
 pub(crate) struct AppControlService {

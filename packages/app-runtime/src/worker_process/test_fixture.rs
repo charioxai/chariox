@@ -31,6 +31,8 @@ pub enum Mode {
     BrokerCall,
     ToolEcho,
     Files,
+    Health,
+    BadHealth,
     OtherInstallation,
 }
 impl Mode {
@@ -42,6 +44,8 @@ impl Mode {
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
             Self::Files => "sdk_files",
+            Self::Health => "sdk_health",
+            Self::BadHealth => "sdk_bad_health",
             Self::OtherInstallation => "sdk_other_installation",
         }
     }
@@ -190,6 +194,32 @@ impl Fixture {
         mode: Mode,
         package: &chariox_app_package::VerifiedPackage<'_>,
     ) -> Result<(WorkerProcess, Observation), WorkerError> {
+        self.spawn_for_installation_blocking(
+            mode,
+            package,
+            match mode {
+                Mode::OtherInstallation => "other_installed",
+                _ => "installed",
+            },
+        )
+    }
+
+    /// Fixed-fixture identity only. Available solely under worker-test-fixture;
+    /// it never accepts a runtime path, process or production sandbox override.
+    pub fn spawn_for_installation_blocking(
+        &self,
+        mode: Mode,
+        package: &chariox_app_package::VerifiedPackage<'_>,
+        installation: &str,
+    ) -> Result<(WorkerProcess, Observation), WorkerError> {
+        if installation.is_empty()
+            || installation.len() > 128
+            || !installation
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(WorkerError::Preparation);
+        }
         let prepare = || -> io::Result<(PreparedWorker, Observation)> {
             let parent = self.scratch.0.join(format!(
                 "instance-{}",
@@ -222,11 +252,7 @@ impl Fixture {
                     arguments: vec![CString::new(mode.argument()).unwrap()],
                     record: LaunchRecord {
                         generation: "1".into(),
-                        installation: match mode {
-                            Mode::OtherInstallation => "other_installed",
-                            _ => "installed",
-                        }
-                        .into(),
+                        installation: installation.into(),
                         release_digest: package.package_digest().into(),
                         roots,
                         bootstrap: "// trusted fixture bootstrap\n".into(),

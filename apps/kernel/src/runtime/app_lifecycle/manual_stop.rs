@@ -12,11 +12,41 @@ pub(super) fn persist(
     if !control.pending_manual_stop() {
         return Ok(());
     }
+    cancel_first(store, owner, control, budget.fork(|| false))?;
     store.stop_app_worker_intent(owner, installation, budget.fork(|| false))?;
     store.finish_app_worker_stop(owner, installation, budget)?;
     control.confirm_manual_stop();
     Ok(())
 }
+
+/// A precommit first install has a separate durable operation identity. Its
+/// recovery must be fenced too; a committed generation instead uses the normal
+/// worker stop intent and can never be rolled back by this cancellation.
+pub(super) fn cancel_first(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    control: &Control,
+    budget: AppOperationBudget,
+) -> Result<()> {
+    let Some(request_id) = &control.first_request else {
+        return Ok(());
+    };
+    match store.cancel_first_app_install(owner, request_id, budget) {
+        Ok(_) => Ok(()),
+        Err(InstallOperationError::Conflict)
+            if store.first_app_install_status(owner, request_id)?.phase
+                == InstallPhase::Committed =>
+        {
+            Ok(())
+        }
+        Err(InstallOperationError::CommitUnknown) => {
+            let _ = store.fence_writer();
+            Err(LifecycleError::CommitUnknown)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 impl AppLifecycleService {
     /// Called only by the bounded maintenance owner while holding its App
     /// permit. A transient failure retains the entry and prevents recovery

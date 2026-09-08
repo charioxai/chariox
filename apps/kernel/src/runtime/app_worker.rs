@@ -11,7 +11,7 @@ mod tests;
 pub(crate) use call::{
     AppCallSlot, AppToolError, AppToolReply, AppToolResponse, PreparedAppToolCall,
 };
-pub(crate) use startup::RegisteredAppWorker;
+pub(crate) use startup::{FirstInstallHealth, HealthyAppWorker, RegisteredAppWorker};
 
 use chariox_app_runtime::{
     app_outbox::EventCatalog,

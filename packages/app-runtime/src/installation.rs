@@ -199,6 +199,11 @@ impl<'a> InstallationRegistry<'a> {
                 trust_revision INTEGER NOT NULL CHECK(trust_revision > 0),
                 public_key_fingerprint TEXT NOT NULL,
                 PRIMARY KEY(installation_id, generation)
+             );
+             CREATE TABLE IF NOT EXISTS app_installation_supervised_stages (
+                installation_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation > 0),
+                PRIMARY KEY(installation_id,generation)
              );",
         )?;
         Ok(())

@@ -57,6 +57,17 @@ pub(crate) struct ActiveStartAdmission {
     trust: TrustedPublisherSnapshot,
 }
 impl ActiveStartAdmission {
+    /// Initial desired-running state is atomic with first activation. Recovery
+    /// cannot observe an active generation without its durable start intent.
+    pub(super) fn first_committed_in(
+        transaction: &rusqlite::Transaction<'_>,
+        owner: &str,
+        attempt: &str,
+        binding: &StageTrustBinding,
+        trust: &TrustedPublisherSnapshot,
+    ) -> Result<Self> {
+        store::first_committed(transaction, owner, attempt, binding, trust)
+    }
     pub(crate) fn owner(&self) -> &str {
         &self.owner
     }

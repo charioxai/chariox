@@ -14,6 +14,9 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
+mod health;
+pub(crate) use health::{FirstInstallHealth, HealthyAppWorker};
+
 /// Provisional generation. Only this owner can consume its channel's report.
 pub(crate) struct StartingAppWorker {
     owner: AppWorkerOwner,

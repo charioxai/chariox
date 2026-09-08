@@ -94,6 +94,7 @@ fn make_control(
     let observations = Arc::new(Mutex::new(Vec::new()));
     *control.lifecycle().0.fixture.lock().unwrap() = Some(start::FixturePlatform {
         native,
+        fail_health: false,
         observations: observations.clone(),
     });
     (control, observations)
@@ -436,6 +437,9 @@ fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
     assert_eq!(status.phase, WorkerPhase::Stopped);
     assert!(!status.desired_running);
 }
+
+#[path = "tests/first_install.rs"]
+mod first_install;
 
 #[test]
 fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {

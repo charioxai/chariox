@@ -1,5 +1,6 @@
-//! Retained owners for already approved active App generations. First-install
-//! commits and data migrations are deliberately outside this restart service.
+//! Retained owners for approved first installs and active-generation restarts.
+//! Data migrations and terminal approval projection remain separate duties.
+mod first_install;
 mod manual_stop;
 mod operations;
 mod owner;
@@ -10,6 +11,7 @@ mod start;
 mod tests;
 use crate::{
     durable_state::{
+        app_installation_operations::{ApprovedFirstInstall, InstallOperationError, InstallPhase},
         app_worker_lifecycle::{ActiveStartAdmission, LifecycleStoreError, WorkerPhase},
         DurableKernelStateStore,
     },
@@ -46,6 +48,10 @@ pub(crate) enum LifecycleError {
     Preparation,
     #[error("app_lifecycle_registration")]
     Registration,
+    #[error("app_lifecycle_health")]
+    Health,
+    #[error("app_install_commit_unknown")]
+    CommitUnknown,
     #[error("app_lifecycle_startup")]
     Startup,
     #[error("app_lifecycle_worker_exit")]
@@ -61,6 +67,22 @@ impl From<LifecycleStoreError> for LifecycleError {
             LifecycleStoreError::Stale => Self::Authority,
         }
     }
+}
+impl From<InstallOperationError> for LifecycleError {
+    fn from(value: InstallOperationError) -> Self {
+        match value {
+            InstallOperationError::CommitUnknown => Self::CommitUnknown,
+            InstallOperationError::Storage => Self::Storage,
+            InstallOperationError::Stopped => Self::Stopped,
+            InstallOperationError::Limit => Self::Busy,
+            _ => Self::Authority,
+        }
+    }
+}
+#[derive(Clone)]
+enum StartKind {
+    Active { recovery: bool },
+    First { request_id: String },
 }
 type Result<T> = std::result::Result<T, LifecycleError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +113,8 @@ struct Maintenance {
     running: bool,
     next: Instant,
     cursor: Option<Key>,
+    first_cursor: Option<Key>,
+    first_next: bool,
 }
 struct Entry {
     attempt: String,
@@ -98,6 +122,7 @@ struct Entry {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 struct Control {
+    first_request: Option<String>,
     stop: AtomicBool,
     manual: AtomicBool,
     manual_committed: AtomicBool,
@@ -129,6 +154,8 @@ impl AppLifecycleService {
                 running: false,
                 next: Instant::now(),
                 cursor: None,
+                first_cursor: None,
+                first_next: false,
             }),
             #[cfg(test)]
             fixture: Mutex::new(None),

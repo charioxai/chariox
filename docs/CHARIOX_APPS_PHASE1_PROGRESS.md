@@ -1159,3 +1159,26 @@ out of production; hosted execution is pending.
 
 The macOS `d91e60833` component run also passed all seven private-file tests and
 eight of nine worker tests; its same receiver-lifetime failure is already fixed.
+
+### First-install health and atomic activation (2026-09-08)
+
+Internal first-install control now uses the existing upload verifier, immutable
+release store, App lifecycle owner and durable writer. The writer atomically
+records a verified stage and replayable operation, resolves exact current signer
+and staged capability approval, and claims one attempt. The same real worker
+performs the local precommit health callback before the writer commits active
+generation, operation receipt and worker restart intent together. Normal startup
+then receives approved SDK access before the callable handle is published.
+
+Replay accepts only the canonical package digest and retains identity after
+upload expiration/abort. Cancellation fences both initial-install and worker
+recovery. Uncertain commits reconcile against the same writer or stop it; no
+postcommit failure rolls the installation data back. Supervised stages cannot
+use the earlier metadata-only commit shortcut.
+
+Nine new SQLite tests and five control/lifecycle fixtures are selected for
+hosted execution, including two actual libc health/startup processes. Rustfmt,
+strict C syntax and source review pass; these new tests are not yet recorded as
+executed. Public installation requests and approval creation remain the next
+adapter. macOS factory integration and exclusive private-data cleanup also
+remain open, as documented in `runtime/app_lifecycle/FIRST_INSTALL.md`.

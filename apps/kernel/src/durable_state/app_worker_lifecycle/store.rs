@@ -20,6 +20,31 @@ fn identity(value: &str) -> Result<()> {
 fn budget(value: &AppOperationBudget) -> Result<()> {
     value.check().map_err(|_| LifecycleStoreError::Stopped)
 }
+pub(super) fn first_committed(
+    tx: &rusqlite::Transaction<'_>,
+    owner: &str,
+    attempt: &str,
+    binding: &StageTrustBinding,
+    trust: &TrustedPublisherSnapshot,
+) -> Result<ActiveStartAdmission> {
+    identity(owner)?;
+    identity(attempt)?;
+    if binding.token().base_generation != 0 || binding.token().generation != 1 {
+        return Err(LifecycleStoreError::Stale);
+    }
+    binding.require_active(tx, owner, trust).map_err(|_| LifecycleStoreError::Stale)?;
+    let installation = &binding.token().installation_id;
+    match status(tx, owner, installation)? {
+        Some(current) if current.generation != 1 || current.attempt != attempt
+            || current.phase != WorkerPhase::Starting || !current.desired_running => return Err(LifecycleStoreError::Stale),
+        Some(_) => {},
+        None => {
+            sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms)
+                VALUES(?1,?2,1,?3,'starting',1,NULL,?4)", params![installation,owner,attempt,checked(crate::session::unix_epoch_ms())?]))?;
+        }
+    }
+    Ok(ActiveStartAdmission { owner:owner.into(), installation:installation.into(), attempt:attempt.into(), binding:binding.clone(), trust:trust.clone() })
+}
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS app_worker_lifecycle (
         installation_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,generation INTEGER NOT NULL CHECK(generation>=0),
