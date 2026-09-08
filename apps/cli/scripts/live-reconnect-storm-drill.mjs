@@ -66,6 +66,7 @@ const relayToken = `reconnect-storm-${process.pid}-${Date.now()}`
 const children = []
 const clients = []
 const resourceSamples = []
+let resourcePhase = "startup"
 let control
 let pressureControl
 let report
@@ -85,9 +86,10 @@ try {
   children.push(spawnOwned(relayBinary, relayEnv()))
   children.push(spawnOwned(kernelBinary, kernelEnv()))
   resourceTimer = setInterval(() => {
-    try { resourceSamples.push({ at: Date.now(), processes: processMetrics(children) }) } catch {}
+    try { resourceSamples.push({ at: Date.now(), phase: resourcePhase, processes: processMetrics(children) }) } catch {}
   }, 1_000)
   await waitForKernel()
+  resourcePhase = "attachment"
   control = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
   pressureControl = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
   await waitFor(async () => unwrap(await control.send(requests.relayStatusRequest()), "RelayStatus")?.status?.connected === true, timeoutMs, "kernel relay connection")
@@ -163,6 +165,7 @@ try {
 
   const reconnectLatenciesMs = []
   for (let cycle = 0; cycle < cycles; cycle += 1) {
+    resourcePhase = `reconnect-${cycle + 1}`
     throwIfInterrupted()
     const marker = `RECONNECT_STORM_CYCLE_${cycle}_${Date.now()}`
     const startedAt = Date.now()
@@ -184,6 +187,7 @@ try {
 
   const slowClient = clients[0]
   const slowContext = contexts[0]
+  resourcePhase = "slow-subscriber-pressure"
   assert.ok(slowClient.eventWebsocket?._socket, "slow client event socket was not connected")
   const pressureBaselineHealth = await relayHealthSnapshot()
   assert.equal(pressureBaselineHealth.subscription_count, clientCount)
@@ -332,6 +336,7 @@ try {
       "healthy subscribers during slow-client pressure",
     )
     healthyTrafficLatencyMs = Date.now() - healthyStartedAt
+    resourcePhase = "post-healthy-slow-flood"
     assert.ok(healthyTrafficLatencyMs <= timeoutMs, `healthy traffic took ${healthyTrafficLatencyMs} ms`)
     assert.ok(slowEventsSubmitted > submittedAtHealthyProbe, "slow flood did not advance during the healthy probe")
     assert.equal(slowFloodSettled, false, "slow flood finished before healthy work completed")
@@ -359,6 +364,7 @@ try {
     throw healthyProbeError
   }
   await slowFlood
+  resourcePhase = "slow-close-wait"
   let relayHealth
   let slowSubscriptionClosedAtMs
   await waitFor(async () => {
@@ -401,6 +407,7 @@ try {
     relayHealth,
     metrics,
     resources,
+    resourceSamples,
     ports,
   }
 } catch (error) {
@@ -411,6 +418,7 @@ try {
     cycles,
     slowEvents,
     resources: resourceSummary(resourceSamples, children[1]?.pid),
+    resourceSamples,
     ports,
   }
   process.exitCode = 1
