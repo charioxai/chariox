@@ -118,10 +118,8 @@ export async function applyCookieImport({source, scope, store, runExclusive, aut
       }
       fail(error instanceof CookieImportError ? error.code : 'cookie_import_failed', recoveryRequired);
     }
-    if (receipt) {
-      try { await journal.discard(receipt); }
-      catch { fail('cookie_import_recovery_required',true); }
-    }
+    // Browser readback is not durable completion. The kernel must record the
+    // outcome before clearing the retained journal and releasing quarantine.
     return batch.summary;
   }); } catch (error) {
     if (error instanceof CookieImportError) throw error;
