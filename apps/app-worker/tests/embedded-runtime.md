@@ -1,17 +1,19 @@
-# Historical unsigned embedded execution fixture
+# Reviewed unsigned embedded execution fixture
 
 This separate hosted Linux x64 fixture executes the actual pinned libnode and
 embedder with the current trusted bootstrap/SDK, after the production native
 launcher has entered its OS sandbox. It never builds Node and never runs on the
 developer laptop. The independent libc containment fixture remains unchanged.
 
-The required initial input is successful completion of native run `34167089795` from
+The required input is successful completion of native run `34176513092` from
 `charioxai/chariox`, workflow `.github/workflows/app-runtime-native.yml`, source
-commit `65a71638909ea27b390f6ae15938c2a3aa0acba3`. The manual `native_run` parameter
+commit `a028881fb2a2cf487b910a439b345f2b7713ac8d`. The manual `native_run` parameter
 must match this allowlist. Supporting another original build requires a reviewed
 source edit. No arbitrary run, repository, workflow or artifact URL is accepted.
-If that compilation has not completed successfully, preparation fails and
-records `ready: false`; the workflow cannot count skipped execution as a pass.
+A pending compilation records `ready: false` and fails preparation; a failed
+compilation is rejected. Neither case can count skipped execution as a pass.
+The earlier one-job run `34167089795` timed out and produced no artifact; this
+reviewed replacement uses two jobs under the same hosted hard resource limits.
 
 Preparation checks the original GitHub run and retained artifact metadata,
 streams at most 512 MiB from GitHub's short-lived HTTPS storage redirect, and
@@ -24,10 +26,11 @@ multidisk archives, unsupported compression, inconsistent headers and CRCs.
 
 The unsigned bundle assembler checks original committed source provenance,
 library digests, Node/toolchain/ABI pins and the complete current SDK graph. The
-initial native build predates current native receipt tooling, so assembly uses
-explicit historical evidence mode, retains `receiptInputHash: null`, and records
-the original run plus new bundle digest. It does not generate an exact current
-native compilation receipt or enroll a runtime release.
+assembler retains `matches-current-source` and its exact input hash when all
+current native inputs match. If later native source changes, explicitly enabled
+historical evidence mode retains `historical-source-only` and
+`receiptInputHash: null`. Both cases record the original run and new bundle
+digest. Neither enrolls a runtime release or creates a signed artifact.
 
 Only the small production C launcher and digest-pinned bubblewrap are compiled,
 with one build job. A dedicated systemd service admits all root provisioning,

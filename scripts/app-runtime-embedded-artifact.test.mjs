@@ -34,11 +34,14 @@ test('native execution accepts only the reviewed successful run and retained exa
     f => { f.artifact.size_in_bytes = MAX_ARCHIVE + 1; },
     f => { f.artifact.digest = 'untrusted'; },
     f => { f.artifact.name = 'other'; },
+    f => { f.artifact.name = `UNSIGNED-NONRELEASE-darwin-arm64-${NATIVE_HEAD}`; },
+    f => { f.artifact.name = `UNSIGNED-NONRELEASE-linux-arm64-${NATIVE_HEAD}`; },
     f => { f.artifact.expires_at = '2026-09-07T00:00:00Z'; },
   ]) {
     const f = metadata(); change(f); await assert.rejects(selectArtifact(NATIVE_RUN, f.get, now));
   }
   await assert.rejects(selectArtifact('123', good.get, now));
+  await assert.rejects(selectArtifact('34167089795', good.get, now), /reviewed fixture input/);
 });
 
 test('pending native compilation is explicit and does not request or select an artifact', async () => {

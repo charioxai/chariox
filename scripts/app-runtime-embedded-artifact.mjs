@@ -7,8 +7,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { packageRuntime, verifyBundle } from './package-app-runtime.mjs';
 
-export const NATIVE_RUN = '34167089795';
-export const NATIVE_HEAD = '65a71638909ea27b390f6ae15938c2a3aa0acba3';
+export const NATIVE_RUN = '34176513092';
+export const NATIVE_HEAD = 'a028881fb2a2cf487b910a439b345f2b7713ac8d';
 const REPOSITORY_NAME = 'charioxai/chariox';
 const WORKFLOW = '.github/workflows/app-runtime-native.yml';
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -16,7 +16,7 @@ export const MAX_ARCHIVE = 512 * 1024 * 1024;
 const HASH = /^sha256:[a-f0-9]{64}$/;
 
 export async function selectArtifact(runId, get, now = Date.now()) {
-  // One reviewed historical input, not an arbitrary artifact/run supplied by a
+  // One reviewed source input, not an arbitrary artifact/run supplied by a
   // workflow caller. Future successful native sources require an explicit edit.
   assert.equal(runId, NATIVE_RUN, 'native run is not the reviewed fixture input');
   const prefix = `/repos/${REPOSITORY_NAME}/actions`;
@@ -130,8 +130,11 @@ async function prepare() {
   const bundle = await packageRuntime({ nativeDirectory: join(scratch, 'native'), output: join(scratch, 'bundle'),
     target: 'linux-x64', allowHistorical: true });
   await verifyBundle(join(scratch, 'bundle'));
-  assert.equal(bundle.native.inputStatus, 'historical-source-only');
-  assert.equal(bundle.native.receiptInputHash, null);
+  // verifyBundle retains either exact current native inputs or explicit historical
+  // provenance. Neither classification grants signing or runtime enrollment.
+  assert.equal(bundle.native.sourceCommit, selected.sourceCommit);
+  assert.equal(bundle.signing.status, 'unsigned');
+  assert.equal(bundle.signing.enrollment, 'not-performed');
   await writeFile(join(scratch, 'evidence/bundle-identity.json'), `${JSON.stringify({
     digest: bundle.bundleDigest, native: bundle.native, signing: bundle.signing,
   }, null, 2)}\n`, { mode: 0o600 });
@@ -139,7 +142,7 @@ async function prepare() {
   await rm(join(scratch, 'native'), { recursive: true });
   await appendFile(process.env.GITHUB_OUTPUT, 'ready=true\n');
   console.log(JSON.stringify({ artifactId: selected.artifactId, sourceCommit: selected.sourceCommit, bundleDigest: bundle.bundleDigest,
-    scope: 'Historical unsigned runtime prepared; embedded execution not yet performed' }));
+    scope: 'Reviewed unsigned runtime prepared; embedded execution not yet performed' }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -1,12 +1,12 @@
-name: App embedded runtime execution (historical unsigned)
+name: App embedded runtime execution (unsigned)
 
 on:
   workflow_dispatch:
     inputs:
       native_run:
-        description: 'Reviewed native build run (initial allowlist: 34167089795)'
+        description: 'Reviewed native build run (exact allowlist: 34176513092)'
         required: true
-        default: '34167089795'
+        default: '34176513092'
   pull_request:
     paths:
       - 'apps/app-worker/tests/embedded-*'
@@ -49,11 +49,11 @@ jobs:
         run: |
           node --test --test-concurrency=1 scripts/app-runtime-embedded-artifact.test.mjs
           python3 -B scripts/app-runtime-extract-zip.test.py
-      - name: Obtain exact successful historical native artifact and assemble runtime
+      - name: Obtain exact successful reviewed native artifact and assemble runtime
         id: artifact
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          NATIVE_RUN: ${{ inputs.native_run || '34167089795' }}
+          NATIVE_RUN: ${{ inputs.native_run || '34176513092' }}
         run: node scripts/app-runtime-embedded-artifact.mjs
       - name: Install small launcher and bubblewrap build dependencies
         run: |
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && steps.artifact.outputs.scratch != ''
         with:
-          name: HISTORICAL-UNSIGNED-embedded-linux-${{ github.event.pull_request.head.sha || github.sha }}
+          name: UNSIGNED-embedded-linux-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ steps.artifact.outputs.evidence }}
           if-no-files-found: error
           retention-days: 7
