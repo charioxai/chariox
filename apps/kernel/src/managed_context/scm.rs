@@ -1258,7 +1258,10 @@ case "$1 $2" in
     /usr/bin/printf 'github.com:\n  user: test\n' > "$GH_CONFIG_DIR/hosts.yml"
     test ! -f "$HOME/fail-token-probe-after-login" || /usr/bin/touch "$HOME/token-error"
     ;;
-  "auth setup-git") /usr/bin/touch "$HOME/git-helper" ;;
+  "auth setup-git")
+    /usr/bin/touch "$HOME/git-helper"
+    test ! -f "$HOME/setup-git-error" || exit 2
+    ;;
   "auth logout")
     /bin/rm -f "$HOME/token"
     if test -f "$HOME/partial-logout"; then
@@ -1358,6 +1361,54 @@ esac
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_materialization_cleans_up_when_git_helper_setup_fails() {
+        let (root, target_home, target) = fake_target("setup-git-failure", None);
+        fs::write(target_home.join("setup-git-error"), "").expect("inject setup failure");
+        materialize_git_credentials(
+            &target,
+            "context-github",
+            &"a".repeat(64),
+            &github_selection(),
+            &[github_materialization("github-secret-canary")],
+        )
+        .expect_err("Git helper setup must fail");
+        assert!(!target_home.join("token").exists());
+        assert!(!github_hosts_path(&target).exists());
+        assert!(!target_home.join("git-helper").exists());
+        assert!(!binding_path(&target).exists());
+        fs::remove_dir_all(root).expect("remove setup-failure fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_opt_out_never_invokes_credential_commands() {
+        let (root, target_home, target) = fake_target("opt-out", None);
+        let gh = root.join("bin/gh");
+        fs::write(
+            &gh,
+            "#!/bin/sh\n/usr/bin/touch \"$HOME/unexpected-gh\"\nexit 2\n",
+        )
+        .expect("install credential-command spy");
+        let selection = ManagedContextGitCredentialSelection::None;
+        assert!(export_selected_git_credentials(&selection, &target)
+            .expect("export without Git credentials")
+            .is_empty());
+        assert!(materialize_git_credentials(
+            &target,
+            "context-none",
+            &"a".repeat(64),
+            &selection,
+            &[]
+        )
+        .expect("materialize without Git credentials")
+        .is_empty());
+        assert!(!target_home.join("unexpected-gh").exists());
+        assert!(!binding_path(&target).exists());
+        fs::remove_dir_all(root).expect("remove opt-out fixture");
     }
 
     #[cfg(unix)]
