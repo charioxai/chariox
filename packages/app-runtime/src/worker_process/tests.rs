@@ -10,6 +10,8 @@ use std::{
     sync::atomic::{AtomicI32, AtomicUsize},
 };
 
+mod resources;
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {

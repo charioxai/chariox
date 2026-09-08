@@ -57,6 +57,14 @@ int main(int argc, char** argv) {
   int file = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (file < 0) return 88;
   close(file);
+  if (!strcmp(argv[1], "grow")) {
+    /* Tiny test-only allocation after Continue; never allocate the production
+     * ceiling on the developer's machine. Volatile stores commit each page. */
+    size_t bytes = 8 * 1024 * 1024;
+    volatile unsigned char* growth = malloc(bytes);
+    if (!growth) return 92;
+    for (size_t offset = 0; offset < bytes; offset += 4096) growth[offset] = 1;
+  }
   if (!strcmp(argv[1], "flood")) {
     char block[8192]; memset(block, 'x', sizeof(block));
     for (;;) if (send_all(1, block, sizeof(block))) return 89;
@@ -66,7 +74,9 @@ int main(int argc, char** argv) {
   unsigned char header[4] = {(unsigned char)(size >> 24), (unsigned char)(size >> 16),
       (unsigned char)(size >> 8), (unsigned char)size};
   if (send_all(3, header, 4) || send_all(3, event, size)) return 90;
-  if (!strcmp(argv[1], "hang")) { close(1); close(2); for (;;) pause(); }
+  if (!strcmp(argv[1], "hang") || !strcmp(argv[1], "grow")) {
+    close(1); close(2); for (;;) pause();
+  }
   if (send_all(1, "fixture complete\n", 17) || send_all(2, "diagnostic\n", 11)) return 91;
   free(record.bootstrap);
   return 0;

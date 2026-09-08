@@ -12,6 +12,8 @@
 mod monitor;
 mod record;
 mod spawn;
+#[cfg(any(target_os = "macos", test))]
+mod worker_platform;
 
 use crate::wire::{Channel, Sender};
 use record::LaunchRecord;
@@ -45,6 +47,17 @@ pub struct PreparedWorker {
 trait ResourceDomain: Send {
     // Verification must be bounded and all cleanup methods nonpanicking.
     fn verify_before_continue(&mut self, launcher_pid: libc::pid_t) -> Result<(), WorkerError>;
+    /// Bounded ongoing domain/aggregate check on the owning thread. The default
+    /// is only for domains with independently enforced hard limits; it does
+    /// not establish confinement or authorize production preparation. macOS
+    /// additionally has a mandatory per-worker monitor owned by `Child`.
+    fn check_running(
+        &mut self,
+        _launcher_pid: libc::pid_t,
+        _now: Instant,
+    ) -> Result<(), WorkerError> {
+        Ok(())
+    }
     fn terminate(&mut self, launcher_pid: libc::pid_t);
     /// Must await an empty owned domain after the direct child is reaped,
     /// retaining all resource/pinning reservations until then.
@@ -95,6 +108,14 @@ pub enum WorkerError {
     Identity,
     #[error("app_worker_resource_domain")]
     ResourceDomain,
+    #[error("app_worker_memory_limit")]
+    MemoryLimit,
+    #[error("app_worker_thread_limit")]
+    ThreadLimit,
+    #[error("app_worker_cpu_limit")]
+    CpuLimit,
+    #[error("app_worker_resource_telemetry")]
+    ResourceTelemetry,
     #[error("app_worker_io")]
     Io,
     #[error("app_worker_log_limit")]

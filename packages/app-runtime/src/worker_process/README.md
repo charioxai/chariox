@@ -40,6 +40,32 @@ floor macOS 13.5). There is no shell, caller-defined environment or public raw
 executable override.
 
 A joinable supervisor thread polls startup, cancellation, child exit and logs.
+Before Continue on macOS it also attaches a mandatory monitor to its own
+unreaped direct child. Every 100ms the owner calls the retained resource domain's
+bounded running check and the macOS monitor. The domain's default running check
+is only for independently enforced hard limits; it does not approve preparation.
+There is still no public production domain/preparation factory.
+
+The private candidate macOS worker policy is 512MiB for the greater of physical
+footprint and RSS, 64 threads, and one CPU of elapsed-time credit with a 250ms
+burst allowance. Fixed-size `proc_pidinfo`/`proc_pid_rusage` calls validate child
+PID, parent, UID, process start identity and monotonic CPU accounting. CPU usage
+is converted from Mach ticks with `mach_timebase_info`; treating the counters as
+nanoseconds would undercount ARM CPU usage. Apple supplies these counters in
+[`fill_task_rusage`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/bsd_kern.c)
+from [`task_power_info_locked`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c).
+Memory, thread, CPU and telemetry failures have separate stable error codes;
+each terminates and reaps through the existing reservation owner. Sampling that
+races a completed child preserves normal exit, using the held wait authority.
+
+These are **monitored termination thresholds**, not hard macOS memory/CPU quotas.
+The 100ms sampling interval, ordinary scheduler delay and OS kill/reap latency
+allow overshoot; stalled kernel operations can delay cleanup. The policy has not
+yet been validated with pinned embedded Node, representative Apps, aggregate
+pressure or separately admitted kernel broker/Chromium work. Thread denial in
+the native sandbox, descriptor limits, signed runtime validation, APFS data/tmp
+quotas and aggregate admission remain independent required mechanisms.
+
 Startup is bounded to at most 15 seconds. Logs retain at most 64 KiB per stream
 (16 KiB default), with a combined one-second rate ceiling up to 1 MiB/s
 (128 KiB/s default). Each poll also limits log-drain work. Raw log tails remain
@@ -62,5 +88,11 @@ function, then exercises real FD/environment/session behavior, SDK transport,
 identity mismatch, withheld continuation, resource rejection, timeout, early
 exit, log flooding, cancellation, Drop and panic cleanup. Its compilation uses
 small temporary native files outside the repository and deletes them afterward.
-It does not load Node or establish native sandbox, hostile App, signed runtime,
-memory/quota overshoot, Linux namespace, or production activation acceptance.
+Pure tests exercise exact accounting boundaries, identity/counter rollback and
+Mach time conversion. Running-hook tests inject each resource failure and panic,
+checking sampling cadence and reservation retention through actual reap. A
+macOS-only libc fixture commits just 8MiB after Continue under a test-only
+baseline-plus-2MiB threshold, measuring detection and reap timing without a large
+local allocation. It does not load Node or establish native sandbox, hostile
+App, signed runtime, production memory/quota overshoot, Linux namespace, or
+production activation acceptance.

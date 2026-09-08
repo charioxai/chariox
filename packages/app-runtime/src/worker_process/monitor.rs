@@ -13,12 +13,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) const RESOURCE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Owns both waitpid authority and reservations, including while unwinding.
 pub(super) struct Child {
     pid: libc::pid_t,
     prepared: PreparedWorker,
     reaped: bool,
     lost_wait_authority: bool,
+    #[cfg(target_os = "macos")]
+    resources: Option<super::worker_platform::MacResourceMonitor>,
 }
 impl Child {
     pub fn new(pid: libc::pid_t, prepared: PreparedWorker) -> Self {
@@ -27,6 +31,46 @@ impl Child {
             prepared,
             reaped: false,
             lost_wait_authority: false,
+            #[cfg(target_os = "macos")]
+            resources: None,
+        }
+    }
+    fn verify_resources(&mut self) -> Result<(), WorkerError> {
+        self.prepared.domain.verify_before_continue(self.pid)?;
+        #[cfg(target_os = "macos")]
+        {
+            self.resources = Some(super::worker_platform::MacResourceMonitor::attach(
+                self.pid,
+                Instant::now(),
+            )?);
+        }
+        Ok(())
+    }
+    fn check_resources(&mut self, now: Instant) -> Result<(), WorkerError> {
+        self.prepared.domain.check_running(self.pid, now)?;
+        #[cfg(target_os = "macos")]
+        self.resources
+            .as_mut()
+            .ok_or(WorkerError::ResourceTelemetry)?
+            .check_running(self.pid, Instant::now())?;
+        Ok(())
+    }
+    fn resource_failure(&mut self, error: WorkerError, running: bool) -> Option<WorkerError> {
+        if error != WorkerError::ResourceTelemetry {
+            return Some(error);
+        }
+        // A child can finish between waitid and the bounded sampling syscalls.
+        // Preserve ordinary exit, and never signal a PID reaped by another owner.
+        match self.exited() {
+            Ok(true) => (!running).then_some(WorkerError::EarlyExit),
+            Ok(false) => Some(error),
+            Err(wait_error) if wait_error.kind() == io::ErrorKind::Interrupted => Some(error),
+            Err(wait_error) => {
+                if wait_error.raw_os_error() == Some(libc::ECHILD) {
+                    self.lost_wait_authority = true;
+                }
+                Some(WorkerError::Io)
+            }
         }
     }
     fn exited(&self) -> io::Result<bool> {
@@ -153,6 +197,7 @@ pub(super) fn run(
     let mut verified = false;
     let mut continued = 0;
     let mut running = false;
+    let mut next_resource_check = Instant::now();
     let failure = loop {
         if cancelled.load(Ordering::Acquire) {
             break Some(WorkerError::Cancelled);
@@ -185,6 +230,12 @@ pub(super) fn run(
                 }
                 break Some(WorkerError::Io);
             }
+        }
+        if running && Instant::now() >= next_resource_check {
+            if let Err(error) = child.check_resources(Instant::now()) {
+                break child.resource_failure(error, true);
+            }
+            next_resource_check = Instant::now() + RESOURCE_CHECK_INTERVAL;
         }
         if !running {
             if let Err(error) = write_some(&mut control, &record, &mut record_sent) {
@@ -219,13 +270,8 @@ pub(super) fn run(
             }
             if reply == ready {
                 if !verified {
-                    if child
-                        .prepared
-                        .domain
-                        .verify_before_continue(child.pid)
-                        .is_err()
-                    {
-                        break Some(WorkerError::ResourceDomain);
+                    if let Err(error) = child.verify_resources() {
+                        break child.resource_failure(error, false);
                     }
                     verified = true;
                 }
@@ -240,6 +286,7 @@ pub(super) fn run(
                 }
                 if continued == CONTINUE.len() {
                     running = true;
+                    next_resource_check = Instant::now() + RESOURCE_CHECK_INTERVAL;
                     let _ = control.shutdown(std::net::Shutdown::Both);
                     if started.send(Ok(())).is_err() {
                         break Some(WorkerError::Cancelled);
