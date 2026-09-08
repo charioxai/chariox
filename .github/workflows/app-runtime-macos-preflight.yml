@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'scripts/app-runtime-macos-preflight*'
+      - 'scripts/app-runtime-macos-watch*'
       - '.github/workflows/app-runtime-macos-preflight.yml'
 
 permissions:
@@ -33,8 +34,11 @@ jobs:
           architecture: arm64
       - name: Select existing pinned Xcode without downloading or deleting SDKs
         run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
-      - name: Test metadata parsers
-        run: node --test --test-concurrency=1 scripts/app-runtime-macos-preflight.test.mjs
+      - name: Test metadata parsers and measured build guard
+        run: >-
+          node --test --test-concurrency=1
+          scripts/app-runtime-macos-preflight.test.mjs
+          scripts/app-runtime-macos-watch.test.mjs
       - name: Measure resource and toolchain facts without native compilation
         id: preflight
         env:
