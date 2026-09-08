@@ -3657,6 +3657,47 @@ mod tests {
     }
 
     #[test]
+    fn managed_default_claude_profile_retains_its_credential_directory() {
+        let _lock = crate::env_lock::lock();
+        struct Restore {
+            variables: Vec<(&'static str, Option<std::ffi::OsString>)>,
+            root: PathBuf,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (name, value) in &self.variables {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+        let (root, registry) = fixture();
+        let _restore = Restore {
+            variables: ["CLAUDE_CONFIG_DIR", "CHARIOX_MANAGED_PROVIDER_ISOLATION"]
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect(),
+            root: root.clone(),
+        };
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        let home = root.join("home");
+        registry.migrate_effective_defaults("owner-a", &home).unwrap();
+
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+        assert_eq!(
+            environment.get("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+            Some(home.join(".claude")),
+            "managed login and sandboxed verification must bind the same default profile"
+        );
+    }
+
+    #[test]
     fn default_claude_profile_inherits_the_host_environment() {
         let (root, registry) = fixture();
         registry
