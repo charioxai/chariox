@@ -71,14 +71,15 @@ impl Probe {
         loop {
             let output = self.output("stdout");
             let diagnostic = self.output("stderr");
-            let (output, diagnostic) = match (output, diagnostic) {
-                (Ok(output), Ok(diagnostic)) => (output, diagnostic),
+            let output = match (output, diagnostic) {
+                (Ok(output), Ok(_)) => output,
                 (Err(error), _) | (_, Err(error)) => {
                     self.stop();
                     return Err(error);
                 }
             };
             if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
+                let diagnostic = self.output("stderr")?;
                 if !readiness && status.success() {
                     return self.output("stdout");
                 }
@@ -144,6 +145,36 @@ fn early_failure_is_not_reported_as_readiness() {
     let error = probe.poll(true).unwrap_err();
     assert!(error.contains("42"), "{error}");
     assert!(error.contains("namespace denied"), "{error}");
+}
+
+#[test]
+fn oversized_output_stops_and_reaps_the_child() {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "printf '%070000d' 0; exec /bin/sleep 30"]);
+    let mut probe = Probe::start(&mut command, Duration::from_secs(2));
+    assert_eq!(
+        probe.poll(false).unwrap_err(),
+        "stdout exceeded acceptance output limit"
+    );
+    assert!(probe.child.try_wait().unwrap().is_some());
+}
+
+#[test]
+fn dropping_an_unfinished_probe_removes_its_process_and_files() {
+    let mut command = Command::new("/bin/sleep");
+    command.arg("30");
+    let probe = Probe::start(&mut command, Duration::from_secs(2));
+    let pid = probe.child.id().to_string();
+    let root = probe.root.clone();
+    drop(probe);
+    assert!(!root.exists());
+    assert!(!Command::new("/bin/kill")
+        .args(["-0", &pid])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success());
 }
 
 #[cfg(target_os = "linux")]
