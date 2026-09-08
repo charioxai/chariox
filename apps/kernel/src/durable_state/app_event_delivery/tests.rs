@@ -1,6 +1,10 @@
 use super::*;
 #[path = "fixtures.rs"]
 mod fixtures;
+#[path = "maintenance_tests.rs"]
+mod maintenance_tests;
+#[path = "dispatch_tests.rs"]
+mod dispatch_tests;
 use crate::durable_state::{
     app_automations::{AppAutomationMutation, WorkflowAutomationTarget},
     app_state::{AppStateOperation, AppStateOutcome},
@@ -38,11 +42,13 @@ fn setup(fixture: &Fixture) -> (DurableKernelStateStore, SessionService, String,
             budget(),
         )
         .unwrap();
+    let occurred_at = crate::session::unix_epoch_ms();
     let occurrence = Occurrence {
         automation_id: "automation".into(),
-        occurrence_id: "first".into(),
+        occurrence_id: chariox_app_runtime::app_outbox::occurrence_id("first", occurred_at)
+            .unwrap(),
         event_version: 1,
-        occurred_at_ms: crate::session::unix_epoch_ms(),
+        occurred_at_ms: occurred_at,
         schedule_revision: None,
         payload: serde_json::json!({}),
         invocation: Invocation {

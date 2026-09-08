@@ -6,10 +6,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_event_payload_contract_is_versioned_and_matches_the_sdk_fixture() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 291);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 292);
     let fixture: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
         "/../../packages/app-sdk/test/event-contract.json"))).unwrap();
-    assert_eq!(fixture["minimumKernelProtocol"], 291);
+    assert_eq!(fixture["minimumKernelProtocol"], 292);
     assert_eq!(fixture["sdkVersion"], SUPPORTED_SDK_VERSION);
     let declaration: EventDeclaration = serde_json::from_value(fixture["declaration"].clone()).unwrap();
     let occurrence: Occurrence = serde_json::from_value(fixture["occurrence"].clone()).unwrap();
@@ -17,7 +17,7 @@ fn app_event_payload_contract_is_versioned_and_matches_the_sdk_fixture() {
     assert_eq!(actual["declaration"], fixture["declaration"]);
     assert_eq!(actual["occurrence"], fixture["occurrence"]);
     assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
-        "f5fa63af81ab14a8abee07ebac91570f37f26ba361ec19886809df8556a144b4");
+        "71b7f9838ad25fcec71051053e415fe2aae02ea8887f3f0d140f3236f1aceea1");
     for field in ["occurredAtMs", "eventVersion", "invocation"] {
         let mut incomplete = fixture["occurrence"].clone();
         incomplete.as_object_mut().unwrap().remove(field);

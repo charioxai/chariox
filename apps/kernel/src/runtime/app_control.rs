@@ -15,6 +15,10 @@ mod projection;
 #[cfg(test)]
 mod tests;
 mod uploads;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod workers;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod catalog;
 
 #[derive(Clone)]
 pub(crate) struct AppControlService {
@@ -22,6 +26,9 @@ pub(crate) struct AppControlService {
     uploads: super::app_package_upload_control::AppPackageUploadControl,
     preparation: super::app_package_preparation::AppPackagePreparation,
     admission: Arc<Semaphore>,
+    event_pump: super::app_event_pump::AppEventPump,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    workers: workers::ActiveWorkers,
 }
 
 impl AppControlService {
@@ -37,11 +44,18 @@ impl AppControlService {
             uploads,
             store,
             admission: Arc::new(Semaphore::new(8)),
+            event_pump: super::app_event_pump::AppEventPump::new(),
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            workers: workers::ActiveWorkers::default(),
         }
     }
 
     pub(crate) fn schedule_maintenance(&self) {
         self.uploads.schedule_maintenance(&self.admission);
+    }
+
+    pub(crate) fn event_pump(&self) -> &super::app_event_pump::AppEventPump {
+        &self.event_pump
     }
 
     pub(crate) fn try_admit(

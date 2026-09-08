@@ -6,7 +6,7 @@ use crate::session::{
     RuntimeSession, SessionService, WorkflowEventDeliveryReceipt,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus,
 };
-use chariox_app_runtime::app_outbox::{Invocation, Occurrence};
+use chariox_app_runtime::app_outbox::{AutomationStatus, Invocation, Occurrence};
 
 pub(crate) const APP_EVENT_TRANSPORT: &str = "app_event";
 const MAX_QUEUED_WORKFLOW_PROMPTS: usize = 1024;
@@ -32,11 +32,18 @@ impl PreparedAppEvent {
     ) -> Result<Self> {
         let configuration = &candidate.configuration;
         let receipt = &candidate.receipt;
+        if configuration.status == AutomationStatus::Paused {
+            return Err(OutboxError::Inactive.into());
+        }
+        if configuration.status != AutomationStatus::Active
+            || receipt.automation_revision != configuration.revision
+        {
+            return Err(AppEventDeliveryError::AutomationChanged);
+        }
         if !matches!(
             receipt.state,
             ReceiptState::Accepted | ReceiptState::Retryable
-        ) || receipt.automation_revision != configuration.revision
-        {
+        ) {
             return Err(AppEventDeliveryError::Conflict);
         }
         let target = WorkflowAutomationTarget::resolve(

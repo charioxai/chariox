@@ -26,6 +26,8 @@ pub(crate) enum AppEventDeliveryError {
     Workflow(#[from] DaemonError),
     #[error(transparent)]
     Target(#[from] super::app_automations::AppAutomationError),
+    #[error("app_event_automation_changed")]
+    AutomationChanged,
     #[error("app_event_queue_conflict")]
     Conflict,
     #[error("app_event_queue_limit")]
@@ -247,22 +249,11 @@ fn require_hot_state(
     owner: &str,
     expected: &DurableWorkflowSessionWrite,
 ) -> Result<()> {
-    let count: i64 = tx.query_row(
-        "SELECT count(*) FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2",
-        rusqlite::params![owner, expected.session_id],
-        |row| row.get(0),
-    )?;
-    if usize::try_from(count).ok() != Some(expected.hot_entities.len()) {
-        return Err(AppEventDeliveryError::Conflict);
+    if super::workflow_runtime::hot_state_matches(tx, owner, expected)? {
+        Ok(())
+    } else {
+        Err(AppEventDeliveryError::Conflict)
     }
-    for entity in &expected.hot_entities {
-        let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",
-            rusqlite::params![owner,expected.session_id,entity.entity_kind,entity.entity_id],|row|row.get(0)).optional()?;
-        if current.as_deref() != Some(&entity.payload_json) {
-            return Err(AppEventDeliveryError::Conflict);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

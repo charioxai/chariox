@@ -47,6 +47,15 @@ impl CommandRouter {
             .runtime_tool_specs_for_auth_token(auth_token)
     }
 
+    pub(crate) async fn runtime_tool_specs_for_auth_token_async(
+        &self,
+        auth_token: String,
+    ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
+        self.runtime_state
+            .runtime_tool_specs_for_auth_token_async(auth_token)
+            .await
+    }
+
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
         &self,
         context: crate::execution_lease::RemoteWorkflowTurnContext,

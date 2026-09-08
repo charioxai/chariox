@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -17,16 +17,24 @@ use crate::error::DaemonError;
 
 pub(crate) mod app_bindings;
 pub(crate) mod app_automations;
+pub(crate) mod app_activation;
 pub(crate) mod app_event_delivery;
+pub(crate) mod app_event_maintenance;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_publishers;
 pub(crate) mod app_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_tools;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
 mod owner;
+mod writer_fence;
+use writer_fence::fenced_writer_error;
 mod slice_saved_state;
 pub(crate) mod workflow_runtime;
+pub(crate) mod workflow_dispatch_intents;
+pub(crate) mod workflow_queue_start;
 
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {
@@ -86,6 +94,7 @@ struct DurableStateWriter {
 
 #[derive(Debug, Default)]
 struct DurableWriterHealth {
+    fatal: AtomicBool,
     committed_batches: AtomicU64,
     committed_records: AtomicU64,
     max_batch_records: AtomicU64,
@@ -134,7 +143,12 @@ enum DurableWriterRequest {
     AppState(Box<app_state::AppStateRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
+    AppActivation(Box<app_activation::AppActivationRequest>),
+    AppEventMaintenance(Box<app_event_maintenance::AppEventMaintenanceRequest>),
     AppEventQueue(Box<app_event_delivery::AppEventQueueRequest>),
+    WorkflowQueueStart(Box<workflow_queue_start::WorkflowQueueStartRequest>),
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    AppTools(Box<app_tools::AppToolsRequest>),
 }
 
 #[derive(Debug)]
@@ -303,6 +317,10 @@ impl DurableKernelStateStore {
         app_publishers::initialize(&mut connection)?;
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
+        workflow_dispatch_intents::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.workflow_dispatch_intents",
+            message: error.to_string(),
+        })?;
         let writer = DurableStateWriter::start(&path)?;
         connection
             .pragma_update(None, "query_only", true)
@@ -1202,6 +1220,9 @@ impl DurableKernelStateStore {
 }
 
 impl DurableStateWriter {
+    fn require_healthy(&self) -> Result<(), DaemonError> {
+        if self.health.fatal.load(Ordering::Acquire) { Err(fenced_writer_error()) } else { Ok(()) }
+    }
     fn start(path: &Path) -> Result<Self, DaemonError> {
         let connection = Connection::open(path).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.open_writer",
@@ -1265,6 +1286,7 @@ impl DurableStateWriter {
     }
 
     fn enqueue(&self, request: DurableWriterRequest) -> Result<(), DaemonError> {
+        self.require_healthy()?;
         let sender = self
             .sender
             .lock()
@@ -1318,8 +1340,14 @@ fn run_durable_writer(
     health: Arc<DurableWriterHealth>,
     batch_window: Duration,
 ) {
+    struct MarkStopped(Arc<DurableWriterHealth>);
+    impl Drop for MarkStopped {
+        fn drop(&mut self) { self.0.fatal.store(true, Ordering::Release); }
+    }
+    let _stopped = MarkStopped(health.clone());
     let mut pending = None;
     while let Some(first) = pending.take().or_else(|| receiver.recv().ok()) {
+        if health.fatal.load(Ordering::Acquire) { break; }
         let first = match first {
             DurableWriterRequest::Ordinary(request) => request,
             DurableWriterRequest::App(request) => {
@@ -1346,14 +1374,35 @@ fn run_durable_writer(
                 app_automations::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppActivation(request) => {
+                app_activation::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppEventMaintenance(request) => {
+                app_event_maintenance::execute(&mut connection, *request);
+                continue;
+            }
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            DurableWriterRequest::AppTools(request) => {
+                app_tools::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppEventQueue(request) => {
                 if matches!(
                     app_event_delivery::execute(&mut connection, *request),
                     app_event_delivery::WriterDisposition::Stop
                 ) {
+                    health.fatal.store(true, Ordering::Release);
                     // Drop queued replies and the receiver so stale sessions
                     // cannot overwrite an uncertain commit. Restart reloads
                     // authoritative state before the kernel accepts writes.
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::WorkflowQueueStart(request) => {
+                if matches!(workflow_queue_start::execute(&mut connection, *request), app_event_delivery::WriterDisposition::Stop) {
+                    health.fatal.store(true, Ordering::Release);
                     break;
                 }
                 continue;
@@ -1362,11 +1411,17 @@ fn run_durable_writer(
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
         while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+            if health.fatal.load(Ordering::Acquire) { break; }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
             match receiver.recv_timeout(remaining) {
                 Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                Ok(request @ DurableWriterRequest::AppTools(_)) => {
+                    pending = Some(request);
+                    break;
+                }
                 Ok(
                     request @ (DurableWriterRequest::App(_)
                     | DurableWriterRequest::AppPublisher(_)
@@ -1374,6 +1429,9 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppState(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
+                    | DurableWriterRequest::AppActivation(_)
+                    | DurableWriterRequest::AppEventMaintenance(_)
+                    | DurableWriterRequest::WorkflowQueueStart(_)
                     | DurableWriterRequest::AppEventQueue(_)),
                 ) => {
                     pending = Some(request);
@@ -1392,6 +1450,10 @@ fn commit_durable_write_batch(
     batch: Vec<DurableWriteRequest>,
     health: &DurableWriterHealth,
 ) {
+    if health.fatal.load(Ordering::Acquire) {
+        send_durable_batch_error(batch, "durable writer requires recovery".into());
+        return;
+    }
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
@@ -1402,6 +1464,10 @@ fn commit_durable_write_batch(
     let mut results = Vec::with_capacity(batch.len());
     let mut failure = None;
     for request in &batch {
+        if health.fatal.load(Ordering::Acquire) {
+            failure = Some("durable writer requires recovery".into());
+            break;
+        }
         let result = match &request.operation {
             DurableWriteOperation::SliceSavedState(write) => {
                 slice_saved_state::write(&transaction, write)
@@ -1425,7 +1491,13 @@ fn commit_durable_write_batch(
                         payload_json
                     ],
                 )
-                .map(|_| transaction.last_insert_rowid().max(0) as u64),
+                .and_then(|_| {
+                    let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
+                        workflow_dispatch_intents::record_prompt_state_in(&transaction, payload_json)?;
+                    }
+                    Ok(sequence)
+                }),
             DurableWriteOperation::Snapshot {
                 sequence,
                 timestamp_ms,
@@ -1529,6 +1601,9 @@ fn commit_durable_write_batch(
             }
         }
     }
+    if health.fatal.load(Ordering::Acquire) {
+        failure = Some("durable writer requires recovery".into());
+    }
     if let Some(message) = failure {
         drop(transaction);
         send_durable_batch_error(batch, message);
@@ -1556,6 +1631,7 @@ fn send_durable_batch_error(batch: Vec<DurableWriteRequest>, message: String) {
         let _ = request.response.send(Err(message.clone()));
     }
 }
+
 
 fn write_entity_checkpoint(
     transaction: &rusqlite::Transaction<'_>,

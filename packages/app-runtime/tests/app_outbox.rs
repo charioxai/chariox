@@ -69,7 +69,7 @@ impl Package {
         Self { manifest:serde_json::from_value(json!({
             "schema":"chariox.app.v1","appId":"com.example.events","version":"1.0.0",
             "publisher":{"id":"com.example","keyId":"developer","name":"Developer"},
-            "sdkVersion":"0.3.0","appContractVersion":1,"minKernelProtocol":500,
+            "sdkVersion":"0.4.0","appContractVersion":1,"minKernelProtocol":500,
             "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
             "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
         })).unwrap(),key:SigningKey::from_bytes(&[73;32]), files:BTreeMap::from([
@@ -174,7 +174,7 @@ fn automation(db: &mut Connection, catalog: &Arc<EventCatalog>) -> VerifiedAutom
 fn occurrence(id: &str, text: &str) -> Occurrence {
     Occurrence {
         automation_id: "automation".into(),
-        occurrence_id: id.into(),
+        occurrence_id: chariox_app_runtime::app_outbox::occurrence_id(id, 100).unwrap(),
         event_version: 1,
         occurred_at_ms: 100,
         schedule_revision: None,
@@ -273,7 +273,7 @@ fn state_outbox_and_batch_failures_rollback_on_the_same_sqlite_transaction() {
         .unwrap()
         .is_none());
     assert_eq!(count(&db), 1);
-    db.execute_batch("CREATE TRIGGER outbox_fault BEFORE INSERT ON app_outbox WHEN NEW.occurrence_id='fault' BEGIN SELECT RAISE(ABORT,'fault'); END;").unwrap();
+    db.execute_batch(&format!("CREATE TRIGGER outbox_fault BEFORE INSERT ON app_outbox WHEN NEW.occurrence_id='{}' BEGIN SELECT RAISE(ABORT,'fault'); END;",chariox_app_runtime::app_outbox::occurrence_id("fault",100).unwrap())).unwrap();
     let mut tx = db.transaction().unwrap();
     assert!(AppOutbox::apply_in(
         &mut tx,
@@ -563,21 +563,28 @@ fn original_timestamp_window_applies_to_new_receipts_and_retained_duplicates_sta
     let now = MAX_OCCURRENCE_AGE_MS + 1000;
     let mut oldest = occurrence("oldest", "value");
     oldest.occurred_at_ms = 1000;
+    oldest.occurrence_id = chariox_app_runtime::app_outbox::occurrence_id("oldest", 1000).unwrap();
     let mut tx = db.transaction().unwrap();
     let accepted = AppOutbox::apply_in(&mut tx, &authority, &[oldest], now)
         .unwrap()
         .remove(0);
     let mut too_old = occurrence("too-old", "value");
     too_old.occurred_at_ms = 999;
+    too_old.occurrence_id = chariox_app_runtime::app_outbox::occurrence_id("too-old", 999).unwrap();
     assert!(matches!(
         AppOutbox::apply_in(&mut tx, &authority, &[too_old], now),
         Err(OutboxError::TooOld)
     ));
     let mut future = occurrence("future", "value");
     future.occurred_at_ms = now + MAX_FUTURE_SKEW_MS;
+    future.occurrence_id =
+        chariox_app_runtime::app_outbox::occurrence_id("future", now + MAX_FUTURE_SKEW_MS).unwrap();
     AppOutbox::apply_in(&mut tx, &authority, &[future], now).unwrap();
     let mut future = occurrence("too-future", "value");
     future.occurred_at_ms = now + MAX_FUTURE_SKEW_MS + 1;
+    future.occurrence_id =
+        chariox_app_runtime::app_outbox::occurrence_id("too-future", now + MAX_FUTURE_SKEW_MS + 1)
+            .unwrap();
     assert!(matches!(
         AppOutbox::apply_in(&mut tx, &authority, &[future], now),
         Err(OutboxError::Invalid)
@@ -602,6 +609,7 @@ fn original_timestamp_window_applies_to_new_receipts_and_retained_duplicates_sta
     .unwrap();
     let mut replay = occurrence("oldest", "value");
     replay.occurred_at_ms = 1000;
+    replay.occurrence_id = chariox_app_runtime::app_outbox::occurrence_id("oldest", 1000).unwrap();
     assert_eq!(
         AppOutbox::apply_in(&mut tx, &authority, &[replay], now + MAX_OCCURRENCE_AGE_MS).unwrap()
             [0],
@@ -611,7 +619,7 @@ fn original_timestamp_window_applies_to_new_receipts_and_retained_duplicates_sta
     changed.occurred_at_ms = now;
     assert!(matches!(
         AppOutbox::apply_in(&mut tx, &authority, &[changed], now),
-        Err(OutboxError::Conflict)
+        Err(OutboxError::Invalid)
     ));
 }
 
@@ -669,3 +677,6 @@ fn signed_event_version_and_scheduled_occurrence_revisions_define_admission() {
     tx.commit().unwrap();
     assert_eq!(count(&db), 2);
 }
+
+#[path = "app_outbox/retention.rs"]
+mod retention;

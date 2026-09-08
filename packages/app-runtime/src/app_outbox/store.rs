@@ -42,6 +42,7 @@ pub struct Receipt {
     pub expires_at_ms: u64,
     pub next_attempt_at_ms: u64,
     pub queued_prompt_id: Option<String>,
+    pub queued_session_id: Option<String>,
     pub payload: Option<String>,
     pub invocation: Option<String>,
     pub content_digest: String,
@@ -71,7 +72,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             payload_json TEXT, invocation_json TEXT, accepted_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('accepted','queued','delivered','retryable','failed','expired')),
             revision INTEGER NOT NULL CHECK(revision>0), attempts INTEGER NOT NULL CHECK(attempts>=0 AND attempts<=8),
-            next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT,
+            next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT, queued_session_id TEXT,
             UNIQUE(owner_id,installation_id,automation_id,event_version,occurrence_id,schedule_revision)
          );
          CREATE INDEX IF NOT EXISTS app_outbox_pending
@@ -91,6 +92,25 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
     if !exists {
         connection.execute_batch("ALTER TABLE app_outbox ADD COLUMN invocation_json TEXT;")?;
     }
+    let has_session: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_outbox') WHERE name='queued_session_id')",
+        [], |row| row.get(0),
+    )?;
+    if !has_session {
+        connection.execute_batch("ALTER TABLE app_outbox ADD COLUMN queued_session_id TEXT;")?;
+    }
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_outbox_replay_floors (
+        owner_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+        minimum_occurred_at_ms INTEGER NOT NULL CHECK(minimum_occurred_at_ms>=0),
+        queued_after_sequence INTEGER NOT NULL DEFAULT 0 CHECK(queued_after_sequence>=0),
+        PRIMARY KEY(owner_id,installation_id)
+    );",
+    )?;
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS app_outbox_queued_workflow
+        ON app_outbox(queued_prompt_id,queued_session_id) WHERE state='queued';",
+    )?;
     // Old pending occurrences cannot acquire an invented invocation. Retain
     // their immutable receipt identity/digest, but release queue/payload capacity
     // so a page of unsupported rows cannot starve current-contract deliveries.
@@ -133,13 +153,14 @@ pub(super) fn accept(
         }
         return receipt(tx, &automation.owner, automation.installation_id(), &id);
     }
-    // Known duplicates retain their receipt even after this admission window.
-    // Tombstones are not pruned; a future retention implementation must revisit
-    // ordering so no previously pruned occurrence can become new again.
+    // Existing duplicates precede the durable replay floor. A pruned identity
+    // embeds its immutable original time and can never become new after the floor.
+    let floor =
+        maintenance::advance_floor(tx, &automation.owner, automation.installation_id(), now)?;
     if occurrence.occurred_at_ms > now.saturating_add(MAX_FUTURE_SKEW_MS) {
         return Err(OutboxError::Invalid);
     }
-    if now.saturating_sub(occurrence.occurred_at_ms) > MAX_OCCURRENCE_AGE_MS {
+    if occurrence.occurred_at_ms < floor {
         return Err(OutboxError::TooOld);
     }
     let (count,pending,bytes):(i64,i64,i64)=tx.query_row(
@@ -178,7 +199,7 @@ pub(super) fn accept(
     receipt(tx, &automation.owner, automation.installation_id(), &id)
 }
 
-const COLUMNS:&str="receipt_id,automation_id,occurrence_id,event_version,state,revision,attempts,accepted_at_ms,expires_at_ms,next_attempt_at_ms,queued_prompt_id,payload_json,content_digest,automation_revision,occurred_at_ms,schedule_revision,invocation_json";
+const COLUMNS:&str="receipt_id,automation_id,occurrence_id,event_version,state,revision,attempts,accepted_at_ms,expires_at_ms,next_attempt_at_ms,queued_prompt_id,payload_json,content_digest,automation_revision,occurred_at_ms,schedule_revision,invocation_json,queued_session_id";
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Receipt> {
     let positive = |index: usize| -> rusqlite::Result<u64> {
         u64::try_from(row.get::<_, i64>(index)?).map_err(|_| rusqlite::Error::InvalidQuery)
@@ -196,6 +217,7 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Receipt> {
         expires_at_ms: positive(8)?,
         next_attempt_at_ms: positive(9)?,
         queued_prompt_id: row.get(10)?,
+        queued_session_id: row.get(17)?,
         payload: row.get(11)?,
         invocation: row.get(16)?,
         content_digest: row.get(12)?,
@@ -225,6 +247,8 @@ pub(super) fn pending(
 ) -> Result<Vec<Receipt>> {
     let mut statement=tx.prepare(&format!("SELECT {COLUMNS} FROM app_outbox
         WHERE owner_id=?1 AND installation_id=?2 AND state IN ('accepted','retryable') AND next_attempt_at_ms<=?3
+        AND NOT EXISTS (SELECT 1 FROM app_automations a WHERE a.owner_id=app_outbox.owner_id
+          AND a.installation_id=app_outbox.installation_id AND a.automation_id=app_outbox.automation_id AND a.status='paused')
         ORDER BY sequence LIMIT ?4"))?;
     let rows = statement.query_map(
         params![owner, installation, time(now)?, limit as i64],
@@ -255,8 +279,8 @@ impl AppOutbox {
             return Err(OutboxError::Conflict);
         }
         let changed=tx.execute("UPDATE app_outbox SET state='queued',revision=revision+1,attempts=attempts+1,
-            queued_prompt_id=?1,payload_json=NULL,invocation_json=NULL WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5",
-            params![queued_prompt_id,automation.owner,automation.installation_id(),id,time(expected_revision)?])?;
+            queued_prompt_id=?1,queued_session_id=?6,payload_json=NULL,invocation_json=NULL WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5",
+            params![queued_prompt_id,automation.owner,automation.installation_id(),id,time(expected_revision)?,automation.binding.session_id])?;
         if changed != 1 {
             return Err(OutboxError::Conflict);
         }
@@ -290,9 +314,30 @@ impl AppOutbox {
         receipt(tx, &automation.owner, automation.installation_id(), id)
     }
 
+    /// A real kernel queue attempt failed permanently (including the eighth
+    /// attempt or insufficient lifetime for another backoff). Count that final
+    /// attempt without allowing an App to reset or resurrect the receipt.
+    pub fn mark_failed_attempt_in(
+        tx: &Transaction<'_>,
+        automation: &VerifiedAutomation,
+        id: &str,
+        expected_revision: u64,
+        now: u64,
+    ) -> Result<Receipt> {
+        automation.require_current(tx)?;
+        transition_input(tx, automation, id, expected_revision, now)?;
+        let changed=tx.execute("UPDATE app_outbox SET state='failed',revision=revision+1,attempts=attempts+1,
+            payload_json=NULL,invocation_json=NULL WHERE owner_id=?1 AND installation_id=?2 AND receipt_id=?3 AND revision=?4",
+            params![automation.owner,automation.installation_id(),id,time(expected_revision)?])?;
+        if changed != 1 {
+            return Err(OutboxError::Conflict);
+        }
+        receipt(tx, &automation.owner, automation.installation_id(), id)
+    }
+
     /// Terminal classification retains identity, immutable content digest, and
-    /// receipt forever within this component. Capacity exhaustion applies
-    /// backpressure; no rolling deletion is safe under the current SDK shape.
+    /// receipt until the bounded terminal retention policy can reclaim it.
+    /// Capacity exhaustion applies backpressure within the rolling retention window.
     pub fn settle_in(
         tx: &Transaction<'_>,
         catalog: &EventCatalog,

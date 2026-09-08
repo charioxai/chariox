@@ -14,10 +14,10 @@ mod monitor;
 mod platform_linux;
 mod record;
 mod spawn;
-#[cfg(target_os = "macos")]
-mod storage_macos;
 #[cfg(target_os = "linux")]
 mod storage_linux;
+#[cfg(target_os = "macos")]
+mod storage_macos;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub mod test_fixture;
@@ -172,6 +172,8 @@ impl WorkerCancellation {
 
 pub struct WorkerProcess {
     generation: String,
+    installation: String,
+    release_digest: String,
     sdk: Option<UnixStream>,
     cancellation: WorkerCancellation,
     monitor: Option<JoinHandle<WorkerExit>>,
@@ -189,6 +191,8 @@ impl WorkerProcess {
         let record = prepared.record.encode()?;
         let ready = prepared.record.ready();
         let generation = prepared.record.generation.clone();
+        let installation = prepared.record.installation.clone();
+        let release_digest = prepared.record.release_digest.clone();
         let (sdk, child_sdk) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
         let (control, child_control) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
         let (stdout, child_stdout) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
@@ -227,6 +231,8 @@ impl WorkerProcess {
             .map_err(|_| WorkerError::Spawn)?;
         let worker = Self {
             generation,
+            installation,
+            release_digest,
             sdk: Some(sdk),
             cancellation,
             monitor: Some(monitor),
@@ -247,6 +253,16 @@ impl WorkerProcess {
 
     pub fn cancellation(&self) -> WorkerCancellation {
         self.cancellation.clone()
+    }
+
+    /// Identity captured from the private trusted preparation, never the App's
+    /// SDK report. The kernel checks both before assigning a catalog to this FD.
+    pub fn installation_id(&self) -> &str {
+        &self.installation
+    }
+
+    pub fn release_digest(&self) -> &str {
+        &self.release_digest
     }
 
     /// Call inside the kernel Tokio I/O runtime. This transfers the one SDK

@@ -318,6 +318,31 @@ async fn dropping_unpolled_submitted_response_cancels_the_owned_request() {
 }
 
 #[tokio::test]
+async fn closure_observer_wakes_on_remote_eof_and_remembers_closed_state() {
+    let (host, stream) = tokio::io::duplex(4096);
+    let (peer, _events, task) = WorkerPeer::start(
+        Channel::new(host, "1".into(), Sender::Worker).unwrap(),
+        null_broker(),
+        PeerLimits::default(),
+    )
+    .unwrap();
+    let observed = peer.clone();
+    let waiting = tokio::spawn(async move {
+        observed.closed().await;
+    });
+    drop(stream);
+    timeout(BUDGET, waiting).await.unwrap().unwrap();
+    timeout(BUDGET, peer.closed()).await.unwrap();
+    assert!(peer.is_closed());
+    // Abrupt remote EOF is an I/O failure, even though every closure observer
+    // must wake promptly and the already-closed notification remains readable.
+    assert_eq!(
+        timeout(BUDGET, task.join()).await.unwrap(),
+        Err(PeerError::Io)
+    );
+}
+
+#[tokio::test]
 async fn timeout_and_caller_drop_send_cancel_and_late_unknown_replies_cannot_revive_calls() {
     let (host, stream) = tokio::io::duplex(4096);
     let (peer, _events, task) = WorkerPeer::start(

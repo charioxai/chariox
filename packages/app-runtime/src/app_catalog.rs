@@ -8,7 +8,7 @@ mod invocation;
 mod payload;
 
 use chariox_app_package::{ActionDeclaration, Limits, VerifiedPackage};
-pub use invocation::{Actor, CallerContext, ValidatedToolCall};
+pub use invocation::{Actor, CallerContext, OwnedValidatedToolCall, ValidatedToolCall};
 use jsonschema::JSONSchema;
 use rusqlite::Transaction;
 use serde_json::Value;

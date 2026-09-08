@@ -2,6 +2,8 @@
 //! sandbox or embedded Node worker. There is no caller-selected executable,
 //! bootstrap, path, generation, limit or resource domain. The feature is absent
 //! from production dependencies and rejected by release-profile compilation.
+//! Only package identity comes from an already verified package; no package
+//! payload is executed. Installation names come from fixed fixture modes.
 
 use super::{
     record::LaunchRecord, PreparedWorker, ResourceDomain, WorkerError, WorkerLimits, WorkerProcess,
@@ -28,6 +30,7 @@ pub enum Mode {
     NoReport,
     BrokerCall,
     ToolEcho,
+    OtherInstallation,
 }
 impl Mode {
     fn argument(self) -> &'static str {
@@ -37,6 +40,7 @@ impl Mode {
             Self::NoReport => "sdk_no_report",
             Self::BrokerCall => "sdk_broker_call",
             Self::ToolEcho => "sdk_tool",
+            Self::OtherInstallation => "sdk_other_installation",
         }
     }
 }
@@ -147,7 +151,11 @@ impl Fixture {
         })
     }
 
-    pub fn spawn_blocking(&self, mode: Mode) -> Result<(WorkerProcess, Observation), WorkerError> {
+    pub fn spawn_blocking(
+        &self,
+        mode: Mode,
+        package: &chariox_app_package::VerifiedPackage<'_>,
+    ) -> Result<(WorkerProcess, Observation), WorkerError> {
         let prepare = || -> io::Result<(PreparedWorker, Observation)> {
             let parent = self.scratch.0.join(format!(
                 "instance-{}",
@@ -179,8 +187,12 @@ impl Fixture {
                     arguments: vec![CString::new(mode.argument()).unwrap()],
                     record: LaunchRecord {
                         generation: "1".into(),
-                        installation: "installation_1".into(),
-                        release_digest: format!("sha256:{}", "a".repeat(64)),
+                        installation: match mode {
+                            Mode::OtherInstallation => "other_installed",
+                            _ => "installed",
+                        }
+                        .into(),
+                        release_digest: package.package_digest().into(),
                         roots,
                         bootstrap: "// trusted fixture bootstrap\n".into(),
                         nofile: 128,

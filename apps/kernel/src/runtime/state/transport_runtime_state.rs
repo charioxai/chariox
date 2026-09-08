@@ -43,6 +43,8 @@ impl KernelRuntimeState {
 
     pub(crate) async fn pump_transport_runtime(&self) {
         self.app_control().schedule_maintenance();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.schedule_app_event_pump();
         if !self.owned.publication_activation.is_active() {
             return;
         }

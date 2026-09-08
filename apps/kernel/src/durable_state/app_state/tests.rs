@@ -50,6 +50,15 @@ fn decision(id: &str) -> TrustDecision {
     }
 }
 pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
+    catalog_with_package(store, package())
+}
+pub(super) fn tool_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
+    catalog_with_package(store, tool_package())
+}
+fn catalog_with_package(
+    store: &DurableKernelStateStore,
+    package_bytes: (Vec<u8>, TrustedPublisher),
+) -> Arc<EventCatalog> {
     store
         .mutate_app_publisher(
             "alice",
@@ -61,43 +70,15 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
             },
         )
         .unwrap();
-    let manifest: Manifest=serde_json::from_value(json!({
-        "schema":"chariox.app.v1","appId":"com.example.state","version":"1.0.0",
-        "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
-        "sdkVersion":"0.3.0","appContractVersion":1,"minKernelProtocol":291,
-        "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
-        "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
-    })).unwrap();
-    let files = BTreeMap::from([
-        (
-            "runtime/main.js".into(),
-            b"export default function register() {}".to_vec(),
-        ),
-        (
-            "ui/index.html".into(),
-            b"<!doctype html><title>State fixture</title>".to_vec(),
-        ),
-        (
-            "schemas/events.json".into(),
-            serde_json::to_vec(&json!({"events":[{
-                "name":"changed","direction":"outgoing","schemaVersion":1,
-                "payloadSchema":{"type":"object","additionalProperties":false,
-                    "required":["text"],"properties":{"text":{"type":"string"}}}
-            }]}))
-            .unwrap(),
-        ),
-    ]);
-    let bytes = pack(
-        &manifest,
-        &files,
-        &SigningKey::from_bytes(&[71; 32]),
-        &Limits::default(),
-    )
-    .unwrap();
+    let (bytes, publisher) = package_bytes;
     let trust = store
         .trusted_app_publisher("alice", "com.example", "state-key")
         .unwrap();
-    let package = verify(&bytes, &VerificationPolicy::new(291, vec![publisher()])).unwrap();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
     let candidate = VerifiedInstallCandidate::from_verified(&package, &trust).unwrap();
     let AppRegistryOutcome::Update(record) = store
         .mutate_verified_app_installation(
@@ -156,6 +137,56 @@ pub(super) fn catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
         )
         .unwrap(),
     )
+}
+pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
+    package_with_tools(false)
+}
+pub(super) fn tool_package() -> (Vec<u8>, TrustedPublisher) {
+    package_with_tools(true)
+}
+fn package_with_tools(with_tools: bool) -> (Vec<u8>, TrustedPublisher) {
+    let mut manifest: Manifest=serde_json::from_value(json!({
+        "schema":"chariox.app.v1","appId":"com.example.state","version":"1.0.0",
+        "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
+        "sdkVersion":chariox_app_package::SUPPORTED_SDK_VERSION,"appContractVersion":1,"minKernelProtocol":crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
+        "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
+    })).unwrap();
+    let mut files = BTreeMap::from([
+        (
+            "runtime/main.js".into(),
+            b"export default function register() {}".to_vec(),
+        ),
+        (
+            "ui/index.html".into(),
+            b"<!doctype html><title>State fixture</title>".to_vec(),
+        ),
+        (
+            "schemas/events.json".into(),
+            serde_json::to_vec(&json!({"events":[{
+                "name":"changed","direction":"outgoing","schemaVersion":1,
+                "payloadSchema":{"type":"object","additionalProperties":false,
+                    "required":["text"],"properties":{"text":{"type":"string"}}}
+            }]}))
+            .unwrap(),
+        ),
+    ]);
+    if with_tools {
+        manifest.tools = Some("schemas/tools.json".into());
+        files.insert("schemas/tools.json".into(), serde_json::to_vec(&json!({"tools":[{
+            "name":"echo", "description":"Fixed native tool fixture",
+            "inputSchema":{"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string"}}},
+            "outputSchema":{"type":"object","additionalProperties":false,"required":["ok"],"properties":{"ok":{"type":"boolean"}}}
+        }]})).unwrap());
+    }
+    let bytes = pack(
+        &manifest,
+        &files,
+        &SigningKey::from_bytes(&[71; 32]),
+        &Limits::default(),
+    )
+    .unwrap();
+    (bytes, publisher())
 }
 fn budget() -> AppOperationBudget {
     AppOperationBudget::fixture(

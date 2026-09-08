@@ -154,6 +154,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    app_control: crate::runtime::app_control::AppControlService,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
@@ -311,6 +312,7 @@ impl DaemonApp {
             sessions: SessionStateStore::new(SessionService::new(&config)),
             history,
             operational_history,
+            app_control: crate::runtime::app_control::AppControlService::new(durable_state.clone()),
             durable_state,
             managed_context_transfers,
             managed_context_outbound,
@@ -430,6 +432,10 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn app_control_service(&self) -> crate::runtime::app_control::AppControlService {
+        self.app_control.clone()
     }
 
     pub(crate) fn managed_context_transfer_store(

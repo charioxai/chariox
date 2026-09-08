@@ -236,6 +236,17 @@ impl WorkerPeer {
     pub fn close(&self) {
         self.control.stopped.send_replace(true);
     }
+
+    /// Observe actor/I/O shutdown as well as explicit owner cancellation. This
+    /// only signals closure; PeerTask::join still drains admitted broker work.
+    pub async fn closed(&self) {
+        let mut stopped = self.control.stopped.subscribe();
+        while !*stopped.borrow_and_update() {
+            if stopped.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 fn wall_ms() -> Result<u64> {

@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAppSdk } from '../src/index.js';
+import { createAppSdk, occurrenceId } from '../src/index.js';
 import { fakeTransport, generation, response } from './helpers.js';
 
 const paths = { package: '/isolated/package', data: '/isolated/data', temporary: '/isolated/tmp' };
 const bytes = value => Buffer.byteLength(JSON.stringify(value));
-const event = (id = 'event') => ({ automationId: 'automation', occurrenceId: id, eventVersion: 1,
+const event = (id = 'event') => ({ automationId: 'automation', occurrenceId: occurrenceId(id, 1000), eventVersion: 1,
   occurredAtMs: 1000, payload: { text: '' }, invocation: { prompt: 'Handle this event', artifacts: [] } });
 function setup() {
   const transport = fakeTransport();

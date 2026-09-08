@@ -6,7 +6,6 @@ use crate::{
         app_event_delivery::{AppEventDeliveryError, PreparedAppEvent},
         app_state::{AppStateOperation, AppStateOutcome},
     },
-    error::DaemonError,
     runtime::app_operation_budget::AppOperationBudget,
 };
 use chariox_app_runtime::app_outbox::{EventCatalog, Receipt, ReceiptState};
@@ -22,57 +21,50 @@ impl KernelRuntimeOwnedState {
         catalog: Arc<EventCatalog>,
         receipt_id: &str,
         budget: AppOperationBudget,
-    ) -> Result<Receipt, DaemonError> {
-        budget.check().map_err(|e| error(e.into()))?;
+    ) -> Result<Receipt, AppEventDeliveryError> {
+        budget.check()?;
         self.durable_state_store
             .with_workflow_runtime_transition_lock(|| {
-                budget.check().map_err(|e| error(e.into()))?;
-                let mut sessions = self.session_store.write();
-                let candidate = self
-                    .durable_state_store
-                    .app_event_candidate(owner, catalog.clone(), receipt_id)
-                    .map_err(error)?;
-                if matches!(
-                    candidate.receipt().state,
-                    ReceiptState::Queued | ReceiptState::Delivered
-                ) {
-                    // A query-only snapshot cannot acknowledge visible data from
-                    // an uncertain commit. Round-trip the existing writer; its
-                    // STOP fence rejects this path until authoritative restart.
-                    return match self
+                Ok((|| {
+                    budget.check()?;
+                    let mut sessions = self.session_store.write();
+                    let candidate = self.durable_state_store.app_event_candidate(
+                        owner,
+                        catalog.clone(),
+                        receipt_id,
+                    )?;
+                    if matches!(
+                        candidate.receipt().state,
+                        ReceiptState::Queued | ReceiptState::Delivered
+                    ) {
+                        // A query-only snapshot cannot acknowledge visible data from
+                        // an uncertain commit. Round-trip the existing writer; its
+                        // STOP fence rejects this path until authoritative restart.
+                        return match self
+                            .durable_state_store
+                            .execute_app_state(
+                                owner,
+                                catalog,
+                                AppStateOperation::Status {
+                                    receipt_id: receipt_id.into(),
+                                },
+                                budget,
+                            )
+                            .map_err(|_| AppEventDeliveryError::CommitUnknown)?
+                        {
+                            AppStateOutcome::Receipt(receipt) => Ok(receipt),
+                            _ => Err(AppEventDeliveryError::CommitUnknown),
+                        };
+                    }
+                    let prepared = Arc::new(PreparedAppEvent::prepare(&mut sessions, candidate)?);
+                    let receipt = self
                         .durable_state_store
-                        .execute_app_state(
-                            owner,
-                            catalog,
-                            AppStateOperation::Status {
-                                receipt_id: receipt_id.into(),
-                            },
-                            budget,
-                        )
-                        .map_err(|failure| DaemonError::LocalTransport {
-                            operation: "app.event.queue",
-                            message: failure.to_string(),
-                        })? {
-                        AppStateOutcome::Receipt(receipt) => Ok(receipt),
-                        _ => Err(error(AppEventDeliveryError::CommitUnknown)),
-                    };
-                }
-                let prepared =
-                    Arc::new(PreparedAppEvent::prepare(&mut sessions, candidate).map_err(error)?);
-                let receipt = self
-                    .durable_state_store
-                    .commit_app_event_queue(prepared.clone(), budget)
-                    .map_err(error)?;
-                // Only a durably committed receipt permits the queue clone to become
-                // visible. Ordinary errors leave the original session untouched.
-                sessions.restore_session(prepared.session().clone());
-                Ok(receipt)
-            })
-    }
-}
-fn error(error: AppEventDeliveryError) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "app.event.queue",
-        message: error.to_string(),
+                        .commit_app_event_queue(prepared.clone(), budget)?;
+                    // Only a durably committed receipt permits the queue clone to become
+                    // visible. Ordinary errors leave the original session untouched.
+                    sessions.restore_session(prepared.session().clone());
+                    Ok(receipt)
+                })())
+            })?
     }
 }

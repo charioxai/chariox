@@ -50,7 +50,7 @@ impl Fixture {
         let manifest:Manifest=serde_json::from_value(json!({
             "schema":"chariox.app.v1","appId":"com.example.automation","version":"1.0.0",
             "publisher":{"id":"com.example","keyId":"automation-key","name":"Developer"},
-            "sdkVersion":"0.3.0","appContractVersion":1,"minKernelProtocol":291,
+            "sdkVersion":"0.4.0","appContractVersion":1,"minKernelProtocol":292,
             "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
             "ui":{"entry":"ui/index.html"},"events":"schemas/events.json","capabilities":{}
         })).unwrap();
@@ -60,7 +60,7 @@ impl Fixture {
             ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":1,"direction":"outgoing","payloadSchema":{"type":"object","additionalProperties":false,"properties":{}}}]})).unwrap()),
         ]);
         let bytes = pack(&manifest, &files, &key, &Limits::default()).unwrap();
-        let verified = verify(&bytes, &VerificationPolicy::new(291, vec![publisher])).unwrap();
+        let verified = verify(&bytes, &VerificationPolicy::new(292, vec![publisher])).unwrap();
         let candidate = VerifiedInstallCandidate::from_verified(&verified, &trust).unwrap();
         let mut registry = InstallationRegistry::new(&mut db);
         let token = registry

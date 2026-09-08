@@ -4,6 +4,7 @@ import { AppPeer } from './peer.js';
 import { validateOccurrence, validateOccurrences } from './occurrences.js';
 
 export { AppError } from './errors.js';
+export { occurrenceId } from './occurrences.js';
 
 const lifecycleNames = ['startup', 'suspend', 'resume', 'shutdown', 'prepare_update', 'configuration_change'];
 

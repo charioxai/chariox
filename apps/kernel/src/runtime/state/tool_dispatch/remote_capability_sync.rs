@@ -136,6 +136,30 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
+        let mut manifest = self.remote_extension_manifest_without_apps_for_agent(agent)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if agent.remote_execution().is_some() {
+            let occupied = manifest
+                .tools
+                .iter()
+                .map(|tool| tool.tool_name.clone())
+                .collect();
+            manifest.tools.extend(
+                self.app_control()
+                    .app_extension_tools_for_agent(agent, &occupied)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "remote App tool catalog",
+                        message: error.to_string(),
+                    })?,
+            );
+        }
+        Ok(manifest)
+    }
+
+    pub(super) fn remote_extension_manifest_without_apps_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
         if agent.remote_execution().is_none() {
             return Ok(crate::extension::RemoteExtensionManifest::default());
         }

@@ -110,13 +110,22 @@ infinite JavaScript loop cannot be contained by JavaScript timers.
 
 ## Validation
 
-SDK 0.3 requires kernel protocol 291, signed event direction/schema version and
+SDK 0.4 requires kernel protocol 292, signed event direction/schema version and
 the complete `invocation: {prompt, artifacts}` alongside each occurrence's
 `payload`. Persist that invocation, `occurredAtMs`, occurrence ID and scheduled
 `scheduleRevision` together; exact replays preserve all of them. Artifact entries
 use `{name, mediaType, reference, sizeBytes?, digest?}` and remain untrusted
 metadata. They confer no file, network, credential or kernel attachment access.
 The kernel validates the signed schema and current automation itself.
+
+Create an outgoing identity with the named `occurrenceId(sourceKey, occurredAtMs)`
+export. Use the original source identity and timestamp, then persist and reuse
+the result; calling it with a new timestamp creates a different occurrence.
+The source key is a nonempty Unicode string of at most 4096 UTF-8 bytes. The ID
+has the form `evt1.<original timestamp>.<SHA-256 digest>`. The kernel rejects a
+timestamp that differs from the ID, so an old ID cannot be refreshed after
+receipt cleanup. This identity is not an authorization or proof of the event's
+domain meaning.
 
 Payloads have a 64 KiB encoded limit; prompts have a 64 KiB UTF-8 limit;
 invocations have a 256 KiB encoded limit and at most 32 artifacts. A state
@@ -127,9 +136,9 @@ retryable receipt; it never resets attempts, advances backoff or restarts termin
 work. Actual workflow handoff remains a separate kernel operation.
 The current outbox component accepts new occurrences up to 30 days old with at
 most five minutes of future clock skew. Already retained exact duplicates return
-their existing receipt; changed content conflicts. Receipt tombstones currently
-remain retained with bounded backpressure; rolling cleanup and the production
-workflow delivery path remain integration work.
+their existing receipt; changed content conflicts. Terminal cleanup requires the
+kernel's durable monotonic replay floor before removing receipt tombstones.
+Workflow delivery and cleanup orchestration remain kernel integration work.
 
 Run `node --test --test-concurrency=1 packages/app-sdk/test/*.test.js` from the
 repository root. Tests use fake trusted transports and small in-process streams;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { AppError, createAppSdk } from '../src/index.js';
+import { AppError, createAppSdk, occurrenceId } from '../src/index.js';
 import { deferred, envelope, fakeTransport, flush, generation, request, response } from './helpers.js';
 
 const roots = { package: '/isolated/package', data: '/isolated/data', temporary: '/isolated/tmp' };
@@ -84,7 +84,7 @@ test('state transaction forwards state and occurrence together without local per
     schemaVersion: 1,
     checks: [{ key: 'issue', version: 3 }],
     writes: [{ key: 'issue', value: { state: 'done' } }],
-    occurrences: [{ automationId: 'auto-1', occurrenceId: 'issue-revision-4', eventVersion: 1, occurredAtMs: 1000, payload: {}, invocation: { prompt: 'Handle the issue', artifacts: [] } }],
+    occurrences: [{ automationId: 'auto-1', occurrenceId: occurrenceId('issue-revision-4', 1000), eventVersion: 1, occurredAtMs: 1000, payload: {}, invocation: { prompt: 'Handle the issue', artifacts: [] } }],
   };
   const pending = sdk.state.transaction(transaction);
   assert.deepEqual(transport.sent[0].params, transaction);
@@ -96,7 +96,7 @@ test('state transaction forwards state and occurrence together without local per
 
 test('versioned occurrences preserve replay time and schedule revision and reject incomplete envelopes', async () => {
   const { transport, sdk } = setup();
-  const event = { automationId: 'auto-1', occurrenceId: 'due-1', eventVersion: 2,
+  const event = { automationId: 'auto-1', occurrenceId: occurrenceId('due-1', 123456), eventVersion: 2,
     occurredAtMs: 123456, scheduleRevision: 'schedule-7', payload: { id: 'todo-1' }, invocation: { prompt: 'Handle the todo', artifacts: [] } };
   for (const patch of [{ eventVersion: 0 }, { eventVersion: 1.5 }, { eventVersion: 0x100000000 },
     { occurredAtMs: undefined }, { occurredAtMs: -1 }, { occurredAtMs: Number.MAX_SAFE_INTEGER + 1 },
@@ -121,7 +121,7 @@ test('SDK emission matches the shared Rust event payload snapshot', async () => 
   const fixture = JSON.parse(readFileSync(new URL('./event-contract.json', import.meta.url), 'utf8'));
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(metadata.version, fixture.sdkVersion);
-  assert.equal(fixture.minimumKernelProtocol, 291);
+  assert.equal(fixture.minimumKernelProtocol, 292);
   const { transport, sdk } = setup();
   const pending = sdk.events.emit(fixture.occurrence);
   assert.deepEqual(transport.sent[0].params, fixture.occurrence);

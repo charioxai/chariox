@@ -1,19 +1,6 @@
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) fn activate_agent_mcp_grants_if_idle(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        requested_mcp_name: &str,
-    ) -> Result<bool, DaemonError> {
-        let reason = format!("MCP `{requested_mcp_name}`");
-        Ok(matches!(
-            self.reload_agent_provider_if_idle(session_id, agent_id, &reason)?,
-            ProviderReloadOutcome::Reloaded
-        ))
-    }
-
     pub(super) fn remember_pending_mcp_continuation(
         &self,
         session_id: &str,
@@ -22,7 +9,49 @@ impl KernelRuntimeState {
         mcp_name: &str,
         previous_prompt: &str,
     ) {
-        self.owned.pending_mcp_continuations.write().insert(
+        self.remember_mcp_continuation_with_reason(
+            session_id,
+            agent_id,
+            source_attachment_id,
+            mcp_name,
+            previous_prompt,
+            ProviderReloadReason::LaunchInputs(format!("MCP `{mcp_name}`")),
+        );
+    }
+
+    pub(super) fn remember_pending_runtime_tools_continuation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        source_attachment_id: &str,
+        previous_prompt: &str,
+    ) {
+        self.remember_mcp_continuation_with_reason(
+            session_id,
+            agent_id,
+            source_attachment_id,
+            "chariox-runtime",
+            previous_prompt,
+            ProviderReloadReason::RuntimeToolCatalog,
+        );
+    }
+
+    fn remember_mcp_continuation_with_reason(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        source_attachment_id: &str,
+        mcp_name: &str,
+        previous_prompt: &str,
+        reload_reason: ProviderReloadReason,
+    ) {
+        let mut pending = self.owned.pending_mcp_continuations.write();
+        let reload_reason = pending
+            .get(agent_id)
+            .map_or(reload_reason.clone(), |previous| {
+                reload_reason.merge(&previous.reload_reason)
+            });
+        pending.insert(
             agent_id.to_string(),
             PendingMcpContinuation {
                 session_id: session_id.to_string(),
@@ -30,8 +59,10 @@ impl KernelRuntimeState {
                 source_attachment_id: source_attachment_id.to_string(),
                 mcp_name: mcp_name.to_string(),
                 previous_prompt: previous_prompt.to_string(),
+                reload_reason,
             },
         );
+        drop(pending);
         let state = self.clone();
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
@@ -106,17 +137,30 @@ impl KernelRuntimeState {
                     Some(run.id().to_string())
                 }
             });
-        self.activate_agent_mcp_grants_if_idle(
+        let outcome = self.reload_agent_provider_if_idle_for_reason(
             &continuation.session_id,
             &continuation.agent_id,
-            &continuation.mcp_name,
+            &continuation.reload_reason,
         )?;
-        self.wait_for_agent_provider_relaunch(
-            &continuation.session_id,
-            &continuation.agent_id,
-            previous_provider_run_id.as_deref(),
-        )
-        .await?;
+        if outcome == ProviderReloadOutcome::Deferred {
+            self.remember_mcp_continuation_with_reason(
+                &continuation.session_id,
+                &continuation.agent_id,
+                &continuation.source_attachment_id,
+                &continuation.mcp_name,
+                &continuation.previous_prompt,
+                continuation.reload_reason,
+            );
+            return Ok(());
+        }
+        if outcome == ProviderReloadOutcome::Reloaded {
+            self.wait_for_agent_provider_relaunch(
+                &continuation.session_id,
+                &continuation.agent_id,
+                previous_provider_run_id.as_deref(),
+            )
+            .await?;
+        }
 
         let (hidden_system_context, _manifest) =
             crate::prompt_assembly::PromptAssemblyService::from_env()?

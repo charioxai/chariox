@@ -150,6 +150,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn require_publication_activation(&self) -> Result<(), DaemonError> {
+        self.durable_state_store.require_writer_healthy()?;
         if self.publication_activation.is_active() {
             return Ok(());
         }

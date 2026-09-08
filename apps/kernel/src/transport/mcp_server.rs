@@ -257,7 +257,7 @@ async fn handle_json_rpc_value(
                 "id": id,
                 "result": {
                     "tools": router
-                        .runtime_tool_specs_for_auth_token(auth_token)
+                        .runtime_tool_specs_for_auth_token_async(auth_token.to_owned()).await?
                         .into_iter()
                         .map(|tool| serde_json::json!({
                             "name": tool.name,

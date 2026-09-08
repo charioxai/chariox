@@ -204,9 +204,9 @@ impl Declarations {
             }
         }
         for event in &self.events {
-            if event.schema_version == 0 || manifest.min_kernel_protocol < 291 {
+            if event.schema_version == 0 || manifest.min_kernel_protocol < 292 {
                 return invalid(
-                    "directed events require a positive schemaVersion and kernel protocol 291",
+                    "directed events require a positive schemaVersion and kernel protocol 292",
                 );
             }
             validate_schema(&event.payload_schema, true, limits)?;

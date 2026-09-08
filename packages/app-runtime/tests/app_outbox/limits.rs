@@ -271,7 +271,14 @@ fn payload_tree_limits_precede_schema_validation_and_encoded_size_includes_escap
     for value in [
         oversized_key,
         occurrence("string", &"x".repeat(MAX_PAYLOAD_BYTES)),
-        sized_occurrence("encoded-over", MAX_PAYLOAD_BYTES + 1 + serde_json::to_vec(&occurrence("size", "").invocation).unwrap().len()),
+        sized_occurrence(
+            "encoded-over",
+            MAX_PAYLOAD_BYTES
+                + 1
+                + serde_json::to_vec(&occurrence("size", "").invocation)
+                    .unwrap()
+                    .len(),
+        ),
     ] {
         assert!(matches!(
             AppOutbox::apply_in(&mut tx, &authority, &[value], 100),

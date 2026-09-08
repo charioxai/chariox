@@ -835,3 +835,48 @@ Hosted App contracts at `980ca9357` reached kernel tests on both platforms, then
 found two preparation tests pinned to SDK0.2. Their fixtures now reference the
 supported SDK constant so they track the package verifier. The full hosted suite
 must rerun; this source correction is not a claim that later tests have passed.
+
+### SDK 0.4 recovery, process ownership and shared App tools (2026-09-08)
+
+Protocol 292 and SDK 0.4 introduce time-bearing occurrence identities and a
+durable retention floor. Existing receipts deduplicate before expiry checks;
+pruning old terminal receipts cannot admit a replay with a refreshed payload
+timestamp. Pending and queued receipts retain their workflow association.
+Twenty-nine focused outbox tests and the shared TypeScript/client checks pass.
+
+App workers now own the actual native process, its single SDK channel, exact
+installation/package/generation identity, signed handler registration, and the
+durable activation proof. Weak catalog handles stop accepting calls when the
+owner stops, while preparation and storage pins survive through actual process
+reap and broker drain. Shared runtime MCP discovery and invocation use the
+existing agent grants, Ask/YOLO rules, Meta filtering and home/worker authority.
+Local catalog changes refresh the official provider connection even when its
+launch arguments are unchanged. Coordinated remote cache refresh remains open;
+critical actions still require the common human-validation/effect broker.
+
+The bounded event pump commits into the common workflow queue. Dequeue and the
+private entry intent commit together; retry, resume and legacy scheduler paths
+preserve that intent. Durable prompt admission marks the original operation
+submitted in the same writer transaction. Restart uses the existing prompt
+recovery path. An uncertain scheduling commit fences the writer and joins its
+shutdown. Pass requests share one monotonic deadline, retain lifecycle
+cancellation, and stop new admission after fatal writer state. None of these
+mechanisms claim exactly-once effects in an external service.
+
+The production kernel library check passed in 34.04 seconds with peak local
+process-group RSS of 2,032,464 KiB. New actual-channel MCP/worker tests, writer
+fence tests, dispatch recovery and retry/resume/legacy regressions are selected
+for hosted execution; they have not run locally. Two small subsequent changes
+correct a test's default permission assumption and remove a writer request's
+unnecessary ownership of the writer itself. The external review of `e9f7e0bcd`
+reported no actionable findings. Its hosted tests progressed past the earlier
+SDK fixture failure and found an event-capability test requiring installed
+Codex; that test now uses the existing fixed dev-stub adapter.
+
+The Linux storage helper and signed managed-release packaging are pushed.
+First hosted compilation identified platform libc field/pointer mismatches;
+the corrected retry compiled the real helper and passed seven offline tests.
+Actual acquisition then found that root-owned search-only directories need
+O_PATH traversal in the client. The next hosted drill verifies that correction;
+full ext4 capacity/recovery evidence is still pending. No privileged helper,
+mount operation or Node compilation ran on this shared Mac.

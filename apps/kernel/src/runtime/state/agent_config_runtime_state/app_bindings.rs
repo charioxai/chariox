@@ -8,6 +8,25 @@ impl KernelRuntimeState {
         grant: ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self
+            .grant_agent_app_for_tool(agent_ref, grant, caller_user_id)
+            .await?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if self.app_control().has_active_apps_for_agent(&agent) {
+            self.refresh_agent_runtime_tool_catalog(agent.session_id(), agent.id())
+                .await?;
+        }
+        Ok(agent)
+    }
+
+    /// The authenticated agent tool schedules its own continuation after the
+    /// same grant path; it must not also schedule a separate provider reload.
+    pub(in crate::runtime::state) async fn grant_agent_app_for_tool(
+        &self,
+        agent_ref: &str,
+        grant: ExtensionGrant,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         grant.validate_app_binding()?;
         self.owned.ensure_agent_extension_authority(
             agent_ref,
@@ -91,6 +110,8 @@ impl KernelRuntimeState {
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(true))
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
+        self.refresh_agent_runtime_tool_catalog(agent.session_id(), agent.id())
+            .await?;
         Ok(agent)
     }
 

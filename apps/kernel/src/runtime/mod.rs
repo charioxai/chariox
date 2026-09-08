@@ -4,11 +4,14 @@ pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
 pub(crate) mod app_control;
+pub(crate) mod app_event_pump;
 pub(crate) mod app_lock;
 pub(crate) mod app_operation_budget;
 mod app_package_preparation;
 mod app_package_upload_control;
 mod app_state_broker;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_worker;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
 pub(crate) mod cloud_api_client;

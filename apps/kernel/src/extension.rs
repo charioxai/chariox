@@ -96,7 +96,12 @@ impl RemoteExtensionManifest {
         self.tools
             .iter()
             .filter(|tool| tool.execution_location == ExtensionExecutionLocation::Home)
-            .filter(|tool| matches!(tool.kind, ExtensionKind::Script | ExtensionKind::Connector))
+            .filter(|tool| {
+                matches!(
+                    tool.kind,
+                    ExtensionKind::Script | ExtensionKind::Connector | ExtensionKind::App
+                )
+            })
             .map(|tool| crate::transport::runtime_tools::RuntimeToolSpec {
                 name: tool.tool_name.clone(),
                 description: tool.description.clone(),
@@ -306,6 +311,7 @@ mod tests {
             tools: vec![
                 tool(ExtensionKind::Script, "home_script"),
                 tool(ExtensionKind::Connector, "home_connector_lookup"),
+                tool(ExtensionKind::App, "home_app_action"),
                 tool(ExtensionKind::Mcp, "home_browser"),
             ],
         };
@@ -315,7 +321,10 @@ mod tests {
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(specs, vec!["home_script", "home_connector_lookup"]);
+        assert_eq!(
+            specs,
+            vec!["home_script", "home_connector_lookup", "home_app_action"]
+        );
         assert_eq!(
             manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
             vec!["home_browser"]
@@ -330,6 +339,7 @@ mod tests {
             tools: vec![
                 tool(ExtensionKind::Script, "home_script"),
                 tool(ExtensionKind::Connector, "home_connector_lookup"),
+                tool(ExtensionKind::App, "home_app_action"),
                 tool(ExtensionKind::Mcp, "worker_browser"),
             ],
         }
@@ -341,7 +351,7 @@ mod tests {
                 .iter()
                 .map(|tool| tool.tool_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["home_script", "home_connector_lookup"]
+            vec!["home_script", "home_connector_lookup", "home_app_action"]
         );
     }
 

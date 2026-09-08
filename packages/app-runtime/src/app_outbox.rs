@@ -3,7 +3,9 @@
 
 mod admission;
 mod configuration;
+mod identity;
 mod invocation;
+mod maintenance;
 mod store;
 mod transactions;
 
@@ -11,7 +13,9 @@ use crate::app_catalog::{AppCatalog, CatalogError};
 pub use admission::{EventCatalog, VerifiedAutomation};
 use chariox_app_package::VerifiedPackage;
 pub use configuration::{AutomationConfiguration, AutomationStatus, AutomationTarget};
+pub use identity::occurrence_id;
 pub use invocation::{Artifact, Invocation, MAX_ARTIFACTS, MAX_INVOCATION_BYTES, MAX_PROMPT_BYTES};
+pub use maintenance::Maintenance;
 use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -192,7 +196,7 @@ fn prepare<'a>(
     occurrences
         .iter()
         .map(|occurrence| {
-            identifier(&occurrence.occurrence_id)?;
+            identity::validate(&occurrence.occurrence_id, occurrence.occurred_at_ms)?;
             if occurrence.occurred_at_ms > MAX_SAFE_TIMESTAMP
                 || occurrence.schedule_revision.is_some() != automation.binding.scheduled
             {

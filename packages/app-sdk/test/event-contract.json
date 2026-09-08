@@ -1,6 +1,6 @@
 {
-  "minimumKernelProtocol": 291,
-  "sdkVersion": "0.3.0",
+  "minimumKernelProtocol": 292,
+  "sdkVersion": "0.4.0",
   "declaration": {
     "name": "todo_due",
     "schemaVersion": 2,
@@ -20,7 +20,7 @@
   },
   "occurrence": {
     "automationId": "automation-1",
-    "occurrenceId": "todo-due-1",
+    "occurrenceId": "evt1.1788828000000.314d8baae71fdef16895c5adc8901d1ee347915faabb85daf4cc37816c17b4cd",
     "eventVersion": 2,
     "occurredAtMs": 1788828000000,
     "scheduleRevision": "revision-7",

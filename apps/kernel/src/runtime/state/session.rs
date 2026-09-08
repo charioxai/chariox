@@ -21,6 +21,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.durable_state_store.require_writer_healthy()?;
         let projection_sequence = self.session_projection.change_sequence();
         let session = self.build_session_snapshot(session_id)?;
         let session = self.update_session_projection(session);
@@ -34,6 +35,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.durable_state_store.require_writer_healthy()?;
         self.build_session_snapshot(session_id)
     }
 
@@ -85,6 +87,9 @@ impl KernelRuntimeOwnedState {
         &self,
         mut session: crate::session::RuntimeSession,
     ) -> crate::session::RuntimeSession {
+        if self.durable_state_store.require_writer_healthy().is_err() {
+            return session;
+        }
         self.project_session_runtime_view(&mut session);
         crate::runtime::projection::publish_session_runtime_projection(
             &self.session_projection,

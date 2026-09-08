@@ -4,6 +4,9 @@ use rusqlite::Transaction;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+mod owned;
+pub use owned::OwnedValidatedToolCall;
+
 /// Captured by the kernel from the submitting human, provider run or authorized
 /// automation. These identifiers are descriptive; they never prove approval.
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +76,17 @@ pub struct ValidatedToolCall<'a> {
 }
 
 impl AppCatalog {
+    /// Bounded shape/schema preflight before kernel queue admission. This checks
+    /// no caller, binding, installation generation or publisher authority.
+    pub fn validate_tool_input(&self, name: &str, input: &Value) -> Result<()> {
+        payload::validate(input)?;
+        let tool = self.tools.get(name).ok_or(CatalogError::UnknownTool)?;
+        if !tool.input.is_valid(input) {
+            return Err(CatalogError::Input);
+        }
+        Ok(())
+    }
+
     /// Validate after the kernel's common operation-policy check. The caller
     /// must keep policy/installation admission serialized until enqueue, and
     /// cancel/fence this request on revoke or generation change. No DB lock may
@@ -94,10 +108,7 @@ impl AppCatalog {
         if deadline_ms <= now_ms || deadline_ms - now_ms > MAX_DEADLINE_MS {
             return Err(CatalogError::Deadline);
         }
-        payload::validate(&input)?;
-        if !tool.input.is_valid(&input) {
-            return Err(CatalogError::Input);
-        }
+        self.validate_tool_input(name, &input)?;
         let request = Message::Request {
             version: WIRE_VERSION,
             generation: self.generation().to_string(),

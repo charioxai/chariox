@@ -6,11 +6,19 @@ App supervisor supplies the installation generation and binds the channel to one
 worker. A worker-supplied generation is checked for equality, not trusted as an
 authorization claim.
 
-SDK 0.3 event payloads require kernel protocol 291. `eventVersion` must match
+SDK 0.4 event payloads require kernel protocol 292. `eventVersion` must match
 the publisher-signed event `schemaVersion`. An outgoing occurrence contains
 `automationId`, `occurrenceId`, `eventVersion`, `occurredAtMs`, `payload`, `invocation`, and
 `scheduleRevision` for a scheduled automation. Preserve the original timestamp
 and revision in the App's durable outbox; a retry must not mint a newer envelope.
+`occurrenceId(sourceKey, occurredAtMs)` returns
+`evt1.<canonical decimal timestamp>.<64 lowercase hex SHA-256 digits>`. The digest
+input is UTF-8 `JSON.stringify(["chariox.app-occurrence-id.v1", sourceKey, occurredAtMs])`.
+The source key is nonempty, well-formed Unicode of at most 4096 UTF-8 bytes; the
+timestamp is a nonnegative safe integer. The encoded timestamp must equal
+`occurredAtMs`; leading zeros, exponent notation and changed timestamps are
+invalid. Persist the ID with the original envelope. It is a replay identity,
+not a grant or an assertion that the kernel understands the source event.
 The required invocation is `{prompt, artifacts}`. Artifact metadata uses
 `{name, mediaType, reference, sizeBytes?, digest?}`; references grant no host file,
 network, credential or kernel asset access. Unknown fields and explicit null

@@ -133,6 +133,10 @@ pub enum WorkflowLaunchOutcome {
     },
 }
 
+mod entry_ownership;
+use entry_ownership::workflow_queue_scheduler_owner;
+pub(crate) use entry_ownership::{workflow_entry_scheduler_owner, WorkflowSchedulerOwner};
+
 impl DaemonApp {
     pub fn enqueue_workflow_prompt_and_maybe_start(
         &mut self,
@@ -175,14 +179,13 @@ impl DaemonApp {
                 endpoint,
             });
         }
-        self.start_next_queued_workflow_prompt(session_id)?
-            .ok_or_else(|| DaemonError::WorkflowLaunchRejected {
-                session_id: session_id.to_string(),
-                workflow_id: workflow.id().to_string(),
-                endpoint_id: endpoint.id().to_string(),
-                message: "workflow prompt was enqueued but no dispatchable queue item was found"
-                    .to_string(),
-            })
+        Ok(self
+            .start_next_queued_workflow_prompt(session_id)?
+            .unwrap_or_else(|| WorkflowLaunchOutcome::Enqueued {
+                queued_prompt: Box::new(queued_prompt),
+                workflow,
+                endpoint,
+            }))
     }
 
     pub fn invoke_workflow_endpoint_and_schedule(
@@ -220,12 +223,26 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<Option<WorkflowLaunchOutcome>, DaemonError> {
+        let store = self.durable_state_store();
+        if workflow_queue_scheduler_owner(&store, &self.sessions().get_session(session_id)?)?
+            == WorkflowSchedulerOwner::Owned
+        {
+            return Ok(None);
+        }
         loop {
             self.ensure_legacy_primary_workflow_runtime_instance(session_id)?;
-            let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
-                .sessions_mut()
-                .dequeue_next_workflow_prompt_and_create_run(session_id)?
-            else {
+            let next = {
+                let mut sessions = self.sessions_mut();
+                // Recheck under the same session guard as dequeue: the owned
+                // App writer may have published a queue item since the fast check.
+                if workflow_queue_scheduler_owner(&store, &sessions.get_session(session_id)?)?
+                    == WorkflowSchedulerOwner::Owned
+                {
+                    return Ok(None);
+                }
+                sessions.dequeue_next_workflow_prompt_and_create_run(session_id)?
+            };
+            let Some((queued_prompt, workflow_run, workflow, endpoint)) = next else {
                 return Ok(None);
             };
             let outcome = self.schedule_claimed_workflow_prompt(
@@ -1301,8 +1318,13 @@ mod tests {
                 "worktree-event",
             ))
             .expect("session should be created");
+        // Existing fixed adapter fixture: this validates capability selection,
+        // not installed Codex discovery or a developer's provider credentials.
         let agent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_model("event-capabilities-fixture"),
+            )
             .expect("agent should be created");
         let workflow = app
             .sessions_mut()

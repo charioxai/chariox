@@ -304,6 +304,8 @@ pub struct SessionService {
 }
 
 mod core;
+mod durable_queue;
+pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod helpers;
 mod launches;
 mod prompt_schedules;

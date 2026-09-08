@@ -6,7 +6,8 @@
 
 static int fixture_sdk_mode(const char* mode) {
   return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
-      !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool");
+      !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
+      !strcmp(mode, "sdk_other_installation");
 }
 
 static int fixture_sdk_io(void* buffer, size_t size, int writing, int64_t deadline) {

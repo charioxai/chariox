@@ -118,3 +118,5 @@ pub(crate) fn is_zero(value: &usize) -> bool {
 pub use agent_prompt_scheduling::{
     AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
 };
+
+pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

@@ -45,7 +45,9 @@ int main(int argc, char** argv) {
   int64_t deadline = cx_monotonic_ms() + 5000;
   int result = cx_read_record(&record, deadline);
   if (result) return result;
-  if (strcmp(record.generation, fixture_sdk_mode(argv[1]) ? "1" : "7") || strcmp(record.installation, "installation_1") ||
+  const char* installation = !strcmp(argv[1], "sdk_other_installation") ? "other_installed" :
+      fixture_sdk_mode(argv[1]) ? "installed" : "installation_1";
+  if (strcmp(record.generation, fixture_sdk_mode(argv[1]) ? "1" : "7") || strcmp(record.installation, installation) ||
       record.nofile != 128 || record.cpu_seconds != 30 || record.heap_mib != 64 ||
       record.v8_threads != 1 || record.max_file_bytes != 1048576 ||
       strcmp(record.bootstrap, "// trusted fixture bootstrap\n")) return 86;

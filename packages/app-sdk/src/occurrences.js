@@ -1,6 +1,7 @@
 import { AppError } from './errors.js';
 import { validateJson } from './json.js';
 import { object, token } from './protocol.js';
+import { createHash } from 'node:crypto';
 
 const PAYLOAD_BYTES = 64 * 1024;
 const INVOCATION_BYTES = 256 * 1024;
@@ -8,6 +9,22 @@ const BATCH_BYTES = 512 * 1024;
 
 function invalid() { throw new AppError('INVALID_ARGUMENT', 'Invalid App occurrence'); }
 function limit() { throw new AppError('LIMIT_EXCEEDED', 'App occurrence exceeds its limit'); }
+
+/** Create once from the source's original identity/time, then persist and reuse. */
+export function occurrenceId(sourceKey, occurredAtMs) {
+  if (typeof sourceKey !== 'string' || sourceKey.length === 0 || sourceKey.length > 4096 || !sourceKey.isWellFormed()
+    || Buffer.byteLength(sourceKey) > 4096 || !Number.isSafeInteger(occurredAtMs) || occurredAtMs < 0) invalid();
+  const digest = createHash('sha256')
+    .update(JSON.stringify(['chariox.app-occurrence-id.v1', sourceKey, occurredAtMs]), 'utf8')
+    .digest('hex');
+  return `evt1.${occurredAtMs}.${digest}`;
+}
+
+function validId(id, occurredAtMs) {
+  if (typeof id !== 'string' || id.length > 86) return false;
+  const match = /^evt1\.(0|[1-9][0-9]*)\.[a-f0-9]{64}$/u.exec(id);
+  return match !== null && match[1] === String(occurredAtMs);
+}
 function fields(value, required, optional = []) {
   if (!object(value) || required.some(key => !Object.hasOwn(value, key))
     || Object.keys(value).some(key => !required.includes(key) && !optional.includes(key))) invalid();
@@ -72,7 +89,7 @@ function invocationBytes(invocation) {
 
 function measure(occurrence) {
   fields(occurrence, ['automationId', 'occurrenceId', 'eventVersion', 'occurredAtMs', 'payload', 'invocation'], ['scheduleRevision']);
-  if (!token(occurrence.automationId) || !token(occurrence.occurrenceId)
+  if (!token(occurrence.automationId) || !validId(occurrence.occurrenceId, occurrence.occurredAtMs)
     || !Number.isSafeInteger(occurrence.eventVersion) || occurrence.eventVersion < 1 || occurrence.eventVersion > 0xffffffff
     || !Number.isSafeInteger(occurrence.occurredAtMs) || occurrence.occurredAtMs < 0
     || (Object.hasOwn(occurrence, 'scheduleRevision') && !token(occurrence.scheduleRevision))) invalid();

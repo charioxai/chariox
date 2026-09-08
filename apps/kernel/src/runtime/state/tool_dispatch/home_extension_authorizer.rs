@@ -15,7 +15,11 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
         hinted_tool: &crate::extension::RemoteExtensionTool,
     ) -> Result<crate::extension::RemoteExtensionTool, DaemonError> {
         let agent = self.authorize_invocation_context(context)?;
-        let manifest = self.state.remote_extension_manifest_for_agent(&agent)?;
+        // App authorization has its own bounded blocking entry, then rejoins
+        // this same remote context/binding policy and operation dispatcher.
+        let manifest = self
+            .state
+            .remote_extension_manifest_without_apps_for_agent(&agent)?;
         let Some(current_tool) = manifest.home_proxy_tool(&hinted_tool.tool_name).cloned() else {
             return Err(DaemonError::LocalTransport {
                 operation: "home extension invocation",
@@ -158,7 +162,7 @@ pub(in crate::runtime::state::tool_dispatch) fn authorize_remote_home_context(
     }
 }
 
-fn validate_projected_tool_matches_current(
+pub(in crate::runtime::state::tool_dispatch) fn validate_projected_tool_matches_current(
     current_tool: &crate::extension::RemoteExtensionTool,
     hinted_tool: &crate::extension::RemoteExtensionTool,
 ) -> Result<(), DaemonError> {

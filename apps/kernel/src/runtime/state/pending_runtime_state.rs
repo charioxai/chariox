@@ -10,6 +10,7 @@ pub(super) struct PendingMcpContinuation {
     pub(super) source_attachment_id: String,
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
+    pub(super) reload_reason: super::ProviderReloadReason,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -36,7 +37,7 @@ impl PendingMcpContinuationStore {
 pub(super) struct PendingProviderReload {
     pub(super) session_id: String,
     pub(super) agent_id: String,
-    pub(super) reason: String,
+    pub(super) reason: super::ProviderReloadReason,
 }
 
 #[derive(Debug, Clone, Default)]

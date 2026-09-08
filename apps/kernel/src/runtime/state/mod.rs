@@ -39,6 +39,8 @@ use context_handoff::*;
 mod app_runtime_state;
 mod app_automation_owned_state;
 mod app_event_delivery_owned_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_pump_runtime;
 mod config_runtime_state;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -72,6 +74,7 @@ struct KernelRuntimeOwnedState {
     provider_store: ProviderProcessServiceStore,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
+    workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims,
     publication_activation: Arc<publication_activation::PublicationActivation>,
     provider_process_tracking: ProviderProcessTrackingStore,
     provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
@@ -296,6 +299,7 @@ mod workflow_node_owned_state;
 mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
+mod workflow_queue_durable;
 use workflow_prompt_dispatches::*;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
@@ -438,6 +442,7 @@ impl KernelRuntimeState {
             relay_state,
             legacy_workflow_history,
             agent_runtime_projection,
+            app_control,
         ) = {
             let started = Instant::now();
             loop {
@@ -449,6 +454,7 @@ impl KernelRuntimeState {
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
+                        app.app_control_service(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -485,7 +491,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
-                app_control: crate::runtime::app_control::AppControlService::new(durable_state_store.clone()),
+                app_control,
                 config_projection,
                 session_store,
                 agent_store,
@@ -493,6 +499,7 @@ impl KernelRuntimeState {
                 provider_store,
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
+                workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims::default(),
                 publication_activation,
                 provider_process_tracking,
                 provider_launch_failure_retries,

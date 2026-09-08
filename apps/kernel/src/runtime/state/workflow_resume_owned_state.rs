@@ -8,26 +8,37 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
-        let resumable_node_ids = self
-            .session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
-            .node_runs()
-            .iter()
-            .filter(|node_run| {
-                node_run.status() == crate::session::WorkflowNodeRunStatus::Stopped
-                    && node_run.completion().is_none()
-                    && node_run
-                        .turn_envelope()
-                        .and_then(|envelope| envelope.rendered_prompt())
-                        .is_some()
-            })
-            .map(|node_run| node_run.id().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
+        // Classify an unsubmitted original entry while the stopped session is
+        // still read-locked, before publishing it as runnable to the owned pump.
+        // A concurrent pump admission afterward must suppress this retry, not
+        // turn it into an intentional second user invocation.
+        let (resumable_node_ids, pending_entry_node) = {
+            let sessions = self.session_store.read();
+            let original = sessions.resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+            let pending = self
+                .workflow_entry_intent(session_id, original.id())?
+                .filter(|intent| !intent.submitted)
+                .map(|intent| intent.node_id);
+            let nodes = original
+                .node_runs()
+                .iter()
+                .filter(|node_run| {
+                    node_run.status() == crate::session::WorkflowNodeRunStatus::Stopped
+                        && node_run.completion().is_none()
+                        && node_run
+                            .turn_envelope()
+                            .and_then(|envelope| envelope.rendered_prompt())
+                            .is_some()
+                })
+                .map(|node_run| node_run.id().to_string())
+                .collect::<std::collections::BTreeSet<_>>();
+            (nodes, pending)
+        };
         let workflow_run = self
             .session_store
             .write()
             .resume_workflow_run(session_id, workflow_run_ref)?;
+        self.persist_workflow_runtime_session(session_id, "workflow_resumed")?;
         let resumable = workflow_run
             .node_runs()
             .iter()
@@ -43,6 +54,18 @@ impl KernelRuntimeOwnedState {
             .collect::<Vec<_>>();
         let mut dispatches = WorkflowPromptDispatches::default();
         for (workflow_node_run_id, agent_id, prompt_text) in resumable {
+            if pending_entry_node.as_deref() == Some(workflow_node_run_id.as_str()) {
+                if let Some(prepared) = self.workflow_retry_durable_entry(
+                    session_id,
+                    workflow_run.id(),
+                    &workflow_node_run_id,
+                )? {
+                    dispatches.extend(prepared);
+                    continue;
+                }
+            }
+            // A deliberate user resume of previously submitted work is a new
+            // invocation; only an unsubmitted original entry reuses its intent.
             let prompt = crate::session::PromptQueueItem::new(
                 format!(
                     "pending-draft:workflow-resume:{}:{}",

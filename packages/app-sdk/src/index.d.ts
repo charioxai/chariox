@@ -22,8 +22,12 @@ export class AppError extends Error {
   constructor(code: string, message: string, options?: { retryable?: boolean; cause?: unknown });
 }
 
+/** Stable source/time identity. Persist the result and original time before delivery or retry. */
+export function occurrenceId(sourceKey: string, occurredAtMs: number): string;
+
 export interface EventOccurrence {
   automationId: string;
+  /** Generated once with occurrenceId(sourceKey, occurredAtMs), persisted and reused. */
   occurrenceId: string;
   eventVersion: number;
   /** Original occurrence time, preserved when replaying a durable outbox. */

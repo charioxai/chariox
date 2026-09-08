@@ -21,8 +21,10 @@ pub(super) fn automations(store: &DurableKernelStateStore, catalog: &EventCatalo
     }
 }
 pub(super) fn occurrence(automation: &str, id: &str) -> Value {
+    let occurred_at = crate::session::unix_epoch_ms();
+    let id = chariox_app_runtime::app_outbox::occurrence_id(id, occurred_at).unwrap();
     json!({"automationId":automation,"occurrenceId":id,"eventVersion":1,
-        "occurredAtMs":crate::session::unix_epoch_ms(),"payload":{"text":"changed"},
+        "occurredAtMs":occurred_at,"payload":{"text":"changed"},
         "invocation":{"prompt":"Handle the declared event","artifacts":[]}})
 }
 pub(super) fn count(store: &DurableKernelStateStore) -> i64 {
@@ -155,9 +157,13 @@ async fn failure_in_second_automation_rolls_back_first_receipt_and_state_on_the_
     assert_eq!(receive(&mut worker).await.unwrap_err(), "CONFLICT");
     assert_eq!(count(&store), 1);
     let db = Connection::open(store.path()).unwrap();
-    db.execute_batch("CREATE TRIGGER fixture_event_failure BEFORE INSERT ON app_outbox WHEN NEW.occurrence_id='fault' BEGIN SELECT RAISE(ABORT,'private failure detail'); END;").unwrap();
+    let fault = occurrence("auto-b", "fault");
+    // The generated canonical ID contains only the fixed prefix, digits, dots
+    // and lowercase hex. Use this exact occurrence in both the trigger and call.
+    let fault_id = fault["occurrenceId"].as_str().unwrap();
+    db.execute_batch(&format!("CREATE TRIGGER fixture_event_failure BEFORE INSERT ON app_outbox WHEN NEW.occurrence_id='{fault_id}' BEGIN SELECT RAISE(ABORT,'private failure detail'); END;")).unwrap();
     let mut mutation = change(json!("also must roll back"));
-    mutation["occurrences"] = json!([occurrence("auto-a", "first"), occurrence("auto-b", "fault")]);
+    mutation["occurrences"] = json!([occurrence("auto-a", "first"), fault]);
     send(&mut worker, "fault", "state.transaction", mutation).await;
     assert_eq!(receive(&mut worker).await.unwrap_err(), "UNAVAILABLE");
     db.execute_batch("DROP TRIGGER fixture_event_failure;")

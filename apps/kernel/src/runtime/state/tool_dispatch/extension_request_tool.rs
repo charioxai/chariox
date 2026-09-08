@@ -75,9 +75,48 @@ impl KernelRuntimeState {
                     ));
                 }
                 let granted_agent = self
-                    .grant_agent_extension(agent.id(), grant, agent.owner_user_id())
+                    .grant_agent_app_for_tool(agent.id(), grant, agent.owner_user_id())
                     .await?;
-                (granted_agent, "binding_saved", false)
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                let active = self
+                    .app_control()
+                    .active_app_lease(granted_agent.owner_user_id(), &args.name)
+                    .is_some();
+                #[cfg(not(any(
+                    target_os = "macos",
+                    all(target_os = "linux", target_env = "gnu")
+                )))]
+                let active = false;
+                if active {
+                    let (source, previous) = self
+                        .owned
+                        .session_store
+                        .get_session(session_id)
+                        .ok()
+                        .and_then(|session| {
+                            self.owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, granted_agent.id())
+                                .map(|prompt| {
+                                    (
+                                        prompt.source_attachment_id().to_owned(),
+                                        prompt.prompt().to_owned(),
+                                    )
+                                })
+                        })
+                        .unwrap_or_else(|| ("chariox-runtime".into(), String::new()));
+                    // Providers cache tools. Reuse the actual shared runtime MCP's
+                    // established idle reload/resume, not a per-App MCP server.
+                    self.remember_pending_runtime_tools_continuation(
+                        session_id,
+                        granted_agent.id(),
+                        &source,
+                        &previous,
+                    );
+                    (granted_agent, "after_provider_reload", true)
+                } else {
+                    (granted_agent, "binding_saved", false)
+                }
             }
             "mcp" => {
                 if mcp_registry.get(&args.name)?.is_none() {
@@ -259,7 +298,7 @@ impl KernelRuntimeState {
             "effective": effective_when,
             "requires_provider_restart": requires_provider_restart,
             "note": match effective_when {
-                "binding_saved" => "The App binding is saved. App tool activation and provider catalog publication are not available yet.",
+                "binding_saved" => "The App binding is saved. Its tools become available when the installation is running and the provider catalog is refreshed.",
                 "after_provider_reload" => "Chariox will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                 "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                 "now" => "The extension grant is persisted and available immediately in this turn.",
@@ -268,6 +307,9 @@ impl KernelRuntimeState {
         });
         if args.kind == "app" {
             payload["tools_available"] = serde_json::json!(false);
+            if requires_provider_restart {
+                payload["note"] = serde_json::json!("Chariox will refresh its shared runtime tool catalog after this turn and resume the request. The App's current binding and permissions are checked again on every call.");
+            }
         }
         if !skill_payload.is_null() {
             payload["skill"] = skill_payload;

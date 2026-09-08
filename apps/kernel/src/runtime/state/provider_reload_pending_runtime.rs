@@ -7,16 +7,21 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-        reason: &str,
+        reason: ProviderReloadReason,
     ) {
-        self.owned.pending_provider_reloads.write().insert(
+        let mut pending = self.owned.pending_provider_reloads.write();
+        let reason = pending
+            .get(agent_id)
+            .map_or(reason.clone(), |previous| reason.merge(&previous.reason));
+        pending.insert(
             agent_id.to_string(),
             PendingProviderReload {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
-                reason: reason.to_string(),
+                reason,
             },
         );
+        drop(pending);
         let state = self.clone();
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
@@ -40,20 +45,29 @@ impl KernelRuntimeState {
                         pending.remove(&agent_id)
                     };
                     if let Some(pending) = pending {
-                        if let Err(error) = state.reload_agent_provider_if_idle(
+                        match state.reload_agent_provider_if_idle_for_reason(
                             &pending.session_id,
                             &pending.agent_id,
                             &pending.reason,
                         ) {
-                            crate::logging::warn_with_fields(
-                                "daemon.provider",
-                                "pending provider reload failed",
-                                serde_json::json!({
-                                    "session_id": pending.session_id,
-                                    "agent_id": pending.agent_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
+                            Ok(ProviderReloadOutcome::Deferred) => state
+                                .remember_pending_provider_reload(
+                                    &pending.session_id,
+                                    &pending.agent_id,
+                                    pending.reason,
+                                ),
+                            Ok(_) => {}
+                            Err(error) => {
+                                crate::logging::warn_with_fields(
+                                    "daemon.provider",
+                                    "pending provider reload failed",
+                                    serde_json::json!({
+                                        "session_id": pending.session_id,
+                                        "agent_id": pending.agent_id,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                            }
                         }
                     }
                     return;

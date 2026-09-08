@@ -12,7 +12,7 @@ impl AppOutbox {
         let mut bytes = 0usize;
         for occurrence in occurrences {
             identifier(&occurrence.automation_id)?;
-            identifier(&occurrence.occurrence_id)?;
+            identity::validate(&occurrence.occurrence_id, occurrence.occurred_at_ms)?;
             if occurrence.event_version == 0 || occurrence.occurred_at_ms > MAX_SAFE_TIMESTAMP {
                 return Err(OutboxError::Invalid);
             }

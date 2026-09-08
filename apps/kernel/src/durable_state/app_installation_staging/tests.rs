@@ -65,7 +65,7 @@ fn candidate(
     let manifest: Manifest = serde_json::from_value(json!({
         "schema":"chariox.app.v1", "appId":"com.example.installed", "version":version,
         "publisher":{"id":"com.example","keyId":"developer-1","name":"Developer"},
-        "sdkVersion":"0.3.0", "appContractVersion":1, "minKernelProtocol":500,
+        "sdkVersion":"0.4.0", "appContractVersion":1, "minKernelProtocol":500,
         "resourcePolicy":"chariox.app.resources.v1", "runtime":{"engine":"node","entry":"runtime/main.js"},
         "ui":{"entry":"ui/index.html"}, "capabilities":{}
     })).unwrap();
