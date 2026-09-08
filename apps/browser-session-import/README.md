@@ -7,8 +7,9 @@ not request permissions, transmit cookies or register a web-accessible endpoint.
 
 ## Kernel recovery execution barrier
 
-The kernel checks durable pending-import metadata by Room before admitting an
-Environment Action or dispatching a browser/controller command. This also blocks
+The kernel checks durable pending-import metadata by Room before authorizing
+import consent, admitting an Environment Action or dispatching a browser/controller
+command. This also blocks
 when the current Environment has not been restored, when its identity differs
 from the recorded import, or when the durable read fails. Marking recovery verified
 does not reopen execution; acknowledged journal cleanup must remove the row first.
