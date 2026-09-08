@@ -8,6 +8,7 @@ import {openCookieImportJournal} from './cookie-import-journal.mjs';
 import {BrowserCdpClient} from '../kernel/slice-linux-docker/docker/browser-controller-cdp.mjs';
 import {applyControllerCookieImport} from './controller-cookie-import.mjs';
 import {createCdpCookieStore,recoverCookieImport} from './cookie-import-transaction.mjs';
+import {completeCookieImport} from './cookie-import-completion.mjs';
 
 assert.ok(process.env.PLAYWRIGHT_MODULE,'PLAYWRIGHT_MODULE must name the installed dependency');
 const {chromium} = await import(process.env.PLAYWRIGHT_MODULE);
@@ -84,6 +85,14 @@ test('controller imports into its registered target and rejects stale browser an
     const retained = await journal.read();
     assert.equal(retained.receipt,recovery.receipt);
     retained.bytes.fill(0);
+    const completion = [];
+    await completeCookieImport({receipt:recovery.receipt,journal,
+      recordOutcome:async()=>{completion.push('outcome');},
+      clearPending:async()=>{
+        assert.equal(await journal.read(),null);
+        completion.push('clear');
+      }});
+    assert.deepEqual(completion,['outcome','clear']);
   } finally {
     const closed = await Promise.allSettled([
       journal?.close(), controller?.close(), context?.close(),
