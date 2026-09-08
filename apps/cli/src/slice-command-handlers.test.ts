@@ -228,6 +228,20 @@ test("slice command screen resolves focused agent slice and opens endpoint", asy
   assert.equal(harness.footers.at(-1)?.message, "opened http://127.0.0.1:6080")
 })
 
+test("slice command screen fails closed without slice metadata lookup", async () => {
+  const harness = sliceHarness({
+    endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
+  })
+  delete harness.deps.getSlice
+
+  await handleSliceSlashCommand(harness.deps, command("screen", "slice-1"))
+
+  assert.deepEqual(harness.displayEndpointRefs, [])
+  assert.deepEqual(harness.openedUrls, [])
+  assert.doesNotMatch(JSON.stringify(harness.notices), /secret/)
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+})
+
 test("slice command screen routes Selkies through the scoped Cloud viewer target", async () => {
   const harness = sliceHarness({
     slices: [slice({

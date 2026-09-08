@@ -956,12 +956,12 @@ async function openSliceScreen(
   deps: SliceCommandHandlerDeps,
   sliceRef: string | undefined,
 ): Promise<void> {
-  if (!deps.getSliceDisplayEndpoint) {
+  if (!deps.getSliceDisplayEndpoint || !deps.getSlice) {
     deps.flashFooter("slice screen is unavailable in this build", "error")
     return
   }
   const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
-  const slice = await deps.getSlice?.(resolvedRef)
+  const slice = await deps.getSlice(resolvedRef)
   if (slice?.display_endpoint?.kind === "selkies") {
     if (!deps.isAttached?.()) {
       deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
