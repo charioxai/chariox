@@ -7,12 +7,20 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { assertOnlySlowSubscriptionClosed } from "./lib/reconnect-storm-pressure.mjs"
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const args = process.argv.slice(2)
 const clientCount = numberArg("--clients", 32)
 const cycles = numberArg("--cycles", 5)
 const slowEvents = numberArg("--slow-events", 4_096)
 const timeoutMs = numberArg("--timeout-ms", 30_000)
+const relayOutgoingQueueCapacity = 64
+const slowFloodQueueTurns = 8
+const slowFloodBatchSize = Math.max(
+  1,
+  Math.floor(slowEvents / (relayOutgoingQueueCapacity * slowFloodQueueTurns)),
+)
 const output = reconnectStormEvidencePath(stringArg("--output"))
 const cargoTargetDir = reconnectStormCargoTargetDir()
 const buildProfile = reconnectStormBuildProfile()
@@ -33,6 +41,8 @@ if (dryRun) {
     clientCount,
     cycles,
     slowEvents,
+    relayOutgoingQueueCapacity,
+    slowFloodBatchSize,
     timeoutMs,
     output,
     cargoTargetDir,
@@ -58,6 +68,7 @@ const relayToken = `reconnect-storm-${process.pid}-${Date.now()}`
 const children = []
 const clients = []
 const resourceSamples = []
+let resourcePhase = "startup"
 let control
 let pressureControl
 let report
@@ -77,9 +88,10 @@ try {
   children.push(spawnOwned(relayBinary, relayEnv()))
   children.push(spawnOwned(kernelBinary, kernelEnv()))
   resourceTimer = setInterval(() => {
-    try { resourceSamples.push({ at: Date.now(), processes: processMetrics(children) }) } catch {}
+    try { resourceSamples.push({ at: Date.now(), phase: resourcePhase, processes: processMetrics(children) }) } catch {}
   }, 1_000)
   await waitForKernel()
+  resourcePhase = "attachment"
   control = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
   pressureControl = new LocalIpcClient(`ws://127.0.0.1:${ports.kernel}`)
   await waitFor(async () => unwrap(await control.send(requests.relayStatusRequest()), "RelayStatus")?.status?.connected === true, timeoutMs, "kernel relay connection")
@@ -155,6 +167,7 @@ try {
 
   const reconnectLatenciesMs = []
   for (let cycle = 0; cycle < cycles; cycle += 1) {
+    resourcePhase = `reconnect-${cycle + 1}`
     throwIfInterrupted()
     const marker = `RECONNECT_STORM_CYCLE_${cycle}_${Date.now()}`
     const startedAt = Date.now()
@@ -176,10 +189,12 @@ try {
 
   const slowClient = clients[0]
   const slowContext = contexts[0]
+  resourcePhase = "slow-subscriber-pressure"
   assert.ok(slowClient.eventWebsocket?._socket, "slow client event socket was not connected")
   const pressureBaselineHealth = await relayHealthSnapshot()
   assert.equal(pressureBaselineHealth.subscription_count, clientCount)
   slowClient.eventWebsocket._socket.pause()
+  const healthyResumeBaseline = resumeCounts.slice(1)
   const payload = "s".repeat(8 * 1024)
   const pressureQueueDepth = 4
   let slowEventsSubmitted = 0
@@ -202,7 +217,7 @@ try {
         await healthyProbeStarted
         healthyProbeStartedObserved = true
       }
-      const count = Math.min(healthyProbeSettled ? 64 : 4, slowEvents - offset)
+      const count = Math.min(healthyProbeSettled ? slowFloodBatchSize : 4, slowEvents - offset)
       await withDeadline(control.send(requests.appendNativeProviderOutputBatchRequest(
         slowContext.sessionId,
         slowContext.attachmentId,
@@ -324,6 +339,7 @@ try {
       "healthy subscribers during slow-client pressure",
     )
     healthyTrafficLatencyMs = Date.now() - healthyStartedAt
+    resourcePhase = "post-healthy-slow-flood"
     assert.ok(healthyTrafficLatencyMs <= timeoutMs, `healthy traffic took ${healthyTrafficLatencyMs} ms`)
     assert.ok(slowEventsSubmitted > submittedAtHealthyProbe, "slow flood did not advance during the healthy probe")
     assert.equal(slowFloodSettled, false, "slow flood finished before healthy work completed")
@@ -351,6 +367,7 @@ try {
     throw healthyProbeError
   }
   await slowFlood
+  resourcePhase = "slow-close-wait"
   let relayHealth
   let slowSubscriptionClosedAtMs
   await waitFor(async () => {
@@ -359,6 +376,21 @@ try {
     slowSubscriptionClosedAtMs = Date.now()
     return true
   }, timeoutMs, "relay to close only the slow subscription")
+  resourcePhase = "post-close-healthy-delivery"
+  const postCloseMarker = `RECONNECT_STORM_POST_CLOSE_${Date.now()}`
+  await Promise.all(contexts.slice(1).map((context) => withDeadline(
+    appendMarker(context, postCloseMarker, pressureControl),
+    timeoutMs,
+    `post-close provider output for ${context.sessionId}`,
+  )))
+  await waitFor(
+    () => seen.slice(1).every((markers) => markers.has(postCloseMarker)),
+    timeoutMs,
+    "every healthy subscriber to receive output after slow isolation",
+  )
+  relayHealth = await relayHealthSnapshot()
+  assertOnlySlowSubscriptionClosed(relayHealth, clientCount, seen.slice(1), postCloseMarker)
+  assert.deepEqual(resumeCounts.slice(1), healthyResumeBaseline, "healthy subscriptions reconnected during isolation")
   const healthyCompletedAtMs = healthyStartedAt + healthyTrafficLatencyMs
   assert.ok(slowSubscriptionClosedAtMs > healthyCompletedAtMs, "slow subscription closed before healthy traffic completed")
   const metrics = processMetrics(children)
@@ -370,9 +402,12 @@ try {
     clientCount,
     cycles,
     slowEvents,
+    relayOutgoingQueueCapacity,
+    slowFloodBatchSize,
     reconnectLatenciesMs,
     reconnectP95Ms: percentile([...reconnectLatenciesMs].sort((left, right) => left - right), 0.95),
     healthySubscribers: clientCount - 1,
+    healthySubscribersVerifiedAfterClose: clientCount - 1,
     healthyTrafficLatencyMs,
     pressureObservedAtMs,
     pressureQueueDepth,
@@ -391,6 +426,7 @@ try {
     relayHealth,
     metrics,
     resources,
+    resourceSamples,
     ports,
   }
 } catch (error) {
@@ -401,6 +437,7 @@ try {
     cycles,
     slowEvents,
     resources: resourceSummary(resourceSamples, children[1]?.pid),
+    resourceSamples,
     ports,
   }
   process.exitCode = 1
@@ -483,7 +520,7 @@ function relayEnv() {
     CHARIOX_RELAY_HOST: "127.0.0.1",
     CHARIOX_RELAY_PORT: String(ports.relay),
     CHARIOX_RELAY_TOKEN: relayToken,
-    CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: "64",
+    CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: String(relayOutgoingQueueCapacity),
   }
 }
 function kernelEnv() {
