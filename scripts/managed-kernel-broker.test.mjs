@@ -720,7 +720,14 @@ test("managed slice broker pins a provisioner path inode across caller replaceme
     return
   }
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-pin-"))
-  context.after(() => rm(root, { recursive: true, force: true }))
+  context.after(async () => {
+    const handle = createHash("sha256").update("chariox-slice-dev\0workspace").digest("hex")
+    const target = join(root, "handles", handle)
+    if (spawnSync("/usr/bin/mountpoint", ["-q", "--", target]).status === 0) {
+      assert.equal(spawnSync("/usr/bin/umount", [target], { timeout: 3000 }).status, 0)
+    }
+    await rm(root, { recursive: true, force: true })
+  })
   const share = join(root, "share")
   const workspace = join(share, "slices/development/slice-dev/development/workspace")
   const moved = join(share, "workspace-original")
@@ -736,7 +743,9 @@ test("managed slice broker pins a provisioner path inode across caller replaceme
 set -eu
 : > '${started}'
 while [ ! -e '${release}' ]; do sleep 0.01; done
-cat "$CHARIOX_SLICE_WORKSPACE/value"
+# Match provision-linux-docker-slice.sh: WORKSPACE is the container destination;
+# the broker-owned SOURCE is the host bind mount, pinned across path replacement.
+cat "$CHARIOX_SLICE_WORKSPACE_SOURCE/value"
 `)
   await chmod(provisioner, 0o755)
   const child = spawn(process.execPath, [broker, "--stdio"], {
@@ -768,6 +777,7 @@ cat "$CHARIOX_SLICE_WORKSPACE/value"
   await waitFor(() => access(started).then(() => true, () => false))
   await rename(workspace, moved)
   await symlink(outside, workspace)
+  assert.equal(await readFile(join(workspace, "value"), "utf8"), "secret")
   await writeFile(release, "go")
   await waitFor(() => Promise.resolve(stdout.includes("\n")))
   child.stdin.end()
