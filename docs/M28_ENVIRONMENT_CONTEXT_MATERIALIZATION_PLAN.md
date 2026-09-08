@@ -133,6 +133,17 @@ The launch receipt contains that target Workspace and worktree path. This path i
 not a source-machine placeholder and remains valid across client retry and kernel
 restart.
 
+For a local Docker slice with an explicit Empty development selection, the
+kernel materializes a separate, non-Git workspace at
+`<slice-root>/development/<slice-id>/development/workspace`. The ordinary slice
+publication record owns that path. A caller-supplied source mount is not used
+for Empty. Restart reuses the publication and preserves files; it fails if a
+previously published workspace is missing instead of silently recreating it.
+Slice deletion removes only the matching publication. Managed machines use the
+same broker-confined publication and access-grant path as source-project slices.
+This does not implement transfer of an existing non-Git workspace or migrate
+legacy slices with no development selection.
+
 ## 8. Client behavior
 
 The TUI and web Waiting Room use the ordinary Machine field. Selecting

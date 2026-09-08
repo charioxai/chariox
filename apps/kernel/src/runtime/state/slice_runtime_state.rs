@@ -31,16 +31,19 @@ impl KernelRuntimeState {
             request.worktree_id.as_deref(),
         )?;
         let config = self.owned.config_projection.snapshot();
-        let development_storage_parent = matches!(
-            request.development.as_ref(),
-            Some(
-                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-                    ..
-                }
-            )
-        )
-        .then(|| self.prepare_slice_development_storage_parent(&config))
-        .transpose()?;
+        let development_storage_parent = request
+            .development
+            .is_some()
+            .then(|| self.prepare_slice_development_storage_parent(&config))
+            .transpose()?;
+        let workspace_mount = if matches!(
+            request.development,
+            Some(crate::managed_context::package::ManagedContextDevelopmentSelection::Empty)
+        ) {
+            None
+        } else {
+            request.workspace_mount
+        };
         let from_saved_state = match request.from_saved_state.as_deref() {
             Some(state_ref) => Some(self.owned.slice_store.saved_state(state_ref)?),
             None if request.base == Some(crate::local::SliceCreateBase::Clean) => None,
@@ -60,7 +63,7 @@ impl KernelRuntimeState {
                 display_mode: request.display_mode,
                 workspace_id: request.workspace_id,
                 worktree_id: request.worktree_id,
-                workspace_mount: request.workspace_mount,
+                workspace_mount,
                 development: request.development,
                 worker_kernel_ref: request.worker_kernel_ref,
                 display_url: request.display_url,
@@ -860,6 +863,73 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn explicit_empty_slice_publishes_a_persistent_workspace_without_source_files() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-empty-slice-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.slices.root = Some(root.join("slices").display().to_string());
+        let (app, runtime, _, _, _) = slice_runtime_with_config(config).await;
+        let slice = runtime
+            .create_slice(crate::local::CreateSliceRequest {
+                name: "empty-publication".into(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".into(),
+                display_mode: crate::slice::SliceDisplayMode::Headed,
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: Some(root.join("private-source").display().to_string()),
+                development: Some(
+                    crate::managed_context::package::ManagedContextDevelopmentSelection::Empty,
+                ),
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: vec![],
+                from_saved_state: None,
+                base: Some(crate::local::SliceCreateBase::Clean),
+            })
+            .await
+            .unwrap();
+        let materialized = runtime
+            .materialize_slice_development_context(&slice)
+            .unwrap();
+        let expected = root
+            .join("slices/development")
+            .join(&slice.id)
+            .join("development/workspace");
+        let actual_mount = materialized.workspace_mount.clone();
+        if actual_mount.as_deref() == expected.to_str() {
+            assert_eq!(std::fs::read_dir(&expected).unwrap().count(), 0);
+            std::fs::write(expected.join("notes.txt"), "preserved office work").unwrap();
+            let recovered = runtime
+                .materialize_slice_development_context(&materialized)
+                .unwrap();
+            assert_eq!(
+                recovered.development_publication,
+                materialized.development_publication
+            );
+            assert_eq!(
+                std::fs::read_to_string(expected.join("notes.txt")).unwrap(),
+                "preserved office work"
+            );
+            assert!(!expected.join(".git").exists());
+            runtime
+                .cleanup_slice_development_context(&recovered)
+                .unwrap();
+            assert!(!expected.exists());
+        }
+        drop(runtime);
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            actual_mount.as_deref(),
+            expected.to_str(),
+            "explicit Empty must publish a workspace instead of mounting a source path"
+        );
+    }
+
+    #[tokio::test]
     async fn relaunch_manifests_ignore_stale_legacy_agent_busy_state() {
         let (_app, runtime, slice, _session_id, agent_id) = slice_runtime().await;
 
@@ -990,8 +1060,19 @@ mod tests {
         String,
         String,
     ) {
-        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-            .expect("daemon bootstrap should succeed");
+        slice_runtime_with_config(crate::config::DaemonConfig::for_tests()).await
+    }
+
+    async fn slice_runtime_with_config(
+        config: crate::config::DaemonConfig,
+    ) -> (
+        Arc<Mutex<DaemonApp>>,
+        KernelRuntimeState,
+        crate::slice::SliceRecord,
+        String,
+        String,
+    ) {
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(crate::session::CreateSessionRequest::new(
                 "workspace-1",

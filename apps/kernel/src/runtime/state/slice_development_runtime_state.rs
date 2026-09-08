@@ -14,6 +14,8 @@ use crate::managed_context::package::ManagedContextDevelopmentSelection;
 
 use super::KernelRuntimeState;
 
+mod empty;
+
 const SLICE_DEVELOPMENT_PUBLICATION_ID: &str = "development";
 const SLICE_DEVELOPMENT_EXPORT_SCRATCH: &str = ".slice-development-export";
 const MANAGED_PUBLICATION_ACCESS_HELPER: &str = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh";
@@ -73,6 +75,11 @@ impl KernelRuntimeState {
         workspace_id: Option<&str>,
         worktree_id: Option<&str>,
     ) -> Result<(), DaemonError> {
+        if development.is_some() && *backend != crate::slice::SliceBackendKind::LocalDocker {
+            return Err(slice_development_error(
+                "development materialization requires a local Docker slice",
+            ));
+        }
         let Some(ManagedContextDevelopmentSelection::SourceProject {
             project_id,
             repositories,
@@ -80,11 +87,6 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        if *backend != crate::slice::SliceBackendKind::LocalDocker {
-            return Err(slice_development_error(
-                "source-project development materialization requires a local Docker slice",
-            ));
-        }
         crate::managed_context::package::validate_development_selection(
             development.expect("source project selection"),
         )?;
@@ -116,20 +118,24 @@ impl KernelRuntimeState {
         &self,
         slice: &crate::slice::SliceRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = slice.development.as_ref()
-        else {
+        let Some(development) = slice.development.as_ref() else {
             return Ok(slice.clone());
         };
         let publication_parent = slice_development_storage_root(slice)?;
-        let publication = materialize_slice_development_publication(
-            &publication_parent,
-            project_id,
-            repositories,
-            slice.development_publication.as_ref(),
-        )?;
+        let publication = match development {
+            ManagedContextDevelopmentSelection::Empty => {
+                empty::materialize(&publication_parent, slice.development_publication.as_ref())?
+            }
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            } => materialize_slice_development_publication(
+                &publication_parent,
+                project_id,
+                repositories,
+                slice.development_publication.as_ref(),
+            )?,
+        };
         if slice
             .development_publication
             .as_ref()
@@ -152,15 +158,21 @@ impl KernelRuntimeState {
         &self,
         slice: &crate::slice::SliceRecord,
     ) -> Result<(), DaemonError> {
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = slice.development.as_ref()
-        else {
+        let Some(development) = slice.development.as_ref() else {
             return Ok(());
         };
         let publication_parent = slice_development_storage_root(slice)?;
-        cleanup_slice_development_publication(&publication_parent, project_id, repositories)
+        match development {
+            ManagedContextDevelopmentSelection::Empty => {
+                empty::cleanup(&publication_parent, slice.development_publication.as_ref())
+            }
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            } => {
+                cleanup_slice_development_publication(&publication_parent, project_id, repositories)
+            }
+        }
     }
 }
 
