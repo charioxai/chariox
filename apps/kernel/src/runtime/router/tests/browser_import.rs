@@ -130,7 +130,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
         state
             .submit_room_environment_action(session.id(), action())
             .unwrap_err(),
-        crate::session::EnvironmentError::ImportRecoveryRequired
+        crate::session::EnvironmentError::BrowserImportRecoveryRequired
     );
     database
         .execute(
@@ -146,7 +146,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
         state
             .submit_room_environment_action(session.id(), action())
             .unwrap_err(),
-        crate::session::EnvironmentError::ImportRecoveryRequired
+        crate::session::EnvironmentError::BrowserImportRecoveryRequired
     );
     database
         .execute(
@@ -163,7 +163,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
         .unwrap();
     drop(database);
     assert!(state
-        .ensure_no_pending_environment_import(session.id())
+        .ensure_browser_import_execution_allowed(session.id())
         .is_ok());
     let mut unverified = caller.clone();
     unverified.public_key_thumbprint = None;
@@ -312,12 +312,12 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
             .await
             .unwrap();
         assert!(state
-            .ensure_no_pending_environment_import(session.id())
+            .ensure_browser_import_execution_allowed(session.id())
             .is_err());
         let completion = destination_guard
             .complete_after_verification(async {
                 assert!(state
-                    .ensure_no_pending_environment_import(session.id())
+                    .ensure_browser_import_execution_allowed(session.id())
                     .is_err());
                 let database = rusqlite::Connection::open(&database_path).unwrap();
                 let recovery_required: bool = database.query_row(
@@ -342,7 +342,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
             let error = completion.unwrap_err();
             assert!(!format!("{error:?}").contains("synthetic private storage detail"));
             assert!(state
-                .ensure_no_pending_environment_import(session.id())
+                .ensure_browser_import_execution_allowed(session.id())
                 .is_err());
             assert!(dispatch(&router, &caller, prepare.clone()).await.is_err());
             assert!(
@@ -407,14 +407,14 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
                 .await
                 .unwrap();
             assert!(state
-                .ensure_no_pending_environment_import(session.id())
+                .ensure_browser_import_execution_allowed(session.id())
                 .is_ok());
             assert!(dispatch(&router, &caller, prepare).await.is_ok());
             return;
         }
         completion.unwrap();
         assert!(state
-            .ensure_no_pending_environment_import(session.id())
+            .ensure_browser_import_execution_allowed(session.id())
             .is_ok());
         assert!(
             dispatch(&router, &caller, prepare).await.is_ok(),

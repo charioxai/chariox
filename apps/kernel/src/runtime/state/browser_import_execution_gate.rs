@@ -38,7 +38,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    pub(super) fn ensure_browser_import_execution_allowed(
+    pub(crate) fn ensure_browser_import_execution_allowed(
         &self,
         session_id: &str,
     ) -> Result<(), EnvironmentError> {

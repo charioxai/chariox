@@ -669,7 +669,7 @@ mod tests {
                 .is_err());
             drop(guard);
             assert!(runtime
-                .ensure_no_pending_environment_import(&session_id)
+                .ensure_browser_import_execution_allowed(&session_id)
                 .is_err());
             return;
         }
