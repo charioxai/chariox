@@ -91,6 +91,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
             | LocalDaemonRequest::GetManagedEnvironment(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
+            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)
             | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)) => {
                 return execute_managed_environment_control_request(

@@ -102,6 +102,44 @@ pub(crate) async fn execute_managed_environment_control_request(
             crate::managed_context::outbound_service::validate_ticket(&config, &ticket)?;
             Ok(LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket })
         }
+        LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(request) => {
+            let crate::local::ManagedEnvironmentGitCredentials::Selected { credential_ids } =
+                &request.git_credentials
+            else {
+                return Err(control_error(
+                    "Git credential enrollment requires an explicit credential selection",
+                ));
+            };
+            let selection =
+                crate::managed_context::package::ManagedContextGitCredentialSelection::Selected {
+                    credential_ids: credential_ids.clone(),
+                };
+            crate::managed_context::scm::validate_selection(&selection)?;
+            let path = format!(
+                "/managed-environments/{}/git-credential-enrollment",
+                cloud_url_component(&request.environment_id),
+            );
+            let body = serde_json::json!({
+                "accountId": account_id,
+                "sourceTargetId": request.source_target_id,
+                "gitCredentials": request.git_credentials,
+            });
+            let response = post_cloud_json_authenticated::<cloud_contract::ContextTransferTicket>(
+                cloud.api_url.clone(),
+                path,
+                token.to_string(),
+                body,
+            )
+            .await?;
+            let ticket = response.into_ticket()?;
+            if ticket.environment_id != request.environment_id {
+                return Err(control_error(
+                    "Cloud returned a Git credential enrollment ticket for another environment",
+                ));
+            }
+            crate::managed_context::outbound_service::validate_ticket(&config, &ticket)?;
+            Ok(LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket })
+        }
         LocalDaemonRequest::CreateManagedEnvironment(request) => {
             preflight_provider_account_exports(
                 &config,
@@ -222,6 +260,7 @@ mod tests {
         ManagedEnvironmentGitCredentials, ManagedEnvironmentKernelContextSelection,
         ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccountSelection,
         ManagedEnvironmentProviderAccounts, PrepareManagedEnvironmentContextTransferRequest,
+        PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
         RequestManagedEnvironmentLifecycleRequest,
     };
     use std::fs;
@@ -461,6 +500,27 @@ mod tests {
         assert_eq!(ticket.environment_id, "environment / one");
         assert_eq!(ticket.target.kernel_id, "target-kernel");
 
+        let enrollment = execute_managed_environment_control_request(
+            config.clone(),
+            provider_account_profiles.clone(),
+            "cloud-user-1",
+            LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(
+                PrepareManagedEnvironmentGitCredentialEnrollmentRequest {
+                    environment_id: "environment / one".to_string(),
+                    source_target_id: "source-target-1".to_string(),
+                    git_credentials: ManagedEnvironmentGitCredentials::Selected {
+                        credential_ids: vec!["github".to_string()],
+                    },
+                },
+            ),
+        )
+        .await
+        .expect("prepare Git credential enrollment");
+        assert!(matches!(
+            enrollment,
+            LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { .. }
+        ));
+
         let lifecycle = execute_managed_environment_control_request(
             config,
             provider_account_profiles,
@@ -481,7 +541,7 @@ mod tests {
         ));
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 7);
         assert!(requests.iter().all(|request| request
             .to_ascii_lowercase()
             .contains("authorization: bearer session-secret")));
@@ -496,6 +556,12 @@ mod tests {
         assert!(requests.iter().any(|request| request.starts_with(
             "GET /managed-environments/environment%20%2F%20one/context-transfer?accountId=account%20%2F%20one HTTP/1.1"
         )));
+        let enrollment_request = requests
+            .iter()
+            .find(|request| request.contains("/git-credential-enrollment HTTP/1.1"))
+            .expect("Git credential enrollment HTTP request");
+        assert!(enrollment_request.contains(r#""sourceTargetId":"source-target-1""#));
+        assert!(enrollment_request.contains(r#""credentialIds":["github"]"#));
         let create_request = requests
             .iter()
             .find(|request| request.starts_with("POST /managed-environments HTTP/1.1"))
@@ -646,6 +712,9 @@ mod tests {
             return serde_json::json!({ "environments": [environment_json()] });
         }
         if request.contains("/context-transfer?") {
+            return context_transfer_ticket.clone();
+        }
+        if request.contains("/git-credential-enrollment ") {
             return context_transfer_ticket.clone();
         }
         if request.starts_with("GET /managed-environments/") {
