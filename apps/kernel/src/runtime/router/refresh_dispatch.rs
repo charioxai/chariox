@@ -107,6 +107,7 @@ impl CommandRouter {
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
                     &caller_user_id,
+                    self.managed_kernel_registration.as_ref(),
                     request,
                 )
                 .await
