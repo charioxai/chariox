@@ -135,7 +135,7 @@ test("cookie writer fence drains an existing worker response before import", asy
   assert.equal(imported, true);
 });
 
-test("cookie writer fence closes a worker first discovered after reconcile", async () => {
+test("cookie writer fence closes a worker first discovered after reconcile through its session", async () => {
   const connection = new FakeConnection();
   connection.includeWorker = false;
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
@@ -145,9 +145,12 @@ test("cookie writer fence closes a worker first discovered after reconcile", asy
   await browser.withCookieWritersQuiesced(async () => {});
 
   assert.equal(connection.calls.some(({ method, params }) =>
-    method === "Target.attachToTarget" && params.targetId === "worker-a"), false);
+    method === "Target.attachToTarget" && params.targetId === "worker-a"), true);
+  assert.equal(connection.calls.some(({ method, params, sessionId }) =>
+    method === "Runtime.evaluate" && params.expression === "self.close()"
+      && sessionId === "worker-session-a"), true);
   assert.equal(connection.calls.some(({ method, params }) =>
-    method === "Target.closeTarget" && params.targetId === "worker-a"), true);
+    method === "Target.closeTarget" && params.targetId === "worker-a"), false);
 });
 
 test("failed event subscription closes the connection before a clean reconnect", async () => {
@@ -179,6 +182,25 @@ test("a failed cookie-writer fence release is never reused", async () => {
     { code: "browser_cookie_writer_fence_release_failed", recoveryRequired: true },
   );
   connection.failRelease = false;
+  await browser.withCookieWritersQuiesced(async () => {});
+
+  assert.equal(connection.calls.filter(({ method, params }) =>
+    method === "Target.setAutoAttach" && params.autoAttach === true).length,
+  initialFenceArmCount + 2);
+});
+
+test("a failed cookie-writer fence acquisition is never reused", async () => {
+  const connection = new AcquisitionFaultConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  const initialFenceArmCount = connection.calls.filter(({ method, params }) =>
+    method === "Target.setAutoAttach" && params.autoAttach === true).length;
+
+  await assert.rejects(
+    browser.withCookieWritersQuiesced(async () => {}),
+    { code: "browser_cookie_writer_fence_failed", recoveryRequired: true },
+  );
+  connection.failAcquisition = false;
   await browser.withCookieWritersQuiesced(async () => {});
 
   assert.equal(connection.calls.filter(({ method, params }) =>
@@ -967,6 +989,9 @@ class FakeConnection {
       };
     }
     if (method === "Runtime.evaluate") {
+      if (sessionId === "worker-session-a" && params.expression === "self.close()") {
+        this.closedTargetIds.add("worker-a");
+      }
       return { result: { value: sessionId === "session-b" } };
     }
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
@@ -985,6 +1010,21 @@ class ReleaseFaultConnection extends FakeConnection {
     if (this.failRelease && method === "Page.setWebLifecycleState" && params.state === "active") {
       this.calls.push({ method, params, sessionId });
       throw new Error("fixture release failure");
+    }
+    return super.send(method, params, sessionId);
+  }
+}
+
+class AcquisitionFaultConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.failAcquisition = true;
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (this.failAcquisition && method === "Page.stopLoading") {
+      this.calls.push({ method, params, sessionId });
+      throw new Error("fixture acquisition failure");
     }
     return super.send(method, params, sessionId);
   }

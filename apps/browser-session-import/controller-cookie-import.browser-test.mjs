@@ -154,6 +154,8 @@ test('controller imports into its registered target and rejects stale browser an
       globalThis.__charioxCookieWorker.terminate();
       delete globalThis.__charioxCookieWorker;
     });
+    await page.evaluate(() => fetch('/writer'));
+    await waitFor(async () => (await context.cookies()).some(cookie => cookie.value.startsWith('writer-')));
 
     refreshed = await controller.reconcile(viewport);
     current = refreshed.tabs.find(tab => tab.url === 'https://example.test/');
