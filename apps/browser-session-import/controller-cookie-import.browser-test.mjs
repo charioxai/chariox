@@ -46,9 +46,13 @@ test('controller imports into its registered target and rejects stale browser an
         workerWriterSequence += 1;
         workerRequestStarted?.resolve();
         await workerResponseGate?.promise;
-        return route.fulfill({status:200,headers:{
-          'set-cookie':`session=worker-${workerWriterSequence}; Path=/; Secure; HttpOnly; SameSite=Lax`,
-        },body:'worker'});
+        try {
+          return await route.fulfill({status:200,headers:{
+            'set-cookie':`session=worker-${workerWriterSequence}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+          },body:'worker'});
+        } catch {
+          return undefined;
+        }
       }
       if (requestPath === '/writer') {
         writerSequence += 1;
@@ -123,8 +127,8 @@ test('controller imports into its registered target and rejects stale browser an
         }
       });
     }));
-    refreshed = await controller.reconcile(viewport);
-    current = refreshed.tabs.find(tab => tab.url === 'https://example.test/');
+    // Do not reconcile after creating the worker: the fence must treat a writer
+    // first discovered during acquisition as untracked and close it.
     workerRequestStarted = Promise.withResolvers();
     workerResponseGate = Promise.withResolvers();
     await page.evaluate(() => globalThis.__charioxCookieWorker.postMessage('write'));
@@ -135,20 +139,17 @@ test('controller imports into its registered target and rejects stale browser an
       browserGeneration:refreshed.browser_generation,documentId:current.document_id},{...authority,
       complete:async payload => {
         durableCompletionStarted = true;
+        workerResponseGate.resolve();
+        await delay(100);
         assert.equal((await context.cookies()).find(cookie => cookie.name === 'session').value,
-          'fixture-controller','worker response must settle before the import snapshot is committed');
+          'fixture-controller','an untracked worker response cannot mutate cookies after import');
         await authority.complete(payload);
       }});
-    await delay(50);
-    assert.equal(durableCompletionStarted,false,
-      'an in-flight dedicated-worker response must drain before cookie import');
-    workerResponseGate.resolve();
     assert.deepEqual(await workerImport,{cookieCount:1,domains:['example.test']});
+    assert.equal(durableCompletionStarted,true);
     assert.deepEqual(completions,['outcome','clear']);
     workerRequestStarted = undefined;
     workerResponseGate = undefined;
-    await page.evaluate(() => globalThis.__charioxCookieWorker.postMessage('write'));
-    await waitFor(async () => (await context.cookies()).some(cookie => cookie.value === 'worker-2'));
     await page.evaluate(() => {
       globalThis.__charioxCookieWorker.terminate();
       delete globalThis.__charioxCookieWorker;

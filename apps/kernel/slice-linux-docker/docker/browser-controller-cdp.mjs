@@ -196,10 +196,10 @@ export class BrowserCdpClient {
         (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
           && typeof target.targetId === "string",
       );
-      const knownWriterTargets = await Promise.all(writerTargets.map(async ({ targetId }) => ({
-        targetId,
-        sessionId: await this.ensureWriterTargetSession(connection, targetId),
-      })));
+      const knownWriterTargets = writerTargets.flatMap(({ targetId }) => {
+        const sessionId = this.sessionsByTarget.get(targetId);
+        return sessionId ? [{ targetId, sessionId }] : [];
+      });
       this.cookieWriterFence = await acquireBrowserCookieWriterFence({
         connection,
         pageSessions,

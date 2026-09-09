@@ -29,6 +29,7 @@ export async function acquireBrowserCookieWriterFence({
   waitForWriterTargetsGone,
 }) {
   const pausedSessions = new Set();
+  const pausedTargetBySession = new Map();
   const frozenSessions = [];
   const writerSessions = [];
   const unsubscribe = connection.subscribe((message) => {
@@ -38,6 +39,14 @@ export async function acquireBrowserCookieWriterFence({
         && WRITER_TARGET_FILTER.some((entry) => !entry.exclude && entry.type === targetInfo?.type)
         && typeof sessionId === "string" && sessionId) {
       pausedSessions.add(sessionId);
+      if (typeof targetInfo?.targetId === "string") {
+        pausedTargetBySession.set(sessionId, targetInfo.targetId);
+      }
+    }
+    if (message?.method === "Target.detachedFromTarget") {
+      const detachedSessionId = message.params?.sessionId ?? message.sessionId;
+      pausedSessions.delete(detachedSessionId);
+      pausedTargetBySession.delete(detachedSessionId);
     }
   });
   let armed = false;
@@ -80,6 +89,13 @@ export async function acquireBrowserCookieWriterFence({
         throw new Error("writer target closure guard unavailable");
       }
       await waitForWriterTargetsGone(untrackedWriterTargetIds);
+      const closedTargetIds = new Set(untrackedWriterTargetIds);
+      for (const [sessionId, targetId] of pausedTargetBySession) {
+        if (closedTargetIds.has(targetId)) {
+          pausedSessions.delete(sessionId);
+          pausedTargetBySession.delete(sessionId);
+        }
+      }
     }
     for (const sessionId of pageSessions) {
       await connection.send("Page.setWebLifecycleState", { state: "frozen" }, sessionId);

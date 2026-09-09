@@ -135,6 +135,21 @@ test("cookie writer fence drains an existing worker response before import", asy
   assert.equal(imported, true);
 });
 
+test("cookie writer fence closes a worker first discovered after reconcile", async () => {
+  const connection = new FakeConnection();
+  connection.includeWorker = false;
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  connection.includeWorker = true;
+
+  await browser.withCookieWritersQuiesced(async () => {});
+
+  assert.equal(connection.calls.some(({ method, params }) =>
+    method === "Target.attachToTarget" && params.targetId === "worker-a"), false);
+  assert.equal(connection.calls.some(({ method, params }) =>
+    method === "Target.closeTarget" && params.targetId === "worker-a"), true);
+});
+
 test("failed event subscription closes the connection before a clean reconnect", async () => {
   const failed = new FakeConnection();
   failed.failDiscovery = true;
@@ -892,6 +907,8 @@ class FakeConnection {
     this.calls = [];
     this.open = true;
     this.listeners = new Set();
+    this.includeWorker = true;
+    this.closedTargetIds = new Set();
   }
 
   isOpen() {
@@ -920,9 +937,11 @@ class FakeConnection {
       return {
         targetInfos: [
           { targetId: "target-a", type: "page", url: "https://a.test/", title: "A" },
-          { targetId: "worker-a", type: "worker", url: "https://a.test/worker.js" },
+          ...(this.includeWorker
+            ? [{ targetId: "worker-a", type: "worker", url: "https://a.test/worker.js" }]
+            : []),
           { targetId: "target-b", type: "page", url: "https://b.test/", title: "B" },
-        ],
+        ].filter(({ targetId }) => !this.closedTargetIds.has(targetId)),
       };
     }
     if (method === "Target.attachToTarget") {
@@ -934,6 +953,7 @@ class FakeConnection {
       return { sessionId: sessions[params.targetId] };
     }
     if (method === "Target.closeTarget") {
+      this.closedTargetIds.add(params.targetId);
       return { success: true };
     }
     if (method === "Page.getFrameTree") {
