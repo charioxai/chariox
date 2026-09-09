@@ -51,8 +51,8 @@ test("persistent browser connection returns page identities, focus, and applied 
   assert.deepEqual(first.viewport, viewport);
   assert.equal(
     connection.calls.filter((call) => call.method === "Target.attachToTarget").length,
-    2,
-    "persistent target sessions should be reused",
+    3,
+    "persistent page and cookie-writing worker sessions should be reused",
   );
   assert.equal(
     connection.calls.filter((call) => call.method === "Page.enable").length,
@@ -62,7 +62,6 @@ test("persistent browser connection returns page identities, focus, and applied 
   for (const method of [
     "Page.setLifecycleEventsEnabled",
     "Runtime.enable",
-    "Network.enable",
     "Inspector.enable",
   ]) {
     assert.equal(
@@ -71,6 +70,11 @@ test("persistent browser connection returns page identities, focus, and applied 
       `${method} should run once for each persistent target session`,
     );
   }
+  assert.equal(
+    connection.calls.filter((call) => call.method === "Network.enable").length,
+    3,
+    "network requests must be tracked for pages and cookie-writing workers",
+  );
   assert.deepEqual(
     connection.calls.find(
       (call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a",
@@ -109,6 +113,28 @@ test("viewport validation happens before opening a browser connection", async ()
   assert.equal(connected, false);
 });
 
+test("cookie writer fence drains an existing worker response before import", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  connection.emit({
+    method: "Network.requestWillBeSent",
+    sessionId: "worker-session-a",
+    params: { requestId: "worker-cookie-response" },
+  });
+  let imported = false;
+  const guardedImport = browser.withCookieWritersQuiesced(async () => { imported = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(imported, false, "a worker response remains a cookie writer until it settles");
+  connection.emit({
+    method: "Network.loadingFinished",
+    sessionId: "worker-session-a",
+    params: { requestId: "worker-cookie-response" },
+  });
+  await guardedImport;
+  assert.equal(imported, true);
+});
+
 test("failed event subscription closes the connection before a clean reconnect", async () => {
   const failed = new FakeConnection();
   failed.failDiscovery = true;
@@ -124,6 +150,25 @@ test("failed event subscription closes the connection before a clean reconnect",
 
   assert.equal(result.browser_generation, 2);
   assert.equal(result.event_cursor, 1);
+});
+
+test("a failed cookie-writer fence release is never reused", async () => {
+  const connection = new ReleaseFaultConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  const initialFenceArmCount = connection.calls.filter(({ method, params }) =>
+    method === "Target.setAutoAttach" && params.autoAttach === true).length;
+
+  await assert.rejects(
+    browser.withCookieWritersQuiesced(async () => {}),
+    { code: "browser_cookie_writer_fence_release_failed", recoveryRequired: true },
+  );
+  connection.failRelease = false;
+  await browser.withCookieWritersQuiesced(async () => {});
+
+  assert.equal(connection.calls.filter(({ method, params }) =>
+    method === "Target.setAutoAttach" && params.autoAttach === true).length,
+  initialFenceArmCount + 2);
 });
 
 test("a detached target session is discarded before the next reconcile", async () => {
@@ -875,13 +920,18 @@ class FakeConnection {
       return {
         targetInfos: [
           { targetId: "target-a", type: "page", url: "https://a.test/", title: "A" },
-          { targetId: "worker-a", type: "service_worker", url: "https://a.test/sw.js" },
+          { targetId: "worker-a", type: "worker", url: "https://a.test/worker.js" },
           { targetId: "target-b", type: "page", url: "https://b.test/", title: "B" },
         ],
       };
     }
     if (method === "Target.attachToTarget") {
-      return { sessionId: params.targetId === "target-a" ? "session-a" : "session-b" };
+      const sessions = {
+        "target-a": "session-a",
+        "target-b": "session-b",
+        "worker-a": "worker-session-a",
+      };
+      return { sessionId: sessions[params.targetId] };
     }
     if (method === "Target.closeTarget") {
       return { success: true };
@@ -902,6 +952,21 @@ class FakeConnection {
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
     if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
+  }
+}
+
+class ReleaseFaultConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.failRelease = true;
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (this.failRelease && method === "Page.setWebLifecycleState" && params.state === "active") {
+      this.calls.push({ method, params, sessionId });
+      throw new Error("fixture release failure");
+    }
+    return super.send(method, params, sessionId);
   }
 }
 

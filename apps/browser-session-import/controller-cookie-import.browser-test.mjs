@@ -30,8 +30,27 @@ test('controller imports into its registered target and rejects stale browser an
     const port = Number((await readFile(path.join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0]);
     controller = new BrowserCdpClient({debuggerEndpoint:`http://127.0.0.1:${port}`});
     let writerSequence = 0;
+    let workerWriterSequence = 0;
+    let workerRequestStarted;
+    let workerResponseGate;
     await context.route('**/*',async route => {
-      if (new URL(route.request().url()).pathname === '/writer') {
+      const requestPath = new URL(route.request().url()).pathname;
+      if (requestPath === '/cookie-worker.js') {
+        return route.fulfill({status:200,contentType:'application/javascript',body:`
+          postMessage('ready');
+          onmessage = () => fetch('/worker-writer')
+            .then(() => postMessage('done'), () => postMessage('failed'));
+        `});
+      }
+      if (requestPath === '/worker-writer') {
+        workerWriterSequence += 1;
+        workerRequestStarted?.resolve();
+        await workerResponseGate?.promise;
+        return route.fulfill({status:200,headers:{
+          'set-cookie':`session=worker-${workerWriterSequence}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+        },body:'worker'});
+      }
+      if (requestPath === '/writer') {
         writerSequence += 1;
         return route.fulfill({status:200,headers:{
           'set-cookie':`session=writer-${writerSequence}; Path=/; Secure; HttpOnly; SameSite=Lax`,
@@ -93,6 +112,47 @@ test('controller imports into its registered target and rejects stale browser an
     assert.deepEqual(completions,['outcome','clear']);
     await waitFor(async () => (await context.cookies()).some(cookie => cookie.value.startsWith('writer-')));
     await page.evaluate(() => clearInterval(globalThis.__charioxWriter));
+
+    await page.evaluate(() => new Promise((resolve,reject) => {
+      const worker = new Worker('/cookie-worker.js');
+      worker.addEventListener('error',reject,{once:true});
+      worker.addEventListener('message',event => {
+        if (event.data === 'ready') {
+          globalThis.__charioxCookieWorker = worker;
+          resolve();
+        }
+      });
+    }));
+    refreshed = await controller.reconcile(viewport);
+    current = refreshed.tabs.find(tab => tab.url === 'https://example.test/');
+    workerRequestStarted = Promise.withResolvers();
+    workerResponseGate = Promise.withResolvers();
+    await page.evaluate(() => globalThis.__charioxCookieWorker.postMessage('write'));
+    await workerRequestStarted.promise;
+    let durableCompletionStarted = false;
+    completions.length = 0;
+    const workerImport = applyControllerCookieImport({...selection,overwrite:true,
+      browserGeneration:refreshed.browser_generation,documentId:current.document_id},{...authority,
+      complete:async payload => {
+        durableCompletionStarted = true;
+        assert.equal((await context.cookies()).find(cookie => cookie.name === 'session').value,
+          'fixture-controller','worker response must settle before the import snapshot is committed');
+        await authority.complete(payload);
+      }});
+    await delay(50);
+    assert.equal(durableCompletionStarted,false,
+      'an in-flight dedicated-worker response must drain before cookie import');
+    workerResponseGate.resolve();
+    assert.deepEqual(await workerImport,{cookieCount:1,domains:['example.test']});
+    assert.deepEqual(completions,['outcome','clear']);
+    workerRequestStarted = undefined;
+    workerResponseGate = undefined;
+    await page.evaluate(() => globalThis.__charioxCookieWorker.postMessage('write'));
+    await waitFor(async () => (await context.cookies()).some(cookie => cookie.value === 'worker-2'));
+    await page.evaluate(() => {
+      globalThis.__charioxCookieWorker.terminate();
+      delete globalThis.__charioxCookieWorker;
+    });
 
     refreshed = await controller.reconcile(viewport);
     current = refreshed.tabs.find(tab => tab.url === 'https://example.test/');

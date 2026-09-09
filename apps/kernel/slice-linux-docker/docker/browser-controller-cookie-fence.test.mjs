@@ -5,10 +5,15 @@ import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fen
 
 test("cookie writer fence freezes pages and pauses new browser writers until release", async () => {
   const connection = new FenceConnection();
+  let closedTargets;
   const fence = await acquireBrowserCookieWriterFence({
     connection,
     pageSessions: ["page-a", "page-b"],
-    waitForNetworkIdle: async (sessions) => assert.deepEqual(sessions, ["page-a", "page-b"]),
+    knownWriterTargets: [{ targetId: "worker-known", sessionId: "worker-known-session" }],
+    waitForNetworkIdle: async (sessions) => {
+      assert.deepEqual(sessions, ["page-a", "page-b", "worker-known-session"]);
+    },
+    waitForWriterTargetsGone: async (targetIds) => { closedTargets = targetIds; },
   });
 
   assert.equal(connection.calls[0].method, "Target.setAutoAttach");
@@ -20,6 +25,14 @@ test("cookie writer fence freezes pages and pauses new browser writers until rel
         "Page.setWebLifecycleState"],
     );
   }
+  assert.deepEqual(
+    connection.calls.filter((call) => call.sessionId === "worker-known-session")
+      .map(({ method }) => method),
+    ["Debugger.pause", "Network.emulateNetworkConditions"],
+  );
+  assert.deepEqual(closedTargets, ["worker-untracked"]);
+  assert.ok(connection.calls.some(({ method, params }) =>
+    method === "Target.closeTarget" && params.targetId === "worker-untracked"));
 
   const releaseStart = connection.calls.length;
   await fence.release();
@@ -28,6 +41,8 @@ test("cookie writer fence freezes pages and pauses new browser writers until rel
     "Target.setAutoAttach",
     "Runtime.runIfWaitingForDebugger",
     "Target.detachFromTarget",
+    "Network.emulateNetworkConditions",
+    "Debugger.resume",
     "Page.setWebLifecycleState",
     "Network.emulateNetworkConditions",
     "Emulation.setScriptExecutionDisabled",
@@ -48,12 +63,15 @@ test("cookie writer fence fails closed and restores pages if acquisition is inco
     acquireBrowserCookieWriterFence({
       connection,
       pageSessions: ["page-a"],
+      knownWriterTargets: [{ targetId: "worker-known", sessionId: "worker-known-session" }],
       waitForNetworkIdle: async () => {},
     }),
     { code: "browser_cookie_writer_fence_failed", recoveryRequired: true },
   );
   assert.ok(connection.calls.some(({ method, params }) =>
     method === "Network.emulateNetworkConditions" && params.offline === false));
+  assert.ok(connection.calls.some(({ method, sessionId }) =>
+    method === "Debugger.resume" && sessionId === "worker-known-session"));
 });
 
 class FenceConnection {
@@ -83,6 +101,13 @@ class FenceConnection {
       }
     }
     if (method === this.failOn) throw new Error("fixture failure");
+    if (method === "Target.getTargets") {
+      return { targetInfos: [
+        { targetId: "worker-known", type: "worker" },
+        { targetId: "worker-untracked", type: "shared_worker" },
+      ] };
+    }
+    if (method === "Target.closeTarget") return { success: true };
     return {};
   }
 }

@@ -6,6 +6,12 @@ const WRITER_TARGET_FILTER = [
   { exclude: true },
 ];
 
+const CLOSEABLE_WRITER_TARGET_TYPES = new Set([
+  "worker",
+  "shared_worker",
+  "service_worker",
+]);
+
 const OFFLINE = {
   offline: true,
   latency: 0,
@@ -15,9 +21,16 @@ const OFFLINE = {
 
 const ONLINE = { ...OFFLINE, offline: false };
 
-export async function acquireBrowserCookieWriterFence({ connection, pageSessions, waitForNetworkIdle }) {
+export async function acquireBrowserCookieWriterFence({
+  connection,
+  pageSessions,
+  knownWriterTargets = [],
+  waitForNetworkIdle,
+  waitForWriterTargetsGone,
+}) {
   const pausedSessions = new Set();
   const frozenSessions = [];
+  const writerSessions = [];
   const unsubscribe = connection.subscribe((message) => {
     const { sessionId, targetInfo, waitingForDebugger } = message?.params ?? {};
     if (message?.method === "Target.attachedToTarget"
@@ -36,6 +49,11 @@ export async function acquireBrowserCookieWriterFence({ connection, pageSessions
       filter: WRITER_TARGET_FILTER,
     });
     armed = true;
+    for (const { sessionId } of knownWriterTargets) {
+      writerSessions.push(sessionId);
+      await connection.send("Debugger.pause", {}, sessionId);
+      await connection.send("Network.emulateNetworkConditions", OFFLINE, sessionId);
+    }
     for (const sessionId of pageSessions) {
       frozenSessions.push(sessionId);
       await connection.send("ServiceWorker.enable", {}, sessionId);
@@ -45,27 +63,46 @@ export async function acquireBrowserCookieWriterFence({ connection, pageSessions
       await connection.send("Page.stopLoading", {}, sessionId);
     }
     if (typeof waitForNetworkIdle !== "function") throw new Error("network idle guard unavailable");
-    await waitForNetworkIdle(pageSessions);
+    await waitForNetworkIdle([...pageSessions, ...writerSessions]);
+    const knownWriterTargetIds = new Set(knownWriterTargets.map(({ targetId }) => targetId));
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const untrackedWriterTargetIds = targetInfos
+      .filter((target) => CLOSEABLE_WRITER_TARGET_TYPES.has(target?.type)
+        && typeof target.targetId === "string"
+        && !knownWriterTargetIds.has(target.targetId))
+      .map(({ targetId }) => targetId);
+    for (const targetId of untrackedWriterTargetIds) {
+      const closed = await connection.send("Target.closeTarget", { targetId });
+      if (closed?.success !== true) throw new Error(`browser writer target ${targetId} did not close`);
+    }
+    if (untrackedWriterTargetIds.length > 0) {
+      if (typeof waitForWriterTargetsGone !== "function") {
+        throw new Error("writer target closure guard unavailable");
+      }
+      await waitForWriterTargetsGone(untrackedWriterTargetIds);
+    }
     for (const sessionId of pageSessions) {
       await connection.send("Page.setWebLifecycleState", { state: "frozen" }, sessionId);
     }
     return new BrowserCookieWriterFence({
       connection,
       frozenSessions,
+      writerSessions,
       pausedSessions,
       unsubscribe,
     });
   } catch (error) {
     unsubscribe();
-    await release({ connection, frozenSessions, pausedSessions, armed }).catch(() => {});
+    await release({ connection, frozenSessions, writerSessions, pausedSessions, armed }).catch(() => {});
     throw failure("browser_cookie_writer_fence_failed", error);
   }
 }
 
 class BrowserCookieWriterFence {
-  constructor({ connection, frozenSessions, pausedSessions, unsubscribe }) {
+  constructor({ connection, frozenSessions, writerSessions, pausedSessions, unsubscribe }) {
     this.connection = connection;
     this.frozenSessions = frozenSessions;
+    this.writerSessions = writerSessions;
     this.pausedSessions = pausedSessions;
     this.unsubscribe = unsubscribe;
     this.released = false;
@@ -79,6 +116,7 @@ class BrowserCookieWriterFence {
       await release({
         connection: this.connection,
         frozenSessions: this.frozenSessions,
+        writerSessions: this.writerSessions,
         pausedSessions: this.pausedSessions,
         armed: true,
       });
@@ -88,7 +126,7 @@ class BrowserCookieWriterFence {
   }
 }
 
-async function release({ connection, frozenSessions, pausedSessions, armed }) {
+async function release({ connection, frozenSessions, writerSessions = [], pausedSessions, armed }) {
   const failures = [];
   if (armed) {
     await connection.send("Target.setAutoAttach", {
@@ -101,6 +139,12 @@ async function release({ connection, frozenSessions, pausedSessions, armed }) {
     await connection.send("Runtime.runIfWaitingForDebugger", {}, sessionId)
       .catch((error) => failures.push(error));
     await connection.send("Target.detachFromTarget", { sessionId })
+      .catch((error) => failures.push(error));
+  }
+  for (const sessionId of [...writerSessions].reverse()) {
+    await connection.send("Network.emulateNetworkConditions", ONLINE, sessionId)
+      .catch((error) => failures.push(error));
+    await connection.send("Debugger.resume", {}, sessionId)
       .catch((error) => failures.push(error));
   }
   for (const sessionId of [...frozenSessions].reverse()) {

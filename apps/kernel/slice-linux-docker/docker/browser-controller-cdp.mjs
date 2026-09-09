@@ -37,6 +37,7 @@ import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fen
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 
 export class BrowserControllerError extends Error {
   constructor(code, message) {
@@ -96,9 +97,15 @@ export class BrowserCdpClient {
       const pages = targetInfos.filter(
         (target) => target?.type === "page" && typeof target.targetId === "string",
       );
-      const pageTargetIds = new Set(pages.map((target) => target.targetId));
+      const writerTargets = targetInfos.filter(
+        (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
+          && typeof target.targetId === "string",
+      );
+      const persistentTargetIds = new Set(
+        [...pages, ...writerTargets].map((target) => target.targetId),
+      );
       for (const targetId of this.sessionsByTarget.keys()) {
-        if (!pageTargetIds.has(targetId)) {
+        if (!persistentTargetIds.has(targetId)) {
           const sessionId = this.sessionsByTarget.get(targetId);
           this.targetsBySession.delete(sessionId);
           this.networkRequestsBySession.delete(sessionId);
@@ -112,6 +119,9 @@ export class BrowserCdpClient {
       }
       const inspected = await Promise.all(
         pages.map((target) => this.inspectPage(connection, target, viewport)),
+      );
+      await Promise.all(
+        writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
@@ -182,10 +192,20 @@ export class BrowserCdpClient {
       const pageSessions = await Promise.all(
         pageTargets.map((target) => this.ensureTargetSession(connection, target.targetId)),
       );
+      const writerTargets = targetInfos.filter(
+        (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
+          && typeof target.targetId === "string",
+      );
+      const knownWriterTargets = await Promise.all(writerTargets.map(async ({ targetId }) => ({
+        targetId,
+        sessionId: await this.ensureWriterTargetSession(connection, targetId),
+      })));
       this.cookieWriterFence = await acquireBrowserCookieWriterFence({
         connection,
         pageSessions,
+        knownWriterTargets,
         waitForNetworkIdle: (sessions) => this.waitForNetworkIdle(sessions),
+        waitForWriterTargetsGone: (targetIds) => this.waitForWriterTargetsGone(connection, targetIds),
       });
     }
     const fence = this.cookieWriterFence;
@@ -196,8 +216,8 @@ export class BrowserCdpClient {
     } finally {
       this.cookieWriterFenceInUse = false;
       if (!retained && this.cookieWriterFence === fence) {
-        await fence.release();
         this.cookieWriterFence = null;
+        await fence.release();
       }
     }
   }
@@ -212,6 +232,24 @@ export class BrowserCdpClient {
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  async waitForWriterTargetsGone(connection, targetIds) {
+    const pending = new Set(targetIds);
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (true) {
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      const live = targetInfos.some((target) => pending.has(target?.targetId));
+      if (!live) return;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new BrowserControllerError(
+          "browser_cookie_writer_fence_timeout",
+          "browser writer targets did not close before cookie import",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
     }
   }
 
@@ -742,6 +780,36 @@ export class BrowserCdpClient {
       this.sessionsByTarget.delete(targetId);
       this.targetsBySession.delete(sessionId);
       await this.frameSessions.removeTarget(targetId);
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      throw error;
+    }
+    return sessionId;
+  }
+
+  async ensureWriterTargetSession(connection, targetId) {
+    let sessionId = this.sessionsByTarget.get(targetId);
+    if (sessionId) return sessionId;
+    const attached = await connection.send("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    });
+    if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
+      throw new BrowserControllerError(
+        "browser_attach_failed",
+        `browser writer target ${JSON.stringify(targetId)} did not return a session`,
+      );
+    }
+    sessionId = attached.sessionId;
+    this.sessionsByTarget.set(targetId, sessionId);
+    this.targetsBySession.set(sessionId, targetId);
+    try {
+      await Promise.all([
+        connection.send("Network.enable", {}, sessionId),
+        connection.send("Debugger.enable", {}, sessionId),
+      ]);
+    } catch (error) {
+      this.sessionsByTarget.delete(targetId);
+      this.targetsBySession.delete(sessionId);
       await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       throw error;
     }
