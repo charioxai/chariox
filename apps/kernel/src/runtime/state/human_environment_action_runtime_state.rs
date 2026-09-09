@@ -30,6 +30,12 @@ impl KernelRuntimeState {
         request: SubmitRoomEnvironmentActionRequest,
         actor: EnvironmentActor,
     ) -> Result<(String, RoomEnvironmentSnapshot), DaemonError> {
+        let _execution_guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(&request.session_id)
+            .read_owned()
+            .await;
         let environment = self
             .room_environment_snapshot(&request.session_id)
             .map_err(human_action_environment_error)?;

@@ -11,7 +11,126 @@ use crate::runtime::browser_import_admission::{ImportBinding, ImportRequestId};
 use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::session::{EnvironmentLifecycle, DEFAULT_LOCAL_USER_ID};
 
+/// Cannot be constructed from a caller-supplied identity or detached from its lock.
+pub(crate) struct BrowserImportDestination {
+    runtime: KernelRuntimeState,
+    environment_id: String,
+    id: ImportRequestId,
+    verified: bool,
+    _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+impl BrowserImportDestination {
+    /// Trusted executor only, after verified application or rollback. Cleanup
+    /// must acknowledge removal of the matching encrypted recovery journal.
+    /// Any failure retains the durable admission block for restart recovery.
+    pub(crate) async fn complete_after_verification<F>(self, cleanup: F) -> Result<(), DaemonError>
+    where
+        F: std::future::Future<Output = Result<(), DaemonError>>,
+    {
+        let store = &self.runtime.owned.durable_state_store;
+        if !self.verified {
+            store
+                .mark_browser_import_recovered(&self.environment_id, self.id.as_str())
+                .map_err(|_| denied())?;
+        }
+        cleanup.await.map_err(|_| denied())?;
+        store
+            .clear_recovered_browser_import(&self.environment_id, self.id.as_str())
+            .map_err(|_| denied())?;
+        self.runtime
+            .owned
+            .browser_import_admission
+            .finish(&self.id)
+            .map_err(|_| denied())
+    }
+}
+
 impl KernelRuntimeState {
+    /// Resume cleanup only when verification was durably acknowledged. This
+    /// does not authorize replay of cookie writes or treat missing state as success.
+    pub(crate) async fn resume_browser_import_cleanup(
+        &self,
+        command: &KernelCommand,
+        session_id: &str,
+        attachment_id: &str,
+        request_id: &str,
+    ) -> Result<BrowserImportDestination, DaemonError> {
+        self.browser_import_human(command, session_id, attachment_id)
+            .await?;
+        let guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .write_owned()
+            .await;
+        let (user_id, _) = self
+            .browser_import_human(command, session_id, attachment_id)
+            .await?;
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|_| denied())?;
+        let pending = self
+            .owned
+            .durable_state_store
+            .pending_browser_import(&environment.environment_id)
+            .map_err(|_| denied())?
+            .ok_or_else(denied)?;
+        if pending.recovery_required
+            || pending.user_id != user_id
+            || pending.room_id != session_id
+            || pending.request_id != request_id
+        {
+            return Err(denied());
+        }
+        let id = ImportRequestId::from_wire(request_id).map_err(|_| denied())?;
+        Ok(BrowserImportDestination {
+            runtime: self.clone(),
+            environment_id: environment.environment_id,
+            id,
+            verified: true,
+            _guard: guard,
+        })
+    }
+
+    /// Destination entry point. Revalidate consent after draining room actions,
+    /// then acknowledge durable recovery state before permitting cookie mutation.
+    pub(crate) async fn claim_browser_import_destination(
+        &self,
+        command: &KernelCommand,
+        selection: &BrowserImportSelection,
+        request_id: &str,
+    ) -> Result<BrowserImportDestination, DaemonError> {
+        let guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(&selection.session_id)
+            .write_owned()
+            .await;
+        let binding = self.browser_import_binding(command, selection).await?;
+        let id = ImportRequestId::from_wire(request_id).map_err(|_| denied())?;
+        self.owned
+            .browser_import_admission
+            .claim(&id, &binding, Instant::now())
+            .map_err(|_| denied())?;
+        self.owned
+            .durable_state_store
+            .begin_browser_import_recovery(
+                &binding.environment_id,
+                id.as_str(),
+                &binding.user_id,
+                &binding.room_id,
+            )
+            .map_err(|_| denied())?;
+        Ok(BrowserImportDestination {
+            runtime: self.clone(),
+            environment_id: binding.environment_id,
+            id,
+            verified: false,
+            _guard: guard,
+        })
+    }
+
     /// Terminal consent only. No cookie payload, controller write or agent turn.
     pub(crate) async fn execute_browser_import_consent(
         &self,

@@ -235,12 +235,16 @@ impl BrowserImportAdmission {
 
     /// Trusted execution completion only, after successful verification or recovery.
     /// Cancellation alone must not release an in-flight destination writer.
+    /// Missing volatile state is expected after kernel restart; durable completion
+    /// remains the caller's authority for invoking this operation.
     pub(crate) fn finish(&self, id: &ImportRequestId) -> Result<(), ImportAdmissionError> {
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| ImportAdmissionError::Denied)?;
-        let entry = entries.get(id).ok_or(ImportAdmissionError::Denied)?;
+        let Some(entry) = entries.get(id) else {
+            return Ok(());
+        };
         if !matches!(entry.phase, Phase::Applying | Phase::Cancelled) {
             return Err(ImportAdmissionError::Denied);
         }

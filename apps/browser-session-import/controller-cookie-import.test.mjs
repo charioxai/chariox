@@ -45,14 +45,17 @@ function fixture(journal, beforeWrite = async () => {}) {
     if (method === 'Network.deleteCookies') { cookies=[]; return {}; }
     throw new Error('unexpected fixture command');
   }};
-  return {calls,selection:{source,scope,browserGeneration:1,targetId:'target',documentId:'document',
-    controller:{browserGeneration:1,resolvePageTarget:async () => ({connection,sessionId:'cdp'})}},
-    authority:{journal,authorize:async () => true,runExclusive:async operation => operation()}};
+  const controller = {browserGeneration:1,
+    resolvePageTarget:async () => ({connection,sessionId:'cdp'}),
+    withCookieWritersQuiesced:async operation => operation({retain:()=>{}})};
+  return {calls,selection:{source,scope,browserGeneration:1,targetId:'target',documentId:'document',controller},
+    authority:{journal,authorize:async () => true,runExclusive:async operation => operation(),
+      complete:async ({receipt}) => journal.discard(receipt)}};
 }
 
 test('controller bridge refuses mutation without a recovery journal',async () => {
   const {selection,authority,calls} = fixture();
-  await assert.rejects(applyControllerCookieImport(selection,authority),{code:'cookie_import_denied'});
+  await assert.rejects(applyControllerCookieImport(selection,authority),{code:'cookie_import_journal_required'});
   assert.deepEqual(calls,[]);
 });
 
@@ -69,20 +72,27 @@ test('controller bridge blocks an existing recovery record before cookie access'
   });
 });
 
-test('controller bridge acknowledges journal before cookie write and retains it after readback',async () => {
+test('controller bridge acknowledges journal before cookie write and clears it only after completion',async () => {
   await withJournal(async journal => {
     let receipt;
+    let journalPresentAtCompletion = false;
     const {selection,authority} = fixture(journal,async () => {
       const pending = await journal.read();
       assert.ok(pending,'cookie write must have an acknowledged journal');
       receipt=pending.receipt;
       pending.bytes.fill(0);
     });
+    authority.complete = async ({receipt:completedReceipt}) => {
+      const pending = await journal.read();
+      journalPresentAtCompletion = pending?.receipt === completedReceipt;
+      pending?.bytes.fill(0);
+      await journal.discard(completedReceipt);
+    };
     assert.deepEqual(await applyControllerCookieImport(selection,authority),
       {cookieCount:1,domains:['example.test']});
-    const retained = await journal.read();
-    assert.equal(retained.receipt,receipt);
-    retained.bytes.fill(0);
+    assert.equal(journalPresentAtCompletion,true);
+    assert.equal(typeof receipt,'string');
+    assert.equal(await journal.read(),null);
   });
 });
 

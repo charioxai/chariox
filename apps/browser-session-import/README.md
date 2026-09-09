@@ -126,6 +126,12 @@ zeroized by this module.
 
 ## Supported conversion
 
+The internal `applyControllerCookieImport` bridge requires a trusted encrypted
+journal dependency before resolving a browser target. It forwards that journal
+to the transaction and retains pending state after readback. Its disposable
+Chrome test verifies retained recovery data and rejection when the journal is
+missing. This does not provide kernel key provisioning or durable completion.
+
 - Exact approved cookie domains and one exact source store. Approval does not
   automatically cover subdomains. Domain cookies retain domain scope, while
   host-only cookies use a URL without a domain attribute.
@@ -414,9 +420,19 @@ sign-in, cancellation rollback and an untouched partitioned control cookie.
 browser generation and live document identity before application and at each
 authorization checkpoint. It snapshots source records and scope before awaiting
 consent. The trusted consent callback receives frozen target/scope metadata, not
-cookie values. Missing consent/exclusion functions, denied consent and stale
-identities fail closed. The caller's exclusive operation covers target selection
-and the complete transaction.
+cookie values. Missing consent/exclusion/completion functions, denied consent and
+stale identities fail closed. The caller's exclusive operation covers target
+selection and the complete transaction.
+
+The controller's cookie-writer fence auto-pauses newly created page and worker
+targets, stops service workers, disables page scripts, forces current page
+sessions offline, stops loading, waits for tracked requests to settle, and
+freezes each page. Verified import or recovery must record its durable outcome
+and remove the encrypted journal before the controller releases the fence. An
+uncertain result retains the in-process fence. Restart recovery acquires a fresh
+fence before reading or restoring the journal. The real browser fixture runs a
+continuous response-driven cookie writer and proves it cannot race import or
+durable cleanup, then proves the page resumes after release.
 
 Persistent Chrome profiles can report a default context ID in target metadata
 that `Storage.getCookies` does not accept. The CDP adapter queries
@@ -448,9 +464,8 @@ alone does not quarantine a controller after process death, stop page/network
 writers, validate DNS cookie semantics, or provide durable recovery. Those
 remain requirements of the Environment executor.
 
-The bridge is not yet called by a kernel request or installed in the slice image.
-It does not consume kernel consent or implement writer quiescence or recovery.
-No controller apply command is exposed. Run its
+The bridge is not yet called by a kernel request. It does not consume kernel
+consent and no controller apply command is exposed. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
 
@@ -459,8 +474,8 @@ destination application authorization, encrypted transport, bounded decoding,
 expiry and replay protection, cancellation and transactional application with
 rollback. Add shared protocol versioning and Web/TUI progress and results when
 that transport is implemented.
-The remaining destination work includes kernel integration, writer quiescence,
-durable encrypted recovery state and process/browser-crash drills.
+The remaining destination work includes kernel integration and
+process/browser-crash drills.
 Complete the security and service validation matrix in
 `docs/BROWSER_SESSION_IMPORT_RESEARCH.md` before importing real sign-ins.
 

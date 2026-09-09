@@ -44,6 +44,7 @@ use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod browser_import_consent;
 mod browser_import_execution_gate;
+mod environment_execution_gate;
 mod event_delivery_runtime_state;
 mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
@@ -91,6 +92,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
     browser_controller_generations:
@@ -527,6 +529,7 @@ impl KernelRuntimeState {
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
+                environment_execution_gates: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),

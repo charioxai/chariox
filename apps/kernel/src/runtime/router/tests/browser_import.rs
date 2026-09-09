@@ -3,14 +3,28 @@ use serde_json::{json, Value};
 
 #[test]
 fn browser_import_consent_requires_verified_owner_and_unchanged_selection() {
+    run_consent_round_trip(None);
+}
+
+#[test]
+fn browser_import_destination_claim_requires_verified_owner() {
+    run_consent_round_trip(Some(false));
+}
+
+#[test]
+fn browser_import_failed_cleanup_retains_admission_block() {
+    run_consent_round_trip(Some(true));
+}
+
+fn run_consent_round_trip(cleanup_failure: Option<bool>) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(consent_round_trip());
+                .block_on(consent_round_trip(cleanup_failure));
         })
         .unwrap()
         .join()
@@ -24,7 +38,7 @@ impl Drop for Scratch {
     }
 }
 
-async fn consent_round_trip() {
+async fn consent_round_trip(cleanup_failure: Option<bool>) {
     let config = DaemonConfig::for_tests();
     let database_path = config.user_config.state.path.clone().unwrap();
     let _scratch = Scratch(
@@ -89,7 +103,7 @@ async fn consent_round_trip() {
     };
     let prepare = json!({"PrepareBrowserImport": {"selection": selection}});
     // Seed durable state directly to model a prior executor/kernel restart.
-    let database = rusqlite::Connection::open(database_path).unwrap();
+    let database = rusqlite::Connection::open(&database_path).unwrap();
     database
         .execute(
             "INSERT INTO durable_browser_import VALUES (?1, 'prior-request', ?2, ?3, 1)",
@@ -104,6 +118,20 @@ async fn consent_round_trip() {
         dispatch(&router, &caller, prepare.clone()).await.is_err(),
         "durable recovery state must block new consent"
     );
+    let action = || {
+        crate::session::EnvironmentActionRequest::computer_mutation(
+            "fixture-actor",
+            environment.runtime_generation,
+            "click",
+            None,
+        )
+    };
+    assert_eq!(
+        state
+            .submit_room_environment_action(session.id(), action())
+            .unwrap_err(),
+        crate::session::EnvironmentError::BrowserImportRecoveryRequired
+    );
     database
         .execute(
             "UPDATE durable_browser_import SET recovery_required = 0",
@@ -113,6 +141,12 @@ async fn consent_round_trip() {
     assert!(
         dispatch(&router, &caller, prepare.clone()).await.is_err(),
         "verified recovery still blocks until journal cleanup"
+    );
+    assert_eq!(
+        state
+            .submit_room_environment_action(session.id(), action())
+            .unwrap_err(),
+        crate::session::EnvironmentError::BrowserImportRecoveryRequired
     );
     database
         .execute(
@@ -128,6 +162,9 @@ async fn consent_round_trip() {
         .execute("DELETE FROM durable_browser_import", [])
         .unwrap();
     drop(database);
+    assert!(state
+        .ensure_browser_import_execution_allowed(session.id())
+        .is_ok());
     let mut unverified = caller.clone();
     unverified.public_key_thumbprint = None;
     assert!(dispatch(&router, &unverified, prepare.clone())
@@ -244,6 +281,147 @@ async fn consent_round_trip() {
     assert!(dispatch(&router, &denied_caller, authorize.clone())
         .await
         .is_err());
+    if let Some(cleanup_failure) = cleanup_failure {
+        let destination_selection = serde_json::from_value(selection.clone()).unwrap();
+        let destination_request: LocalDaemonRequest =
+            serde_json::from_value(authorize.clone()).unwrap();
+        let destination_command = |identity: KernelCaller| {
+            KernelCommand::from_local_request_with_caller(
+                "destination-test",
+                KernelCommandSource::RelayClient,
+                identity,
+                None,
+                None,
+                &destination_request,
+            )
+        };
+        assert!(state
+            .claim_browser_import_destination(
+                &destination_command(denied_caller.clone()),
+                &destination_selection,
+                id,
+            )
+            .await
+            .is_err());
+        let destination_guard = state
+            .claim_browser_import_destination(
+                &destination_command(caller.clone()),
+                &destination_selection,
+                id,
+            )
+            .await
+            .unwrap();
+        assert!(state
+            .ensure_browser_import_execution_allowed(session.id())
+            .is_err());
+        let completion = destination_guard
+            .complete_after_verification(async {
+                assert!(state
+                    .ensure_browser_import_execution_allowed(session.id())
+                    .is_err());
+                let database = rusqlite::Connection::open(&database_path).unwrap();
+                let recovery_required: bool = database.query_row(
+                "SELECT recovery_required FROM durable_browser_import WHERE environment_id = ?1",
+                [&environment.environment_id], |row| row.get(0),
+            ).unwrap();
+                assert!(
+                    !recovery_required,
+                    "durable verification must precede journal cleanup"
+                );
+                if cleanup_failure {
+                    Err(DaemonError::LocalTransport {
+                        operation: "fixture cleanup",
+                        message: "synthetic private storage detail".into(),
+                    })
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+        if cleanup_failure {
+            let error = completion.unwrap_err();
+            assert!(!format!("{error:?}").contains("synthetic private storage detail"));
+            assert!(state
+                .ensure_browser_import_execution_allowed(session.id())
+                .is_err());
+            assert!(dispatch(&router, &caller, prepare.clone()).await.is_err());
+            assert!(
+                state
+                    .resume_browser_import_cleanup(
+                        &destination_command(denied_caller.clone()),
+                        session.id(),
+                        attachment.id(),
+                        id,
+                    )
+                    .await
+                    .is_err(),
+                "automation cannot resume cleanup"
+            );
+            // Model reopening a record that has not durably acknowledged rollback.
+            let recovery_database = rusqlite::Connection::open(&database_path).unwrap();
+            recovery_database
+                .execute(
+                    "UPDATE durable_browser_import SET recovery_required = 1 WHERE request_id = ?1",
+                    [id],
+                )
+                .unwrap();
+            assert!(
+                state
+                    .resume_browser_import_cleanup(
+                        &destination_command(caller.clone()),
+                        session.id(),
+                        attachment.id(),
+                        id,
+                    )
+                    .await
+                    .is_err(),
+                "unverified state requires recovery, not cleanup"
+            );
+            recovery_database
+                .execute(
+                    "UPDATE durable_browser_import SET recovery_required = 0 WHERE request_id = ?1",
+                    [id],
+                )
+                .unwrap();
+            drop(recovery_database);
+            assert!(state
+                .resume_browser_import_cleanup(
+                    &destination_command(caller.clone()),
+                    session.id(),
+                    attachment.id(),
+                    &"b".repeat(32),
+                )
+                .await
+                .is_err());
+            let resumed = state
+                .resume_browser_import_cleanup(
+                    &destination_command(caller.clone()),
+                    session.id(),
+                    attachment.id(),
+                    id,
+                )
+                .await
+                .unwrap();
+            resumed
+                .complete_after_verification(async { Ok(()) })
+                .await
+                .unwrap();
+            assert!(state
+                .ensure_browser_import_execution_allowed(session.id())
+                .is_ok());
+            assert!(dispatch(&router, &caller, prepare).await.is_ok());
+            return;
+        }
+        completion.unwrap();
+        assert!(state
+            .ensure_browser_import_execution_allowed(session.id())
+            .is_ok());
+        assert!(
+            dispatch(&router, &caller, prepare).await.is_ok(),
+            "completion must release the in-memory consent claim too"
+        );
+        return;
+    }
     let cancel = json!({"CancelBrowserImport": {"session_id": session.id(), "attachment_id": attachment.id(), "request_id": id}});
     assert_eq!(
         dispatch(&router, &caller, cancel).await.unwrap()["BrowserImportConsent"]["status"],

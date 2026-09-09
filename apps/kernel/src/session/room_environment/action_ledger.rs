@@ -324,13 +324,15 @@ impl EnvironmentActionLedger {
                 .ok_or_else(|| EnvironmentError::UnknownAction {
                     action_id: action_id.to_string(),
                 })?;
-        if action.state == EnvironmentActionState::Queued {
+        let cancelling_queued = action.state == EnvironmentActionState::Queued
+            && terminal == EnvironmentActionTerminal::Cancelled;
+        if action.state == EnvironmentActionState::Queued && !cancelling_queued {
             return Err(EnvironmentError::ActionNotRunning {
                 action_id: action_id.to_string(),
                 state: action.state,
             });
         }
-        if action.state != EnvironmentActionState::Running {
+        if action.state != EnvironmentActionState::Running && !cancelling_queued {
             return Err(EnvironmentError::ActionAlreadyTerminal {
                 action_id: action_id.to_string(),
                 state: action.state,
