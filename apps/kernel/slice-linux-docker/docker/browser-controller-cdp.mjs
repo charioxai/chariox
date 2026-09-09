@@ -33,6 +33,7 @@ import {
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
+import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -82,6 +83,9 @@ export class BrowserCdpClient {
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.dialogDefaults = new BrowserDialogDefaults();
+    this.networkRequestsBySession = new Map();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
   }
 
   async reconcile(rawViewport) {
@@ -95,7 +99,9 @@ export class BrowserCdpClient {
       const pageTargetIds = new Set(pages.map((target) => target.targetId));
       for (const targetId of this.sessionsByTarget.keys()) {
         if (!pageTargetIds.has(targetId)) {
-          this.targetsBySession.delete(this.sessionsByTarget.get(targetId));
+          const sessionId = this.sessionsByTarget.get(targetId);
+          this.targetsBySession.delete(sessionId);
+          this.networkRequestsBySession.delete(sessionId);
           this.sessionsByTarget.delete(targetId);
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
@@ -128,6 +134,9 @@ export class BrowserCdpClient {
         this.downloadDiskCheckRequested = false;
         this.documentIdsByTarget.clear();
         this.dialogDefaults.clear();
+        this.networkRequestsBySession.clear();
+        this.cookieWriterFence = null;
+        this.cookieWriterFenceInUse = false;
       }
       throw normalizeControllerError(error);
     }
@@ -149,8 +158,60 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
+    this.networkRequestsBySession.clear();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
     if (connection) {
       await connection.close();
+    }
+  }
+
+  async withCookieWritersQuiesced(operation) {
+    if (typeof operation !== "function" || this.cookieWriterFenceInUse) {
+      throw new BrowserControllerError(
+        "browser_cookie_writer_fence_busy",
+        "browser cookie writer fence is already in use",
+      );
+    }
+    const connection = await this.ensureConnection();
+    if (!this.cookieWriterFence) {
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      const pageTargets = targetInfos.filter(
+        (target) => target?.type === "page" && typeof target.targetId === "string",
+      );
+      const pageSessions = await Promise.all(
+        pageTargets.map((target) => this.ensureTargetSession(connection, target.targetId)),
+      );
+      this.cookieWriterFence = await acquireBrowserCookieWriterFence({
+        connection,
+        pageSessions,
+        waitForNetworkIdle: (sessions) => this.waitForNetworkIdle(sessions),
+      });
+    }
+    const fence = this.cookieWriterFence;
+    this.cookieWriterFenceInUse = true;
+    let retained = false;
+    try {
+      return await operation({ retain: () => { retained = true; } });
+    } finally {
+      this.cookieWriterFenceInUse = false;
+      if (!retained && this.cookieWriterFence === fence) {
+        await fence.release();
+        this.cookieWriterFence = null;
+      }
+    }
+  }
+
+  async waitForNetworkIdle(sessionIds) {
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (sessionIds.some((sessionId) => (this.networkRequestsBySession.get(sessionId)?.size ?? 0) > 0)) {
+      if (Date.now() >= deadline) {
+        throw new BrowserControllerError(
+          "browser_cookie_writer_fence_timeout",
+          "browser network did not quiesce before cookie import",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
 
@@ -171,6 +232,9 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
+    this.networkRequestsBySession.clear();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
     const connection = this.connectionFactory
       ? await this.connectionFactory()
       : await connectToBrowser({
@@ -685,13 +749,28 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
+        && typeof message.params?.requestId === "string") {
+      const requests = this.networkRequestsBySession.get(message.sessionId) ?? new Set();
+      requests.add(message.params.requestId);
+      this.networkRequestsBySession.set(message.sessionId, requests);
+    }
+    if (["Network.loadingFinished", "Network.loadingFailed"].includes(message?.method)
+        && typeof message.sessionId === "string" && typeof message.params?.requestId === "string") {
+      const requests = this.networkRequestsBySession.get(message.sessionId);
+      requests?.delete(message.params.requestId);
+      if (requests?.size === 0) this.networkRequestsBySession.delete(message.sessionId);
+    }
     if (this.frameSessions.observe(message, this.connection)) return;
     const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
     this.dialogDefaults.observe(message, dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
-      if (typeof sessionId === "string") this.targetsBySession.delete(sessionId);
+      if (typeof sessionId === "string") {
+        this.targetsBySession.delete(sessionId);
+        this.networkRequestsBySession.delete(sessionId);
+      }
       if (typeof targetId === "string") {
         this.sessionsByTarget.delete(targetId);
         this.dialogDefaults.delete(targetId);
