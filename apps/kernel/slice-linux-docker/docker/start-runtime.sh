@@ -134,6 +134,9 @@ provider_probe_result="/workspace/.chariox-managed-isolation-probe.result"
 if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   real_codex="$(command -v codex)"
   [[ -x "$real_codex" ]] || { printf '[slice-runtime] real Codex executable is unavailable\n' >&2; exit 1; }
+  if [[ -n "${CHARIOX_MANAGED_WORKSPACE_ROOT_0:-}" ]]; then
+    provider_probe_unselected="${CHARIOX_MANAGED_WORKSPACE_ROOT_0%/*}/.chariox-managed-isolation-unselected-repository"
+  fi
   mkdir -p "$provider_probe_unselected"
   provider_probe_kernel_env=(
     CHARIOX_CODEX_BIN="$ROOT/managed-provider-isolation-probe-wrapper.sh"

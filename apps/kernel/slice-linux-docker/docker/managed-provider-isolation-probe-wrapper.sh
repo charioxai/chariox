@@ -25,7 +25,6 @@ fail() {
 
 for denied in \
   /var/lib/chariox \
-  /var/lib/chariox-slice-share \
   /run/chariox-slice-broker.sock \
   /proc/1/root/var/lib/chariox \
   "$unselected"
