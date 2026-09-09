@@ -115,7 +115,6 @@ enum ManagedKernelGitCredentials {
 }
 
 impl ManagedKernelContextPlan {
-    #[cfg(test)]
     pub(crate) fn context_id(&self) -> &str {
         &self.context_id
     }
@@ -169,6 +168,7 @@ impl ManagedKernelContextPlan {
         self.source
             .as_ref()
             .map(|source| ManagedKernelContextSourceBinding {
+                source_target_id: &source.source_target_id,
                 relay_realm_id: &source.relay_realm_id,
                 machine_id: &source.machine_id,
                 kernel_id: &source.kernel_id,
@@ -248,6 +248,17 @@ impl ManagedKernelContextPlan {
             && matches!(self.development_setup, ManagedKernelDevelopmentSetup::Empty)
             && matches!(self.provider_accounts, ManagedKernelProviderAccounts::None)
             && matches!(self.git_credentials, ManagedKernelGitCredentials::None)
+    }
+
+    pub(crate) fn is_git_credential_enrollment(&self) -> bool {
+        self.source.is_some()
+            && self.kernel_context == ManagedKernelContextSelection::Empty
+            && matches!(self.development_setup, ManagedKernelDevelopmentSetup::Empty)
+            && matches!(self.provider_accounts, ManagedKernelProviderAccounts::None)
+            && matches!(
+                self.git_credentials,
+                ManagedKernelGitCredentials::Selected { .. }
+            )
     }
 
     fn validate_development(&self) -> Result<(), &'static str> {
@@ -393,9 +404,39 @@ impl ManagedKernelContextPlan {
         plan.plan_digest = plan.compute_digest().expect("test plan digest");
         plan
     }
+
+    #[cfg(test)]
+    pub(crate) fn git_credential_enrollment_for_tests(
+        context_id: &str,
+        relay_realm_id: &str,
+        source_kernel_id: &str,
+        source_key_thumbprint: &str,
+    ) -> Self {
+        let mut plan = Self {
+            schema_version: 1,
+            context_id: context_id.to_string(),
+            plan_digest: format!("sha256:{}", "0".repeat(64)),
+            source: Some(ManagedKernelContextSource {
+                source_target_id: "source-target-test".to_string(),
+                relay_realm_id: relay_realm_id.to_string(),
+                machine_id: "source-machine-test".to_string(),
+                kernel_id: source_kernel_id.to_string(),
+                key_thumbprint: source_key_thumbprint.to_string(),
+            }),
+            kernel_context: ManagedKernelContextSelection::Empty,
+            development_setup: ManagedKernelDevelopmentSetup::Empty,
+            provider_accounts: ManagedKernelProviderAccounts::None,
+            git_credentials: ManagedKernelGitCredentials::Selected {
+                credential_ids: vec!["github".to_string()],
+            },
+        };
+        plan.plan_digest = plan.compute_digest().expect("test plan digest");
+        plan
+    }
 }
 
 pub(crate) struct ManagedKernelContextSourceBinding<'a> {
+    pub(crate) source_target_id: &'a str,
     pub(crate) relay_realm_id: &'a str,
     pub(crate) machine_id: &'a str,
     pub(crate) kernel_id: &'a str,
@@ -501,6 +542,25 @@ mod tests {
             source_plan.validate(),
             Err("managed context plan source selection is inconsistent")
         );
+    }
+
+    #[test]
+    fn post_creation_git_enrollment_plan_is_git_only_and_source_bound() {
+        let plan = ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+            "managed_ctx_git_enrollment",
+            "realm-1",
+            "source-kernel",
+            &"a".repeat(64),
+        );
+        plan.validate().expect("valid Git enrollment plan");
+        assert!(plan.is_git_credential_enrollment());
+        let binding = plan.package_binding();
+        assert_eq!(binding.context_id, "managed_ctx_git_enrollment");
+        assert!(matches!(
+            binding.git_credentials,
+            ManagedContextGitCredentialSelection::Selected { ref credential_ids }
+                if credential_ids == &["github"]
+        ));
     }
 
     #[test]

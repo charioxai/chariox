@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 318);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 319);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -116,6 +116,15 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
                 environment_id: "environment-1".to_string(),
             },
         ),
+        LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(
+            PrepareManagedEnvironmentGitCredentialEnrollmentRequest {
+                environment_id: "environment-1".to_string(),
+                source_target_id: "source-target-1".to_string(),
+                git_credentials: ManagedEnvironmentGitCredentials::Selected {
+                    credential_ids: vec!["github-work".to_string()],
+                },
+            },
+        ),
         LocalDaemonRequest::RequestManagedEnvironmentLifecycle(
             RequestManagedEnvironmentLifecycleRequest {
                 environment_id: "environment-1".to_string(),
@@ -224,25 +233,31 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("work"))
     );
     assert_eq!(
-        snapshot.pointer("/9/ManagedEnvironmentCatalog/catalog/computeClasses/0/computeClass"),
+        snapshot.pointer("/10/ManagedEnvironmentCatalog/catalog/computeClasses/0/computeClass"),
         Some(&serde_json::json!("agent-small"))
     );
     assert_eq!(
-        snapshot.pointer("/13/ManagedEnvironmentLifecycleRequested/result/operation/status"),
+        snapshot.pointer("/14/ManagedEnvironmentLifecycleRequested/result/operation/status"),
         Some(&serde_json::json!("pending"))
     );
     assert_eq!(
-        snapshot.pointer("/9/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),
+        snapshot.pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
     );
     assert_eq!(
-        snapshot.pointer("/11/ManagedEnvironmentContextTransferPrepared/ticket/target/kernelId"),
+        snapshot.pointer("/12/ManagedEnvironmentContextTransferPrepared/ticket/target/kernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/5/PrepareManagedEnvironmentGitCredentialEnrollment/gitCredentials/credentialIds/0"
+        ),
+        Some(&serde_json::json!("github-work"))
     );
     let serialized = serde_json::to_string(&snapshot).expect("managed environment shape");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "2d5398f770de7285663e8d7fca403a5213f9a2320c8b078d0b7c2c0795417b0a"
+        "9bac614e7957a4134505790e4217ec84f6ec4be2f54806434c8a004726a4f9fe"
     );
 }
 
