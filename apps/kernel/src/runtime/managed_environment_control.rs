@@ -132,11 +132,7 @@ pub(crate) async fn execute_managed_environment_control_request(
             )
             .await?;
             let ticket = response.into_ticket()?;
-            if ticket.environment_id != request.environment_id {
-                return Err(control_error(
-                    "Cloud returned a Git credential enrollment ticket for another environment",
-                ));
-            }
+            validate_git_credential_enrollment_ticket(&ticket, &request)?;
             crate::managed_context::outbound_service::validate_ticket(&config, &ticket)?;
             Ok(LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket })
         }
@@ -248,6 +244,39 @@ fn control_error(message: impl Into<String>) -> DaemonError {
         operation: "managed environment control",
         message: message.into(),
     }
+}
+
+fn validate_git_credential_enrollment_ticket(
+    ticket: &crate::managed_context::outbound_service::ManagedContextTransferTicket,
+    request: &crate::local::PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
+) -> Result<(), DaemonError> {
+    let requested_selection = match &request.git_credentials {
+        crate::local::ManagedEnvironmentGitCredentials::Selected { credential_ids } => {
+            crate::managed_context::package::ManagedContextGitCredentialSelection::Selected {
+                credential_ids: credential_ids.clone(),
+            }
+        }
+        crate::local::ManagedEnvironmentGitCredentials::None => {
+            return Err(control_error(
+                "Git credential enrollment requires an explicit credential selection",
+            ));
+        }
+    };
+    let source_matches = ticket
+        .context_plan
+        .source_binding()
+        .is_some_and(|source| source.source_target_id == request.source_target_id);
+    let binding = ticket.context_plan.package_binding();
+    if ticket.environment_id != request.environment_id
+        || !ticket.context_plan.is_git_credential_enrollment()
+        || !source_matches
+        || binding.git_credentials != requested_selection
+    {
+        return Err(control_error(
+            "Cloud returned a Git credential enrollment ticket that does not match the local selection",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -371,6 +400,53 @@ mod tests {
         assert_eq!(summary.runtime_kernel_id, None);
     }
 
+    #[test]
+    fn git_credential_enrollment_ticket_matches_the_local_selection_and_source() {
+        let thumbprint = "a".repeat(64);
+        let ticket = crate::managed_context::outbound_service::ManagedContextTransferTicket {
+            environment_id: "environment-1".to_string(),
+            context_plan:
+                crate::managed_bootstrap::ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                    "managed_ctx_enroll",
+                    "realm-1",
+                    "source-kernel",
+                    &thumbprint,
+                ),
+            target: crate::managed_context::outbound_service::ManagedContextTransferTarget {
+                relay_realm_id: "realm-1".to_string(),
+                machine_id: "target-machine".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                relay_public_key: "target-public-key".to_string(),
+                key_thumbprint: thumbprint,
+            },
+        };
+        let request = |source_target_id: &str, credential_id: &str| {
+            PrepareManagedEnvironmentGitCredentialEnrollmentRequest {
+                environment_id: "environment-1".to_string(),
+                source_target_id: source_target_id.to_string(),
+                git_credentials: ManagedEnvironmentGitCredentials::Selected {
+                    credential_ids: vec![credential_id.to_string()],
+                },
+            }
+        };
+
+        validate_git_credential_enrollment_ticket(
+            &ticket,
+            &request("source-target-test", "github"),
+        )
+        .expect("exact ticket binding");
+        assert!(validate_git_credential_enrollment_ticket(
+            &ticket,
+            &request("source-target-test", "work")
+        )
+        .is_err());
+        assert!(validate_git_credential_enrollment_ticket(
+            &ticket,
+            &request("other-source", "github")
+        )
+        .is_err());
+    }
+
     #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let mut config = DaemonConfig::for_tests();
@@ -398,19 +474,41 @@ mod tests {
                 .expect("target public key");
         let target_thumbprint =
             crate::runtime::terminal_pairings::public_key_thumbprint(&target_public_key);
-        let server = ManagedEnvironmentCloudFixture::start(serde_json::json!({
+        let enrollment_plan =
+            crate::managed_bootstrap::ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                "managed_ctx_enroll",
+                "realm-1",
+                &config.daemon_id,
+                &source_thumbprint,
+            );
+        let server = ManagedEnvironmentCloudFixture::start(
+            serde_json::json!({
             "environmentId": "environment / one",
             "contextPlan": context_plan,
             "target": {
                 "relayRealmId": "realm-1",
                 "machineId": "target-machine",
                 "kernelId": "target-kernel",
-                "relayPublicKey": target_public_key,
-                "keyThumbprint": target_thumbprint,
+                "relayPublicKey": target_public_key.clone(),
+                "keyThumbprint": target_thumbprint.clone(),
                 "futureTargetField": true
             },
             "futureTicketField": true
-        }));
+            }),
+            serde_json::json!({
+                "environmentId": "environment / one",
+                "contextPlan": enrollment_plan,
+                "target": {
+                    "relayRealmId": "realm-1",
+                    "machineId": "target-machine",
+                    "kernelId": "target-kernel",
+                    "relayPublicKey": target_public_key,
+                    "keyThumbprint": target_thumbprint,
+                    "futureTargetField": true
+                },
+                "futureTicketField": true
+            }),
+        );
         config.cloud_relay.as_mut().expect("Cloud profile").api_url = server.url();
         let provider_account_profiles =
             crate::account_profile::ProviderAccountProfileRegistry::open(
@@ -507,7 +605,7 @@ mod tests {
             LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(
                 PrepareManagedEnvironmentGitCredentialEnrollmentRequest {
                     environment_id: "environment / one".to_string(),
-                    source_target_id: "source-target-1".to_string(),
+                    source_target_id: "source-target-test".to_string(),
                     git_credentials: ManagedEnvironmentGitCredentials::Selected {
                         credential_ids: vec!["github".to_string()],
                     },
@@ -560,7 +658,7 @@ mod tests {
             .iter()
             .find(|request| request.contains("/git-credential-enrollment HTTP/1.1"))
             .expect("Git credential enrollment HTTP request");
-        assert!(enrollment_request.contains(r#""sourceTargetId":"source-target-1""#));
+        assert!(enrollment_request.contains(r#""sourceTargetId":"source-target-test""#));
         assert!(enrollment_request.contains(r#""credentialIds":["github"]"#));
         let create_request = requests
             .iter()
@@ -585,7 +683,10 @@ mod tests {
     }
 
     impl ManagedEnvironmentCloudFixture {
-        fn start(context_transfer_ticket: serde_json::Value) -> Self {
+        fn start(
+            context_transfer_ticket: serde_json::Value,
+            git_enrollment_ticket: serde_json::Value,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind Cloud fixture");
             listener.set_nonblocking(true).expect("nonblocking fixture");
             let address = listener.local_addr().expect("fixture address");
@@ -601,7 +702,11 @@ mod tests {
                             if request.is_empty() {
                                 continue;
                             }
-                            let response = fixture_response(&request, &context_transfer_ticket);
+                            let response = fixture_response(
+                                &request,
+                                &context_transfer_ticket,
+                                &git_enrollment_ticket,
+                            );
                             thread_requests.lock().expect("requests lock").push(request);
                             write_http_response(&mut stream, &response);
                         }
@@ -690,6 +795,7 @@ mod tests {
     fn fixture_response(
         request: &str,
         context_transfer_ticket: &serde_json::Value,
+        git_enrollment_ticket: &serde_json::Value,
     ) -> serde_json::Value {
         if request.starts_with("GET /managed-environments/options?") {
             return serde_json::json!({
@@ -715,7 +821,7 @@ mod tests {
             return context_transfer_ticket.clone();
         }
         if request.contains("/git-credential-enrollment ") {
-            return context_transfer_ticket.clone();
+            return git_enrollment_ticket.clone();
         }
         if request.starts_with("GET /managed-environments/") {
             return serde_json::json!({

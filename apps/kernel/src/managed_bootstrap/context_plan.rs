@@ -168,6 +168,7 @@ impl ManagedKernelContextPlan {
         self.source
             .as_ref()
             .map(|source| ManagedKernelContextSourceBinding {
+                source_target_id: &source.source_target_id,
                 relay_realm_id: &source.relay_realm_id,
                 machine_id: &source.machine_id,
                 kernel_id: &source.kernel_id,
@@ -435,6 +436,7 @@ impl ManagedKernelContextPlan {
 }
 
 pub(crate) struct ManagedKernelContextSourceBinding<'a> {
+    pub(crate) source_target_id: &'a str,
     pub(crate) relay_realm_id: &'a str,
     pub(crate) machine_id: &'a str,
     pub(crate) kernel_id: &'a str,
