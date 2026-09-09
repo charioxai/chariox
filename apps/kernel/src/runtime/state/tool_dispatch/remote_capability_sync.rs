@@ -27,29 +27,45 @@ impl KernelRuntimeState {
         if packages.is_empty() {
             return Ok(Vec::new());
         }
-        let response = self
-            .with_app_side_effect(|app| {
-                let relay_config = app.relay_config_for_remote_execution(&remote_execution);
-                app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        &relay_config,
-                        ClientTarget {
-                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::EnsureRemoteSkillPackages {
-                            context: crate::transport::relay_peer::RemoteSkillSyncContext {
-                                home_kernel_id: app.config().daemon_id.clone(),
-                                home_session_id: agent.session_id().to_string(),
-                                home_agent_id: agent.id().to_string(),
-                                leased_agent_id: remote_execution.leased_agent_id.clone(),
-                            },
-                            packages: packages.clone(),
-                        },
-                    ),
+        let mut relay_config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            relay_config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::EnsureRemoteSkillPackages {
+            context: crate::transport::relay_peer::RemoteSkillSyncContext {
+                home_kernel_id: relay_config.daemon_id.clone(),
+                home_session_id: agent.session_id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+            },
+            packages,
+        };
+        let response = match self.connected_relay_state_for_config(&relay_config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    request,
                 )
-            })
-            .await?;
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    target,
+                    request,
+                )
+                .await
+            }
+        }?;
         match response {
             RelayPeerResponse::RemoteSkillPackagesEnsured { materialized } => Ok(materialized),
             other => Err(DaemonError::LocalTransport {
@@ -294,29 +310,45 @@ impl KernelRuntimeState {
         if required_mcps.is_empty() {
             return Ok(());
         }
-        let response = self
-            .with_app_side_effect(|app| {
-                let relay_config = app.relay_config_for_remote_execution(&remote_execution);
-                app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        &relay_config,
-                        ClientTarget {
-                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::CheckRemoteMcpAvailability {
-                            context: crate::transport::relay_peer::RemoteMcpCheckContext {
-                                home_kernel_id: app.config().daemon_id.clone(),
-                                home_session_id: agent.session_id().to_string(),
-                                home_agent_id: agent.id().to_string(),
-                                leased_agent_id: remote_execution.leased_agent_id.clone(),
-                            },
-                            required_mcps,
-                        },
-                    ),
+        let mut relay_config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            relay_config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::CheckRemoteMcpAvailability {
+            context: crate::transport::relay_peer::RemoteMcpCheckContext {
+                home_kernel_id: relay_config.daemon_id.clone(),
+                home_session_id: agent.session_id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+            },
+            required_mcps,
+        };
+        let response = match self.connected_relay_state_for_config(&relay_config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    request,
                 )
-            })
-            .await?;
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    target,
+                    request,
+                )
+                .await
+            }
+        }?;
         match response {
             RelayPeerResponse::RemoteMcpAvailabilityChecked { results } => {
                 let unavailable = results
