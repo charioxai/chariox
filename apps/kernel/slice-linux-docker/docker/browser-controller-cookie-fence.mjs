@@ -75,15 +75,32 @@ export async function acquireBrowserCookieWriterFence({
     await waitForNetworkIdle([...pageSessions, ...writerSessions]);
     const knownWriterTargetIds = new Set(knownWriterTargets.map(({ targetId }) => targetId));
     const { targetInfos = [] } = await connection.send("Target.getTargets");
-    const untrackedWriterTargetIds = targetInfos
+    const untrackedWriterTargets = targetInfos
       .filter((target) => CLOSEABLE_WRITER_TARGET_TYPES.has(target?.type)
         && typeof target.targetId === "string"
-        && !knownWriterTargetIds.has(target.targetId))
-      .map(({ targetId }) => targetId);
-    for (const targetId of untrackedWriterTargetIds) {
+        && !knownWriterTargetIds.has(target.targetId));
+    for (const { targetId, type } of untrackedWriterTargets) {
+      if (type === "worker") {
+        let sessionId = [...pausedTargetBySession]
+          .find(([, pausedTargetId]) => pausedTargetId === targetId)?.[0];
+        if (!sessionId) {
+          ({ sessionId } = await connection.send("Target.attachToTarget", {
+            targetId,
+            flatten: true,
+          }));
+          if (typeof sessionId !== "string" || !sessionId) {
+            throw new Error(`browser writer target ${targetId} did not attach`);
+          }
+          pausedSessions.add(sessionId);
+          pausedTargetBySession.set(sessionId, targetId);
+        }
+        await connection.send("Runtime.evaluate", { expression: "self.close()" }, sessionId);
+        continue;
+      }
       const closed = await connection.send("Target.closeTarget", { targetId });
       if (closed?.success !== true) throw new Error(`browser writer target ${targetId} did not close`);
     }
+    const untrackedWriterTargetIds = untrackedWriterTargets.map(({ targetId }) => targetId);
     if (untrackedWriterTargetIds.length > 0) {
       if (typeof waitForWriterTargetsGone !== "function") {
         throw new Error("writer target closure guard unavailable");

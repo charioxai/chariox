@@ -74,11 +74,39 @@ test("cookie writer fence fails closed and restores pages if acquisition is inco
     method === "Debugger.resume" && sessionId === "worker-known-session"));
 });
 
+test("cookie writer fence closes an untracked dedicated worker through its own session", async () => {
+  const connection = new FenceConnection();
+  connection.targetInfos = [{ targetId: "worker-untracked", type: "worker" }];
+  const fence = await acquireBrowserCookieWriterFence({
+    connection,
+    pageSessions: [],
+    waitForNetworkIdle: async (sessions) => assert.deepEqual(sessions, []),
+    waitForWriterTargetsGone: async (targetIds) => {
+      assert.deepEqual(targetIds, ["worker-untracked"]);
+    },
+  });
+  assert.ok(connection.calls.some(({ method, params }) =>
+    method === "Target.attachToTarget"
+      && params.targetId === "worker-untracked"
+      && params.flatten === true));
+  assert.ok(connection.calls.some(({ method, params, sessionId }) =>
+    method === "Runtime.evaluate"
+      && params.expression === "self.close()"
+      && sessionId === "worker-untracked-session"));
+  assert.ok(!connection.calls.some(({ method, params }) =>
+    method === "Target.closeTarget" && params.targetId === "worker-untracked"));
+  await fence.release();
+});
+
 class FenceConnection {
   constructor() {
     this.calls = [];
     this.listeners = new Set();
     this.failOn = null;
+    this.targetInfos = [
+      { targetId: "worker-known", type: "worker" },
+      { targetId: "worker-untracked", type: "shared_worker" },
+    ];
   }
 
   subscribe(listener) {
@@ -102,11 +130,9 @@ class FenceConnection {
     }
     if (method === this.failOn) throw new Error("fixture failure");
     if (method === "Target.getTargets") {
-      return { targetInfos: [
-        { targetId: "worker-known", type: "worker" },
-        { targetId: "worker-untracked", type: "shared_worker" },
-      ] };
+      return { targetInfos: this.targetInfos };
     }
+    if (method === "Target.attachToTarget") return { sessionId: `${params.targetId}-session` };
     if (method === "Target.closeTarget") return { success: true };
     return {};
   }
