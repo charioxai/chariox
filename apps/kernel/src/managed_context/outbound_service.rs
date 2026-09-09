@@ -284,34 +284,35 @@ pub(crate) fn start_managed_context_outbound_operation(
     tokio::spawn(async move {
         let _permit = permit;
         let _active = active;
-        let authoritative_ticket = match fetch_authoritative_ticket(&config, &ticket).await {
-            Ok(authoritative) if authoritative == ticket => authoritative,
-            Ok(_) => {
-                let error = outbound_service_error(
-                    "caller-supplied managed-context ticket does not match Cloud",
-                    false,
-                );
-                let retirement_error =
-                    retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
-                        .err();
-                store.update(&context_id, |status| {
-                    fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
-                });
-                return;
-            }
-            Err(error) => {
-                let retirement_error = if error_is_retryable(&error) {
-                    None
-                } else {
-                    retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
-                        .err()
-                };
-                store.update(&context_id, |status| {
-                    fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
-                });
-                return;
-            }
-        };
+        let authoritative_ticket =
+            match authoritative_ticket_for_outbound_operation(&config, &ticket).await {
+                Ok(authoritative) if authoritative == ticket => authoritative,
+                Ok(_) => {
+                    let error = outbound_service_error(
+                        "caller-supplied managed-context ticket does not match Cloud",
+                        false,
+                    );
+                    let retirement_error =
+                        retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
+                            .err();
+                    store.update(&context_id, |status| {
+                        fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let retirement_error = if error_is_retryable(&error) {
+                        None
+                    } else {
+                        retire_matching_artifact_after_terminal_preflight(&config, &store, &ticket)
+                            .err()
+                    };
+                    store.update(&context_id, |status| {
+                        fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
+                    });
+                    return;
+                }
+            };
         let task_store = store.clone();
         let task_context_id = context_id.clone();
         let task_config = config.clone();
@@ -442,6 +443,16 @@ async fn fetch_authoritative_ticket(
             retryable,
         )
     })
+}
+
+async fn authoritative_ticket_for_outbound_operation(
+    config: &DaemonConfig,
+    requested: &ManagedContextTransferTicket,
+) -> Result<ManagedContextTransferTicket, DaemonError> {
+    if requested.context_plan.is_git_credential_enrollment() {
+        return Ok(requested.clone());
+    }
+    fetch_authoritative_ticket(config, requested).await
 }
 
 fn retire_matching_artifact_after_terminal_preflight(
@@ -1725,7 +1736,7 @@ mod tests {
             String::from_utf8(request).expect("request UTF-8")
         });
         assert_eq!(
-            fetch_authoritative_ticket(&config, &ticket)
+            authoritative_ticket_for_outbound_operation(&config, &ticket)
                 .await
                 .expect("authoritative ticket"),
             ticket
@@ -1735,6 +1746,46 @@ mod tests {
         assert!(request.contains("\"machineId\":\"source-machine-test\""));
         assert!(request.contains("\"kernelId\":"));
         assert!(request.contains("\"machineCredential\":\"mcred_"));
+    }
+
+    #[tokio::test]
+    async fn prepared_git_enrollment_ticket_does_not_require_a_source_machine_credential() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:1".to_string(),
+            realm_id: "realm-1".to_string(),
+            machine_id: Some("source-machine-test".to_string()),
+            machine_credential: None,
+            ..PersistedCloudRelayProfile::default()
+        });
+        let source_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let target_private_key = relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let ticket = ManagedContextTransferTicket {
+            environment_id: "environment-1".to_string(),
+            context_plan: ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                "context-1",
+                "realm-1",
+                &config.daemon_id,
+                &source_thumbprint,
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm-1".to_string(),
+                machine_id: "target-machine".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                key_thumbprint: public_key_thumbprint(&target_public_key),
+                relay_public_key: target_public_key,
+            },
+        };
+
+        assert_eq!(
+            authoritative_ticket_for_outbound_operation(&config, &ticket)
+                .await
+                .expect("prepared Git enrollment ticket"),
+            ticket
+        );
     }
 
     #[test]
