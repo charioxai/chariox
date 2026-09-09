@@ -9,6 +9,10 @@ use crate::error::DaemonError;
 
 use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
+#[cfg(all(test, unix))]
+#[path = "managed_isolation/attachment_acceptance.rs"]
+mod attachment_acceptance;
+
 pub(crate) const MANAGED_PROVIDER_ISOLATION_ENV: &str = "CHARIOX_MANAGED_PROVIDER_ISOLATION";
 #[cfg(any(target_os = "linux", test))]
 const CLAUDE_SANDBOX_ENV: &str = "IS_SANDBOX";
