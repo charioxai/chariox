@@ -1,6 +1,7 @@
 use super::*;
 
 const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
+const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
 pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
 
@@ -189,7 +190,11 @@ fn recover_pruned_development_context_publication_with_head_policy(
         {
             continue;
         }
-        if receipt.schema_version != PUBLICATION_RECEIPT_SCHEMA_VERSION
+        if ![
+            PUBLICATION_RECEIPT_SCHEMA_VERSION,
+            DIRECTORY_RECEIPT_SCHEMA_VERSION,
+        ]
+        .contains(&receipt.schema_version)
             || receipt.source_repository_binding_sha256s.len() != expected_repositories.len()
         {
             return Err(context_error(
@@ -384,6 +389,7 @@ fn import_development_context_with_options(
         checkout_bytes = checkout_bytes.saturating_add(estimate.checkout_bytes);
         materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
         imported.push(DevelopmentImportedRepository {
+            workspace_kind: repository.workspace_kind,
             repository_id: repository.repository_id.clone(),
             role: repository.role,
             target_directory: repository.target_directory.clone(),
@@ -411,7 +417,15 @@ fn import_development_context_with_options(
     };
     let publication_receipt =
         publication_id.map(|publication_id| DevelopmentContextPublicationReceipt {
-            schema_version: PUBLICATION_RECEIPT_SCHEMA_VERSION,
+            schema_version: if result
+                .repositories
+                .iter()
+                .any(|repository| !repository.workspace_kind.is_git())
+            {
+                DIRECTORY_RECEIPT_SCHEMA_VERSION
+            } else {
+                PUBLICATION_RECEIPT_SCHEMA_VERSION
+            },
             publication_id,
             archive_sha256: request.expected_archive_sha256.to_ascii_lowercase(),
             project_id: request.expected_project_id.clone(),
@@ -679,7 +693,11 @@ fn validate_publication_receipt(
     require_original_head: bool,
     require_repository_directories: bool,
 ) -> Result<(), DaemonError> {
-    if receipt.schema_version != PUBLICATION_RECEIPT_SCHEMA_VERSION
+    if ![
+        PUBLICATION_RECEIPT_SCHEMA_VERSION,
+        DIRECTORY_RECEIPT_SCHEMA_VERSION,
+    ]
+    .contains(&receipt.schema_version)
         || receipt.publication_id != publication_id
         || receipt.archive_sha256 != request.expected_archive_sha256.to_ascii_lowercase()
         || receipt.project_id != request.expected_project_id
@@ -714,7 +732,15 @@ fn validate_publication_receipt(
     let mut primary_ids = Vec::new();
     for repository in &receipt.repositories {
         validate_publication_id(&repository.repository_id)?;
-        validate_git_oid(&repository.head_sha)?;
+        if repository.workspace_kind.is_git() {
+            validate_git_oid(&repository.head_sha)?;
+        } else if receipt.schema_version != DIRECTORY_RECEIPT_SCHEMA_VERSION
+            || !repository.head_sha.is_empty()
+        {
+            return Err(context_error(
+                "directory publication receipt contains invalid Git metadata",
+            ));
+        }
         let target = Path::new(&repository.target_directory);
         if repository.target_directory.is_empty()
             || repository.target_directory.len() > 255
@@ -742,6 +768,7 @@ fn validate_publication_receipt(
                 ));
             }
             if require_original_head
+                && repository.workspace_kind.is_git()
                 && git_text_isolated(&repository.destination_path, &["rev-parse", "HEAD"])?
                     != repository.head_sha
             {
