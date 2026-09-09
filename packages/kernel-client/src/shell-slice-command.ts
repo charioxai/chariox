@@ -232,37 +232,13 @@ export async function executeSliceCommand(
       const sliceResponse = await deps.client.send(getSliceRequest(sliceRef))
       const slice = expectVariant<{ slice: SliceRecord }>(sliceResponse, "Slice").slice
       if (slice.display_endpoint?.kind === "selkies") {
-        if (!context.sessionId || !context.attachmentId || !context.agentId) {
-          return { ok: false, message: "Selkies slice screen requires an active Room session, attachment, and focused agent" }
-        }
-        const bindingResponse = await deps.client.send(getRoomEnvironmentSliceRequest(context.sessionId))
-        const binding = expectVariant<RoomEnvironmentSliceResponse["RoomEnvironmentSlice"]>(
-          bindingResponse,
-          "RoomEnvironmentSlice",
-        ).binding
-        const scoped = scopedSliceViewerTarget({
-          sessionId: context.sessionId,
-          attachmentId: context.attachmentId,
-          agentId: context.agentId,
-          sliceId: slice.id,
-          binding,
-        })
-        if (scoped.error !== null) return { ok: false, message: scoped.error }
-        if (!deps.openRoomViewer) {
-          return { ok: false, message: "Chariox Cloud Web View is unavailable in this client" }
-        }
-        const opened = await deps.openRoomViewer(scoped.target)
-        if (!opened) {
-          return { ok: false, message: "Chariox Cloud Web View is not configured; run cloud link first" }
-        }
-        return {
-          ok: true,
-          message: opened.url,
-          data: { viewer: { url: opened.url, opened: opened.opened } },
-        }
+        return openScopedSliceViewer(slice.id, context, deps)
       }
       const response = await deps.client.send(getSliceDisplayEndpointRequest(sliceRef))
       const endpoint = expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
+      if (endpoint.kind === "selkies") {
+        return openScopedSliceViewer(slice.id, context, deps)
+      }
       return { ok: true, message: endpoint.url, data: { endpoint } }
     }
     case "auth": {
@@ -328,6 +304,41 @@ export async function executeSliceCommand(
     }
     default:
       return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|screen" }
+  }
+}
+
+async function openScopedSliceViewer(
+  sliceId: string,
+  context: ShellContext,
+  deps: ShellSliceCommandDeps,
+): Promise<ShellCommandResult> {
+  if (!context.sessionId || !context.attachmentId || !context.agentId) {
+    return { ok: false, message: "Selkies slice screen requires an active Room session, attachment, and focused agent" }
+  }
+  const bindingResponse = await deps.client.send(getRoomEnvironmentSliceRequest(context.sessionId))
+  const binding = expectVariant<RoomEnvironmentSliceResponse["RoomEnvironmentSlice"]>(
+    bindingResponse,
+    "RoomEnvironmentSlice",
+  ).binding
+  const scoped = scopedSliceViewerTarget({
+    sessionId: context.sessionId,
+    attachmentId: context.attachmentId,
+    agentId: context.agentId,
+    sliceId,
+    binding,
+  })
+  if (scoped.error !== null) return { ok: false, message: scoped.error }
+  if (!deps.openRoomViewer) {
+    return { ok: false, message: "Chariox Cloud Web View is unavailable in this client" }
+  }
+  const opened = await deps.openRoomViewer(scoped.target)
+  if (!opened) {
+    return { ok: false, message: "Chariox Cloud Web View is not configured; run cloud link first" }
+  }
+  return {
+    ok: true,
+    message: opened.url,
+    data: { viewer: { url: opened.url, opened: opened.opened } },
   }
 }
 

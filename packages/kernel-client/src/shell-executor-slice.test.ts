@@ -77,6 +77,48 @@ test("shared slice screen routes Selkies through only the scoped Cloud viewer ta
   assert.doesNotMatch(JSON.stringify([result, targets, fake.requests]), /relay\.invalid|viewer_public_key|stream_id|peer_public_key/)
 })
 
+test("shared slice screen scopes Selkies returned after stale slice metadata", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) {
+      return { Slice: { slice: { ...screenSlice("novnc"), display_endpoint: undefined } } }
+    }
+    if ("GetSliceDisplayEndpoint" in request) {
+      return { SliceDisplayEndpoint: { endpoint: {
+        slice_id: "slice-1",
+        kind: "selkies",
+        url: "wss://relay.invalid/secret",
+        access: "tunnel",
+      } } }
+    }
+    if ("GetRoomEnvironmentSlice" in request) {
+      return { RoomEnvironmentSlice: { binding: roomSliceBinding() } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const targets: Array<{ sessionId: string; agentId: string; sliceId: string }> = []
+  const result = await executeShellCommand(
+    parseShellCommand("slice screen linux-a"),
+    createDefaultShellContext({ sessionId: "session-1", attachmentId: "attachment-1", agentId: "agent-1" }),
+    {
+      client: fake.client,
+      openRoomViewer: async (target) => {
+        targets.push(target)
+        return { url: "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1", opened: true }
+      },
+    },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(result.message, "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1")
+  assert.deepEqual(targets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(fake.requests, [
+    { GetSlice: { slice_ref: "linux-a" } },
+    { GetSliceDisplayEndpoint: { slice_ref: "linux-a" } },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
+  assert.doesNotMatch(JSON.stringify([result, targets, fake.requests]), /relay\.invalid|secret/)
+})
+
 test("shared slice screen rejects missing and mismatched Selkies Room scope", async (t) => {
   const cases = [
     { name: "no binding", binding: null, message: "Room Environment has no bound slice to view" },
