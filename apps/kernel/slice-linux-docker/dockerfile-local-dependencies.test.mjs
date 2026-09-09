@@ -32,3 +32,10 @@ test("slice image build runs the discoverable Selkies lifecycle tests", async ()
   assert.match(lifecycleTest, /class SelkiesStopTests/)
   assert.match(dockerfile, /python[^\n]*-m unittest discover\s*\\?\s*-s [^\n]* -p 'test_\*\.py'/)
 })
+
+test("slice image provides the desktop terminal command advertised by Openbox", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8")
+
+  assert.match(dockerfile, /\n    xterm \\\n/)
+  assert.match(dockerfile, /test -x \/usr\/bin\/x-terminal-emulator/)
+})

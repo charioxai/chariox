@@ -1,8 +1,58 @@
 use super::*;
 
 #[test]
+fn plain_workspace_launch_and_relay_shapes_are_versioned() {
+    use crate::managed_context::development::{
+        DevelopmentRepositoryRole, DevelopmentWorkspaceKind,
+    };
+    use crate::transport::relay_peer::RelayManagedContextImportedRepository;
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 318);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        47
+    );
+    let local = crate::local::ManagedContextRepositoryLaunchTarget {
+        workspace_kind: DevelopmentWorkspaceKind::Directory,
+        repository_id: "office".into(),
+        role: DevelopmentRepositoryRole::Primary,
+        target_directory: "office".into(),
+        workspace_path: "/managed/context/office".into(),
+        head_sha: String::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(&local).unwrap(),
+        serde_json::json!({
+            "workspaceKind": "directory", "repositoryId": "office", "role": "primary",
+            "targetDirectory": "office", "workspacePath": "/managed/context/office", "headSha": ""
+        })
+    );
+    let relay = RelayManagedContextImportedRepository {
+        workspace_kind: local.workspace_kind,
+        repository_id: local.repository_id,
+        role: local.role,
+        target_directory: local.target_directory,
+        destination_path: local.workspace_path,
+        head_sha: local.head_sha,
+    };
+    assert_eq!(
+        serde_json::to_value(&relay).unwrap(),
+        serde_json::json!({
+            "workspace_kind": "directory", "repository_id": "office", "role": "primary",
+            "target_directory": "office", "destination_path": "/managed/context/office", "head_sha": ""
+        })
+    );
+    let mut legacy = serde_json::to_value(&relay).unwrap();
+    legacy.as_object_mut().unwrap().remove("workspace_kind");
+    legacy["head_sha"] = serde_json::json!("a".repeat(40));
+    let restored: RelayManagedContextImportedRepository =
+        serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(restored.workspace_kind, DevelopmentWorkspaceKind::Git);
+    assert_eq!(serde_json::to_value(restored).unwrap(), legacy);
+}
+
+#[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 312);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 318);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",
@@ -76,6 +126,8 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
                     destination_root: "/managed/context".to_string(),
                     primary_repository_id: "repository-1".to_string(),
                     repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-1".to_string(),
                         role:
                             crate::managed_context::development::DevelopmentRepositoryRole::Primary,

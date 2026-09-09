@@ -1,4 +1,5 @@
 import type { RelayCloudProfile } from "./preferences.js"
+export { buildHostedCloudViewUrl } from "@chariox/kernel-client/slice-screen-viewer"
 
 export type RelayStatus = {
   configured: boolean
@@ -72,15 +73,6 @@ const HOSTED_CLOUD_RELAY_CONNECT_POLL_MS = 500
 export function buildHostedCloudTerminalUrl(apiUrl: string): string {
   const url = new URL("/terminal", apiUrl)
   url.searchParams.set("view", "waiting")
-  return url.toString()
-}
-
-export function buildHostedCloudViewUrl(
-  apiUrl: string,
-  target: { sessionId: string; agentId: string; sliceId: string },
-): string {
-  const url = new URL("/view", apiUrl)
-  url.searchParams.set("view_target", `${target.sessionId}:${target.agentId}:${target.sliceId}`)
   return url.toString()
 }
 

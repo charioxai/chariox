@@ -72,7 +72,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 44 requires cancellable uploads and upload execution receipt recovery.
 /// Version 45 requires cancellable browser configuration and execution receipt recovery.
 /// Version 46 requires cancellable browser lifecycle operations and receipt recovery.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 46;
+/// Version 47 carries the workspace kind in managed-context import receipts.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 47;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 
@@ -88,6 +89,11 @@ pub enum RelayManagedContextTransferPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportedRepository {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_context::development::DevelopmentWorkspaceKind::is_git"
+    )]
+    pub workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind,
     pub repository_id: String,
     pub role: crate::managed_context::development::DevelopmentRepositoryRole,
     pub target_directory: String,

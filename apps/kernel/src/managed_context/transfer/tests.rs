@@ -5,6 +5,65 @@ use std::path::PathBuf;
 use super::*;
 
 #[test]
+fn plain_workspace_launch_target_survives_transfer_store_restart() {
+    use crate::managed_context::development::DevelopmentWorkspaceKind;
+    let root = test_root("plain-launch-target");
+    let mut target = large_launch_target("plain-context");
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { repositories, .. } =
+        &mut target.development
+    else {
+        unreachable!()
+    };
+    // Mixed Projects must retain the kind of each Workspace across restart.
+    repositories[0].workspace_kind = DevelopmentWorkspaceKind::Directory;
+    repositories[0].head_sha.clear();
+    let mut state = PersistedTransferState::default();
+    state.consumed_context_ids.insert(target.context_id.clone());
+    state
+        .applied_contexts
+        .insert(target.context_id.clone(), target.clone());
+    let path = root.join("state.json");
+    write_private_state_file(&path, &serde_json::to_vec(&state).unwrap()).unwrap();
+    let store = ManagedContextTransferStore::open(root.clone())
+        .expect("plain launch target could not reopen");
+    assert_eq!(
+        store
+            .launch_target(&target.context_id, &target.plan_digest)
+            .unwrap(),
+        target
+    );
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn plain_workspace_launch_target_rejects_inconsistent_head_metadata() {
+    use crate::managed_context::development::DevelopmentWorkspaceKind;
+    for (kind, head) in [
+        (DevelopmentWorkspaceKind::Directory, "a".repeat(40)),
+        (DevelopmentWorkspaceKind::Git, String::new()),
+        (DevelopmentWorkspaceKind::Git, "z".repeat(40)),
+    ] {
+        let mut target = large_launch_target("invalid-head-context");
+        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+            repositories, ..
+        } = &mut target.development
+        else {
+            unreachable!()
+        };
+        repositories[0].workspace_kind = kind;
+        repositories[0].head_sha = head;
+        let mut state = PersistedTransferState::default();
+        state.consumed_context_ids.insert(target.context_id.clone());
+        state
+            .applied_contexts
+            .insert(target.context_id.clone(), target);
+        let error = validate_persisted_state(&state).expect_err("inconsistent HEAD must fail");
+        assert!(error.to_string().contains("HEAD is invalid"));
+    }
+}
+
+#[test]
 fn internal_transfer_debug_redacts_capabilities() {
     let request = arm_request(b"archive", current_time_ms() + 10_000);
     let request_debug = format!("{request:?}");
@@ -415,6 +474,8 @@ fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
                 )],
                 repositories: vec![
                     crate::managed_context::development::DevelopmentImportedRepository {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "stale-repository".to_string(),
                         role:
                             crate::managed_context::development::DevelopmentRepositoryRole::Primary,
@@ -457,6 +518,8 @@ fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
                 )],
                 repositories: vec![
                     crate::managed_context::development::DevelopmentImportedRepository {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-1".to_string(),
                         role:
                             crate::managed_context::development::DevelopmentRepositoryRole::Primary,
@@ -565,6 +628,8 @@ fn schema_v3_pruned_import_rejects_legacy_publication_without_source_bindings() 
             )],
             repositories: vec![
                 crate::managed_context::development::DevelopmentImportedRepository {
+                    workspace_kind:
+                        crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                     repository_id: "repository-legacy".to_string(),
                     role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                     target_directory: "primary".to_string(),
@@ -1792,6 +1857,7 @@ fn managed_package_receipt(
                     )],
                     repositories: vec![
                         crate::managed_context::development::DevelopmentImportedRepository {
+                        workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                             repository_id: "repository-1".to_string(),
                             role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                             target_directory: "primary".to_string(),
@@ -1826,6 +1892,7 @@ fn large_launch_target(context_id: &str) -> crate::local::ManagedContextLaunchTa
                 .into_iter()
                 .map(
                     |repository| crate::local::ManagedContextRepositoryLaunchTarget {
+                        workspace_kind: repository.workspace_kind,
                         repository_id: repository.repository_id,
                         role: repository.role,
                         target_directory: repository.target_directory,
@@ -1890,6 +1957,7 @@ fn large_imported_repositories(
             let repository_id = format!("repository-{index}-{}", "r".repeat(2_450));
             let target_directory = format!("repository-{index}-{}", "d".repeat(180));
             crate::managed_context::development::DevelopmentImportedRepository {
+                workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                 repository_id,
                 role: if index == 0 {
                     crate::managed_context::development::DevelopmentRepositoryRole::Primary

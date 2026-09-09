@@ -1039,9 +1039,12 @@ impl DaemonApp {
         let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(
             crate::session::unix_epoch_ms(),
             |slice| {
-                if let Err(error) = crate::slice::recover_local_docker_snapshot_pause(slice, &slice_options) {
+                if let Err(error) =
+                    crate::slice::recover_local_docker_snapshot_pause(slice, &slice_options)
+                {
                     crate::logging::warn_with_fields(
-                        "durable_state.restore", "snapshot resume remains pending",
+                        "durable_state.restore",
+                        "snapshot resume remains pending",
                         serde_json::json!({"slice_id": slice.id, "error": error.to_string()}),
                     );
                     return crate::slice::SliceHostRuntimeState::Unknown;

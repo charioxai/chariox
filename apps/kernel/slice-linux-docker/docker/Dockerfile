@@ -119,8 +119,10 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     x11-xserver-utils \
     xclip \
     xdotool \
+    xterm \
     xvfb \
     zstd \
+  && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
 # Nested Docker cannot write an unprivileged uid_map on every host. The

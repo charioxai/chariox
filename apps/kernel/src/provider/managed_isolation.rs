@@ -164,10 +164,14 @@ pub(crate) fn apply_managed_provider_isolation(
         let runtime_roots = managed_runtime_roots(&launch)?;
         let account_bindings = managed_account_bindings(&mut launch.pty_env)?;
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
+        let prompt_attachment_root = managed_prompt_attachment_root(request)?;
 
         let resolver = managed_resolver_binding()?;
-        let (mut args, mut created_directories) =
-            managed_namespace_args(resolver.as_deref(), Path::exists);
+        let (mut args, mut created_directories) = managed_namespace_args(
+            resolver.as_deref(),
+            Path::exists,
+            prompt_attachment_root.as_deref(),
+        );
         append_directory(&mut args, Path::new(SANDBOX_HOME), &mut created_directories);
         append_bind(
             &mut args,
@@ -467,6 +471,7 @@ fn managed_resolver_binding() -> Result<Option<PathBuf>, DaemonError> {
 fn managed_namespace_args(
     resolver: Option<&Path>,
     path_exists: impl Fn(&Path) -> bool,
+    prompt_attachment_root: Option<&Path>,
 ) -> (Vec<String>, BTreeSet<PathBuf>) {
     let mut args = vec![
         "--die-with-parent".to_string(),
@@ -512,7 +517,64 @@ fn managed_namespace_args(
     if let Some(resolver) = resolver {
         append_read_only_bind(&mut args, resolver, resolver, &mut created_directories);
     }
+    if let Some(root) = prompt_attachment_root {
+        append_read_only_bind(&mut args, root, root, &mut created_directories);
+    }
     (args, created_directories)
+}
+
+#[cfg(target_os = "linux")]
+fn managed_prompt_attachment_root(
+    request: &LaunchProviderRequest,
+) -> Result<Option<PathBuf>, DaemonError> {
+    let Some(agent_id) = request.agent_id.as_deref() else {
+        return Ok(None);
+    };
+    let root =
+        crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
+            &request.session_id,
+            agent_id,
+        );
+    std::fs::create_dir_all(&root).map_err(|error| {
+        isolation_error(format!(
+            "managed provider prompt attachment directory could not be created: {error}"
+        ))
+    })?;
+    let metadata = std::fs::symlink_metadata(&root).map_err(|error| {
+        isolation_error(format!(
+            "managed provider prompt attachment directory could not be inspected: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(isolation_error(
+            "managed provider prompt attachment path must be a nonsymlink directory",
+        ));
+    }
+    let temp_root = std::env::temp_dir();
+    let relative = root.strip_prefix(&temp_root).map_err(|_| {
+        isolation_error(
+            "managed provider prompt attachment path must stay under the process temp directory",
+        )
+    })?;
+    let expected = temp_root
+        .canonicalize()
+        .map_err(|error| {
+            isolation_error(format!(
+                "managed provider temp directory could not be resolved: {error}"
+            ))
+        })?
+        .join(relative);
+    let canonical = root.canonicalize().map_err(|error| {
+        isolation_error(format!(
+            "managed provider prompt attachment directory could not be resolved: {error}"
+        ))
+    })?;
+    if canonical != expected {
+        return Err(isolation_error(
+            "managed provider prompt attachment path must not traverse symlinks",
+        ));
+    }
+    Ok(Some(root))
 }
 
 #[cfg(target_os = "linux")]
@@ -745,7 +807,8 @@ mod tests {
     #[test]
     fn namespace_args_restore_the_resolver_after_masking_run() {
         let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
-        let (args, _) = managed_namespace_args(Some(resolver), |path| path == Path::new("/run"));
+        let (args, _) =
+            managed_namespace_args(Some(resolver), |path| path == Path::new("/run"), None);
 
         let mask = args
             .windows(2)
@@ -777,7 +840,7 @@ mod tests {
 
     #[test]
     fn namespace_args_do_not_bind_a_resolver_outside_masked_run() {
-        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"));
+        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"), None);
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 1);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
@@ -1029,6 +1092,67 @@ mod tests {
                 directory_text.as_str(),
                 directory_text.as_str(),
             ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_namespace_exposes_materialized_prompt_attachment_to_its_provider() {
+        use crate::runtime::agent_actor::prompt_attachment_materialization::INLINE_PROMPT_ATTACHMENT_DIR;
+        use base64::Engine;
+
+        let session_id = format!(
+            "managed-attachment-session-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let request =
+            LaunchProviderRequest::new(&session_id, "codex", "codex", "default", "gpt-5.6-luna")
+                .with_agent_id("agent:two");
+        let attachment_root = managed_prompt_attachment_root(&request)
+            .expect("managed attachment root should prepare")
+            .expect("agent-bound launches should have an attachment root");
+        let attachment = crate::session::PromptAttachment::new(
+            "chariox-cloud://artifact/art-1",
+            "text/plain",
+            Some("remote-attachment-probe.txt".to_string()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode("attachment probe"));
+        let materialized = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(
+            &session_id,
+            "agent:two",
+            vec![attachment],
+        )
+        .expect("inline attachment should materialize before provider input");
+        let attachment_path = Path::new(
+            materialized[0]
+                .url()
+                .strip_prefix("file://")
+                .expect("materialized attachment should use a file URL"),
+        );
+
+        let (args, _) = managed_namespace_args(
+            None,
+            |path| path == Path::new("/tmp"),
+            Some(&attachment_root),
+        );
+
+        assert!(attachment_path.starts_with(&attachment_root));
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--ro-bind"
+                && window[1] == attachment_root.to_string_lossy()
+                && window[2] == attachment_root.to_string_lossy()
+        }));
+        let global_root = std::env::temp_dir().join(INLINE_PROMPT_ATTACHMENT_DIR);
+        assert!(!args.windows(3).any(|window| {
+            window[0] == "--ro-bind"
+                && window[1] == global_root.to_string_lossy()
+                && window[2] == global_root.to_string_lossy()
+        }));
+        let _ = std::fs::remove_dir_all(
+            attachment_root
+                .parent()
+                .expect("attachment root should have a session parent"),
         );
     }
 

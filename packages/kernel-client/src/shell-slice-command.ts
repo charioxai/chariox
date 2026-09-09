@@ -10,6 +10,7 @@ import {
   createSliceRequest,
   deleteSliceRequest,
   getSliceDisplayEndpointRequest,
+  getRoomEnvironmentSliceRequest,
   getSliceLogsRequest,
   getSliceRequest,
   getSliceStateStatusRequest,
@@ -24,8 +25,10 @@ import {
   startSliceRequest,
   stopSliceRequest,
 } from "./ipc-requests.js"
+import type { RoomEnvironmentSliceResponse } from "./kernel-types.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
+import { scopedSliceViewerTarget } from "./slice-screen-viewer.js"
 import {
   formatSliceProviderAuth,
   formatSliceProviderAuthReadiness,
@@ -40,6 +43,7 @@ type ShellKernelClient = {
 
 export type ShellSliceCommandDeps = {
   client: ShellKernelClient
+  openRoomViewer?: (target: { sessionId: string; agentId: string; sliceId: string }) => Promise<{ url: string; opened: boolean } | null>
 }
 
 export async function executeSliceCommand(
@@ -57,13 +61,14 @@ export async function executeSliceCommand(
     }
     case "create": {
       if (!first) {
-        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
+        return { ok: false, message: "usage: slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
       }
       let workerKernelRef: string | undefined
       let displayUrl: string | undefined
       let fromSavedState: string | undefined
       let base: "default" | "clean" | undefined
       let displayMode: "headless" | "headed" | undefined
+      let displayBackend: "novnc" | "selkies" | undefined
       for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index]
         const value = rest[index + 1]
@@ -80,6 +85,12 @@ export async function executeSliceCommand(
           displayMode = "headed"
         } else if (arg === "--headless" || arg === "--no-display") {
           displayMode = "headless"
+        } else if (arg === "--display-backend") {
+          if (value !== "selkies" && value !== "novnc") {
+            return { ok: false, message: "usage: slice create <name> --headed --display-backend selkies|novnc" }
+          }
+          displayBackend = value
+          index += 1
         } else if (arg === "--clean") {
           base = "clean"
         } else if (arg === "--default") {
@@ -87,12 +98,16 @@ export async function executeSliceCommand(
         } else if (arg?.startsWith("--")) {
           return { ok: false, message: `unknown or incomplete slice create option: ${arg}` }
         } else if (arg) {
-          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
+          return { ok: false, message: "usage: slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
         }
+      }
+      if (displayBackend !== undefined && displayMode !== "headed") {
+        return { ok: false, message: "--display-backend requires --headed" }
       }
       const response = await deps.client.send(createSliceRequest({
         name: first,
         ...(displayMode ? { displayMode } : {}),
+        ...(displayBackend ? { displayBackend } : {}),
         workspaceId: context.workspace,
         worktreeId: context.worktree,
         workspaceMount: context.worktree,
@@ -214,8 +229,16 @@ export async function executeSliceCommand(
     }
     case "screen": {
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const sliceResponse = await deps.client.send(getSliceRequest(sliceRef))
+      const slice = expectVariant<{ slice: SliceRecord }>(sliceResponse, "Slice").slice
+      if (slice.display_endpoint?.kind === "selkies") {
+        return openScopedSliceViewer(slice.id, context, deps)
+      }
       const response = await deps.client.send(getSliceDisplayEndpointRequest(sliceRef))
       const endpoint = expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
+      if (endpoint.kind === "selkies") {
+        return openScopedSliceViewer(slice.id, context, deps)
+      }
       return { ok: true, message: endpoint.url, data: { endpoint } }
     }
     case "auth": {
@@ -281,6 +304,41 @@ export async function executeSliceCommand(
     }
     default:
       return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|screen" }
+  }
+}
+
+async function openScopedSliceViewer(
+  sliceId: string,
+  context: ShellContext,
+  deps: ShellSliceCommandDeps,
+): Promise<ShellCommandResult> {
+  if (!context.sessionId || !context.attachmentId || !context.agentId) {
+    return { ok: false, message: "Selkies slice screen requires an active Room session, attachment, and focused agent" }
+  }
+  const bindingResponse = await deps.client.send(getRoomEnvironmentSliceRequest(context.sessionId))
+  const binding = expectVariant<RoomEnvironmentSliceResponse["RoomEnvironmentSlice"]>(
+    bindingResponse,
+    "RoomEnvironmentSlice",
+  ).binding
+  const scoped = scopedSliceViewerTarget({
+    sessionId: context.sessionId,
+    attachmentId: context.attachmentId,
+    agentId: context.agentId,
+    sliceId,
+    binding,
+  })
+  if (scoped.error !== null) return { ok: false, message: scoped.error }
+  if (!deps.openRoomViewer) {
+    return { ok: false, message: "Chariox Cloud Web View is unavailable in this client" }
+  }
+  const opened = await deps.openRoomViewer(scoped.target)
+  if (!opened) {
+    return { ok: false, message: "Chariox Cloud Web View is not configured; run cloud link first" }
+  }
+  return {
+    ok: true,
+    message: opened.url,
+    data: { viewer: { url: opened.url, opened: opened.opened } },
   }
 }
 

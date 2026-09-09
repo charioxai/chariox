@@ -1020,8 +1020,10 @@ impl ProviderAccountProfileRegistry {
         let mut environment = locator.environment();
         // Preserve Claude's provider-native default credential scope. Injecting the
         // conventional config directory can select a different credential store, including
-        // a scoped Keychain service on macOS.
+        // a scoped Keychain service on macOS. Managed isolation changes HOME, so it
+        // must retain the explicit directory to bind the selected credential profile.
         if provider == "claude"
+            && !crate::provider::managed_provider_isolation_required()
             && origin == ProviderAccountProfileOrigin::Default
             && matches!(
                 locator,
@@ -3654,6 +3656,49 @@ mod tests {
 
         assert_eq!(migrated.label, "codex-1");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_default_claude_profile_retains_its_credential_directory() {
+        let _lock = crate::env_lock::lock();
+        struct Restore {
+            variables: Vec<(&'static str, Option<std::ffi::OsString>)>,
+            root: PathBuf,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (name, value) in &self.variables {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+        let (root, registry) = fixture();
+        let _restore = Restore {
+            variables: ["CLAUDE_CONFIG_DIR", "CHARIOX_MANAGED_PROVIDER_ISOLATION"]
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect(),
+            root: root.clone(),
+        };
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        let home = root.join("home");
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+        assert_eq!(
+            environment.get("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+            Some(home.join(".claude")),
+            "managed login and sandboxed verification must bind the same default profile"
+        );
     }
 
     #[test]

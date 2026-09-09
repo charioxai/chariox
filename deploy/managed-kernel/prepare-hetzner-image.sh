@@ -271,6 +271,22 @@ if find /var/lib/chariox-slice-share -mindepth 1 \
 fi
 
 apt-get clean
+managed_sshd_config=/etc/ssh/sshd_config.d/00-chariox-managed.conf
+install -d -o root -g root -m 0755 /etc/ssh/sshd_config.d
+{
+  printf '%s\n' 'PasswordAuthentication no'
+  printf '%s\n' 'KbdInteractiveAuthentication no'
+  printf '%s\n' 'PermitRootLogin prohibit-password'
+} | install -o root -g root -m 0644 /dev/stdin "$managed_sshd_config"
+passwd --lock root
+chage -d "$(date -u +%Y-%m-%d)" -M 99999 -I -1 -E -1 root
+sshd_effective=$(sshd -T)
+printf '%s\n' "$sshd_effective" | grep -Fxq 'passwordauthentication no' \
+  || fail "managed image must disable SSH password authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
+  || fail "managed image must disable interactive SSH authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin without-password' \
+  || fail "managed image must restrict root SSH to public keys"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed

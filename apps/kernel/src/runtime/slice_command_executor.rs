@@ -35,6 +35,9 @@ pub(crate) async fn execute_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     caller: &KernelCaller,
+    managed_kernel_registration: Option<
+        &crate::managed_bootstrap::ConfirmedManagedKernelRegistration,
+    >,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let owner_user_id = caller
@@ -46,7 +49,11 @@ pub(crate) async fn execute_slice_request(
             execute_list_slices_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateSlice(request) => {
-            execute_create_slice_request(runtime_state, request).await
+            execute_create_slice_request(
+                runtime_state,
+                managed_slice_create_request(request, managed_kernel_registration),
+            )
+            .await
         }
         LocalDaemonRequest::GetSlice(request) => {
             execute_get_slice_request(runtime_state, request).await
@@ -126,6 +133,20 @@ pub(crate) async fn execute_slice_request(
             message: "unsupported slice request".to_string(),
         }),
     }
+}
+
+fn managed_slice_create_request(
+    mut request: crate::local::CreateSliceRequest,
+    registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+) -> crate::local::CreateSliceRequest {
+    if request.backend == crate::slice::SliceBackendKind::LocalDocker
+        && request.development.is_none()
+    {
+        request.development = registration
+            .and_then(|registration| registration.context_plan.as_ref())
+            .map(|plan| plan.package_binding().development);
+    }
+    request
 }
 
 pub(crate) async fn execute_import_slice_provider_auth_request(
@@ -451,6 +472,60 @@ fn resolve_local_docker_provider_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
+    use crate::managed_context::package::ManagedContextDevelopmentSelection;
+
+    fn create_request() -> crate::local::CreateSliceRequest {
+        crate::local::CreateSliceRequest {
+            name: "browser-work".to_string(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headed,
+            display_backend: Default::default(),
+            workspace_id: Some("/home/chariox".to_string()),
+            worktree_id: Some("/home/chariox".to_string()),
+            workspace_mount: Some("/home/chariox".to_string()),
+            development: None,
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: Vec::new(),
+            from_saved_state: None,
+            base: Some(crate::local::SliceCreateBase::Clean),
+        }
+    }
+
+    fn empty_registration() -> ConfirmedManagedKernelRegistration {
+        ConfirmedManagedKernelRegistration {
+            environment_id: "environment-1".to_string(),
+            machine_id: "machine-1".to_string(),
+            kernel_id: "kernel-1".to_string(),
+            context_plan: Some(ManagedKernelContextPlan::empty_for_tests("context-1")),
+        }
+    }
+
+    #[test]
+    fn client_slice_create_inherits_the_managed_development_plan() {
+        let request = managed_slice_create_request(create_request(), Some(&empty_registration()));
+
+        assert_eq!(
+            request.development,
+            Some(ManagedContextDevelopmentSelection::Empty)
+        );
+    }
+
+    #[test]
+    fn ordinary_and_explicit_slice_development_are_not_rewritten() {
+        let ordinary = managed_slice_create_request(create_request(), None);
+        assert_eq!(ordinary.development, None);
+
+        let mut explicit = create_request();
+        explicit.development = Some(ManagedContextDevelopmentSelection::Empty);
+        let explicit = managed_slice_create_request(explicit, Some(&empty_registration()));
+        assert_eq!(
+            explicit.development,
+            Some(ManagedContextDevelopmentSelection::Empty)
+        );
+    }
 
     fn auth(provider: &str, account: &str) -> crate::slice_provider_auth::SliceProviderAuthSummary {
         crate::slice_provider_auth::SliceProviderAuthSummary {

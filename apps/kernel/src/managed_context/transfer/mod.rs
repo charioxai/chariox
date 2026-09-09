@@ -1082,6 +1082,7 @@ fn development_launch_target(
         .iter()
         .map(|repository| {
             Ok(crate::local::ManagedContextRepositoryLaunchTarget {
+                workspace_kind: repository.workspace_kind,
                 repository_id: repository.repository_id.clone(),
                 role: repository.role,
                 target_directory: repository.target_directory.clone(),

@@ -300,7 +300,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleSliceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "slice" }>,
   ): Promise<void> => {
-    await handleSliceSlashCommand({ ...deps, currentWorkspaceTarget, currentWorktreeTarget }, command)
+    await handleSliceSlashCommand({
+      ...deps,
+      currentWorkspaceTarget,
+      currentWorktreeTarget,
+      sessionId: () => deps.sessionState().id,
+      attachmentId: () => deps.attachmentState()?.id ?? null,
+    }, command)
   }
 
   const handleKernelCommand = async (

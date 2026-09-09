@@ -122,6 +122,66 @@ test("slice command create passes display mode and current worktree mount", asyn
   assert.equal(harness.footers.at(-1)?.message, "created slice qa")
 })
 
+test("slice command create passes an explicit headed display backend", async (t) => {
+  for (const displayBackend of ["selkies", "novnc"] as const) {
+    await t.test(displayBackend, async () => {
+      const harness = sliceHarness()
+
+      await handleSliceSlashCommand(harness.deps, command(
+        "create",
+        `qa-${displayBackend}`,
+        "--display-backend",
+        displayBackend,
+        "--headed",
+      ))
+
+      assert.equal(harness.createdSlices.length, 1)
+      assert.equal(harness.createdSlices[0]?.displayMode, "headed")
+      assert.equal(harness.createdSlices[0]?.displayBackend, displayBackend)
+    })
+  }
+})
+
+test("slice command create rejects invalid display backends", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command(
+    "create",
+    "qa",
+    "--headed",
+    "--display-backend",
+    "unknown",
+  ))
+
+  assert.deepEqual(harness.createdSlices, [])
+  assert.deepEqual(harness.footers.at(-1), {
+    message: "usage: /slice create <name> --headed --display-backend selkies|novnc",
+    tone: "error",
+  })
+})
+
+test("slice command create rejects a display backend for non-headed slices", async (t) => {
+  for (const displayArgs of [[], ["--headless"]]) {
+    await t.test(displayArgs.length === 0 ? "implicit headless" : "explicit headless", async () => {
+      const harness = sliceHarness()
+
+      await handleSliceSlashCommand(harness.deps, command(
+        "create",
+        "qa",
+        ...displayArgs,
+        "--display-backend",
+        "selkies",
+      ))
+
+      assert.deepEqual(harness.createdSlices, [])
+      assert.deepEqual(harness.footers.at(-1), {
+        message: "--display-backend requires --headed",
+        tone: "error",
+      })
+    })
+  }
+})
+
 test("slice command create can request a clean base", async () => {
   const harness = sliceHarness()
 
@@ -166,6 +226,79 @@ test("slice command screen resolves focused agent slice and opens endpoint", asy
   assert.deepEqual(harness.openedUrls, ["http://127.0.0.1:6080"])
   assert.deepEqual(harness.displayEndpointRefs, ["linux-dev"])
   assert.equal(harness.footers.at(-1)?.message, "opened http://127.0.0.1:6080")
+})
+
+test("slice command screen fails closed without slice metadata lookup", async () => {
+  const harness = sliceHarness({
+    endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
+  })
+  delete harness.deps.getSlice
+
+  await handleSliceSlashCommand(harness.deps, command("screen", "slice-1"))
+
+  assert.deepEqual(harness.displayEndpointRefs, [])
+  assert.deepEqual(harness.openedUrls, [])
+  assert.doesNotMatch(JSON.stringify(harness.notices), /secret/)
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+})
+
+test("slice command screen scopes Selkies returned after stale slice metadata", async () => {
+  const harness = sliceHarness({
+    slices: [slice({ id: "slice-1", name: "linux-dev" })],
+    endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
+  })
+  await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
+  assert.deepEqual(harness.viewerTargets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(harness.openedUrls, [])
+  assert.doesNotMatch(JSON.stringify([harness.notices, harness.footers]), /secret/)
+})
+
+test("slice command screen routes Selkies through the scoped Cloud viewer target", async () => {
+  const harness = sliceHarness({
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid/secret", access: "tunnel" },
+    })],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
+
+  assert.deepEqual(harness.roomRequests, [{ GetRoomEnvironmentSlice: { session_id: "session-1" } }])
+  assert.deepEqual(harness.viewerTargets, [{ sessionId: "session-1", agentId: "agent-1", sliceId: "slice-1" }])
+  assert.deepEqual(harness.displayEndpointRefs, [])
+  assert.deepEqual(harness.openedUrls, [])
+  assert.match(harness.notices.at(-1) ?? "", /^Opening slice screen in Chariox Cloud\.\nurl=https:\/\/cloud\.test\/view\?view_target=session-1%3Aagent-1%3Aslice-1\nbrowser=opened$/)
+  assert.doesNotMatch(JSON.stringify([harness.notices, harness.viewerTargets]), /secret|viewer_public_key|stream_id|peer_public_key/)
+})
+
+test("slice command screen rejects missing or mismatched Room bindings for Selkies", async (t) => {
+  const cases = [
+    { name: "no binding", binding: null, message: "Room Environment has no bound slice to view" },
+    { name: "wrong room", binding: { session_id: "session-other", slice_id: "slice-1", owner_kernel_id: "kernel", worker_kernel_ref: "worker" }, message: "Room Environment slice binding belongs to a different session" },
+    { name: "mismatched slice", binding: { session_id: "session-1", slice_id: "slice-other", owner_kernel_id: "kernel", worker_kernel_ref: "worker" }, message: "Room Environment is bound to slice slice-other, not slice-1" },
+  ] as const
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const harness = sliceHarness({
+        slices: [slice({ id: "slice-1", name: "linux-dev", display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid", access: "tunnel" } })],
+        roomBinding: entry.binding,
+      })
+      await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
+      assert.equal(harness.footers.at(-1)?.message, entry.message)
+      assert.deepEqual(harness.viewerTargets, [])
+    })
+  }
+})
+
+test("slice command screen fails clearly when the Cloud viewer is not configured", async () => {
+  const harness = sliceHarness({
+    slices: [slice({ id: "slice-1", name: "linux-dev", display_endpoint: { slice_id: "slice-1", kind: "selkies", url: "wss://relay.invalid", access: "tunnel" } })],
+    viewerConfigured: false,
+  })
+  await handleSliceSlashCommand(harness.deps, command("screen", "linux-dev"))
+  assert.equal(harness.footers.at(-1)?.message, "Chariox Cloud Web View is not configured; run /cloud link first")
+  assert.deepEqual(harness.displayEndpointRefs, [])
 })
 
 test("slice command focused lookup prefers explicit agent bindings", async () => {
@@ -584,6 +717,8 @@ function sliceHarness(options: {
   readonly endpoint?: SliceDisplayEndpoint
   readonly importedAuthStatus?: string
   readonly removedAuthStatus?: string
+  readonly roomBinding?: { session_id: string; slice_id: string; owner_kernel_id: string; worker_kernel_ref: string } | null
+  readonly viewerConfigured?: boolean
 } = {}) {
   const notices: string[] = []
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
@@ -602,6 +737,8 @@ function sliceHarness(options: {
   const resetStates: string[] = []
   const backups: Array<{ sliceRef: string; name: string | null | undefined }> = []
   const restoredBackups: Array<{ sliceRef: string; backupRef: string }> = []
+  const roomRequests: unknown[] = []
+  const viewerTargets: Array<{ sessionId: string; agentId: string; sliceId: string }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
@@ -609,6 +746,9 @@ function sliceHarness(options: {
     currentWorkspaceTarget: () => "/repo",
     currentWorktreeTarget: () => "/repo/wt",
     focusedAgentId: () => focusedAgent.id,
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    attachmentId: () => "attachment-1",
     resolveSessionAgent: () => ({ agent: focusedAgent, error: null }),
     flashFooter: (message, tone) => { footers.push({ message, tone }) },
     appendNotice: (message) => { notices.push(message) },
@@ -616,6 +756,20 @@ function sliceHarness(options: {
       openedUrls.push(url)
       return true
     },
+    sendRoomEnvironmentRequest: async <TResponse>(request: unknown) => {
+      roomRequests.push(request)
+      const binding = Object.prototype.hasOwnProperty.call(options, "roomBinding")
+        ? options.roomBinding ?? null
+        : { session_id: "session-1", slice_id: "slice-1", owner_kernel_id: "kernel", worker_kernel_ref: "worker" }
+      return { RoomEnvironmentSlice: { binding } } as TResponse
+    },
+    ...(options.viewerConfigured === false ? {} : { openRoomViewer: async (target: { sessionId: string; agentId: string; sliceId: string }) => {
+      viewerTargets.push(target)
+      return {
+        url: `https://cloud.test/view?view_target=${encodeURIComponent(`${target.sessionId}:${target.agentId}:${target.sliceId}`)}`,
+        opened: true,
+      }
+    } }),
     listSlices: async () => slices,
     createSlice: async (createOptions) => {
       createdSlices.push(createOptions)
@@ -751,7 +905,7 @@ function sliceHarness(options: {
       }
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups, restoredBackups }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups, restoredBackups, roomRequests, viewerTargets }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
