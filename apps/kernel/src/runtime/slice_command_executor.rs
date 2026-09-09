@@ -481,6 +481,7 @@ mod tests {
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headed,
+            display_backend: Default::default(),
             workspace_id: Some("/home/chariox".to_string()),
             worktree_id: Some("/home/chariox".to_string()),
             workspace_mount: Some("/home/chariox".to_string()),
