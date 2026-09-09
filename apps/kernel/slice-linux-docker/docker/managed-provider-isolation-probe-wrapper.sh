@@ -8,6 +8,8 @@ unselected="${CHARIOX_MANAGED_ISOLATION_PROBE_UNSELECTED_REPOSITORY:?unselected 
 account="${CODEX_HOME:-}"
 
 fail() {
+  printf 'managed_provider_isolation=failure\nreason=%s\n' "$1" >"$result" 2>/dev/null || true
+  chmod 600 "$result" 2>/dev/null || true
   printf '%s\n' "$1" >&2
   exit 1
 }

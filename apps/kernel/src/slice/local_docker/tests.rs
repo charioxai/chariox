@@ -793,6 +793,7 @@ fn managed_provider_isolation_probe_allows_selected_publication_ancestors() {
     ));
     assert!(runtime.contains("mkdir -p \"$provider_probe_unselected\""));
     assert!(wrapper.contains("\"$unselected\""));
+    assert!(wrapper.contains("managed_provider_isolation=failure"));
     assert!(
         !wrapper
             .lines()
