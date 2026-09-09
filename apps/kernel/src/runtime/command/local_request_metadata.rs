@@ -135,6 +135,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
             LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
         }
+        LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_) => {
+            LocalRequestMetadata::new("managed_environment.git_credentials.enroll", Interactive)
+        }
         LocalDaemonRequest::CreateManagedEnvironment(_) => {
             LocalRequestMetadata::new("managed_environment.create", Interactive)
         }
@@ -808,6 +811,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
+        | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)

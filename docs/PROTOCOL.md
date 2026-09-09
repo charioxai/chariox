@@ -982,6 +982,18 @@ Workflow trigger and deployment direction:
 - protocol 284 adds `ImportNativeProviderAccountProfile`. The authority owner
   can explicitly register the kernel host's provider-native scope without a
   client-supplied path, changing an existing profile, or copying credentials.
+- protocol 288 adds `PrepareManagedEnvironmentGitCredentialEnrollment`. This
+  explicitly requests a Cloud-authorized managed-context ticket for enrolling
+  selected Git credentials into an existing managed environment; creating an
+  environment with Git credentials set to `none` remains an opt-out.
+  - initial `gitCredentials: { kind: "none" }` performs no Git export or helper
+    setup
+  - create/copy with `kind: "selected"` remains part of the immutable launch
+    plan and the ordinary managed-context transfer
+  - post-creation enrollment uses a separate, Git-only plan authorized by Cloud
+    with the target Machine credential; the target kernel validates the exact
+    source/key/realm binding, imports through the encrypted context package,
+    and does not replace or publish a development workspace
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
