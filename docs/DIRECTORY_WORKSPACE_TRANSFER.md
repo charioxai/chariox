@@ -16,7 +16,9 @@ recovery paths apply to Git and directory workspaces.
 - Local messages encode `workspaceKind`; relay records encode `workspace_kind`.
   An omitted kind means Git for existing records. Shared daemon protocol318
   versions the new shape. Older importers must reject unsupported schema3 rather
-  than silently treating directories as repositories.
+  than silently treating directories as repositories. Relay peer protocol47
+  rejects workers that cannot return the workspace kind before any package bytes
+  are uploaded.
 
 ## Filesystem policy
 

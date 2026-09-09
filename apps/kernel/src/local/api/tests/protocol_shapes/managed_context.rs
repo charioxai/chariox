@@ -7,6 +7,10 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
     };
     use crate::transport::relay_peer::RelayManagedContextImportedRepository;
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 318);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        47
+    );
     let local = crate::local::ManagedContextRepositoryLaunchTarget {
         workspace_kind: DevelopmentWorkspaceKind::Directory,
         repository_id: "office".into(),
