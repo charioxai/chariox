@@ -149,6 +149,16 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
         crate::session::EnvironmentError::ImportRecoveryRequired
     );
     database
+        .execute(
+            "UPDATE durable_browser_import SET environment_id = 'retired-environment'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        dispatch(&router, &caller, prepare.clone()).await.is_err(),
+        "replacing the Environment identity must not bypass the Room recovery record"
+    );
+    database
         .execute("DELETE FROM durable_browser_import", [])
         .unwrap();
     drop(database);

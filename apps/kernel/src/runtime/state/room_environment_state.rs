@@ -256,25 +256,10 @@ impl KernelRuntimeState {
         session_id: &str,
         request: EnvironmentActionRequest,
     ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
-        self.ensure_no_pending_environment_import(session_id)?;
+        self.ensure_browser_import_execution_allowed(session_id)?;
         self.owned
             .session_store
             .submit_room_environment_action(session_id, request)
-    }
-
-    pub(crate) fn ensure_no_pending_environment_import(
-        &self,
-        session_id: &str,
-    ) -> Result<(), EnvironmentError> {
-        let environment = self.room_environment_snapshot(session_id)?;
-        match self
-            .owned
-            .durable_state_store
-            .browser_import_pending(&environment.environment_id)
-        {
-            Ok(false) => Ok(()),
-            Ok(true) | Err(_) => Err(EnvironmentError::ImportRecoveryRequired),
-        }
     }
 
     pub(crate) fn existing_room_environment_action(

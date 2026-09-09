@@ -287,6 +287,7 @@ impl KernelRuntimeState {
         let preconditions = self
             .room_environment_snapshot(session_id)
             .and_then(|current| {
+                self.ensure_browser_import_execution_allowed(session_id)?;
                 if current.runtime_generation != runtime_generation {
                     return Err(EnvironmentError::StaleRuntimeGeneration {
                         expected: current.runtime_generation,
@@ -374,19 +375,15 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn wait_for_environment_action_admission(
+    pub(super) async fn wait_for_environment_action_admission(
         &self,
         session_id: &str,
         action_id: &str,
     ) -> Result<(), DaemonError> {
         let started = Instant::now();
         loop {
-            if let Err(error) = self.ensure_no_pending_environment_import(session_id) {
-                let _ = self.finish_room_environment_action(
-                    session_id,
-                    action_id,
-                    EnvironmentActionTerminal::Cancelled,
-                );
+            if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
+                let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
                 return Err(action_environment_error(error));
             }
             let environment = self

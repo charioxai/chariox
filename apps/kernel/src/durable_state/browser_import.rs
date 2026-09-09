@@ -35,6 +35,31 @@ impl std::fmt::Debug for ImportStateWrite {
 }
 
 impl DurableKernelStateStore {
+    /// Check the durable Room binding, even before its Environment is restored.
+    /// A recovered row remains quarantined until its journal cleanup is durable.
+    pub(crate) fn browser_import_pending_for_room(
+        &self,
+        room_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "browser_import.read",
+                message: "state lock unavailable".into(),
+            })?;
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_browser_import WHERE room_id = ?1)",
+                params![room_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "browser_import.read",
+                message: "state read failed".into(),
+            })
+    }
+
     /// A recovered row still blocks admission until journal cleanup is complete.
     pub(crate) fn browser_import_pending(&self, environment_id: &str) -> Result<bool, DaemonError> {
         self.pending_browser_import(environment_id)

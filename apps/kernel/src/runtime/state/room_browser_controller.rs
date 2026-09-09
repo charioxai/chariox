@@ -28,6 +28,12 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
+        // Cleanup must remain available while the Room is quarantined, including
+        // when the durable store cannot establish that execution is safe.
+        if !matches!(&command, Command::CancelAction { .. } | Command::Release) {
+            self.ensure_browser_import_execution_allowed(session_id)
+                .map_err(browser_import_execution_gate::execution_error)?;
+        }
         let admitted_mutation_command = matches!(
             &command,
             Command::Action { .. }

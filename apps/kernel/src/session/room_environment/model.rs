@@ -236,7 +236,8 @@ pub(crate) struct EnvironmentTabRuntimeBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvironmentError {
-    ImportRecoveryRequired,
+    BrowserImportRecoveryRequired,
+    BrowserImportRecoveryStateUnavailable,
     InvalidViewport,
     EnvironmentAlreadyExists {
         session_id: String,
@@ -348,7 +349,10 @@ pub enum EnvironmentError {
 impl EnvironmentError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::ImportRecoveryRequired => "environment_import_recovery_required",
+            Self::BrowserImportRecoveryRequired => "environment_browser_import_recovery_required",
+            Self::BrowserImportRecoveryStateUnavailable => {
+                "environment_browser_import_recovery_state_unavailable"
+            }
             Self::InvalidViewport => "environment_invalid_viewport",
             Self::EnvironmentAlreadyExists { .. } => "environment_already_exists",
             Self::EnvironmentNotFound { .. } => "environment_not_found",
