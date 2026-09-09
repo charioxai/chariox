@@ -779,6 +779,32 @@ recover_existing_container() {
   refresh_slice_support_files
 }
 
+managed_provider_probe_unselected_path() {
+  if [[ "$MANAGED_PROVIDER_ISOLATION_PROBE" != "1" || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -eq 0 ]]; then
+    return 0
+  fi
+  local primary_mount="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_0:-}"
+  [[ -n "$primary_mount" ]] || fail "slice development mount 0 is missing"
+  printf '%s\n' "${primary_mount%/*}/.chariox-managed-isolation-unselected-repository"
+}
+
+prepare_managed_provider_probe_unselected_path() {
+  local provider_probe_unselected
+  provider_probe_unselected="$(managed_provider_probe_unselected_path)"
+  [[ -n "$provider_probe_unselected" ]] || return 0
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" \
+    install -d -m 0755 "$provider_probe_unselected" \
+    || fail "could not prepare the managed provider isolation probe sentinel"
+}
+
+cleanup_managed_provider_probe_unselected_path() {
+  local provider_probe_unselected
+  provider_probe_unselected="$(managed_provider_probe_unselected_path)"
+  [[ -n "$provider_probe_unselected" ]] || return 0
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" \
+    rmdir "$provider_probe_unselected" >/dev/null 2>&1 || true
+}
+
 start_slice_services() {
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
     import_provider_auth
@@ -789,7 +815,9 @@ start_slice_services() {
   fi
   if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
     require_slice_free_space "runtime" /home/slice /tmp
+    prepare_managed_provider_probe_unselected_path
     run_required_phase runtime exec_slice /opt/chariox-slice/start-runtime.sh
+    cleanup_managed_provider_probe_unselected_path
   fi
   if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
     run_required_phase provider-servers exec_slice /opt/chariox-slice/start-providers.sh
