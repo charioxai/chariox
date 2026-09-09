@@ -18,6 +18,14 @@ pub struct PrepareManagedEnvironmentContextTransferRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrepareManagedEnvironmentGitCredentialEnrollmentRequest {
+    pub environment_id: String,
+    pub source_target_id: String,
+    pub git_credentials: ManagedEnvironmentGitCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateManagedEnvironmentRequest {
     pub client_request_id: String,
     pub name: String,

@@ -66,5 +66,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 318 adds directory workspace materialization and publication receipts.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 318;
+/// Version 319 adds Git credential enrollment for an existing managed environment.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 319;
