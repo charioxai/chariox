@@ -16,6 +16,7 @@ use cloud_contract::{
 pub(crate) async fn execute_managed_environment_control_request(
     config: DaemonConfig,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    outbound_store: crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -134,6 +135,7 @@ pub(crate) async fn execute_managed_environment_control_request(
             let ticket = response.into_ticket()?;
             validate_git_credential_enrollment_ticket(&ticket, &request)?;
             crate::managed_context::outbound_service::validate_ticket(&config, &ticket)?;
+            outbound_store.remember_prepared_git_enrollment_ticket(&ticket)?;
             Ok(LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket })
         }
         LocalDaemonRequest::CreateManagedEnvironment(request) => {
@@ -515,10 +517,14 @@ mod tests {
                 config.account_profile_registry_path(),
             )
             .expect("provider account registry");
+        let outbound_store =
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            );
 
         let catalog = execute_managed_environment_control_request(
             config.clone(),
             provider_account_profiles.clone(),
+            outbound_store.clone(),
             "cloud-user-1",
             LocalDaemonRequest::ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
         )
@@ -538,6 +544,7 @@ mod tests {
         let create = execute_managed_environment_control_request(
             config.clone(),
             provider_account_profiles.clone(),
+            outbound_store.clone(),
             "cloud-user-1",
             LocalDaemonRequest::CreateManagedEnvironment(CreateManagedEnvironmentRequest {
                 client_request_id: "create-1".to_string(),
@@ -567,6 +574,7 @@ mod tests {
         let get = execute_managed_environment_control_request(
             config.clone(),
             provider_account_profiles.clone(),
+            outbound_store.clone(),
             "cloud-user-1",
             LocalDaemonRequest::GetManagedEnvironment(GetManagedEnvironmentRequest {
                 environment_id: "environment / one".to_string(),
@@ -582,6 +590,7 @@ mod tests {
         let prepared = execute_managed_environment_control_request(
             config.clone(),
             provider_account_profiles.clone(),
+            outbound_store.clone(),
             "cloud-user-1",
             LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(
                 PrepareManagedEnvironmentContextTransferRequest {
@@ -601,6 +610,7 @@ mod tests {
         let enrollment = execute_managed_environment_control_request(
             config.clone(),
             provider_account_profiles.clone(),
+            outbound_store.clone(),
             "cloud-user-1",
             LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(
                 PrepareManagedEnvironmentGitCredentialEnrollmentRequest {
@@ -622,6 +632,7 @@ mod tests {
         let lifecycle = execute_managed_environment_control_request(
             config,
             provider_account_profiles,
+            outbound_store,
             "cloud-user-1",
             LocalDaemonRequest::RequestManagedEnvironmentLifecycle(
                 RequestManagedEnvironmentLifecycleRequest {

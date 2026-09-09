@@ -94,6 +94,7 @@ pub struct ManagedContextOutboundOperationStatus {
 pub(crate) struct ManagedContextOutboundOperationStore {
     state: Arc<Mutex<BTreeMap<String, ManagedContextOutboundOperationStatus>>>,
     active: Arc<Mutex<BTreeSet<String>>>,
+    prepared_git_enrollment_tickets: Arc<Mutex<BTreeMap<String, ManagedContextTransferTicket>>>,
     transfer_slots: Arc<Semaphore>,
     artifact_lock: Arc<Mutex<()>>,
     artifact_parent: Option<Arc<PathBuf>>,
@@ -104,6 +105,7 @@ impl Default for ManagedContextOutboundOperationStore {
         Self {
             state: Arc::new(Mutex::new(BTreeMap::new())),
             active: Arc::new(Mutex::new(BTreeSet::new())),
+            prepared_git_enrollment_tickets: Arc::new(Mutex::new(BTreeMap::new())),
             transfer_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_OUTBOUND_TRANSFERS)),
             artifact_lock: Arc::new(Mutex::new(())),
             artifact_parent: None,
@@ -140,6 +142,59 @@ impl ManagedContextOutboundOperationStore {
             .expect("managed-context outbound operation lock")
             .get(context_id)
             .cloned()
+    }
+
+    pub(crate) fn remember_prepared_git_enrollment_ticket(
+        &self,
+        ticket: &ManagedContextTransferTicket,
+    ) -> Result<(), DaemonError> {
+        if !ticket.context_plan.is_git_credential_enrollment() {
+            return Err(outbound_service_error(
+                "only Git credential enrollment tickets can be remembered",
+                false,
+            ));
+        }
+        let context_id = ticket.context_plan.context_id();
+        let mut prepared = self
+            .prepared_git_enrollment_tickets
+            .lock()
+            .expect("prepared Git enrollment ticket lock");
+        if let Some(existing) = prepared.get(context_id) {
+            if existing != ticket {
+                return Err(outbound_service_error(
+                    "prepared Git enrollment context was reused with another ticket",
+                    false,
+                ));
+            }
+            return Ok(());
+        }
+        if prepared.len() >= MAX_OUTBOUND_OPERATIONS {
+            return Err(outbound_service_error(
+                "too many prepared Git credential enrollments",
+                true,
+            ));
+        }
+        prepared.insert(context_id.to_string(), ticket.clone());
+        Ok(())
+    }
+
+    fn prepared_git_enrollment_ticket(
+        &self,
+        requested: &ManagedContextTransferTicket,
+    ) -> Result<ManagedContextTransferTicket, DaemonError> {
+        let context_id = requested.context_plan.context_id();
+        self.prepared_git_enrollment_tickets
+            .lock()
+            .expect("prepared Git enrollment ticket lock")
+            .get(context_id)
+            .filter(|prepared| *prepared == requested)
+            .cloned()
+            .ok_or_else(|| {
+                outbound_service_error(
+                    "Git credential enrollment ticket was not prepared by this kernel",
+                    false,
+                )
+            })
     }
 
     fn start(
@@ -245,6 +300,22 @@ impl ManagedContextOutboundOperationStore {
             .lock()
             .expect("managed-context outbound active lock")
             .remove(context_id);
+        let terminal = self
+            .state
+            .lock()
+            .expect("managed-context outbound operation lock")
+            .get(context_id)
+            .is_some_and(|status| {
+                status.phase == ManagedContextOutboundOperationPhase::Completed
+                    || (status.phase == ManagedContextOutboundOperationPhase::Failed
+                        && !status.retryable)
+            });
+        if terminal {
+            self.prepared_git_enrollment_tickets
+                .lock()
+                .expect("prepared Git enrollment ticket lock")
+                .remove(context_id);
+        }
     }
 
     fn active_context_ids(&self) -> BTreeSet<String> {
@@ -285,7 +356,7 @@ pub(crate) fn start_managed_context_outbound_operation(
         let _permit = permit;
         let _active = active;
         let authoritative_ticket =
-            match authoritative_ticket_for_outbound_operation(&config, &ticket).await {
+            match authoritative_ticket_for_outbound_operation(&config, &store, &ticket).await {
                 Ok(authoritative) if authoritative == ticket => authoritative,
                 Ok(_) => {
                     let error = outbound_service_error(
@@ -447,10 +518,11 @@ async fn fetch_authoritative_ticket(
 
 async fn authoritative_ticket_for_outbound_operation(
     config: &DaemonConfig,
+    store: &ManagedContextOutboundOperationStore,
     requested: &ManagedContextTransferTicket,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
     if requested.context_plan.is_git_credential_enrollment() {
-        return Ok(requested.clone());
+        return store.prepared_git_enrollment_ticket(requested);
     }
     fetch_authoritative_ticket(config, requested).await
 }
@@ -1736,9 +1808,13 @@ mod tests {
             String::from_utf8(request).expect("request UTF-8")
         });
         assert_eq!(
-            authoritative_ticket_for_outbound_operation(&config, &ticket)
-                .await
-                .expect("authoritative ticket"),
+            authoritative_ticket_for_outbound_operation(
+                &config,
+                &ManagedContextOutboundOperationStore::default(),
+                &ticket,
+            )
+            .await
+            .expect("authoritative ticket"),
             ticket
         );
         let request = fixture.join().expect("Cloud fixture thread");
@@ -1779,12 +1855,75 @@ mod tests {
                 relay_public_key: target_public_key,
             },
         };
+        let store = ManagedContextOutboundOperationStore::default();
+        store
+            .remember_prepared_git_enrollment_ticket(&ticket)
+            .expect("remember prepared Git enrollment ticket");
 
         assert_eq!(
-            authoritative_ticket_for_outbound_operation(&config, &ticket)
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
                 .await
                 .expect("prepared Git enrollment ticket"),
             ticket
+        );
+
+        let context_id = ticket.context_plan.context_id().to_string();
+        let plan_digest = ticket.context_plan.package_binding().plan_digest.clone();
+        let (_, permit) = store
+            .start(&context_id, &plan_digest)
+            .expect("start prepared operation");
+        drop(permit);
+        store.update(&context_id, |status| {
+            status.phase = ManagedContextOutboundOperationPhase::Completed;
+        });
+        store.finish(&context_id);
+        assert!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn unprepared_or_modified_git_enrollment_ticket_is_rejected() {
+        let config = DaemonConfig::for_tests();
+        let source_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let target_private_key = relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let ticket = ManagedContextTransferTicket {
+            environment_id: "environment-1".to_string(),
+            context_plan: ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+                "context-1",
+                "realm-1",
+                &config.daemon_id,
+                &source_thumbprint,
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm-1".to_string(),
+                machine_id: "target-machine".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                key_thumbprint: public_key_thumbprint(&target_public_key),
+                relay_public_key: target_public_key,
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::default();
+        assert!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                .await
+                .is_err()
+        );
+
+        store
+            .remember_prepared_git_enrollment_ticket(&ticket)
+            .expect("remember prepared ticket");
+        let mut modified = ticket;
+        modified.target.kernel_id = "attacker-kernel".to_string();
+        assert!(
+            authoritative_ticket_for_outbound_operation(&config, &store, &modified)
+                .await
+                .is_err()
         );
     }
 

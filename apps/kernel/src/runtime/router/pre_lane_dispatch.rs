@@ -97,6 +97,7 @@ impl CommandRouter {
                 return execute_managed_environment_control_request(
                     self.config_projection.snapshot(),
                     self.provider_account_profiles.clone(),
+                    self.managed_context_outbound.clone(),
                     caller_user_id,
                     request.clone(),
                 )
