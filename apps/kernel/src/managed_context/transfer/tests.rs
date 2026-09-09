@@ -379,6 +379,53 @@ fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_
 }
 
 #[test]
+fn credential_only_import_is_consumed_without_publishing_a_launch_target() {
+    let root = test_root("credential-only-commit");
+    let archive = b"credential package";
+    let now = current_time_ms();
+    let mut request = arm_request(archive, now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let plan_digest = request.plan.plan_digest.clone();
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let armed = store.arm(request, now).expect("arm transfer");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin transfer");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
+            now + 2,
+        )
+        .expect("upload archive");
+    let ready = claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim import"),
+    );
+    let receipt = managed_package_receipt(&armed.transfer_id, archive, &ready.destination_root);
+    store
+        .commit_credential_import(&armed.transfer_id, &receipt, now + 4)
+        .expect("commit credential import");
+    assert_eq!(
+        store
+            .get_status(&armed.transfer_id, &armed.capability, &caller, now + 5)
+            .expect("credential import status")
+            .phase,
+        ManagedContextTransferPhase::Consumed
+    );
+    assert!(store.launch_target("context-1", &plan_digest).is_err());
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
 fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
     let root = test_root("schema-v4-empty-workspace");
     fs::create_dir_all(&root).expect("create transfer root");
