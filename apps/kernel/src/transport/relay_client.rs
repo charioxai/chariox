@@ -60,7 +60,7 @@ use envelope_io::{
     send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
-use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext};
+use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};

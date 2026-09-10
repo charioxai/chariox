@@ -803,6 +803,7 @@ async fn run_daemon_relay_connector_inner(
                 let (mut writer, mut reader) = socket.split();
                 let (outgoing_tx, mut priority_outgoing_rx, mut event_outgoing_rx) =
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
+                let reconnect_gate = Arc::new(RelayReconnectGate::default());
                 let (pong_tx, mut pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_task = tokio::spawn(async move {
@@ -1027,6 +1028,7 @@ async fn run_daemon_relay_connector_inner(
                                             subscription_tasks: &subscription_tasks,
                                             event_runtime: &event_runtime,
                                             command_result_cache: &command_result_cache,
+                                            reconnect_gate: &reconnect_gate,
                                         },
                                         static_relay.is_none().then_some((
                                             relay_url.as_str(),
