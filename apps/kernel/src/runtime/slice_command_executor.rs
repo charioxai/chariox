@@ -472,8 +472,12 @@ fn resolve_local_docker_provider_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{DaemonApp, KernelSessionService};
     use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
     use crate::managed_context::package::ManagedContextDevelopmentSelection;
+    use crate::runtime::router::CommandRouter;
+    use crate::session::CreateSessionRequest;
+    use tokio::sync::Mutex;
 
     fn create_request() -> crate::local::CreateSliceRequest {
         crate::local::CreateSliceRequest {
@@ -501,6 +505,69 @@ mod tests {
             kernel_id: "kernel-1".to_string(),
             context_plan: Some(ManagedKernelContextPlan::empty_for_tests("context-1")),
         }
+    }
+
+    #[tokio::test]
+    async fn managed_empty_slice_uses_the_selected_session_directory_project() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-slice-directory-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create directory Workspace");
+        std::fs::write(workspace.join("notes.txt"), "selected directory contents\n")
+            .expect("write directory Workspace file");
+
+        let workspace_id = workspace.to_string_lossy().into_owned();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.slices.root = Some(root.join("slices").to_string_lossy().into_owned());
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, _) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(&workspace_id, &workspace_id))
+            .expect("create current session");
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1)
+            .with_managed_kernel_registration(empty_registration());
+        let mut request = create_request();
+        request.workspace_id = Some(workspace_id.clone());
+        request.worktree_id = Some(workspace_id.clone());
+        request.workspace_mount = Some(workspace_id.clone());
+        let request = LocalDaemonRequest::CreateSlice(request);
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "create-managed-directory-slice",
+            None,
+            None,
+            &request,
+        );
+
+        let LocalDaemonResponse::SliceCreated { slice } = router
+            .dispatch(command, request)
+            .await
+            .expect("create managed slice")
+        else {
+            panic!("expected created slice");
+        };
+        let Some(ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            repositories,
+        }) = slice.development
+        else {
+            panic!("managed slice should select the current session Project");
+        };
+        assert_eq!(project_id, session.project_id());
+        assert_eq!(repositories.len(), 1);
+        let resolved = crate::managed_context::outbound_service::resolve_repository_selection(
+            &repositories[0],
+        )
+        .expect("resolve kernel-authorized directory selection");
+        assert_eq!(
+            std::fs::read_to_string(resolved.worktree_path.join("notes.txt"))
+                .expect("read selected directory file"),
+            "selected directory contents\n"
+        );
+        assert!(!resolved.worktree_path.join(".git").exists());
+
+        std::fs::remove_dir_all(root).expect("clean test root");
     }
 
     #[test]
