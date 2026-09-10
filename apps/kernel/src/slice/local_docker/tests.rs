@@ -131,6 +131,75 @@ fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
     assert!(removal.contains("HOME='/home/slice' gh auth logout --hostname '$SLICE_GITHUB_HOST'"));
 }
 
+#[cfg(unix)]
+#[test]
+fn github_auth_removal_restores_unrelated_slice_user_state() {
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+
+    let provisioner = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    let removal = provisioner
+        .split("remove_github_auth() {")
+        .nth(1)
+        .and_then(|tail| tail.split("print_provider_auth_status() {").next())
+        .expect("GitHub removal function should exist")
+        .trim()
+        .strip_suffix('}')
+        .expect("GitHub removal function should have a closing brace")
+        .replace("/home/slice", "$SLICE_USER_HOME");
+
+    let root = test_root("github-auth-removal-restores-user-state");
+    let user_home = root.join("home");
+    let provider_home = user_home.join(".chariox/provider-home");
+    let provider_gh = provider_home.join(".config/gh");
+    std::fs::create_dir_all(&provider_gh).expect("provider GitHub config should create");
+    std::fs::create_dir_all(user_home.join(".config"))
+        .expect("slice-user config parent should create");
+    std::fs::write(
+        provider_gh.join("hosts.yml"),
+        "github.com:\n    user: managed\n    oauth_token: test-managed-token\nenterprise.example:\n    user: retained\n    oauth_token: test-unrelated-token\n",
+    )
+    .expect("GitHub hosts fixture should write");
+    std::fs::write(provider_gh.join("config.yml"), "git_protocol: ssh\n")
+        .expect("unrelated GitHub config should write");
+    symlink(&provider_gh, user_home.join(".config/gh"))
+        .expect("shared GitHub config link should create");
+
+    let script = format!(
+        "set -euo pipefail\nSLICE_USER_HOME=$TEST_SLICE_USER_HOME\nSLICE_PROVIDER_HOME=$TEST_SLICE_PROVIDER_HOME\nSLICE_GITHUB_HOST=github.com\nexec_slice() {{ \"$@\"; }}\nlog() {{ :; }}\nremove_github_auth() {{\n{}\n}}\nremove_github_auth\n",
+        removal,
+    );
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .env("TEST_SLICE_USER_HOME", &user_home)
+        .env("TEST_SLICE_PROVIDER_HOME", &provider_home)
+        .output()
+        .expect("GitHub auth removal fixture should execute");
+    assert!(
+        output.status.success(),
+        "GitHub auth removal failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let restored_gh = user_home.join(".config/gh");
+    assert!(restored_gh.is_dir());
+    assert!(!restored_gh.is_symlink());
+    let hosts = std::fs::read_to_string(restored_gh.join("hosts.yml"))
+        .expect("restored GitHub hosts should read");
+    assert!(!hosts.contains("github.com:"));
+    assert!(hosts.contains("enterprise.example:"));
+    assert!(std::fs::read_to_string(restored_gh.join("config.yml"))
+        .expect("unrelated GitHub config should remain")
+        .contains("git_protocol: ssh"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 pub(super) fn test_record() -> SliceRecord {
     let store = SliceStore::default();
     store

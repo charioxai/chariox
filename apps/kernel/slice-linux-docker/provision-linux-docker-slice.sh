@@ -1189,6 +1189,9 @@ remove_github_auth() {
     if [[ -L '/home/slice/.config/gh' \
       && \"\$(readlink '/home/slice/.config/gh')\" == '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
       rm -f '/home/slice/.config/gh'
+      if [[ -d '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
+        mv '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'
+      fi
     fi
     exit 0
   "
