@@ -21,6 +21,10 @@ const viewport = {
   desktop_pixel_height: 600,
 }
 
+export async function captureSoakScreenshot(screenshotPath, execOptions) {
+  await execFileAsync("scrot", ["-o", screenshotPath], execOptions)
+}
+
 export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) {
   const runId = new Date().toISOString().replace(/[:.]/g, "-")
   const paths = options.runDir
@@ -220,7 +224,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
         chromiumMutations += 1
         stream.requestKeyframe()
         const screenshotPath = path.join(paths.runDir, "latest-screen.png")
-        await execFileAsync("scrot", [screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
+        await captureSoakScreenshot(screenshotPath, { cwd: repoRoot, env: environment, timeout: 10_000 })
         screenshotDigests.add(createHash("sha256").update(await readFile(screenshotPath)).digest("hex"))
         iterations += 1
         await writeJson(paths.status, {
