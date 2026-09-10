@@ -1123,7 +1123,7 @@ impl DaemonApp {
             if state.connected()
                 && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
             {
-                state.remember_peer_public_key(kernel_id, public_key);
+                state.pin_peer_public_key(kernel_id, public_key);
             }
             Ok(())
         });

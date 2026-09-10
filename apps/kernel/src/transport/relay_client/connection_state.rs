@@ -31,6 +31,7 @@ pub struct RelayClientState {
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
+    pinned_peer_public_keys: BTreeMap<String, String>,
     peer_public_keys: BTreeMap<String, String>,
     pub(super) display_tunnels: BTreeMap<String, RelayDisplayTunnelTarget>,
     pub(super) pending_display_tunnel_registrations:
@@ -98,7 +99,19 @@ impl RelayClientState {
     }
 
     pub(crate) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
-        self.peer_public_keys.get(target_ref).cloned()
+        self.pinned_peer_public_keys
+            .get(target_ref)
+            .or_else(|| self.peer_public_keys.get(target_ref))
+            .cloned()
+    }
+
+    pub(crate) fn pin_peer_public_key(
+        &mut self,
+        target_ref: impl Into<String>,
+        public_key: impl Into<String>,
+    ) {
+        self.pinned_peer_public_keys
+            .insert(target_ref.into(), public_key.into());
     }
 
     pub(crate) fn remember_peer_public_key(
@@ -111,7 +124,7 @@ impl RelayClientState {
     }
 
     pub(crate) fn claim_peer_public_key(&mut self, target_ref: &str, public_key: &str) -> bool {
-        match self.peer_public_keys.get(target_ref) {
+        match self.peer_public_key(target_ref) {
             Some(existing) => existing == public_key,
             None => {
                 self.peer_public_keys
@@ -484,6 +497,7 @@ impl Default for RelayClientState {
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
+            pinned_peer_public_keys: BTreeMap::new(),
             peer_public_keys: BTreeMap::new(),
             display_tunnels: BTreeMap::new(),
             pending_display_tunnel_registrations: BTreeMap::new(),
@@ -657,6 +671,23 @@ mod tests {
         set_disconnected(&state).await;
 
         assert!(state.read().await.peer_public_key("worker-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_and_transport_failure_preserve_bound_worker_key() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        state
+            .write()
+            .await
+            .pin_peer_public_key("worker-1", "public-key-1");
+
+        set_disconnected(&state).await;
+        state.write().await.forget_peer_public_key("worker-1");
+
+        assert_eq!(
+            state.read().await.peer_public_key("worker-1").as_deref(),
+            Some("public-key-1")
+        );
     }
 
     #[test]
