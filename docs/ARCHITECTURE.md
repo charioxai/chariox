@@ -155,6 +155,9 @@ Remote-machine note:
 - once spawned, a remote agent is bound to one selected worker kernel for its lifetime
 - provider availability is advertised from the worker kernel back through relay metadata
 - provider login remains local to the worker kernel; the home kernel consumes provider availability but does not proxy provider auth flows
+- account and repository transfer is a provisioning handoff: after the target
+  accepts it, the target kernel owns that state and later launches must not
+  refresh it from the source kernel
 
 Managed-machine note:
 

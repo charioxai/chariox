@@ -69,6 +69,12 @@ The target kernel:
 - preserves consumed receipts and launch targets across restart for idempotent
   replay.
 
+Receipt replay is transactional recovery only. After a successful import, the
+target kernel owns the imported accounts, Git credentials, repositories, Vault,
+and provider-native state. Normal launches do not resynchronize them from the
+source. Later changes happen through ordinary target-kernel operations or a new,
+explicitly authorized transfer.
+
 A retryable source or transport failure remains visible to the initiating client.
 The launch never falls back to Empty.
 

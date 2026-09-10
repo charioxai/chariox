@@ -215,13 +215,7 @@ fn validate_catalog_materialization(
             slice_ref.as_str(),
         ),
     };
-    let materialized = profile.materializations.iter().any(|status| {
-        status.target_kind == target.0
-            && status.target_ref == target.1
-            && status.state
-                == crate::account_profile::ProviderAccountMaterializationState::Materialized
-    });
-    if materialized {
+    if profile.is_installed_at(target.0, target.1) {
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
@@ -1215,6 +1209,24 @@ mod tests {
         let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
             .expect("materialized selection should resolve");
         assert_eq!(selected["codex"].profile_id, work.profile_id);
+
+        registry
+            .update_materialization_status(
+                "owner-a",
+                "codex",
+                &work.profile_id,
+                crate::account_profile::ProviderAccountMaterializationStatus {
+                    target_kind:
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+                    target_ref: "slice-a".to_string(),
+                    state: crate::account_profile::ProviderAccountMaterializationState::Stale,
+                    observed_at_ms: 2,
+                    last_error: None,
+                },
+            )
+            .expect("legacy stale installation should be recorded");
+        resolve_catalog_profiles(&registry, "owner-a", &request)
+            .expect("a previously installed independent profile remains selectable");
         let _ = fs::remove_dir_all(root);
     }
 

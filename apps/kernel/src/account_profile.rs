@@ -437,6 +437,24 @@ pub struct ProviderAccountProfile {
     pub materializations: Vec<ProviderAccountMaterializationStatus>,
 }
 
+impl ProviderAccountProfile {
+    pub(crate) fn is_installed_at(
+        &self,
+        target_kind: ProviderAccountMaterializationTargetKind,
+        target_ref: &str,
+    ) -> bool {
+        self.materializations.iter().any(|status| {
+            status.target_kind == target_kind
+                && status.target_ref == target_ref
+                && matches!(
+                    status.state,
+                    ProviderAccountMaterializationState::Materialized
+                        | ProviderAccountMaterializationState::Stale
+                )
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub(crate) enum ProviderAccountLocator {
@@ -872,9 +890,6 @@ impl ProviderAccountProfileRegistry {
                         ProviderAccountAuthState::Error;
                     document.profiles[losing_index].public.last_validated_at_ms =
                         Some(crate::session::unix_epoch_ms());
-                    mark_profile_materializations_stale(
-                        &mut document.profiles[losing_index].public,
-                    );
                     if !incoming_wins {
                         let existing_label =
                             document.profiles[duplicate_index].public.label.clone();
@@ -890,12 +905,6 @@ impl ProviderAccountProfileRegistry {
             }
         }
         let profile = &mut document.profiles[profile_index];
-        let identity_changed = profile.public.identity_summary.is_some()
-            && identity_summary.is_some()
-            && profile.public.identity_summary != identity_summary;
-        if identity_changed || auth_state != ProviderAccountAuthState::Authenticated {
-            mark_profile_materializations_stale(&mut profile.public);
-        }
         profile.public.auth_state = auth_state;
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
@@ -924,7 +933,6 @@ impl ProviderAccountProfileRegistry {
         profile.public.plan = None;
         profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
-        mark_profile_materializations_stale(&mut profile.public);
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
@@ -1338,10 +1346,18 @@ impl ProviderAccountProfileRegistry {
         provider: &str,
         profile_id: &str,
         label: &str,
+        is_default: bool,
         source_home: &Path,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
+        if let Some(profile) = self
+            .list(owner_user_id, Some(provider))?
+            .into_iter()
+            .find(|profile| profile.profile_id == profile_id)
+        {
+            return Ok(profile);
+        }
         let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
         let files = materialization_files(&locator, profile_id)?;
         if files.is_empty() {
@@ -1359,7 +1375,7 @@ impl ProviderAccountProfileRegistry {
                     profile_id: profile_id.to_string(),
                     label: label.trim().to_string(),
                     origin: ProviderAccountProfileOrigin::Linked,
-                    is_default: false,
+                    is_default,
                 },
                 files,
                 generated_at_ms: crate::session::unix_epoch_ms(),
@@ -1720,20 +1736,20 @@ impl ProviderAccountProfileRegistry {
                     locator: stored.locator.clone(),
                 })
         });
-        let previous_default_profile_id = managed_context
-            .filter(|_| materialization.profile.is_default)
-            .and_then(|_| {
-                document
-                    .profiles
-                    .iter()
-                    .find(|stored| {
-                        stored.public.owner_user_id == owner_user_id
-                            && stored.public.provider == provider
-                            && stored.public.profile_id != profile_id
-                            && stored.public.is_default
-                    })
-                    .map(|stored| stored.public.profile_id.clone())
-            });
+        let previous_default_profile_id = if materialization.profile.is_default {
+            document
+                .profiles
+                .iter()
+                .find(|stored| {
+                    stored.public.owner_user_id == owner_user_id
+                        && stored.public.provider == provider
+                        && stored.public.profile_id != profile_id
+                        && stored.public.is_default
+                })
+                .map(|stored| stored.public.profile_id.clone())
+        } else {
+            None
+        };
         if let Some(previous_default_profile_id) = &previous_default_profile_id {
             if let Some(previous_default) = document.profiles.iter_mut().find(|stored| {
                 stored.public.owner_user_id == owner_user_id
@@ -1748,7 +1764,7 @@ impl ProviderAccountProfileRegistry {
             package_sha256: intent.package_sha256.to_string(),
             materialization_sha256: intent.materialization_sha256.to_string(),
             replaced_profile,
-            previous_default_profile_id,
+            previous_default_profile_id: previous_default_profile_id.clone(),
         });
         let result = if let Some(existing) = document.profiles.iter_mut().find(|stored| {
             stored.public.owner_user_id == owner_user_id
@@ -2321,15 +2337,6 @@ fn new_public_profile(
         last_validated_at_ms: None,
         usage: ProviderAccountUsageSnapshot::unavailable(profile_id, provider),
         materializations: Vec::new(),
-    }
-}
-
-fn mark_profile_materializations_stale(profile: &mut ProviderAccountProfile) {
-    let now_ms = crate::session::unix_epoch_ms();
-    for materialization in &mut profile.materializations {
-        materialization.state = ProviderAccountMaterializationState::Stale;
-        materialization.observed_at_ms = now_ms;
-        materialization.last_error = None;
     }
 }
 
@@ -3792,6 +3799,7 @@ mod tests {
                 "codex",
                 "cloud-profile-2",
                 "Codex validation",
+                false,
                 &source_home,
             )
             .unwrap();

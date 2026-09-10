@@ -94,6 +94,7 @@ fn claude_deployment_materializes_nonsecret_state_without_refresh_credentials() 
             "claude",
             "deployment-claude",
             "Deployment",
+            false,
             &source_home,
         )
         .expect("settings-only deployment profile should materialize");
