@@ -29,6 +29,7 @@ async fn worker_computer_tools_scenario() {
         false,
         true,
         Some(crate::config::CredentialVaultBackend::ProcessMemory),
+        true,
     )
     .await;
     let check = std::panic::AssertUnwindSafe(check_worker_computer_tools(&mut fixture))
