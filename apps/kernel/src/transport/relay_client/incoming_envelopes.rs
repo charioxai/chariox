@@ -22,6 +22,7 @@ pub(super) struct RelayReconnectGate {
 struct RelayReconnectGateState {
     active_daemon_requests: usize,
     pending_reconnect: Option<&'static str>,
+    closing: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -32,29 +33,50 @@ enum RelayReconnectDecision {
 }
 
 impl RelayReconnectGate {
-    fn begin_daemon_request(&self) {
+    fn begin_daemon_request(&self) -> bool {
         let mut state = self.state.lock().expect("relay reconnect gate poisoned");
+        if state.closing {
+            return false;
+        }
         state.active_daemon_requests = state.active_daemon_requests.saturating_add(1);
+        true
     }
 
-    fn finish_daemon_request(&self) -> Option<&'static str> {
+    fn finish_daemon_request(
+        &self,
+        outgoing_tx: &RelayOutgoingSender,
+    ) -> Result<Option<&'static str>, DaemonError> {
         let mut state = self.state.lock().expect("relay reconnect gate poisoned");
         debug_assert!(state.active_daemon_requests > 0);
         state.active_daemon_requests = state.active_daemon_requests.saturating_sub(1);
-        if state.active_daemon_requests == 0 {
-            state.pending_reconnect.take()
-        } else {
-            None
+        if state.active_daemon_requests != 0 {
+            return Ok(None);
         }
+        let Some(reason) = state.pending_reconnect else {
+            return Ok(None);
+        };
+        enqueue_relay_close(outgoing_tx)?;
+        state.pending_reconnect = None;
+        state.closing = true;
+        Ok(Some(reason))
     }
 
-    fn request_reconnect(&self, reason: &'static str) -> RelayReconnectDecision {
+    fn request_reconnect(
+        &self,
+        outgoing_tx: &RelayOutgoingSender,
+        reason: &'static str,
+    ) -> Result<RelayReconnectDecision, DaemonError> {
         let mut state = self.state.lock().expect("relay reconnect gate poisoned");
+        if state.closing {
+            return Ok(RelayReconnectDecision::Queued(reason));
+        }
         if state.active_daemon_requests == 0 {
-            RelayReconnectDecision::Queued(reason)
+            enqueue_relay_close(outgoing_tx)?;
+            state.closing = true;
+            Ok(RelayReconnectDecision::Queued(reason))
         } else {
             state.pending_reconnect.get_or_insert(reason);
-            RelayReconnectDecision::Deferred(reason)
+            Ok(RelayReconnectDecision::Deferred(reason))
         }
     }
 }
@@ -86,7 +108,16 @@ pub(super) async fn handle_incoming_envelope(
             caller_identity,
             encrypted_request,
         } => {
-            reconnect_gate.begin_daemon_request();
+            if !reconnect_gate.begin_daemon_request() {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "ignored daemon request while relay reconnect is queued",
+                    serde_json::json!({
+                        "relay_request_id": relay_request_id,
+                    }),
+                );
+                return Ok(());
+            }
             let router = Arc::clone(router);
             let command_sequence = Arc::clone(command_sequence);
             let outgoing_tx = outgoing_tx.clone();
@@ -117,23 +148,22 @@ pub(super) async fn handle_incoming_envelope(
                         }),
                     );
                 }
-                if let Some(reason) = reconnect_gate.finish_daemon_request() {
-                    match enqueue_relay_close(&outgoing_tx) {
-                        Ok(()) => crate::logging::info_with_fields(
-                            "daemon.relay_client",
-                            "relay reconnect queued after daemon response",
-                            serde_json::json!({
-                                "reason": reason,
-                            }),
-                        ),
-                        Err(error) => crate::logging::warn_with_fields(
-                            "daemon.relay_client",
-                            "failed to queue relay reconnect after daemon response",
-                            serde_json::json!({
-                                "error": error.to_string(),
-                            }),
-                        ),
-                    }
+                match reconnect_gate.finish_daemon_request(&outgoing_tx) {
+                    Ok(Some(reason)) => crate::logging::info_with_fields(
+                        "daemon.relay_client",
+                        "relay reconnect queued after daemon response",
+                        serde_json::json!({
+                            "reason": reason,
+                        }),
+                    ),
+                    Ok(None) => {}
+                    Err(error) => crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "failed to queue relay reconnect after daemon response",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    ),
                 }
             });
         }
@@ -372,11 +402,7 @@ fn defer_or_enqueue_relay_close(
     reconnect_gate: &RelayReconnectGate,
     reason: &'static str,
 ) -> Result<RelayReconnectDecision, DaemonError> {
-    let decision = reconnect_gate.request_reconnect(reason);
-    if matches!(decision, RelayReconnectDecision::Queued(_)) {
-        enqueue_relay_close(outgoing_tx)?;
-    }
-    Ok(decision)
+    reconnect_gate.request_reconnect(outgoing_tx, reason)
 }
 
 fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonError> {
@@ -396,7 +422,7 @@ mod tests {
     fn dynamic_relay_reconnect_waits_for_in_flight_daemon_response() {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
         let reconnect_gate = RelayReconnectGate::default();
-        reconnect_gate.begin_daemon_request();
+        assert!(reconnect_gate.begin_daemon_request());
         send_outgoing_envelope(
             &outgoing_tx,
             RelayEnvelope::DaemonIncomingPeerResponse {
@@ -439,9 +465,9 @@ mod tests {
         )
         .expect("daemon response should enqueue");
         let deferred_reason = reconnect_gate
-            .finish_daemon_request()
+            .finish_daemon_request(&outgoing_tx)
+            .expect("deferred reconnect should enqueue")
             .expect("last daemon response should release deferred reconnect");
-        enqueue_relay_close(&outgoing_tx).expect("deferred reconnect should enqueue");
 
         assert_eq!(deferred_reason, "relay token changed");
         assert!(matches!(
@@ -484,17 +510,69 @@ mod tests {
     #[test]
     fn dynamic_relay_reconnect_waits_for_every_active_daemon_request() {
         let reconnect_gate = RelayReconnectGate::default();
-        reconnect_gate.begin_daemon_request();
-        reconnect_gate.begin_daemon_request();
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        assert!(reconnect_gate.begin_daemon_request());
+        assert!(reconnect_gate.begin_daemon_request());
 
         assert_eq!(
-            reconnect_gate.request_reconnect("relay token changed"),
-            RelayReconnectDecision::Deferred("relay token changed")
+            reconnect_gate
+                .request_reconnect(&outgoing_tx, "relay token changed")
+                .expect("reconnect should defer"),
+            RelayReconnectDecision::Deferred("relay token changed"),
         );
-        assert_eq!(reconnect_gate.finish_daemon_request(), None);
         assert_eq!(
-            reconnect_gate.finish_daemon_request(),
+            reconnect_gate
+                .finish_daemon_request(&outgoing_tx)
+                .expect("first request should finish"),
+            None
+        );
+        assert_eq!(
+            reconnect_gate
+                .finish_daemon_request(&outgoing_tx)
+                .expect("last request should queue reconnect"),
             Some("relay token changed")
         );
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(RelayEnvelope::Close { .. })
+        ));
+    }
+
+    #[test]
+    fn daemon_request_cannot_enter_after_deferred_reconnect_is_released() {
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
+        let reconnect_gate = RelayReconnectGate::default();
+        assert!(reconnect_gate.begin_daemon_request());
+        assert_eq!(
+            reconnect_gate
+                .request_reconnect(&outgoing_tx, "relay token changed")
+                .expect("reconnect should defer"),
+            RelayReconnectDecision::Deferred("relay token changed"),
+        );
+
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: "first-request".to_string(),
+                encrypted_response: None,
+                error: None,
+            },
+        )
+        .expect("daemon response should enqueue");
+        assert_eq!(
+            reconnect_gate
+                .finish_daemon_request(&outgoing_tx)
+                .expect("deferred reconnect should enqueue"),
+            Some("relay token changed")
+        );
+        assert!(!reconnect_gate.begin_daemon_request());
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonResponse { .. })
+        ));
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(RelayEnvelope::Close { .. })
+        ));
     }
 }
