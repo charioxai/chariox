@@ -119,6 +119,16 @@ fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
     assert!(
         import.contains("ln -s \\\"$SLICE_PROVIDER_HOME/.config/gh\\\" '/home/slice/.config/gh'")
     );
+    assert!(import
+        .contains("cp -a '/home/slice/.config/gh/.' \\\"$SLICE_PROVIDER_HOME/.config/gh/\\\""));
+    assert!(import.contains("rm -rf '/home/slice/.config/gh'"));
+
+    let removal = provisioner
+        .split("remove_github_auth() {")
+        .nth(1)
+        .and_then(|tail| tail.split("print_provider_auth_status() {").next())
+        .expect("GitHub removal function should exist");
+    assert!(removal.contains("HOME='/home/slice' gh auth logout --hostname '$SLICE_GITHUB_HOST'"));
 }
 
 pub(super) fn test_record() -> SliceRecord {
