@@ -856,6 +856,60 @@ pub fn inspect_local_docker_slice_host_runtime(
     }
 }
 
+pub fn inspect_local_docker_slice_relay_endpoint(
+    record: &SliceRecord,
+) -> Option<SliceRelayEndpoint> {
+    if record.backend != SliceBackendKind::LocalDocker || record.os != "linux" {
+        return None;
+    }
+    let container = local_docker_container_name(record);
+    let output = docker_command()
+        .args([
+            "exec",
+            "--user",
+            "slice",
+            &container,
+            "cat",
+            "/home/slice/.chariox/daemon/config.json",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = Zeroizing::new(output.stdout);
+    relay_endpoint_from_persisted_daemon_config(record, stdout.as_slice())
+}
+
+fn relay_endpoint_from_persisted_daemon_config(
+    record: &SliceRecord,
+    config_json: &[u8],
+) -> Option<SliceRelayEndpoint> {
+    #[derive(serde::Deserialize)]
+    struct PersistedRelayConfig {
+        relay_url: Option<String>,
+    }
+
+    let config: PersistedRelayConfig = serde_json::from_slice(config_json).ok()?;
+    let relay_url = config.relay_url?.trim().to_string();
+    let parsed = url::Url::parse(&relay_url).ok()?;
+    if !matches!(parsed.scheme(), "ws" | "wss") {
+        return None;
+    }
+    if parsed.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }) {
+        return Some(local_docker_private_relay_endpoint(record));
+    }
+    Some(SliceRelayEndpoint {
+        url: relay_url,
+        private: false,
+    })
+}
+
 fn read_slice_log_file_entry(source: &str, path: &Path, tail_lines: usize) -> SliceLogEntry {
     match std::fs::read_to_string(path) {
         Ok(text) => {

@@ -1035,23 +1035,65 @@ impl DaemonApp {
         if reconciled_runtime_state || repaired_session_focus_count > 0 {
             self.save_durable_state_snapshot()?;
         }
+        self.reconcile_restored_slices_after_restart()
+    }
+
+    fn reconcile_restored_slices_after_restart(&self) -> Result<(), DaemonError> {
         let slice_options = crate::slice::LocalDockerSliceOptions::from_config(&self.config);
-        let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(
-            crate::session::unix_epoch_ms(),
-            |slice| {
-                if let Err(error) =
-                    crate::slice::recover_local_docker_snapshot_pause(slice, &slice_options)
+        let now_ms = crate::session::unix_epoch_ms();
+        let observed_slice_host_state = self
+            .slices
+            .list()
+            .into_iter()
+            .map(|slice| {
+                let host_state = if let Err(error) =
+                    crate::slice::recover_local_docker_snapshot_pause(&slice, &slice_options)
                 {
                     crate::logging::warn_with_fields(
                         "durable_state.restore",
                         "snapshot resume remains pending",
                         serde_json::json!({"slice_id": slice.id, "error": error.to_string()}),
                     );
-                    return crate::slice::SliceHostRuntimeState::Unknown;
-                }
-                crate::slice::inspect_local_docker_slice_host_runtime(slice)
-            },
-        );
+                    crate::slice::SliceHostRuntimeState::Unknown
+                } else {
+                    crate::slice::inspect_local_docker_slice_host_runtime(&slice)
+                };
+                (slice, host_state)
+            })
+            .collect::<Vec<_>>();
+        for (slice, host_state) in &observed_slice_host_state {
+            if slice.relay_endpoint.is_some()
+                || *host_state != crate::slice::SliceHostRuntimeState::Running
+            {
+                continue;
+            }
+            let Some(endpoint) = crate::slice::inspect_local_docker_slice_relay_endpoint(slice)
+            else {
+                continue;
+            };
+            let repaired = self
+                .slices
+                .set_relay_endpoint(&slice.id, Some(endpoint), now_ms)?;
+            self.durable_state.append_event(
+                "slice.updated",
+                Some(repaired.id.clone()),
+                serde_json::json!({ "slice": &repaired }),
+            )?;
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "recovered slice relay endpoint after kernel restart",
+                serde_json::json!({ "slice_id": repaired.id, "slice_name": repaired.name }),
+            );
+        }
+        let reconciled_slices =
+            self.slices
+                .reconcile_after_kernel_restart_with_host_state(now_ms, |slice| {
+                    observed_slice_host_state
+                        .iter()
+                        .find(|(observed, _)| observed.id == slice.id)
+                        .map(|(_, host_state)| *host_state)
+                        .unwrap_or(crate::slice::SliceHostRuntimeState::Unknown)
+                });
         for slice in reconciled_slices {
             self.durable_state.append_event(
                 "slice.updated",
