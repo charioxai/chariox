@@ -50,7 +50,12 @@ fn materialize_validated_bindings(
     owner_user_id: &str,
     bindings: &PublicationProviderAccountBindings,
 ) -> Result<(), DaemonError> {
+    let mut installed = Vec::new();
     for binding in &bindings.accounts {
+        let existed = registry
+            .list(owner_user_id, Some(&binding.provider))?
+            .into_iter()
+            .any(|profile| profile.profile_id == binding.account_profile);
         registry.materialize_deployment_profile(
             owner_user_id,
             &binding.provider,
@@ -58,14 +63,17 @@ fn materialize_validated_bindings(
             &binding.label,
             &binding.home,
         )?;
+        if !existed {
+            installed.push((
+                binding.provider.trim().to_lowercase(),
+                binding.account_profile.clone(),
+            ));
+        }
     }
     for default in &bindings.defaults {
-        if bindings.accounts.iter().any(|account| {
-            account
-                .provider
-                .trim()
-                .eq_ignore_ascii_case(default.provider.trim())
-                && account.account_profile.trim() == default.account_profile.trim()
+        if installed.iter().any(|(provider, profile_id)| {
+            provider == &default.provider.trim().to_lowercase()
+                && profile_id == default.account_profile.trim()
         }) {
             registry.set_default(owner_user_id, &default.provider, &default.account_profile)?;
         }
@@ -135,6 +143,7 @@ fn invalid_bindings() -> DaemonError {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
@@ -217,6 +226,79 @@ mod tests {
             .get("local", "codex", "profile-codex")
             .expect("resolve publication account");
         assert!(profile.is_default);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publication_restart_preserves_target_credentials_and_default() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-publication-provider-handoff-{}-{unique}",
+            std::process::id()
+        ));
+        let source_home = root.join("source-home");
+        fs::create_dir_all(source_home.join(".codex")).expect("create source profile");
+        fs::write(
+            source_home.join(".codex/auth.json"),
+            r#"{"token":"source-one"}"#,
+        )
+        .expect("write source credential");
+        let registry = ProviderAccountProfileRegistry::open(root.join("registry.json"))
+            .expect("open registry");
+        let bindings = PublicationProviderAccountBindings {
+            schema_version: 1,
+            defaults: vec![PublicationProviderDefaultAccount {
+                provider: "codex".to_string(),
+                account_profile: "profile-codex".to_string(),
+            }],
+            accounts: vec![PublicationProviderAccountBinding {
+                provider: "codex".to_string(),
+                account_profile: "profile-codex".to_string(),
+                label: "Codex deployment".to_string(),
+                home: source_home.clone(),
+            }],
+        };
+
+        materialize_validated_bindings(&registry, "local", &bindings)
+            .expect("materialize publication account");
+        let second = registry
+            .create_managed("local", "codex", "Target default")
+            .expect("create target-owned account");
+        registry
+            .set_default("local", "codex", &second.profile_id)
+            .expect("change target default");
+        let environment = registry
+            .resolve_environment("local", "codex", "profile-codex")
+            .expect("resolve installed account");
+        fs::write(
+            Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+            r#"{"token":"target-owned"}"#,
+        )
+        .expect("change target credential");
+        fs::write(
+            source_home.join(".codex/auth.json"),
+            r#"{"token":"source-two"}"#,
+        )
+        .expect("change source credential");
+
+        materialize_validated_bindings(&registry, "local", &bindings)
+            .expect("replay publication manifest");
+
+        assert_eq!(
+            fs::read_to_string(Path::new(&environment["CODEX_HOME"]).join("auth.json"))
+                .expect("read target credential"),
+            r#"{"token":"target-owned"}"#
+        );
+        assert_eq!(
+            registry
+                .get("local", "codex", "default")
+                .expect("resolve target default")
+                .profile_id,
+            second.profile_id
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

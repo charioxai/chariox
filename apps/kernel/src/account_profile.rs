@@ -1350,6 +1350,13 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
+        if let Some(profile) = self
+            .list(owner_user_id, Some(provider))?
+            .into_iter()
+            .find(|profile| profile.profile_id == profile_id)
+        {
+            return Ok(profile);
+        }
         let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
         let files = materialization_files(&locator, profile_id)?;
         if files.is_empty() {
