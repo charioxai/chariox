@@ -134,7 +134,7 @@ fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
 #[cfg(unix)]
 #[test]
 fn github_auth_removal_restores_unrelated_slice_user_state() {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{symlink, PermissionsExt};
     use std::process::Command;
 
     let provisioner = std::fs::read_to_string(
@@ -153,9 +153,11 @@ fn github_auth_removal_restores_unrelated_slice_user_state() {
         .replace("/home/slice", "$SLICE_USER_HOME");
 
     let root = test_root("github-auth-removal-restores-user-state");
+    let bin = root.join("bin");
     let user_home = root.join("home");
     let provider_home = user_home.join(".chariox/provider-home");
     let provider_gh = provider_home.join(".config/gh");
+    std::fs::create_dir_all(&bin).expect("fixture bin should create");
     std::fs::create_dir_all(&provider_gh).expect("provider GitHub config should create");
     std::fs::create_dir_all(user_home.join(".config"))
         .expect("slice-user config parent should create");
@@ -169,6 +171,19 @@ fn github_auth_removal_restores_unrelated_slice_user_state() {
     symlink(&provider_gh, user_home.join(".config/gh"))
         .expect("shared GitHub config link should create");
 
+    let write_executable = |name: &str, contents: &str| {
+        let path = bin.join(name);
+        std::fs::write(&path, contents).expect("fixture executable should write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture executable should be executable");
+    };
+    write_executable(
+        "gh",
+        "#!/bin/sh\ncat > \"$HOME/.config/gh/hosts.yml\" <<'EOF'\nenterprise.example:\n    user: retained\n    oauth_token: test-unrelated-token\nEOF\n",
+    );
+    write_executable("git", "#!/bin/sh\nexit 0\n");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
     let script = format!(
         "set -euo pipefail\nSLICE_USER_HOME=$TEST_SLICE_USER_HOME\nSLICE_PROVIDER_HOME=$TEST_SLICE_PROVIDER_HOME\nSLICE_GITHUB_HOST=github.com\nexec_slice() {{ \"$@\"; }}\nlog() {{ :; }}\nremove_github_auth() {{\n{}\n}}\nremove_github_auth\n",
         removal,
@@ -178,6 +193,7 @@ fn github_auth_removal_restores_unrelated_slice_user_state() {
         .arg(script)
         .env("TEST_SLICE_USER_HOME", &user_home)
         .env("TEST_SLICE_PROVIDER_HOME", &provider_home)
+        .env("PATH", path)
         .output()
         .expect("GitHub auth removal fixture should execute");
     assert!(
