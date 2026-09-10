@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -16,6 +16,8 @@ import {
   assertProcessHealth,
   assertSandboxCapableChromiumIdentity,
   baselineResourceSnapshot,
+  captureSoakScreenshot,
+  processIsRunning,
   runBrowserComputerSoak,
 } from "./browser-computer-soak-runtime.mjs"
 
@@ -113,6 +115,49 @@ test("the preflight baseline measures the evidence filesystem", async () => {
   })
   assert.equal(observedDiskPath, paths.runDir)
   assert.equal(baseline.disk.path, paths.runDir)
+})
+
+test("soak screenshot capture overwrites its stable evidence path", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-soak-screenshot-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fakeBin = path.join(root, "bin")
+  const screenshotPath = path.join(root, "latest-screen.png")
+  await mkdir(fakeBin)
+  const fakeScrot = path.join(fakeBin, "scrot")
+  await writeFile(fakeScrot, `#!/bin/sh
+overwrite=
+if test "$1" = "-o"; then
+  overwrite=1
+  shift
+fi
+target=$1
+if test -e "$target" && test -z "$overwrite"; then
+  echo "scrot can no longer generate new file names" >&2
+  exit 1
+fi
+printf frame > "$target"
+`)
+  await chmod(fakeScrot, 0o700)
+  const execOptions = {
+    cwd: root,
+    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    timeout: 10_000,
+  }
+
+  await captureSoakScreenshot(screenshotPath, execOptions)
+  await captureSoakScreenshot(screenshotPath, execOptions)
+
+  assert.deepEqual((await readdir(root)).sort(), ["bin", "latest-screen.png"])
+  assert.equal(await readFile(screenshotPath, "utf8"), "frame")
+})
+
+test("cleanup treats a reparented zombie as stopped", () => {
+  const probe = () => {}
+  const live = () => "13499 (selkies) S 1 13499 13499 0 -1"
+  const zombie = () => "13499 (selkies) Z 1 13499 13499 0 -1"
+
+  assert.equal(processIsRunning(13499, { probe, readStat: live }), true)
+  assert.equal(processIsRunning(13499, { probe, readStat: zombie }), false)
 })
 
 test("startup failures leave terminal status, result, failure, and cleanup evidence", async (context) => {
