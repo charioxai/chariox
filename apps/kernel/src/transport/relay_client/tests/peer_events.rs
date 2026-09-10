@@ -72,9 +72,8 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         )
     };
     let sender_private_key = relay_crypto::generate_private_key_base64();
-    let sender_public_key =
-        relay_crypto::public_key_from_private_key_base64(&sender_private_key)
-            .expect("sender public key should derive");
+    let sender_public_key = relay_crypto::public_key_from_private_key_base64(&sender_private_key)
+        .expect("sender public key should derive");
     let plaintext = serde_json::to_vec(&RelayPeerEvent::LeasedRuntimeProjection {
         home_session_id: session_id.clone(),
         home_agent_id: agent_id.clone(),
@@ -115,9 +114,9 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         expires_at_ms: u64::MAX,
         token_id: Some("worker-token-1".to_string()),
         user_id: Some("user-1".to_string()),
-        public_key_thumbprint: Some(
-            crate::runtime::terminal_pairings::public_key_thumbprint(&sender_public_key),
-        ),
+        public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+            &sender_public_key,
+        )),
     };
     handle_daemon_peer_event(
         &router,
@@ -126,8 +125,8 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         Some(caller_identity),
         encrypted_event,
     )
-        .await
-        .expect("peer event should project");
+    .await
+    .expect("peer event should project");
     state.write().await.forget_peer_public_key("worker-1");
     assert_eq!(
         state.read().await.peer_public_key("worker-1").as_deref(),
