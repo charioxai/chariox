@@ -50,33 +50,30 @@ fn materialize_validated_bindings(
     owner_user_id: &str,
     bindings: &PublicationProviderAccountBindings,
 ) -> Result<(), DaemonError> {
-    let mut installed = Vec::new();
+    let default_profiles = bindings
+        .defaults
+        .iter()
+        .map(|default| {
+            (
+                default.provider.trim().to_lowercase(),
+                default.account_profile.trim().to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for binding in &bindings.accounts {
-        let existed = registry
-            .list(owner_user_id, Some(&binding.provider))?
-            .into_iter()
-            .any(|profile| profile.profile_id == binding.account_profile);
+        let provider = binding.provider.trim().to_lowercase();
+        let profile_id = binding.account_profile.trim();
+        let is_default = default_profiles
+            .get(&provider)
+            .is_some_and(|default_profile_id| default_profile_id == profile_id);
         registry.materialize_deployment_profile(
             owner_user_id,
-            &binding.provider,
-            &binding.account_profile,
+            &provider,
+            profile_id,
             &binding.label,
+            is_default,
             &binding.home,
         )?;
-        if !existed {
-            installed.push((
-                binding.provider.trim().to_lowercase(),
-                binding.account_profile.clone(),
-            ));
-        }
-    }
-    for default in &bindings.defaults {
-        if installed.iter().any(|(provider, profile_id)| {
-            provider == &default.provider.trim().to_lowercase()
-                && profile_id == default.account_profile.trim()
-        }) {
-            registry.set_default(owner_user_id, &default.provider, &default.account_profile)?;
-        }
     }
     Ok(())
 }
@@ -208,12 +205,12 @@ mod tests {
         let bindings = PublicationProviderAccountBindings {
             schema_version: 1,
             defaults: vec![PublicationProviderDefaultAccount {
-                provider: "codex".to_string(),
-                account_profile: "profile-codex".to_string(),
+                provider: " codex ".to_string(),
+                account_profile: " profile-codex ".to_string(),
             }],
             accounts: vec![PublicationProviderAccountBinding {
-                provider: "codex".to_string(),
-                account_profile: "profile-codex".to_string(),
+                provider: " Codex ".to_string(),
+                account_profile: " profile-codex ".to_string(),
                 label: "Codex deployment".to_string(),
                 home: source_home,
             }],
@@ -226,6 +223,53 @@ mod tests {
             .get("local", "codex", "profile-codex")
             .expect("resolve publication account");
         assert!(profile.is_default);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publication_default_survives_a_later_install_failure() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-publication-provider-atomic-default-{}-{unique}",
+            std::process::id()
+        ));
+        let source_home = root.join("source-home");
+        fs::create_dir_all(source_home.join(".codex")).expect("create source profile");
+        fs::write(source_home.join(".codex/auth.json"), "{}").expect("write source credential");
+        let registry = ProviderAccountProfileRegistry::open(root.join("registry.json"))
+            .expect("open registry");
+        let bindings = PublicationProviderAccountBindings {
+            schema_version: 1,
+            defaults: vec![PublicationProviderDefaultAccount {
+                provider: "codex".to_string(),
+                account_profile: "profile-codex".to_string(),
+            }],
+            accounts: vec![
+                PublicationProviderAccountBinding {
+                    provider: "codex".to_string(),
+                    account_profile: "profile-codex".to_string(),
+                    label: "Codex deployment".to_string(),
+                    home: source_home,
+                },
+                PublicationProviderAccountBinding {
+                    provider: "codex".to_string(),
+                    account_profile: "missing-profile".to_string(),
+                    label: "Missing".to_string(),
+                    home: root.join("missing-source-home"),
+                },
+            ],
+        };
+
+        assert!(materialize_validated_bindings(&registry, "local", &bindings).is_err());
+        assert!(
+            registry
+                .get("local", "codex", "profile-codex")
+                .expect("first account remains installed")
+                .is_default
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1346,6 +1346,7 @@ impl ProviderAccountProfileRegistry {
         provider: &str,
         profile_id: &str,
         label: &str,
+        is_default: bool,
         source_home: &Path,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
@@ -1374,7 +1375,7 @@ impl ProviderAccountProfileRegistry {
                     profile_id: profile_id.to_string(),
                     label: label.trim().to_string(),
                     origin: ProviderAccountProfileOrigin::Linked,
-                    is_default: false,
+                    is_default,
                 },
                 files,
                 generated_at_ms: crate::session::unix_epoch_ms(),
@@ -1735,20 +1736,20 @@ impl ProviderAccountProfileRegistry {
                     locator: stored.locator.clone(),
                 })
         });
-        let previous_default_profile_id = managed_context
-            .filter(|_| materialization.profile.is_default)
-            .and_then(|_| {
-                document
-                    .profiles
-                    .iter()
-                    .find(|stored| {
-                        stored.public.owner_user_id == owner_user_id
-                            && stored.public.provider == provider
-                            && stored.public.profile_id != profile_id
-                            && stored.public.is_default
-                    })
-                    .map(|stored| stored.public.profile_id.clone())
-            });
+        let previous_default_profile_id = if materialization.profile.is_default {
+            document
+                .profiles
+                .iter()
+                .find(|stored| {
+                    stored.public.owner_user_id == owner_user_id
+                        && stored.public.provider == provider
+                        && stored.public.profile_id != profile_id
+                        && stored.public.is_default
+                })
+                .map(|stored| stored.public.profile_id.clone())
+        } else {
+            None
+        };
         if let Some(previous_default_profile_id) = &previous_default_profile_id {
             if let Some(previous_default) = document.profiles.iter_mut().find(|stored| {
                 stored.public.owner_user_id == owner_user_id
@@ -1763,7 +1764,7 @@ impl ProviderAccountProfileRegistry {
             package_sha256: intent.package_sha256.to_string(),
             materialization_sha256: intent.materialization_sha256.to_string(),
             replaced_profile,
-            previous_default_profile_id,
+            previous_default_profile_id: previous_default_profile_id.clone(),
         });
         let result = if let Some(existing) = document.profiles.iter_mut().find(|stored| {
             stored.public.owner_user_id == owner_user_id
@@ -3798,6 +3799,7 @@ mod tests {
                 "codex",
                 "cloud-profile-2",
                 "Codex validation",
+                false,
                 &source_home,
             )
             .unwrap();
