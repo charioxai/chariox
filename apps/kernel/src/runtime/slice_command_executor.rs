@@ -60,9 +60,15 @@ pub(crate) async fn execute_slice_request(
         }
         LocalDaemonRequest::StartSlice(request) => {
             let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+            let target_git_available = managed_kernel_registration.is_some()
+                && crate::managed_context::scm::GitCredentialCommandContext::source_from_process()
+                    .is_ok_and(|context| {
+                        crate::managed_context::scm::github_credential_is_available(&context)
+                    });
             let inherit_git = managed_slice_should_inherit_git_credentials(
                 &slice.provider_auth,
                 managed_kernel_registration,
+                target_git_available,
             );
             execute_start_slice_request(
                 runtime_state,
@@ -163,19 +169,10 @@ fn managed_slice_create_request(
 fn managed_slice_should_inherit_git_credentials(
     provider_auth: &[crate::slice_provider_auth::SliceProviderAuthSummary],
     registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+    target_git_available: bool,
 ) -> bool {
-    let selected =
-        registration
-            .and_then(|registration| registration.context_plan.as_ref())
-            .is_some_and(|plan| {
-                matches!(
-                plan.package_binding().git_credentials,
-                crate::managed_context::package::ManagedContextGitCredentialSelection::Selected {
-                    ..
-                }
-            )
-            });
-    selected
+    registration.is_some()
+        && target_git_available
         && !provider_auth.iter().any(|summary| {
             summary.provider == "github"
                 && matches!(
@@ -565,33 +562,29 @@ mod tests {
     }
 
     #[test]
-    fn managed_slice_inherits_selected_git_credentials_once() {
-        let registration = ConfirmedManagedKernelRegistration {
-            environment_id: "environment-1".to_string(),
-            machine_id: "machine-1".to_string(),
-            kernel_id: "kernel-1".to_string(),
-            context_plan: Some(
-                ManagedKernelContextPlan::git_credential_enrollment_for_tests(
-                    "context-1",
-                    "realm-1",
-                    "source-kernel-1",
-                    &format!("sha256:{}", "1".repeat(64)),
-                ),
-            ),
-        };
+    fn managed_slice_inherits_target_owned_git_credentials_once() {
+        let registration = empty_registration();
         assert!(managed_slice_should_inherit_git_credentials(
             &[],
-            Some(&registration)
+            Some(&registration),
+            true,
         ));
 
         let configured = vec![auth("github", "github.com")];
         assert!(!managed_slice_should_inherit_git_credentials(
             &configured,
-            Some(&registration)
+            Some(&registration),
+            true,
         ));
         assert!(!managed_slice_should_inherit_git_credentials(
-            &configured,
-            None
+            &[],
+            None,
+            true,
+        ));
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &[],
+            Some(&registration),
+            false,
         ));
     }
 
