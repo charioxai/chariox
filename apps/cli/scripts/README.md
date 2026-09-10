@@ -192,6 +192,33 @@ CARGO_TARGET_DIR=/absolute/shared/cargo-target \
 
 Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
 
+## Active browser, controller, and stream soak
+
+Run the deterministic short gate before starting the full eight-hour soak:
+
+```bash
+pnpm --filter @chariox/cli run browser-computer:soak -- --preflight
+pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
+pnpm --filter @chariox/cli run browser-computer:soak -- --detach
+```
+
+The real mode defaults to 28,800 seconds. `--duration-seconds` configures a
+bounded duration up to 24 hours; `--activity-interval-seconds` and
+`--sample-interval-seconds` control browser activity and resource sampling.
+The runner owns an isolated X display, Chromium profile and debugging port,
+one long-lived Browser Controller, and one read-only Selkies stream consumer.
+Every activity cycle changes the deterministic fixture through a stable
+controller reference, verifies the physical browser effect, requests a video
+keyframe, captures the screen, and records CPU, RAM, and disk state.
+
+Evidence defaults to
+`~/.chariox/dev/browser-computer-use-soak/<run-id>/`. It contains the exact
+source identity and command, preflight baseline, runner and child logs,
+`runner.pid`, atomic `status.json`, JSONL resource samples, `result.json`, a
+failure marker when applicable, and an explicit cleanup ledger. SIGINT,
+SIGTERM, assertion failures, and timeouts all use the same PID-scoped cleanup.
+The runner never adopts or prunes an existing display, browser, or streamer.
+
 ## Computer secret input protocol drill
 
 Use this after changing Computer credential policy, approval, relay resolution,
