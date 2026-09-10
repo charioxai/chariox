@@ -530,17 +530,17 @@ mod tests {
     }
 
     #[test]
-    fn slice_store_reconciles_runtime_state_after_kernel_restart() {
+    fn slice_store_preserves_runtime_routing_when_host_state_is_unknown_after_restart() {
         let store = SliceStore::default();
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
             .expect("slice should create");
+        let hosted_endpoint = SliceRelayEndpoint {
+            url: "wss://relay.example.test".to_string(),
+            private: false,
+        };
         let slice = store
-            .set_relay_endpoint(
-                &slice.id,
-                Some(local_docker_private_relay_endpoint(&slice)),
-                43,
-            )
+            .set_relay_endpoint(&slice.id, Some(hosted_endpoint.clone()), 43)
             .expect("relay endpoint should update");
         store
             .set_worker_presence(
@@ -559,10 +559,13 @@ mod tests {
 
         assert_eq!(reconciled.len(), 1);
         assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
-        assert_eq!(reconciled[0].worker_kernel_id, None);
-        assert_eq!(reconciled[0].worker_machine_id, None);
-        assert_eq!(reconciled[0].relay_endpoint, None);
-        assert!(reconciled[0].providers.is_empty());
+        assert_eq!(reconciled[0].worker_kernel_id.as_deref(), Some("worker-1"));
+        assert_eq!(
+            reconciled[0].worker_machine_id.as_deref(),
+            Some("machine-2")
+        );
+        assert_eq!(reconciled[0].relay_endpoint, Some(hosted_endpoint));
+        assert_eq!(reconciled[0].providers, vec!["codex"]);
         assert_eq!(reconciled[0].updated_at_ms, 46);
     }
 

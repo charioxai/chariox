@@ -648,10 +648,14 @@ impl SliceStore {
             // A running container survives a home-kernel restart. Its worker
             // identity, provider inventory, and relay endpoint remain valid;
             // clearing them strands the live slice until it is restarted.
-            // Only discard runtime fields when the host no longer confirms
-            // that the slice is running.
-            let runtime_fields_are_stale = !matches!(host_runtime, SliceHostRuntimeState::Running)
-                && (was_runtime_status || matches!(record.status, SliceStatus::Stopped));
+            // Only discard runtime fields when the host confirms that the
+            // container stopped or disappeared. Unknown inspection cannot
+            // revoke otherwise durable routing information.
+            let runtime_fields_are_stale = matches!(
+                host_runtime,
+                SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing
+            ) && (was_runtime_status
+                || matches!(record.status, SliceStatus::Stopped));
             if runtime_fields_are_stale {
                 if record.worker_kernel_id.take().is_some() {
                     record_changed = true;
