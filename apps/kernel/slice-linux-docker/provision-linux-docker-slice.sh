@@ -107,7 +107,6 @@ SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
-SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -1143,8 +1142,8 @@ import_github_auth() {
   local import_status=0
   run_with_file_stdin_timeout 90 "$token_tmp" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    install -d -m 0700 '$SLICE_PROVIDER_HOME'
-    export HOME='$SLICE_PROVIDER_HOME'
+    export HOME='/home/slice'
+    install -d -m 0700 \"\$HOME/.config/gh\"
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
   " || import_status=$?
@@ -1159,7 +1158,7 @@ import_github_auth() {
 remove_github_auth() {
   exec_slice bash -lc "
     set +e
-    export HOME='$SLICE_PROVIDER_HOME'
+    export HOME='/home/slice'
     gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
@@ -1206,7 +1205,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "install -d -m 0700 '$SLICE_PROVIDER_HOME' && export HOME='$SLICE_PROVIDER_HOME' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
+      printf '%s\n' "export HOME='/home/slice' && install -d -m 0700 \"\$HOME/.config/gh\" && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"

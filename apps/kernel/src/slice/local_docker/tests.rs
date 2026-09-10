@@ -70,7 +70,21 @@ fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
         .expect("success helper should write");
     std::fs::set_permissions(&success, std::fs::Permissions::from_mode(0o700))
         .expect("success helper should be executable");
-    let token = bounded_github_token(&success, Duration::from_secs(1))
+    let managed_home = root.join("managed-home");
+    let context = crate::managed_context::scm::GitCredentialCommandContext::for_tests(
+        managed_home.clone(),
+        std::ffi::OsString::from("/usr/bin:/bin"),
+    );
+    std::fs::write(
+        &success,
+        format!(
+            "#!/bin/sh\n[ \"$HOME\" = '{}' ] || exit 41\n[ \"$GH_CONFIG_DIR\" = '{}/.config/gh' ] || exit 42\nprintf 'github-token\\n'\n",
+            managed_home.display(),
+            managed_home.display()
+        ),
+    )
+    .expect("context-aware success helper should write");
+    let token = bounded_github_token(&success, Duration::from_secs(1), &context)
         .expect("bounded helper should return a token");
     assert_eq!(token.as_slice(), b"github-token\n");
 
@@ -79,10 +93,27 @@ fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
     std::fs::set_permissions(&stalled, std::fs::Permissions::from_mode(0o700))
         .expect("stalled helper should be executable");
     let started = std::time::Instant::now();
-    assert!(bounded_github_token(&stalled, Duration::from_millis(50)).is_none());
+    assert!(bounded_github_token(&stalled, Duration::from_millis(50), &context).is_none());
     assert!(started.elapsed() < Duration::from_secs(3));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn github_auth_import_configures_the_slice_users_ordinary_git_home() {
+    let provisioner = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    let import = provisioner
+        .split("import_github_auth() {")
+        .nth(1)
+        .and_then(|tail| tail.split("remove_github_auth() {").next())
+        .expect("GitHub import function should exist");
+
+    assert!(import.contains("export HOME='/home/slice'"));
+    assert!(!import.contains("export HOME='$SLICE_PROVIDER_HOME'"));
 }
 
 pub(super) fn test_record() -> SliceRecord {
