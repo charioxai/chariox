@@ -125,10 +125,13 @@ impl RelayClientState {
 
     pub(crate) fn claim_peer_public_key(&mut self, target_ref: &str, public_key: &str) -> bool {
         match self.peer_public_key(target_ref) {
-            Some(existing) => existing == public_key,
+            Some(existing) if existing == public_key => {
+                self.pin_peer_public_key(target_ref, public_key);
+                true
+            }
+            Some(_) => false,
             None => {
-                self.peer_public_keys
-                    .insert(target_ref.to_string(), public_key.to_string());
+                self.pin_peer_public_key(target_ref, public_key);
                 true
             }
         }
@@ -696,6 +699,7 @@ mod tests {
         assert!(state.claim_peer_public_key("worker-1", "public-key-1"));
         assert!(state.claim_peer_public_key("worker-1", "public-key-1"));
         assert!(!state.claim_peer_public_key("worker-1", "public-key-2"));
+        state.forget_peer_public_key("worker-1");
         assert_eq!(
             state.peer_public_key("worker-1").as_deref(),
             Some("public-key-1")
