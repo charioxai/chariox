@@ -132,6 +132,43 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 }
 
 #[test]
+fn relay_peer_public_key_claim_survives_restart_and_rejects_rebinding() {
+    let _guard = crate::env_lock::lock();
+    let temp_home = std::env::temp_dir().join(format!(
+        "chariox-relay-peer-key-test-{}",
+        generate_identity_suffix()
+    ));
+    let old_chariox_home = env::var_os("CHARIOX_HOME");
+    unsafe {
+        env::set_var("CHARIOX_HOME", &temp_home);
+    }
+
+    assert!(
+        DaemonConfig::claim_relay_peer_public_key("worker-1", "public-key-1")
+            .expect("first authenticated key should persist")
+    );
+    assert!(
+        DaemonConfig::claim_relay_peer_public_key("worker-1", "public-key-1")
+            .expect("the same authenticated key should be idempotent")
+    );
+    assert!(
+        !DaemonConfig::claim_relay_peer_public_key("worker-1", "public-key-2")
+            .expect("a different key should be rejected")
+    );
+    assert_eq!(
+        DaemonConfig::relay_peer_public_key_entries()
+            .get("worker-1")
+            .map(String::as_str),
+        Some("public-key-1")
+    );
+
+    unsafe {
+        restore_env_var("CHARIOX_HOME", old_chariox_home);
+    }
+    let _ = fs::remove_dir_all(temp_home);
+}
+
+#[test]
 fn renamed_vault_backend_deserializes_to_the_only_supported_encrypted_backend() {
     let config = toml::from_str::<CharioxUserConfig>(
         r#"

@@ -707,6 +707,20 @@ mod tests {
     }
 
     #[test]
+    fn relay_state_restores_durable_peer_key_pins() {
+        let state = RelayClientState::with_pinned_peer_public_keys(BTreeMap::from([(
+            "worker-1".to_string(),
+            "public-key-1".to_string(),
+        )]));
+
+        assert_eq!(
+            state.peer_public_key("worker-1").as_deref(),
+            Some("public-key-1")
+        );
+        assert!(state.peer_public_key("worker-2").is_none());
+    }
+
+    #[test]
     fn managed_slice_activation_requires_exact_worker_subject_key_and_nonce() {
         let mut state = RelayClientState::default();
         state.begin_managed_slice_relay_activation(
