@@ -301,10 +301,14 @@ pub async fn send_peer_request_via_connected_relay_with_timeout(
         .to_string();
     let cached_public_key = state.read().await.peer_public_key(&target_ref);
     let target_public_key = match cached_public_key {
-        Some(public_key) => public_key,
-        None => {
+        Some(public_key) if relay_crypto::decode_public_key(&public_key).is_ok() => public_key,
+        stale_public_key => {
+            if stale_public_key.is_some() {
+                state.write().await.forget_peer_public_key(&target_ref);
+            }
             let kernel = relay_discovery::get_live_kernel(config, &target_ref).await?;
             let public_key = kernel.public_key;
+            relay_crypto::decode_public_key(&public_key)?;
             state
                 .write()
                 .await
@@ -637,6 +641,8 @@ mod identity_tests;
 #[cfg(test)]
 mod relay_rtt_tests {
     use super::*;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
 
     #[tokio::test]
     async fn connected_peer_request_uses_cached_key_and_custom_timeout_without_metadata_socket() {
@@ -721,6 +727,148 @@ mod relay_rtt_tests {
             response,
             RelayPeerResponse::Pong {
                 value: "cached".to_string(),
+                daemon_id: "worker-1".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_peer_request_replaces_malformed_cached_key_before_sending() {
+        let mut sender_config = crate::config::DaemonConfig::for_tests();
+        let target_config = crate::config::DaemonConfig::for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("metadata fixture should bind");
+        sender_config.relay_url = Some(format!(
+            "ws://{}",
+            listener
+                .local_addr()
+                .expect("metadata fixture should have an address")
+        ));
+        sender_config.relay_token = Some("metadata-test-token".to_string());
+        sender_config.relay_request_timeout_ms = 1_000;
+
+        let metadata_public_key = target_config.relay_public_key.clone();
+        let metadata = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("metadata client should connect");
+            let mut socket = accept_async(stream)
+                .await
+                .expect("metadata websocket should accept");
+            let request = match socket.next().await {
+                Some(Ok(Message::Text(text))) => serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("metadata request should decode"),
+                other => panic!("expected metadata request, received {other:?}"),
+            };
+            let RelayEnvelope::ClientMetadataRequest { request_id, .. } = request else {
+                panic!("expected metadata request envelope");
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::ClientMetadataResponse {
+                        request_id,
+                        machines: None,
+                        kernels: None,
+                        kernel: Some(chariox_relay::protocol::RelayKernelPresence {
+                            kernel_id: "worker-1".to_string(),
+                            machine_id: "machine-1".to_string(),
+                            machine_alias: None,
+                            relay_alias: None,
+                            kernel_alias: None,
+                            available_providers: Vec::new(),
+                            provider_accounts: Vec::new(),
+                            capabilities: Vec::new(),
+                            accepting_remote_leases: true,
+                            leased_agent_count: 0,
+                            local_session_count: 0,
+                            public_key: metadata_public_key,
+                        }),
+                        error: None,
+                    })
+                    .expect("metadata response should encode")
+                    .into(),
+                ))
+                .await
+                .expect("metadata response should send");
+        });
+
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+        {
+            let mut guard = state.write().await;
+            guard.test_set_connected_sender(
+                outgoing_tx,
+                sender_config
+                    .relay_url
+                    .as_deref()
+                    .expect("relay URL should be configured"),
+            );
+            guard.remember_peer_public_key("worker-1", "malformed-key");
+        }
+
+        let responder_state = Arc::clone(&state);
+        let sender_public_key = sender_config.relay_public_key.clone();
+        let target_private_key = target_config.relay_private_key.clone();
+        let responder = tokio::spawn(async move {
+            let envelope = priority_rx
+                .recv()
+                .await
+                .expect("peer request should use the relay outgoing queue");
+            let RelayEnvelope::DaemonPeerRequest {
+                request_id,
+                encrypted_request,
+                ..
+            } = envelope
+            else {
+                panic!("expected a daemon peer request");
+            };
+            relay_crypto::decrypt_payload_for_private_key(&target_private_key, &encrypted_request)
+                .expect("target should decrypt the request with the discovered key");
+            let response = RelayPeerResponse::Pong {
+                value: "recovered".to_string(),
+                daemon_id: "worker-1".to_string(),
+            };
+            let encrypted_response = relay_crypto::encrypt_payload_for_peer(
+                &target_private_key,
+                &sender_public_key,
+                &serde_json::to_vec(&response).expect("response should encode"),
+            )
+            .expect("response should encrypt");
+            resolve_pending_peer_response(
+                &responder_state,
+                request_id,
+                RelayPeerResponseEnvelope {
+                    from_daemon_id: "worker-1".to_string(),
+                    encrypted_response: Some(encrypted_response),
+                    error: None,
+                },
+            )
+            .await;
+        });
+
+        let response = send_peer_request_via_connected_relay_with_timeout(
+            &sender_config,
+            &state,
+            ClientTarget {
+                daemon_id: Some("worker-1".to_string()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::Ping {
+                value: "recovered".to_string(),
+            },
+            Duration::from_millis(500),
+        )
+        .await
+        .expect("malformed cached key should be replaced from relay discovery");
+
+        metadata.await.expect("metadata fixture should join");
+        responder.await.expect("responder should join");
+        assert_eq!(
+            response,
+            RelayPeerResponse::Pong {
+                value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
             }
         );

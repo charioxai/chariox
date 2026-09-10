@@ -656,7 +656,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         }
     }
     let discovered = match discover_started_slice_worker(&discovery_config, &initial_slice).await {
-        Ok(worker) => Some(worker),
+        Ok(worker) => worker,
         Err(error) => {
             runtime_state
                 .stop_slice_private_relay_home_connection(&initial_slice.id)
@@ -680,7 +680,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
                     &discovery_config,
                     relay_state,
                     &initial_slice,
-                    discovered.as_ref().expect("slice worker was discovered"),
+                    &discovered,
                 )
                 .await
             }
@@ -701,7 +701,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
             return Err(error);
         }
     }
-    let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
+    let slice = runtime_state.mark_slice_running(&request.slice_ref, Some(discovered.clone()))?;
     let mut slice = slice;
     if !relaunch_manifests.is_empty() {
         let relaunch_agent_ids = relaunch_manifests
@@ -715,9 +715,9 @@ async fn execute_start_slice_request_with_relaunch_manifests(
             None,
             None,
         )?;
-        let worker = relay_presence_from_started_slice(&slice, "slice.start")?;
+        let worker = relay_presence_from_started_slice(&slice, &discovered, "slice.start")?;
         if let Err(source) = runtime_state
-            .rebind_and_relaunch_slice_agents(relaunch_manifests, &worker)
+            .rebind_and_relaunch_slice_agents(relaunch_manifests, worker)
             .await
         {
             let error =
@@ -941,10 +941,11 @@ fn slice_stop_is_already_complete(slice: &crate::slice::SliceRecord) -> bool {
     slice.status == crate::slice::SliceStatus::Stopped
 }
 
-fn relay_presence_from_started_slice(
+fn relay_presence_from_started_slice<'a>(
     slice: &crate::slice::SliceRecord,
+    discovered: &'a chariox_relay::protocol::RelayKernelPresence,
     operation: &'static str,
-) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError> {
+) -> Result<&'a chariox_relay::protocol::RelayKernelPresence, DaemonError> {
     let Some(worker_kernel_id) = slice.worker_kernel_id.clone() else {
         return Err(DaemonError::LocalTransport {
             operation,
@@ -957,20 +958,16 @@ fn relay_presence_from_started_slice(
             message: format!("started slice `{}` has no worker machine id", slice.name),
         });
     };
-    Ok(chariox_relay::protocol::RelayKernelPresence {
-        kernel_id: worker_kernel_id,
-        machine_id: worker_machine_id,
-        machine_alias: None,
-        relay_alias: None,
-        kernel_alias: None,
-        available_providers: slice.providers.clone(),
-        provider_accounts: Vec::new(),
-        capabilities: Vec::new(),
-        accepting_remote_leases: true,
-        leased_agent_count: 0,
-        local_session_count: 0,
-        public_key: String::new(),
-    })
+    if discovered.kernel_id != worker_kernel_id || discovered.machine_id != worker_machine_id {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "started slice `{}` worker identity changed before agent relaunch",
+                slice.name
+            ),
+        });
+    }
+    Ok(discovered)
 }
 
 async fn local_docker_slice_relay(
@@ -1425,6 +1422,31 @@ mod tests {
         let mut stopped = slice(vec!["agent-1".to_string()]);
         stopped.status = crate::slice::SliceStatus::Stopped;
         assert!(slice_stop_is_already_complete(&stopped));
+    }
+
+    #[test]
+    fn slice_relaunch_preserves_the_discovered_worker_relay_key() {
+        let slice = slice(vec!["agent-1".to_string()]);
+        let discovered = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "worker-1".to_string(),
+            machine_id: "machine-slice-1".to_string(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: Some("slice:dev".to_string()),
+            available_providers: vec!["codex".to_string()],
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "authenticated-worker-key".to_string(),
+        };
+
+        let relaunch_worker = relay_presence_from_started_slice(&slice, &discovered, "slice.start")
+            .expect("the discovered worker should remain authoritative");
+
+        assert!(std::ptr::eq(relaunch_worker, &discovered));
+        assert_eq!(relaunch_worker.public_key, "authenticated-worker-key");
     }
 
     #[test]

@@ -182,29 +182,44 @@ impl KernelRuntimeState {
             relay_config.apply_remote_relay_override(relay_url, relay_token);
         }
         let leased_agent_id = remote_execution.leased_agent_id.clone();
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::LaunchLeasedNativeProviderRun {
-                leased_agent_id: leased_agent_id.clone(),
-                adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
-                    .to_string(),
-                provider: request.provider.clone(),
-                account_profile: request.account_profile.clone(),
-                model: request.model.clone(),
-                variant: request.variant.clone(),
-                structured_endpoint: request.structured_endpoint.clone(),
-                provider_session_id: request.provider_session_id.clone(),
-                required_mcps,
-                required_skills: Some(required_skills),
-                remote_extension_manifest,
-                provider_launch_credential,
-            },
-        )
-        .await?;
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let peer_request = RelayPeerRequest::LaunchLeasedNativeProviderRun {
+            leased_agent_id: leased_agent_id.clone(),
+            adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
+                .to_string(),
+            provider: request.provider.clone(),
+            account_profile: request.account_profile.clone(),
+            model: request.model.clone(),
+            variant: request.variant.clone(),
+            structured_endpoint: request.structured_endpoint.clone(),
+            provider_session_id: request.provider_session_id.clone(),
+            required_mcps,
+            required_skills: Some(required_skills),
+            remote_extension_manifest,
+            provider_launch_credential,
+        };
+        let response = match self.connected_relay_state_for_config(&relay_config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    peer_request,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    target,
+                    peer_request,
+                )
+                .await
+            }
+        }?;
         match response {
             RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
                 let home_agent_id = agent_id.clone();

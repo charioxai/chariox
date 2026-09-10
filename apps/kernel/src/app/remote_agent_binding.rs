@@ -569,10 +569,14 @@ impl DaemonApp {
             agent.provider(),
             &discovery_config,
         )?;
+        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
+            &worker_kernel.kernel_id,
+            &worker_kernel.machine_id,
+        );
         let rebound = self.bind_remote_agent_to_worker(
             &agent,
             &worker_kernel,
-            None,
+            worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
@@ -605,10 +609,14 @@ impl DaemonApp {
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
+        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
+            &worker_kernel.kernel_id,
+            &worker_kernel.machine_id,
+        );
         let rebound = self.bind_remote_agent_to_worker(
             &agent,
             worker_kernel,
-            None,
+            worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
@@ -1034,6 +1042,15 @@ impl DaemonApp {
                     .unwrap_or_else(|| "/workspace".to_string())
             })
             .or(requested_worktree_id)
+    }
+
+    fn worker_worktree_id_for_rebound_worker(
+        &self,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+    ) -> Option<String> {
+        self.worker_worktree_id_for_kernel_ref(worker_kernel_id, None)
+            .or_else(|| self.worker_worktree_id_for_kernel_ref(worker_machine_id, None))
     }
 
     pub(crate) fn relay_config_for_remote_execution(
@@ -1562,6 +1579,11 @@ mod tests {
                 Some("/host/worktree".to_string()),
             )
             .as_deref(),
+            Some("/workspace")
+        );
+        assert_eq!(
+            app.worker_worktree_id_for_rebound_worker("slice-kernel-1", "slice:slice-1")
+                .as_deref(),
             Some("/workspace")
         );
         let ports = slice

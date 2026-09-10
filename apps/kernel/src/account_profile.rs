@@ -1644,25 +1644,23 @@ impl ProviderAccountProfileRegistry {
             ));
         }
 
-        let mut file_refresh = if provider == "opencode"
-            && managed_context.is_none()
-            && replace_existing_replica
-            && managed_root_exists
-        {
-            match replica_refresh::ReplicaFileRefresh::publish(
-                &managed_root,
-                &staging_root,
-                &decoded_files,
-            ) {
-                Ok(refresh) => Some(refresh),
-                Err(error) => {
-                    let _ = fs::remove_dir_all(&staging_root);
-                    return Err(error);
+        let mut file_refresh =
+            if managed_context.is_none() && replace_existing_replica && managed_root_exists {
+                match replica_refresh::ReplicaFileRefresh::publish(
+                    &managed_root,
+                    &staging_root,
+                    &decoded_files,
+                    provider,
+                ) {
+                    Ok(refresh) => Some(refresh),
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&staging_root);
+                        return Err(error);
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let backup_root = (managed_root_exists
             && !adopt_interrupted_managed_publication
             && !refresh_existing_replica)
@@ -3918,6 +3916,126 @@ mod tests {
         );
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_account_materialization_preserves_provider_runtime_links() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+        fs::create_dir_all(target_codex_home.join("runtime")).unwrap();
+        std::os::unix::fs::symlink("../auth.json", target_codex_home.join("runtime/auth-link"))
+            .unwrap();
+
+        fs::write(
+            source_codex_home.join("auth.json"),
+            br#"{"token":"refreshed"}"#,
+        )
+        .unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        target.materialize_replica("owner-a", &refreshed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target_codex_home.join("auth.json")).unwrap(),
+            r#"{"token":"refreshed"}"#
+        );
+        assert!(fs::read_to_string(target_codex_home.join("config.toml"))
+            .unwrap()
+            .contains("cli_auth_credentials_store = \"file\""));
+        assert_eq!(
+            fs::read_link(target_codex_home.join("runtime/auth-link")).unwrap(),
+            PathBuf::from("../auth.json")
+        );
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn repeated_account_materialization_bounds_old_and_new_files_independently() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        let old_auth = vec![b'a'; 40 * 1024 * 1024];
+        fs::write(source_codex_home.join("auth.json"), &old_auth).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+
+        let new_auth = vec![b'b'; 40 * 1024 * 1024];
+        fs::write(source_codex_home.join("auth.json"), &new_auth).unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let refresh_result = target.materialize_replica("owner-a", &refreshed);
+        let published_auth = fs::read(target_codex_home.join("auth.json"));
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+        refresh_result.unwrap();
+        assert_eq!(published_auth.unwrap(), new_auth);
+    }
+
+    #[test]
+    fn repeated_account_materialization_rejects_nonportable_files() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+
+        let mut refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        refreshed.files.push(ProviderAccountMaterializationFile {
+            relative_path: "runtime-state.json".to_string(),
+            contents_base64: base64::engine::general_purpose::STANDARD.encode(b"not portable"),
+        });
+        let refresh_result = target.materialize_replica("owner-a", &refreshed);
+        let published_auth = fs::read_to_string(target_codex_home.join("auth.json"));
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+        assert!(refresh_result.is_err());
+        assert_eq!(published_auth.unwrap(), r#"{"token":"first"}"#);
     }
 
     #[test]
