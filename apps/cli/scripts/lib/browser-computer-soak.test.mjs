@@ -11,6 +11,7 @@ import {
   parseBrowserComputerSoakArgs,
   validateCompletedSoakResult,
 } from "./browser-computer-soak.mjs"
+import { assertSandboxCapableChromiumIdentity } from "./browser-computer-soak-runtime.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..", "..")
 
@@ -53,6 +54,18 @@ test("unsafe durations and repository evidence paths are rejected", () => {
   assert.throws(
     () => parseBrowserComputerSoakArgs(["--evidence-root", path.join(repoRoot, ".artifacts")], { repoRoot, homeDir: os.tmpdir() }),
     /evidence must stay outside repositories/,
+  )
+})
+
+test("soak requires a non-root Chromium identity instead of disabling its sandbox", () => {
+  assert.doesNotThrow(() => assertSandboxCapableChromiumIdentity({ uid: 1000 }))
+  assert.throws(
+    () => assertSandboxCapableChromiumIdentity({ uid: 0 }),
+    /refuses root Chromium because the renderer sandbox would be disabled.*non-root slice user/,
+  )
+  assert.throws(
+    () => assertSandboxCapableChromiumIdentity({ uid: 0, managedProviderIsolationActive: "1" }),
+    /slice-owner desktop\/runtime instead of the provider sandbox/,
   )
 })
 

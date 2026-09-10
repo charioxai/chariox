@@ -149,7 +149,6 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       "--remote-debugging-address=127.0.0.1",
       `--remote-debugging-port=${allocation.debugPort}`,
       "--window-size=800,600",
-      ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []),
       fixture.url,
     ]
     owned.set("chromium", spawnLogged("chromium", "chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
@@ -291,6 +290,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
 }
 
 async function runPreflight({ options, allocation, paths, repoRoot, source, baseline }) {
+  assertSandboxCapableChromiumIdentity()
   const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
   const commands = ["Xvfb", "openbox", "tint2", "chromium", "scrot", "xdpyinfo"]
   const commandPaths = {}
@@ -324,6 +324,17 @@ async function runPreflight({ options, allocation, paths, repoRoot, source, base
     baseline,
     paths,
   }
+}
+
+export function assertSandboxCapableChromiumIdentity({
+  uid = process.getuid?.(),
+  managedProviderIsolationActive = process.env.CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE,
+} = {}) {
+  if (uid !== 0) return
+  const launchContext = managedProviderIsolationActive === "1"
+    ? "launch the soak from the slice-owner desktop/runtime instead of the provider sandbox"
+    : "launch the soak as the non-root slice user"
+  throw new Error(`preflight refuses root Chromium because the renderer sandbox would be disabled; ${launchContext}`)
 }
 
 async function allocateRuntime(options) {
