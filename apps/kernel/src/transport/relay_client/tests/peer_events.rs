@@ -29,9 +29,19 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn incoming_peer_events_project_runtime_to_the_home_session() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _env_guard = crate::env_lock::lock();
+    let temp_home = std::env::temp_dir().join(format!(
+        "chariox-relay-peer-event-test-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms(),
+    ));
+    let old_chariox_home = std::env::var_os("CHARIOX_HOME");
+    unsafe {
+        std::env::set_var("CHARIOX_HOME", &temp_home);
+    }
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap"),
     ));
@@ -152,6 +162,14 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         .drain_completion_records(&session_id, &attachment_id);
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
+
+    unsafe {
+        match old_chariox_home {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+    let _ = std::fs::remove_dir_all(temp_home);
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_connection() {
