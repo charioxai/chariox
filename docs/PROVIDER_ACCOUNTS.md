@@ -57,6 +57,9 @@ Agent launch never refreshes an installed OpenCode profile. The target kernel an
 OpenCode own its credentials, configuration, history, databases, and later
 changes. An explicit account-transfer or credential-update operation may replace
 portable account files, but it is not coupled to provider launch.
+Kernel startup follows the same rule for publication-bound accounts. The
+publication manifest installs a missing profile once; restarting the kernel does
+not reapply source credentials or reset the target kernel's default account.
 
 This account transfer is not a history backup or provider-session migration.
 Environment and slice saved-state acceptance must validate their own durable
