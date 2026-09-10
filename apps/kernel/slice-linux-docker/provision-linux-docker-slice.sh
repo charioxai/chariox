@@ -107,6 +107,7 @@ SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
+SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -1142,10 +1143,17 @@ import_github_auth() {
   local import_status=0
   run_with_file_stdin_timeout 90 "$token_tmp" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    export HOME='/home/slice'
-    install -d -m 0700 \"\$HOME/.config/gh\"
+    export HOME='$SLICE_PROVIDER_HOME'
+    install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config'
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
+    if [[ ! -e '/home/slice/.config/gh' ]]; then
+      ln -s \"$SLICE_PROVIDER_HOME/.config/gh\" '/home/slice/.config/gh'
+    fi
+    if ! HOME='/home/slice' git config --global --get-all include.path 2>/dev/null \
+      | grep -Fxq \"$SLICE_PROVIDER_HOME/.gitconfig\"; then
+      HOME='/home/slice' git config --global --add include.path \"$SLICE_PROVIDER_HOME/.gitconfig\"
+    fi
   " || import_status=$?
   rm -f "$token_tmp"
   trap - RETURN
@@ -1158,10 +1166,15 @@ import_github_auth() {
 remove_github_auth() {
   exec_slice bash -lc "
     set +e
-    export HOME='/home/slice'
+    export HOME='$SLICE_PROVIDER_HOME'
     gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    HOME='/home/slice' git config --global --unset-all include.path '$SLICE_PROVIDER_HOME/.gitconfig' >/dev/null 2>&1
+    if [[ -L '/home/slice/.config/gh' \
+      && \"\$(readlink '/home/slice/.config/gh')\" == '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
+      rm -f '/home/slice/.config/gh'
+    fi
     exit 0
   "
   log "removed GitHub auth from slice"
@@ -1205,7 +1218,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "export HOME='/home/slice' && install -d -m 0700 \"\$HOME/.config/gh\" && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
+      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ -e '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"

@@ -100,7 +100,7 @@ fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
 }
 
 #[test]
-fn github_auth_import_configures_the_slice_users_ordinary_git_home() {
+fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
     let provisioner = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("slice-linux-docker/provision-linux-docker-slice.sh"),
@@ -112,8 +112,13 @@ fn github_auth_import_configures_the_slice_users_ordinary_git_home() {
         .and_then(|tail| tail.split("remove_github_auth() {").next())
         .expect("GitHub import function should exist");
 
-    assert!(import.contains("export HOME='/home/slice'"));
-    assert!(!import.contains("export HOME='$SLICE_PROVIDER_HOME'"));
+    assert!(import.contains("export HOME='$SLICE_PROVIDER_HOME'"));
+    assert!(import.contains(
+        "HOME='/home/slice' git config --global --add include.path \\\"$SLICE_PROVIDER_HOME/.gitconfig\\\""
+    ));
+    assert!(
+        import.contains("ln -s \\\"$SLICE_PROVIDER_HOME/.config/gh\\\" '/home/slice/.config/gh'")
+    );
 }
 
 pub(super) fn test_record() -> SliceRecord {
