@@ -17,6 +17,7 @@ import {
   assertSandboxCapableChromiumIdentity,
   baselineResourceSnapshot,
   captureSoakScreenshot,
+  processIsRunning,
   runBrowserComputerSoak,
 } from "./browser-computer-soak-runtime.mjs"
 
@@ -148,6 +149,15 @@ printf frame > "$target"
 
   assert.deepEqual((await readdir(root)).sort(), ["bin", "latest-screen.png"])
   assert.equal(await readFile(screenshotPath, "utf8"), "frame")
+})
+
+test("cleanup treats a reparented zombie as stopped", () => {
+  const probe = () => {}
+  const live = () => "13499 (selkies) S 1 13499 13499 0 -1"
+  const zombie = () => "13499 (selkies) Z 1 13499 13499 0 -1"
+
+  assert.equal(processIsRunning(13499, { probe, readStat: live }), true)
+  assert.equal(processIsRunning(13499, { probe, readStat: zombie }), false)
 })
 
 test("startup failures leave terminal status, result, failure, and cleanup evidence", async (context) => {

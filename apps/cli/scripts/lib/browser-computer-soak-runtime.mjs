@@ -1,5 +1,5 @@
 import { appendFile, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { createWriteStream } from "node:fs"
+import { createWriteStream, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFile, spawn } from "node:child_process"
 import http from "node:http"
@@ -829,7 +829,22 @@ function childExitDescription(child) {
 }
 
 function pids(owned) { return [...owned.values()].map((child) => child?.pid).filter(Number.isSafeInteger) }
-function running(pid) { try { process.kill(pid, 0); return true } catch { return false } }
+export function processIsRunning(pid, {
+  probe = (candidate, signal) => process.kill(candidate, signal),
+  readStat = (candidate) => readFileSync(candidate, "utf8"),
+} = {}) {
+  try { probe(pid, 0) } catch { return false }
+  try {
+    const statLine = readStat(`/proc/${pid}/stat`)
+    const commandEnd = statLine.lastIndexOf(")")
+    const state = commandEnd === -1 ? "" : statLine.slice(commandEnd + 1).trimStart().charAt(0)
+    return state !== "Z" && state !== "X"
+  } catch {
+    return true
+  }
+}
+
+function running(pid) { return processIsRunning(pid) }
 async function exists(candidate) { try { await stat(candidate); return true } catch { return false } }
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 const bounded = (value, limit = 2_000) => String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(-limit)
