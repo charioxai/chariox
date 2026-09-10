@@ -1644,25 +1644,22 @@ impl ProviderAccountProfileRegistry {
             ));
         }
 
-        let mut file_refresh = if provider == "opencode"
-            && managed_context.is_none()
-            && replace_existing_replica
-            && managed_root_exists
-        {
-            match replica_refresh::ReplicaFileRefresh::publish(
-                &managed_root,
-                &staging_root,
-                &decoded_files,
-            ) {
-                Ok(refresh) => Some(refresh),
-                Err(error) => {
-                    let _ = fs::remove_dir_all(&staging_root);
-                    return Err(error);
+        let mut file_refresh =
+            if managed_context.is_none() && replace_existing_replica && managed_root_exists {
+                match replica_refresh::ReplicaFileRefresh::publish(
+                    &managed_root,
+                    &staging_root,
+                    provider,
+                ) {
+                    Ok(refresh) => Some(refresh),
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&staging_root);
+                        return Err(error);
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let backup_root = (managed_root_exists
             && !adopt_interrupted_managed_publication
             && !refresh_existing_replica)
@@ -3915,6 +3912,55 @@ mod tests {
         assert_eq!(
             fs::read_to_string(rollout).unwrap(),
             "provider-owned runtime state"
+        );
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_account_materialization_preserves_provider_runtime_links() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+        fs::create_dir_all(target_codex_home.join("runtime")).unwrap();
+        std::os::unix::fs::symlink("../auth.json", target_codex_home.join("runtime/auth-link"))
+            .unwrap();
+
+        fs::write(
+            source_codex_home.join("auth.json"),
+            br#"{"token":"refreshed"}"#,
+        )
+        .unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        target.materialize_replica("owner-a", &refreshed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target_codex_home.join("auth.json")).unwrap(),
+            r#"{"token":"refreshed"}"#
+        );
+        assert!(fs::read_to_string(target_codex_home.join("config.toml"))
+            .unwrap()
+            .contains("cli_auth_credentials_store = \"file\""));
+        assert_eq!(
+            fs::read_link(target_codex_home.join("runtime/auth-link")).unwrap(),
+            PathBuf::from("../auth.json")
         );
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);

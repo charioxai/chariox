@@ -17,30 +17,22 @@ impl ReplicaFileRefresh {
     pub(super) fn publish(
         root: &Path,
         staging_root: &Path,
-        files: &[(PathBuf, Vec<u8>)],
+        provider: &str,
     ) -> Result<Self, DaemonError> {
         let mut refresh = Self {
             previous: Vec::new(),
             applied: Vec::new(),
         };
-        let mut desired: BTreeMap<PathBuf, Option<&[u8]>> =
-            BTreeMap::from([(PathBuf::from("data/opencode/auth.json"), None)]);
-        for name in OPENCODE_CONFIG_FILES {
-            desired.insert(Path::new("config/opencode").join(name), None);
-        }
-        for (staged, contents) in files {
-            let relative = staged
-                .strip_prefix(staging_root)
-                .map_err(|error| registry_error("refresh account profile", error.to_string()))?;
-            let value = desired.get_mut(relative).ok_or_else(|| {
-                registry_error(
-                    "refresh account profile",
-                    "OpenCode account refresh accepts only portable account files",
-                )
-            })?;
-            *value = Some(contents);
-        }
+        let mut desired = portable_account_paths(provider)?
+            .into_iter()
+            .map(|relative| (relative, None))
+            .collect::<BTreeMap<PathBuf, Option<Vec<u8>>>>();
         let mut remaining = MAX_MATERIALIZATION_BYTES;
+        for (relative, contents) in &mut desired {
+            let staged = ReplicaFile::open(staging_root, relative)?;
+            *contents = staged.read(remaining)?;
+            remaining = remaining.saturating_sub(contents.as_ref().map_or(0, Vec::len));
+        }
         // Validate and snapshot every destination before changing credentials.
         for relative in desired.keys() {
             let destination = ReplicaFile::open(root, relative)?;
@@ -49,12 +41,12 @@ impl ReplicaFileRefresh {
             refresh.previous.push((destination, previous));
         }
         for (index, contents) in desired.values().enumerate() {
-            if refresh.previous[index].1.as_deref() == *contents {
+            if refresh.previous[index].1.as_deref() == contents.as_deref() {
                 continue;
             }
             // An atomic write can fail at directory sync after publishing.
             refresh.applied.push(index);
-            if let Err(error) = refresh.previous[index].0.replace(*contents) {
+            if let Err(error) = refresh.previous[index].0.replace(contents.as_deref()) {
                 refresh.rollback().map_err(|rollback| {
                     registry_error(
                         "refresh account profile",
@@ -79,6 +71,29 @@ impl ReplicaFileRefresh {
     pub(super) fn commit(&mut self) {
         self.applied.clear();
     }
+}
+
+fn portable_account_paths(provider: &str) -> Result<Vec<PathBuf>, DaemonError> {
+    let mut paths = match provider {
+        "codex" => vec![
+            PathBuf::from("codex/auth.json"),
+            PathBuf::from("codex/config.toml"),
+        ],
+        "claude" => vec![
+            PathBuf::from("claude/settings.json"),
+            PathBuf::from("claude/stats-cache.json"),
+        ],
+        "opencode" => vec![PathBuf::from("data/opencode/auth.json")],
+        _ => return Err(unsupported_provider(provider)),
+    };
+    if provider == "opencode" {
+        paths.extend(
+            OPENCODE_CONFIG_FILES
+                .iter()
+                .map(|name| Path::new("config/opencode").join(name)),
+        );
+    }
+    Ok(paths)
 }
 
 #[cfg(not(unix))]
