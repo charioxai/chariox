@@ -30,6 +30,26 @@ pub async fn run_daemon_relay_connector_with_router(
     run_daemon_relay_connector_inner(router, state, &mut shutdown, None).await;
 }
 
+#[cfg(test)]
+pub async fn run_daemon_relay_connector_with_router_and_static_relay(
+    router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
+    mut shutdown: watch::Receiver<bool>,
+    relay_url: String,
+    relay_token: String,
+) {
+    run_daemon_relay_connector_inner(
+        router,
+        state,
+        &mut shutdown,
+        Some(StaticRelayConfig {
+            relay_url,
+            relay_token,
+        }),
+    )
+    .await;
+}
+
 pub async fn run_daemon_relay_connector_with_static_relay(
     app: Arc<Mutex<DaemonApp>>,
     state: Arc<RwLock<RelayClientState>>,

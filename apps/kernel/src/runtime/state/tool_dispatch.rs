@@ -34,6 +34,7 @@ pub(super) use slice::{
 };
 mod worker_home_credential_client;
 mod worker_home_extension_client;
+mod worker_home_relay_client;
 mod worker_home_room_browser_client;
 mod workflow_authenticated;
 mod workflow_forwarding;

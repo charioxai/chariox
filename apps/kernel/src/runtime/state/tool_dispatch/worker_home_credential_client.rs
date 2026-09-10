@@ -1,4 +1,3 @@
-use chariox_relay::protocol::ClientTarget;
 use std::time::Duration;
 
 use super::*;
@@ -31,20 +30,18 @@ impl KernelRuntimeState {
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         let response_timeout =
             remote_home_credential_tool_response_timeout(&relay_config, tool_name, &arguments);
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(home_kernel_id),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::InvokeHomeCredentialTool {
-                context,
-                tool_name: tool_name.to_string(),
-                arguments,
-            },
-            response_timeout,
-        )
-        .await?;
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::InvokeHomeCredentialTool {
+                    context,
+                    tool_name: tool_name.to_string(),
+                    arguments,
+                },
+                response_timeout,
+            )
+            .await?;
         match response {
             RelayPeerResponse::HomeCredentialToolHandled { result } => Ok(Some(result)),
             other => Err(DaemonError::LocalTransport {
@@ -68,19 +65,18 @@ impl KernelRuntimeState {
         };
         let home_kernel_id = context.home_kernel_id.clone();
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(home_kernel_id),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::ResolveHomeCredentialSecret {
-                context,
-                credential_id: credential_id.to_string(),
-                injection,
-            },
-        )
-        .await?;
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::ResolveHomeCredentialSecret {
+                    context,
+                    credential_id: credential_id.to_string(),
+                    injection,
+                },
+                Duration::from_millis(relay_config.relay_request_timeout_ms),
+            )
+            .await?;
         match response {
             RelayPeerResponse::HomeCredentialSecretResolved { secret_input, .. } => {
                 Ok(Some(secret_input.into_zeroizing()))
