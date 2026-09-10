@@ -30,15 +30,15 @@ Use `/provider accounts import-native <provider>` to register the kernel host's 
 
 ## Workers and slices
 
-The home kernel remains authoritative. When an agent is assigned to a trusted home-worker or home-managed slice, only its selected profile is materialized through the existing encrypted kernel-to-worker channel. Separate profiles use separate roots. Claude replicas contain only non-secret settings and statistics; `.credentials.json` is excluded and rejected. Cloud and the relay receive only opaque encrypted packets and safe materialization status.
+The home kernel owns the agent and selects the account profile used for its initial placement. When an agent is assigned to a trusted home-worker or home-managed slice, only that selected profile is installed through the existing encrypted kernel-to-worker channel. Separate profiles use separate roots. Claude transfers contain only non-secret settings and statistics; `.credentials.json` is excluded and rejected. Cloud and the relay receive only opaque encrypted packets and safe installation status.
 
-Materialization is denied before launch when the existing trust/ownership policy does not authorize credential transfer. A credential replica is refreshed by rematerializing from the home authority; it does not become an independent credential source. Chariox never reads or copies Claude credentials from macOS Keychain. Foreground local `/login` remains provider-owned. Unattended Claude profiles use a provider-supported `claude setup-token` credential stored in the Chariox encrypted vault and injected only into the official Claude CLI process as `CLAUDE_CODE_OAUTH_TOKEN`. Missing or locked credentials fail before launch without an OS dialog.
+Installation is denied before launch when the existing trust/ownership policy does not authorize credential transfer. After the target accepts the profile, that kernel owns its files and provider-native state exactly like a locally created profile. Later agent launches reuse it without exporting or retransmitting source credentials. Source-side login, logout, or account changes do not mutate the installed target profile. Replacing credentials is an explicit operation on the target kernel. Chariox never reads or copies Claude credentials from macOS Keychain. Foreground local `/login` remains provider-owned. Unattended Claude profiles use a provider-supported `claude setup-token` credential stored in the Chariox encrypted vault and injected only into the official Claude CLI process as `CLAUDE_CODE_OAUTH_TOKEN`. Missing or locked credentials fail before launch without an OS dialog.
 
 Each vaulted provider credential has a deterministic, non-secret handle derived from the account owner, provider, and stable profile ID. Launch preparation resolves that handle through `RuntimeSecretService`. Local launch keeps the resulting value in a redacted, non-serializable, zeroizing environment. Remote launch wraps it in a profile-bound redacted value inside the existing end-to-end-encrypted kernel packet; the worker immediately moves it back into the same non-serializable launch environment. It is excluded from provider-run persistence, projections, command history, and debug output. Claude's live runtime retains that protected environment only so a provider child process can restart without returning to macOS credential storage.
 
 After creating the setup token with the official `claude setup-token` command, an interactive Chariox client stores it with `provider setup-token claude <account-profile>`. Input is hidden. Replacement requires `--replace`. The kernel verifies that the profile belongs to the caller's account authority, requests a Chariox Vault unlock through `RuntimeInteraction` when needed, and writes the vault value and provider-only credential policy as one operation. The setup token is never stored in the Claude profile directory or macOS Keychain.
 
-Model catalogs are cached by owner, selected profile, and execution location. Remote/slice selections must have a kernel-projected materialization record; clients never infer availability from labels.
+Model catalogs are cached by owner, selected profile, and execution location. Remote/slice selections require evidence that the profile was installed at that target; source-profile freshness does not invalidate an independent target profile. Clients never infer availability from labels.
 
 OpenCode account transfer exports `data/opencode/auth.json` and the portable
 configuration files `config`, `config.json`, `opencode.json`, `opencode.jsonc`,
@@ -53,14 +53,10 @@ allowed, but exported roots and files must be regular, non-symlink entries and
 the existing 64 MiB total limit still applies. Managed-machine context export
 remains the separate credential-only, 16 MiB path.
 
-Refreshing an existing regular OpenCode replica updates only those portable
-account files. It preserves worker-created history, databases, and directories
-held open by a running provider. Portable files omitted by the home authority
-are removed, so revoked credentials do not survive a refresh. If the registry
-commit fails, the previous portable files are restored. On Unix, refresh and
-rollback use held directory descriptors and no-follow reads so a concurrent
-symlink replacement cannot redirect credential writes. Each file publication
-is atomic; this is not an atomic multi-file provider-state snapshot.
+Agent launch never refreshes an installed OpenCode profile. The target kernel and
+OpenCode own its credentials, configuration, history, databases, and later
+changes. An explicit account-transfer or credential-update operation may replace
+portable account files, but it is not coupled to provider launch.
 
 This account transfer is not a history backup or provider-session migration.
 Environment and slice saved-state acceptance must validate their own durable
