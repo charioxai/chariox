@@ -108,6 +108,7 @@ impl CommandRouter {
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
                     &command.caller,
+                    command.session_id.as_deref(),
                     self.managed_kernel_registration.as_ref(),
                     request,
                 )
