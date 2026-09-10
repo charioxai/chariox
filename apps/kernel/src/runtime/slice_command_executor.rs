@@ -35,6 +35,7 @@ pub(crate) async fn execute_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     caller: &KernelCaller,
+    session_id: Option<&str>,
     managed_kernel_registration: Option<
         &crate::managed_bootstrap::ConfirmedManagedKernelRegistration,
     >,
@@ -49,11 +50,14 @@ pub(crate) async fn execute_slice_request(
             execute_list_slices_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateSlice(request) => {
-            execute_create_slice_request(
+            let request = managed_slice_create_request_for_session(
                 runtime_state,
-                managed_slice_create_request(request, managed_kernel_registration),
+                request,
+                managed_kernel_registration,
+                session_id,
             )
-            .await
+            .await?;
+            execute_create_slice_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetSlice(request) => {
             execute_get_slice_request(runtime_state, request).await
@@ -147,6 +151,39 @@ fn managed_slice_create_request(
             .map(|plan| plan.package_binding().development);
     }
     request
+}
+
+async fn managed_slice_create_request_for_session(
+    runtime_state: &KernelRuntimeState,
+    request: crate::local::CreateSliceRequest,
+    registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+    session_id: Option<&str>,
+) -> Result<crate::local::CreateSliceRequest, DaemonError> {
+    let derives_managed_default = request.backend == crate::slice::SliceBackendKind::LocalDocker
+        && request.development.is_none();
+    let mut request = managed_slice_create_request(request, registration);
+    if !derives_managed_default
+        || request.development
+            != Some(crate::managed_context::package::ManagedContextDevelopmentSelection::Empty)
+    {
+        return Ok(request);
+    }
+    let Some(session_id) = session_id else {
+        return Ok(request);
+    };
+    let session = runtime_state.session_snapshot(session_id).await?;
+    let (Some(workspace_id), Some(worktree_id)) = (
+        request.workspace_id.as_deref(),
+        request.worktree_id.as_deref(),
+    ) else {
+        return Ok(request);
+    };
+    if workspace_id != session.workspace_id() {
+        return Ok(request);
+    }
+    request.development =
+        Some(runtime_state.slice_development_selection_for_session(&session, worktree_id)?);
+    Ok(request)
 }
 
 pub(crate) async fn execute_import_slice_provider_auth_request(
@@ -533,12 +570,13 @@ mod tests {
         request.worktree_id = Some(workspace_id.clone());
         request.workspace_mount = Some(workspace_id.clone());
         let request = LocalDaemonRequest::CreateSlice(request);
-        let command = crate::runtime::command::KernelCommand::from_local_request(
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
             "create-managed-directory-slice",
             None,
             None,
             &request,
         );
+        command.session_id = Some(session.id().to_string());
 
         let LocalDaemonResponse::SliceCreated { slice } = router
             .dispatch(command, request)
