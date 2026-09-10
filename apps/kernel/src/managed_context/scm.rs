@@ -162,6 +162,10 @@ impl GitCredentialCommandContext {
         })
     }
 
+    pub(crate) fn configure_command(&self, command: &mut Command) {
+        configure_command_environment(command, self);
+    }
+
     #[cfg(test)]
     pub(crate) fn for_tests(home: PathBuf, path: OsString) -> Self {
         let xdg_config_home = home.join(".config");
@@ -1027,7 +1031,7 @@ fn run_command_with_timeout(
         .unwrap_or_else(Instant::now);
     let mut command = Command::new(program);
     command.args(arguments);
-    configure_command_environment(&mut command, context);
+    context.configure_command(&mut command);
     command
         .stdin(if stdin.is_some() {
             Stdio::piped()

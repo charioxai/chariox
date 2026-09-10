@@ -227,6 +227,7 @@ pub(super) async fn execute_save_slice_state_request(
                     },
                     Some(relaunch_manifests),
                     SliceStartMode::RecoverExistingContainer,
+                    false,
                     operation_guard,
                 )
                 .await
@@ -273,6 +274,7 @@ pub(super) async fn execute_save_slice_state_request(
             },
             Some(relaunch_manifests),
             SliceStartMode::RestoreSavedState,
+            false,
             operation_guard,
         )
         .await?;
@@ -533,6 +535,7 @@ pub(super) async fn execute_start_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
+    inherit_managed_git_credentials: bool,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
     execute_start_slice_request_with_relaunch_manifests(
@@ -542,6 +545,7 @@ pub(super) async fn execute_start_slice_request(
         request,
         None,
         SliceStartMode::RestoreSavedState,
+        inherit_managed_git_credentials,
         operation,
     )
     .await
@@ -554,6 +558,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     request: SliceRefRequest,
     prepared_relaunch_manifests: Option<Vec<super::super::state::SliceAgentRelaunchManifest>>,
     start_mode: SliceStartMode,
+    inherit_managed_git_credentials: bool,
     _operation: crate::slice::SliceOperationGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
@@ -701,6 +706,22 @@ async fn execute_start_slice_request_with_relaunch_manifests(
             return Err(error);
         }
     }
+    if inherit_managed_git_credentials {
+        if let Err(error) =
+            inherit_managed_slice_git_credentials(runtime_state, config_projection, &initial_slice)
+                .await
+        {
+            let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &initial_record,
+                "auth.inherit",
+                "failed",
+                Some("github"),
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    }
     let slice = runtime_state.mark_slice_running(&request.slice_ref, Some(discovered.clone()))?;
     let mut slice = slice;
     if !relaunch_manifests.is_empty() {
@@ -745,6 +766,63 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     }
     runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
+}
+
+async fn inherit_managed_slice_git_credentials(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    slice: &crate::slice::SliceRecord,
+) -> Result<(), DaemonError> {
+    runtime_state.record_slice_audit_event(
+        slice,
+        "auth.inherit",
+        "accepted",
+        Some("github"),
+        None,
+    )?;
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let imported = tokio::task::spawn_blocking(move || {
+        crate::slice::run_local_docker_slice_action(
+            &task_slice,
+            crate::slice::LocalDockerSliceAction::ImportProviderAuth,
+            None,
+            Some("github"),
+            None,
+            &docker_options,
+        )?;
+        crate::slice::inspect_local_docker_slice_provider_auth(&task_slice, "github", None)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.auth.inherit",
+        message: format!("managed slice Git credential task failed: {error}"),
+    })??;
+    if !imported.iter().any(|summary| {
+        summary.provider == "github"
+            && matches!(
+                summary.state,
+                crate::slice_provider_auth::SliceProviderAuthState::Configured
+                    | crate::slice_provider_auth::SliceProviderAuthState::Authenticated
+            )
+    }) {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.inherit",
+            message: "selected managed Git credential was not installed in the slice".to_string(),
+        });
+    }
+    let current = runtime_state.resolve_slice(&slice.id)?;
+    let updated = merge_detected_provider_auth(current.provider_auth, imported);
+    let updated = runtime_state.set_slice_provider_auth(&slice.id, updated)?;
+    runtime_state.record_slice_audit_event(
+        &updated,
+        "auth.inherit",
+        "completed",
+        Some("github"),
+        None,
+    )?;
+    Ok(())
 }
 
 fn slice_agent_relaunch_failure(

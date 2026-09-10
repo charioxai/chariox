@@ -286,7 +286,12 @@ pub fn run_local_docker_slice_action(
             }
         }
         if broker::configured() && matches!(provider, Some("all" | "github")) {
-            let github_token = bounded_github_token("gh", GITHUB_TOKEN_COMMAND_TIMEOUT);
+            let github_token =
+                crate::managed_context::scm::GitCredentialCommandContext::source_from_process()
+                    .ok()
+                    .and_then(|context| {
+                        bounded_github_token("gh", GITHUB_TOKEN_COMMAND_TIMEOUT, &context)
+                    });
             replace_broker_input(
                 &mut broker_inputs,
                 "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
@@ -431,9 +436,12 @@ fn replace_broker_input(
 fn bounded_github_token(
     program: impl AsRef<std::ffi::OsStr>,
     timeout: Duration,
+    context: &crate::managed_context::scm::GitCredentialCommandContext,
 ) -> Option<Zeroizing<Vec<u8>>> {
-    let mut child = Command::new(program)
-        .args(["auth", "token", "--hostname", "github.com"])
+    let mut command = Command::new(program);
+    command.args(["auth", "token", "--hostname", "github.com"]);
+    context.configure_command(&mut command);
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

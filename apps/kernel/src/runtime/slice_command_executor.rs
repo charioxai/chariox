@@ -59,8 +59,25 @@ pub(crate) async fn execute_slice_request(
             execute_get_slice_request(runtime_state, request).await
         }
         LocalDaemonRequest::StartSlice(request) => {
-            execute_start_slice_request(runtime_state, config_projection, relay_state, request)
-                .await
+            let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+            let target_git_available = managed_kernel_registration.is_some()
+                && crate::managed_context::scm::GitCredentialCommandContext::source_from_process()
+                    .is_ok_and(|context| {
+                        crate::managed_context::scm::github_credential_is_available(&context)
+                    });
+            let inherit_git = managed_slice_should_inherit_git_credentials(
+                &slice.provider_auth,
+                managed_kernel_registration,
+                target_git_available,
+            );
+            execute_start_slice_request(
+                runtime_state,
+                config_projection,
+                relay_state,
+                request,
+                inherit_git,
+            )
+            .await
         }
         LocalDaemonRequest::StopSlice(request) => {
             execute_stop_slice_request(runtime_state, config_projection, relay_state, request).await
@@ -147,6 +164,23 @@ fn managed_slice_create_request(
             .map(|plan| plan.package_binding().development);
     }
     request
+}
+
+fn managed_slice_should_inherit_git_credentials(
+    provider_auth: &[crate::slice_provider_auth::SliceProviderAuthSummary],
+    registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+    target_git_available: bool,
+) -> bool {
+    registration.is_some()
+        && target_git_available
+        && !provider_auth.iter().any(|summary| {
+            summary.provider == "github"
+                && matches!(
+                    summary.state,
+                    crate::slice_provider_auth::SliceProviderAuthState::Configured
+                        | crate::slice_provider_auth::SliceProviderAuthState::Authenticated
+                )
+        })
 }
 
 pub(crate) async fn execute_import_slice_provider_auth_request(
@@ -525,6 +559,33 @@ mod tests {
             explicit.development,
             Some(ManagedContextDevelopmentSelection::Empty)
         );
+    }
+
+    #[test]
+    fn managed_slice_inherits_target_owned_git_credentials_once() {
+        let registration = empty_registration();
+        assert!(managed_slice_should_inherit_git_credentials(
+            &[],
+            Some(&registration),
+            true,
+        ));
+
+        let configured = vec![auth("github", "github.com")];
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &configured,
+            Some(&registration),
+            true,
+        ));
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &[],
+            None,
+            true,
+        ));
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &[],
+            Some(&registration),
+            false,
+        ));
     }
 
     fn auth(provider: &str, account: &str) -> crate::slice_provider_auth::SliceProviderAuthSummary {

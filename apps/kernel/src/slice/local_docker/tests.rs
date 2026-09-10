@@ -70,7 +70,21 @@ fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
         .expect("success helper should write");
     std::fs::set_permissions(&success, std::fs::Permissions::from_mode(0o700))
         .expect("success helper should be executable");
-    let token = bounded_github_token(&success, Duration::from_secs(1))
+    let managed_home = root.join("managed-home");
+    let context = crate::managed_context::scm::GitCredentialCommandContext::for_tests(
+        managed_home.clone(),
+        std::ffi::OsString::from("/usr/bin:/bin"),
+    );
+    std::fs::write(
+        &success,
+        format!(
+            "#!/bin/sh\n[ \"$HOME\" = '{}' ] || exit 41\n[ \"$GH_CONFIG_DIR\" = '{}/.config/gh' ] || exit 42\nprintf 'github-token\\n'\n",
+            managed_home.display(),
+            managed_home.display()
+        ),
+    )
+    .expect("context-aware success helper should write");
+    let token = bounded_github_token(&success, Duration::from_secs(1), &context)
         .expect("bounded helper should return a token");
     assert_eq!(token.as_slice(), b"github-token\n");
 
@@ -79,8 +93,125 @@ fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
     std::fs::set_permissions(&stalled, std::fs::Permissions::from_mode(0o700))
         .expect("stalled helper should be executable");
     let started = std::time::Instant::now();
-    assert!(bounded_github_token(&stalled, Duration::from_millis(50)).is_none());
+    assert!(bounded_github_token(&stalled, Duration::from_millis(50), &context).is_none());
     assert!(started.elapsed() < Duration::from_secs(3));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn github_auth_import_is_shared_by_the_agent_and_slice_user() {
+    let provisioner = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    let import = provisioner
+        .split("import_github_auth() {")
+        .nth(1)
+        .and_then(|tail| tail.split("remove_github_auth() {").next())
+        .expect("GitHub import function should exist");
+
+    assert!(import.contains("export HOME='$SLICE_PROVIDER_HOME'"));
+    assert!(import.contains(
+        "HOME='/home/slice' git config --global --add include.path \\\"$SLICE_PROVIDER_HOME/.gitconfig\\\""
+    ));
+    assert!(
+        import.contains("ln -s \\\"$SLICE_PROVIDER_HOME/.config/gh\\\" '/home/slice/.config/gh'")
+    );
+    assert!(import
+        .contains("cp -a '/home/slice/.config/gh/.' \\\"$SLICE_PROVIDER_HOME/.config/gh/\\\""));
+    assert!(import.contains("rm -rf '/home/slice/.config/gh'"));
+
+    let removal = provisioner
+        .split("remove_github_auth() {")
+        .nth(1)
+        .and_then(|tail| tail.split("print_provider_auth_status() {").next())
+        .expect("GitHub removal function should exist");
+    assert!(removal.contains("HOME='/home/slice' gh auth logout --hostname '$SLICE_GITHUB_HOST'"));
+}
+
+#[cfg(unix)]
+#[test]
+fn github_auth_removal_restores_unrelated_slice_user_state() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::process::Command;
+
+    let provisioner = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    let removal = provisioner
+        .split("remove_github_auth() {")
+        .nth(1)
+        .and_then(|tail| tail.split("print_provider_auth_status() {").next())
+        .expect("GitHub removal function should exist")
+        .trim()
+        .strip_suffix('}')
+        .expect("GitHub removal function should have a closing brace")
+        .replace("/home/slice", "$SLICE_USER_HOME");
+
+    let root = test_root("github-auth-removal-restores-user-state");
+    let bin = root.join("bin");
+    let user_home = root.join("home");
+    let provider_home = user_home.join(".chariox/provider-home");
+    let provider_gh = provider_home.join(".config/gh");
+    std::fs::create_dir_all(&bin).expect("fixture bin should create");
+    std::fs::create_dir_all(&provider_gh).expect("provider GitHub config should create");
+    std::fs::create_dir_all(user_home.join(".config"))
+        .expect("slice-user config parent should create");
+    std::fs::write(
+        provider_gh.join("hosts.yml"),
+        "github.com:\n    user: managed\n    oauth_token: test-managed-token\nenterprise.example:\n    user: retained\n    oauth_token: test-unrelated-token\n",
+    )
+    .expect("GitHub hosts fixture should write");
+    std::fs::write(provider_gh.join("config.yml"), "git_protocol: ssh\n")
+        .expect("unrelated GitHub config should write");
+    symlink(&provider_gh, user_home.join(".config/gh"))
+        .expect("shared GitHub config link should create");
+
+    let write_executable = |name: &str, contents: &str| {
+        let path = bin.join(name);
+        std::fs::write(&path, contents).expect("fixture executable should write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture executable should be executable");
+    };
+    write_executable(
+        "gh",
+        "#!/bin/sh\ncat > \"$HOME/.config/gh/hosts.yml\" <<'EOF'\nenterprise.example:\n    user: retained\n    oauth_token: test-unrelated-token\nEOF\n",
+    );
+    write_executable("git", "#!/bin/sh\nexit 0\n");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
+    let script = format!(
+        "set -euo pipefail\nSLICE_USER_HOME=$TEST_SLICE_USER_HOME\nSLICE_PROVIDER_HOME=$TEST_SLICE_PROVIDER_HOME\nSLICE_GITHUB_HOST=github.com\nexec_slice() {{ \"$@\"; }}\nlog() {{ :; }}\nremove_github_auth() {{\n{}\n}}\nremove_github_auth\n",
+        removal,
+    );
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .env("TEST_SLICE_USER_HOME", &user_home)
+        .env("TEST_SLICE_PROVIDER_HOME", &provider_home)
+        .env("PATH", path)
+        .output()
+        .expect("GitHub auth removal fixture should execute");
+    assert!(
+        output.status.success(),
+        "GitHub auth removal failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let restored_gh = user_home.join(".config/gh");
+    assert!(restored_gh.is_dir());
+    assert!(!restored_gh.is_symlink());
+    let hosts = std::fs::read_to_string(restored_gh.join("hosts.yml"))
+        .expect("restored GitHub hosts should read");
+    assert!(!hosts.contains("github.com:"));
+    assert!(hosts.contains("enterprise.example:"));
+    assert!(std::fs::read_to_string(restored_gh.join("config.yml"))
+        .expect("unrelated GitHub config should remain")
+        .contains("git_protocol: ssh"));
 
     let _ = std::fs::remove_dir_all(root);
 }

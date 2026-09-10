@@ -1143,10 +1143,27 @@ import_github_auth() {
   local import_status=0
   run_with_file_stdin_timeout 90 "$token_tmp" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    install -d -m 0700 '$SLICE_PROVIDER_HOME'
     export HOME='$SLICE_PROVIDER_HOME'
+    install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config'
+    if [[ -d '/home/slice/.config/gh' && ! -L '/home/slice/.config/gh' ]]; then
+      cp -a '/home/slice/.config/gh/.' \"$SLICE_PROVIDER_HOME/.config/gh/\"
+    fi
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
+    if [[ -d '/home/slice/.config/gh' && ! -L '/home/slice/.config/gh' ]]; then
+      rm -rf '/home/slice/.config/gh'
+    fi
+    if [[ ! -e '/home/slice/.config/gh' && ! -L '/home/slice/.config/gh' ]]; then
+      ln -s \"$SLICE_PROVIDER_HOME/.config/gh\" '/home/slice/.config/gh'
+    elif [[ ! -L '/home/slice/.config/gh' \
+      || \"\$(readlink '/home/slice/.config/gh')\" != '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
+      printf '%s\n' 'cannot share managed GitHub auth with the slice user: /home/slice/.config/gh is occupied' >&2
+      exit 1
+    fi
+    if ! HOME='/home/slice' git config --global --get-all include.path 2>/dev/null \
+      | grep -Fxq \"$SLICE_PROVIDER_HOME/.gitconfig\"; then
+      HOME='/home/slice' git config --global --add include.path \"$SLICE_PROVIDER_HOME/.gitconfig\"
+    fi
   " || import_status=$?
   rm -f "$token_tmp"
   trap - RETURN
@@ -1163,6 +1180,19 @@ remove_github_auth() {
     gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    HOME='/home/slice' git config --global --unset-all include.path '$SLICE_PROVIDER_HOME/.gitconfig' >/dev/null 2>&1
+    if [[ -d '/home/slice/.config/gh' && ! -L '/home/slice/.config/gh' ]]; then
+      HOME='/home/slice' gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
+      HOME='/home/slice' git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+      HOME='/home/slice' git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    fi
+    if [[ -L '/home/slice/.config/gh' \
+      && \"\$(readlink '/home/slice/.config/gh')\" == '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
+      rm -f '/home/slice/.config/gh'
+      if [[ -d '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
+        mv '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'
+      fi
+    fi
     exit 0
   "
   log "removed GitHub auth from slice"
@@ -1206,7 +1236,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "install -d -m 0700 '$SLICE_PROVIDER_HOME' && export HOME='$SLICE_PROVIDER_HOME' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
+      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && { [[ ! -d '/home/slice/.config/gh' || -L '/home/slice/.config/gh' ]] || cp -a '/home/slice/.config/gh/.' '$SLICE_PROVIDER_HOME/.config/gh/'; } && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ ! -d '/home/slice/.config/gh' || -L '/home/slice/.config/gh' ]] || rm -rf '/home/slice/.config/gh'; } && { [[ -e '/home/slice/.config/gh' || -L '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && [[ -L '/home/slice/.config/gh' && \"\$(readlink '/home/slice/.config/gh')\" == '$SLICE_PROVIDER_HOME/.config/gh' ]] && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"
