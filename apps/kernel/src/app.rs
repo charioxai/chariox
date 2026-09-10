@@ -348,7 +348,11 @@ impl DaemonApp {
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             started_at_ms: crate::session::unix_epoch_ms(),
-            relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
+            relay_client_state: Arc::new(tokio::sync::RwLock::new(
+                RelayClientState::with_pinned_peer_public_keys(
+                    DaemonConfig::relay_peer_public_key_entries(),
+                ),
+            )),
             config,
         };
         let restore_started = Instant::now();

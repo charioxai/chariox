@@ -16,6 +16,7 @@ mod persisted_daemon;
 mod private_file;
 mod provider;
 mod publication_state;
+mod relay_peer_keys;
 mod relay_profile;
 mod room_environment;
 mod slices;

@@ -86,6 +86,15 @@ impl PendingManagedSliceActivationConfirmation {
 }
 
 impl RelayClientState {
+    pub(crate) fn with_pinned_peer_public_keys(
+        pinned_peer_public_keys: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            pinned_peer_public_keys,
+            ..Self::default()
+        }
+    }
+
     pub fn connected(&self) -> bool {
         self.connected
     }
@@ -103,6 +112,10 @@ impl RelayClientState {
             .get(target_ref)
             .or_else(|| self.peer_public_keys.get(target_ref))
             .cloned()
+    }
+
+    pub(crate) fn pinned_peer_public_key(&self, target_ref: &str) -> Option<String> {
+        self.pinned_peer_public_keys.get(target_ref).cloned()
     }
 
     pub(crate) fn pin_peer_public_key(

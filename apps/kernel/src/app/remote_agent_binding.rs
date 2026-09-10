@@ -282,7 +282,7 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
-        self.remember_remote_worker_public_key(&relay_config, worker_kernel);
+        self.remember_remote_worker_public_key(&relay_config, worker_kernel)?;
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&worker_kernel.kernel_id);
         let (lease, relay_peer_protocol_version) = match self.send_remote_binding_request(
@@ -1111,22 +1111,39 @@ impl DaemonApp {
         &self,
         relay_config: &DaemonConfig,
         worker_kernel: &RelayKernelPresence,
-    ) {
+    ) -> Result<(), DaemonError> {
+        if !DaemonConfig::claim_relay_peer_public_key(
+            &worker_kernel.kernel_id,
+            &worker_kernel.public_key,
+        )? {
+            return Err(DaemonError::LocalTransport {
+                operation: "bind remote worker identity",
+                message: format!(
+                    "remote worker `{}` changed its public key",
+                    worker_kernel.kernel_id
+                ),
+            });
+        }
         let Some(relay_url) = relay_config.relay_url.clone() else {
-            return;
+            return Ok(());
         };
         let relay_state = self.relay_client_state();
         let kernel_id = worker_kernel.kernel_id.clone();
         let public_key = worker_kernel.public_key.clone();
-        let _ = self.block_on_relay_future(async move {
+        self.block_on_relay_future(async move {
             let mut state = relay_state.write().await;
             if state.connected()
                 && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
             {
-                state.pin_peer_public_key(kernel_id, public_key);
+                if !state.claim_peer_public_key(&kernel_id, &public_key) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "bind remote worker identity",
+                        message: format!("remote worker `{kernel_id}` changed its public key"),
+                    });
+                }
             }
             Ok(())
-        });
+        })
     }
 }
 

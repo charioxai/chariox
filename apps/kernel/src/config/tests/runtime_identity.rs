@@ -143,23 +143,30 @@ fn relay_peer_public_key_claim_survives_restart_and_rejects_rebinding() {
         env::set_var("CHARIOX_HOME", &temp_home);
     }
 
+    let first_private_key = relay_crypto::generate_private_key_base64();
+    let first_public_key = relay_crypto::public_key_from_private_key_base64(&first_private_key)
+        .expect("first public key should derive");
+    let second_private_key = relay_crypto::generate_private_key_base64();
+    let second_public_key = relay_crypto::public_key_from_private_key_base64(&second_private_key)
+        .expect("second public key should derive");
+
     assert!(
-        DaemonConfig::claim_relay_peer_public_key("worker-1", "public-key-1")
+        DaemonConfig::claim_relay_peer_public_key("worker-1", &first_public_key)
             .expect("first authenticated key should persist")
     );
     assert!(
-        DaemonConfig::claim_relay_peer_public_key("worker-1", "public-key-1")
+        DaemonConfig::claim_relay_peer_public_key("worker-1", &first_public_key)
             .expect("the same authenticated key should be idempotent")
     );
     assert!(
-        !DaemonConfig::claim_relay_peer_public_key("worker-1", "public-key-2")
+        !DaemonConfig::claim_relay_peer_public_key("worker-1", &second_public_key)
             .expect("a different key should be rejected")
     );
     assert_eq!(
         DaemonConfig::relay_peer_public_key_entries()
             .get("worker-1")
             .map(String::as_str),
-        Some("public-key-1")
+        Some(first_public_key.as_str())
     );
 
     unsafe {

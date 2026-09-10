@@ -100,19 +100,28 @@ pub(super) async fn handle_daemon_peer_event(
         relay_crypto::decrypt_payload_for_private_key(&daemon_private_key, &encrypted_event)?;
     let sender_public_key = decrypted.sender_public_key.clone();
     let stable_sender_id = stable_peer_daemon_id(from_daemon_id);
-    if authenticated_sender
-        && !stable_sender_id.trim().is_empty()
-        && !state
+    if authenticated_sender && !stable_sender_id.trim().is_empty() {
+        let already_pinned = state
+            .read()
+            .await
+            .pinned_peer_public_key(stable_sender_id)
+            .as_deref()
+            == Some(sender_public_key.as_str());
+        if !already_pinned
+            && !crate::config::DaemonConfig::claim_relay_peer_public_key(
+                stable_sender_id,
+                &sender_public_key,
+            )?
+        {
+            return Err(peer_identity_changed(stable_sender_id));
+        }
+        if !state
             .write()
             .await
             .claim_peer_public_key(stable_sender_id, &sender_public_key)
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "bind relay peer event sender",
-            message: format!(
-                "authenticated relay peer `{stable_sender_id}` changed its public key"
-            ),
-        });
+        {
+            return Err(peer_identity_changed(stable_sender_id));
+        }
     }
     let event =
         serde_json::from_slice::<RelayPeerEvent>(&decrypted.plaintext).map_err(|error| {
@@ -153,6 +162,13 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
     from_daemon_id
         .split_once(":peer-tmp:daemon-peer-tmp-")
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
+}
+
+fn peer_identity_changed(stable_sender_id: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "bind relay peer event sender",
+        message: format!("authenticated relay peer `{stable_sender_id}` changed its public key"),
+    }
 }
 
 pub(super) async fn emit_leased_projection_event(

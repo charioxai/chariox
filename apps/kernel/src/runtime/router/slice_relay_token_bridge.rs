@@ -218,7 +218,10 @@ impl CommandRouter {
                 "slice relay token request does not match the recorded worker",
             ));
         }
-        if !self
+        if !crate::config::DaemonConfig::claim_relay_peer_public_key(
+            worker_kernel_id,
+            worker_public_key,
+        )? || !self
             .relay_state
             .write()
             .await
