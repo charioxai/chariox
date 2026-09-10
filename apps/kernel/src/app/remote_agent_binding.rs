@@ -357,11 +357,17 @@ impl DaemonApp {
                     &self.config,
                     agent.owner_user_id(),
                 );
-            let source_profile = self.provider_account_profiles.get(
+            let source_profile = match self.provider_account_profiles.get(
                 &account_owner_user_id,
                 agent.provider(),
                 agent.provider_account_profile(),
-            )?;
+            ) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                    return Err(error);
+                }
+            };
             if let Some(installed) = installed_remote_account_metadata(
                 &source_profile,
                 materialization_target_kind,
