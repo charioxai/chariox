@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -11,7 +12,12 @@ import {
   parseBrowserComputerSoakArgs,
   validateCompletedSoakResult,
 } from "./browser-computer-soak.mjs"
-import { assertSandboxCapableChromiumIdentity } from "./browser-computer-soak-runtime.mjs"
+import {
+  assertProcessHealth,
+  assertSandboxCapableChromiumIdentity,
+  baselineResourceSnapshot,
+  runBrowserComputerSoak,
+} from "./browser-computer-soak-runtime.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..", "..")
 
@@ -67,6 +73,80 @@ test("soak requires a non-root Chromium identity instead of disabling its sandbo
     () => assertSandboxCapableChromiumIdentity({ uid: 0, managedProviderIsolationActive: "1" }),
     /slice-owner desktop\/runtime instead of the provider sandbox/,
   )
+})
+
+test("signal-terminated children fail health checks even when exitCode is null", () => {
+  const killed = { exitCode: null, signalCode: "SIGKILL" }
+  const running = { exitCode: null, signalCode: null }
+  assert.throws(
+    () => assertProcessHealth(new Map([["openbox", killed]]), { child: running }, {
+      child: running,
+      ready: true,
+      readyAt: Date.now(),
+      lastBinaryFrameAt: Date.now(),
+    }),
+    /openbox exited during soak with signal SIGKILL/,
+  )
+})
+
+test("a ready stream must deliver its first frame before the health deadline", () => {
+  const running = { exitCode: null, signalCode: null }
+  assert.throws(
+    () => assertProcessHealth(new Map(), { child: running }, {
+      child: running,
+      ready: true,
+      readyAt: 1_000,
+      lastBinaryFrameAt: null,
+    }, 31_001),
+    /did not deliver its first video frame/,
+  )
+})
+
+test("the preflight baseline measures the evidence filesystem", async () => {
+  const paths = buildSoakPaths("/evidence", "run")
+  let observedDiskPath = null
+  const baseline = await baselineResourceSnapshot(paths, {
+    snapshot: async (_label, _pids, diskPath) => {
+      observedDiskPath = diskPath
+      return { disk: { path: diskPath } }
+    },
+  })
+  assert.equal(observedDiskPath, paths.runDir)
+  assert.equal(baseline.disk.path, paths.runDir)
+})
+
+test("startup failures leave terminal status, result, failure, and cleanup evidence", async (context) => {
+  const evidenceRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-soak-startup-failure-"))
+  context.after(() => rm(evidenceRoot, { recursive: true, force: true }))
+  const paths = buildSoakPaths(evidenceRoot, "run")
+  const options = {
+    mode: "run",
+    smoke: true,
+    durationSeconds: 12,
+    activityIntervalSeconds: 1,
+    sampleIntervalSeconds: 1,
+    evidenceRoot,
+    runDir: paths.runDir,
+    displayNumber: 70,
+    debugPort: 52_000,
+    viewerPort: 52_000,
+    internalRun: true,
+  }
+  await assert.rejects(
+    runBrowserComputerSoak({ options, repoRoot, scriptPath: "/unused" }),
+    /debug-port and viewer-port must differ/,
+  )
+  const [status, result, failure, cleanup] = await Promise.all([
+    readFile(paths.status, "utf8").then(JSON.parse),
+    readFile(paths.result, "utf8").then(JSON.parse),
+    readFile(paths.failure, "utf8").then(JSON.parse),
+    readFile(paths.cleanup, "utf8").then(JSON.parse),
+  ])
+  assert.equal(status.status, "failed")
+  assert.equal(result.status, "failed")
+  assert.equal(result.phase, "startup")
+  assert.match(failure.marker, /debug-port and viewer-port must differ/)
+  assert.equal(cleanup.clean, true)
 })
 
 test("run paths keep logs, state, samples, status, result, PID, and cleanup together", () => {

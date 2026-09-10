@@ -22,43 +22,58 @@ const viewport = {
 }
 
 export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) {
-  const allocation = await allocateRuntime(options)
   const runId = new Date().toISOString().replace(/[:.]/g, "-")
   const paths = options.runDir
     ? buildSoakPaths(path.dirname(options.runDir), path.basename(options.runDir))
     : buildSoakPaths(options.evidenceRoot, runId)
   await mkdir(paths.runDir, { recursive: true, mode: 0o700 })
-  const source = await sourceIdentity(repoRoot)
-  const baseline = await resourceSnapshot("preflight", [process.pid], repoRoot)
-  const preflight = await runPreflight({ options, allocation, paths, repoRoot, source, baseline })
-  await writeJson(paths.preflight, preflight)
-  if (options.mode === "preflight") {
-    console.log(JSON.stringify({ status: "passed", runDir: paths.runDir, preflight: paths.preflight, allocation }))
-    return
+  const startedAt = new Date().toISOString()
+  let allocation = null
+  let source = null
+  let baseline = null
+  try {
+    if (options.mode === "run") {
+      await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 })
+      await writeJson(paths.status, { schema, status: "starting", pid: process.pid, startedAt, runDir: paths.runDir })
+    }
+    allocation = await allocateRuntime(options)
+    source = await sourceIdentity(repoRoot)
+    baseline = await baselineResourceSnapshot(paths)
+    const preflight = await runPreflight({ options, allocation, paths, repoRoot, source, baseline })
+    await writeJson(paths.preflight, preflight)
+    if (options.mode === "preflight") {
+      console.log(JSON.stringify({ status: "passed", runDir: paths.runDir, preflight: paths.preflight, allocation }))
+      return
+    }
+    if (options.mode === "detach") {
+      const args = detachedArgs({ options, paths, allocation })
+      const descriptor = await open(paths.log, "a", 0o600)
+      const child = spawn(process.execPath, [scriptPath, ...args], {
+        cwd: repoRoot,
+        env: process.env,
+        detached: true,
+        stdio: ["ignore", descriptor.fd, descriptor.fd],
+      })
+      child.unref()
+      await descriptor.close()
+      await writeFile(paths.pid, `${child.pid}\n`, { mode: 0o600 })
+      await writeJson(paths.status, {
+        schema,
+        status: "starting",
+        pid: child.pid,
+        startedAt,
+        runDir: paths.runDir,
+      })
+      console.log(JSON.stringify(detachedLaunchSummary(paths, child.pid)))
+      return
+    }
+    await executeSoak({ options, allocation, paths, repoRoot, source, baseline })
+  } catch (error) {
+    if (!await exists(paths.result)) {
+      await persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt })
+    }
+    throw error
   }
-  if (options.mode === "detach") {
-    const args = detachedArgs({ options, paths, allocation })
-    const descriptor = await open(paths.log, "a", 0o600)
-    const child = spawn(process.execPath, [scriptPath, ...args], {
-      cwd: repoRoot,
-      env: process.env,
-      detached: true,
-      stdio: ["ignore", descriptor.fd, descriptor.fd],
-    })
-    child.unref()
-    await descriptor.close()
-    await writeFile(paths.pid, `${child.pid}\n`, { mode: 0o600 })
-    await writeJson(paths.status, {
-      schema,
-      status: "starting",
-      pid: child.pid,
-      startedAt: new Date().toISOString(),
-      runDir: paths.runDir,
-    })
-    console.log(JSON.stringify(detachedLaunchSummary(paths, child.pid)))
-    return
-  }
-  await executeSoak({ options, allocation, paths, repoRoot, source, baseline })
 }
 
 async function executeSoak({ options, allocation, paths, repoRoot, source, baseline }) {
@@ -168,6 +183,8 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     ], { env: environment, cwd: sourceRoot, logsRoot }))
     await stream.waitReady(15_000)
     stream.startRenewal()
+    stream.requestKeyframe()
+    await stream.waitForFrames(2, 10_000)
 
     await recordSample("initial", [process.pid, ...pids(owned), selkiesPid])
     const deadline = Date.now() + options.durationSeconds * 1_000
@@ -280,7 +297,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
   }
 
   async function recordSample(label, roots) {
-    const sample = await resourceSnapshot(label, roots.filter(Number.isSafeInteger), repoRoot)
+    const sample = await resourceSnapshot(label, roots.filter(Number.isSafeInteger), paths.runDir)
     sampleCount += 1
     peakOwnedRssBytes = Math.max(peakOwnedRssBytes, sample.owned.rssBytes)
     peakOwnedCpuPercent = Math.max(peakOwnedCpuPercent, sample.owned.cpuPercent)
@@ -434,7 +451,7 @@ class ControllerClient {
   }
 
   async shutdown() {
-    if (this.child.exitCode != null) return
+    if (childExited(this.child)) return
     await this.request("shutdown")
     this.child.stdin.end()
     await waitForExit(this.child, 5_000)
@@ -445,6 +462,7 @@ class StreamClient {
   constructor(child) {
     this.child = child
     this.ready = false
+    this.readyAt = null
     this.binaryFrames = 0
     this.binaryBytes = 0
     this.digests = new Set()
@@ -453,7 +471,10 @@ class StreamClient {
     this.waiters = new Set()
     this.renewal = null
     readJsonLines(child.stdout, (value) => {
-      if (value.kind === "ready") this.ready = true
+      if (value.kind === "ready") {
+        this.ready = true
+        this.readyAt ??= Date.now()
+      }
       if (value.kind === "binary" && typeof value.data_base64 === "string") {
         this.binaryFrames += 1
         this.binaryBytes += Buffer.byteLength(value.data_base64, "base64")
@@ -475,13 +496,13 @@ class StreamClient {
 
   startRenewal() {
     this.renewal = setInterval(() => {
-      if (this.child.exitCode == null) this.child.stdin.write('{"kind":"renew"}\n')
+      if (!childExited(this.child)) this.child.stdin.write('{"kind":"renew"}\n')
     }, 20_000)
     this.renewal.unref()
   }
 
   stopRenewal() { if (this.renewal) clearInterval(this.renewal) }
-  requestKeyframe() { if (this.child.exitCode == null) this.child.stdin.write('{"kind":"control","text":"REQUEST_KEYFRAME"}\n') }
+  requestKeyframe() { if (!childExited(this.child)) this.child.stdin.write('{"kind":"control","text":"REQUEST_KEYFRAME"}\n') }
   metrics() {
     return {
       binaryFrames: this.binaryFrames,
@@ -493,7 +514,7 @@ class StreamClient {
   }
 
   async close() {
-    if (this.child.exitCode != null) return
+    if (childExited(this.child)) return
     this.child.stdin.write('{"kind":"close"}\n')
     this.child.stdin.end()
     await waitForExit(this.child, 5_000)
@@ -518,7 +539,7 @@ function spawnProtocol(name, command, args, { env, cwd, logsRoot }) {
 }
 
 async function terminateGroup(name, child) {
-  if (!child || child.exitCode != null) return { name, ok: true, alreadyExited: true }
+  if (!child || childExited(child)) return { name, ok: true, alreadyExited: true }
   let forced = false
   try { process.kill(-child.pid, "SIGTERM") } catch {}
   if (!await waitForExit(child, 5_000, false)) {
@@ -653,13 +674,25 @@ async function retry(operation, timeoutMs, message) {
   throw new Error(`${message}: ${bounded(last?.message ?? last)}`)
 }
 
-function assertProcessHealth(owned, controller, stream) {
-  for (const [name, child] of owned) if (child.exitCode != null) throw new Error(`${name} exited during soak with ${child.exitCode}`)
-  if (controller.child.exitCode != null) throw new Error(`Browser Controller exited during soak with ${controller.child.exitCode}`)
-  if (stream.child.exitCode != null) throw new Error(`Selkies stream exited during soak with ${stream.child.exitCode}`)
-  if (stream.lastBinaryFrameAt && Date.now() - stream.lastBinaryFrameAt > 30_000) {
+export function assertProcessHealth(owned, controller, stream, now = Date.now()) {
+  for (const [name, child] of owned) {
+    if (childExited(child)) throw new Error(`${name} exited during soak with ${childExitDescription(child)}`)
+  }
+  if (childExited(controller.child)) throw new Error(`Browser Controller exited during soak with ${childExitDescription(controller.child)}`)
+  if (childExited(stream.child)) throw new Error(`Selkies stream exited during soak with ${childExitDescription(stream.child)}`)
+  if (stream.readyAt && !stream.lastBinaryFrameAt && now - stream.readyAt > 30_000) {
+    throw new Error("Selkies stream did not deliver its first video frame")
+  }
+  if (stream.lastBinaryFrameAt && now - stream.lastBinaryFrameAt > 30_000) {
     throw new Error("Selkies stream stopped delivering video frames")
   }
+}
+
+export async function baselineResourceSnapshot(paths, {
+  rootPids = [process.pid],
+  snapshot = resourceSnapshot,
+} = {}) {
+  return snapshot("preflight", rootPids, paths.runDir)
 }
 
 function readJsonLines(stream, consume) {
@@ -725,13 +758,70 @@ async function availableDisplay(start, end) {
 }
 
 async function waitForExit(child, timeoutMs, reject = true) {
-  if (child.exitCode != null) return true
+  if (childExited(child)) return true
   const exited = await Promise.race([
     new Promise((resolve) => child.once("exit", () => resolve(true))),
     sleep(timeoutMs).then(() => false),
   ])
   if (!exited && reject) throw new Error(`process ${child.pid} did not exit within ${timeoutMs}ms`)
   return exited
+}
+
+async function persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt }) {
+  const completedAt = new Date().toISOString()
+  const marker = bounded(error?.stack ?? error)
+  const cleanup = {
+    schema: "chariox.browser_computer_soak_cleanup.v1",
+    at: completedAt,
+    phase: "startup",
+    actions: [],
+    remainingPids: [],
+    portsReleased: true,
+    displayReleased: true,
+    stateRemoved: true,
+    clean: true,
+  }
+  const result = {
+    schema,
+    status: "failed",
+    phase: "startup",
+    pid: process.pid,
+    startedAt,
+    completedAt,
+    durationSeconds: options.durationSeconds,
+    smoke: options.smoke,
+    source,
+    allocation,
+    paths,
+    resources: { baseline },
+    cleanup,
+    failure: marker,
+  }
+  await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 })
+  await writeJson(paths.cleanup, cleanup)
+  await writeJson(paths.failure, {
+    schema: "chariox.browser_computer_soak_failure.v1",
+    status: "failed",
+    phase: "startup",
+    at: completedAt,
+    marker,
+  })
+  await writeJson(paths.result, result)
+  await writeJson(paths.status, {
+    schema,
+    status: "failed",
+    phase: "startup",
+    pid: process.pid,
+    startedAt,
+    completedAt,
+    result: paths.result,
+    cleanup: paths.cleanup,
+  })
+}
+
+function childExited(child) { return child?.exitCode != null || child?.signalCode != null }
+function childExitDescription(child) {
+  return child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`
 }
 
 function pids(owned) { return [...owned.values()].map((child) => child?.pid).filter(Number.isSafeInteger) }
