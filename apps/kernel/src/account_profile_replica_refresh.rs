@@ -17,6 +17,7 @@ impl ReplicaFileRefresh {
     pub(super) fn publish(
         root: &Path,
         staging_root: &Path,
+        files: &[(PathBuf, Vec<u8>)],
         provider: &str,
     ) -> Result<Self, DaemonError> {
         let mut refresh = Self {
@@ -27,17 +28,31 @@ impl ReplicaFileRefresh {
             .into_iter()
             .map(|relative| (relative, None))
             .collect::<BTreeMap<PathBuf, Option<Vec<u8>>>>();
-        let mut remaining = MAX_MATERIALIZATION_BYTES;
+        for (staged, _) in files {
+            let relative = staged
+                .strip_prefix(staging_root)
+                .map_err(|error| registry_error("refresh account profile", error.to_string()))?;
+            if !desired.contains_key(relative) {
+                return Err(registry_error(
+                    "refresh account profile",
+                    "provider account refresh accepts only portable account files",
+                ));
+            }
+        }
+        let mut staged_remaining = MAX_MATERIALIZATION_BYTES;
         for (relative, contents) in &mut desired {
             let staged = ReplicaFile::open(staging_root, relative)?;
-            *contents = staged.read(remaining)?;
-            remaining = remaining.saturating_sub(contents.as_ref().map_or(0, Vec::len));
+            *contents = staged.read(staged_remaining)?;
+            staged_remaining =
+                staged_remaining.saturating_sub(contents.as_ref().map_or(0, Vec::len));
         }
         // Validate and snapshot every destination before changing credentials.
+        let mut snapshot_remaining = MAX_MATERIALIZATION_BYTES;
         for relative in desired.keys() {
             let destination = ReplicaFile::open(root, relative)?;
-            let previous = destination.read(remaining)?;
-            remaining = remaining.saturating_sub(previous.as_ref().map_or(0, Vec::len));
+            let previous = destination.read(snapshot_remaining)?;
+            snapshot_remaining =
+                snapshot_remaining.saturating_sub(previous.as_ref().map_or(0, Vec::len));
             refresh.previous.push((destination, previous));
         }
         for (index, contents) in desired.values().enumerate() {
