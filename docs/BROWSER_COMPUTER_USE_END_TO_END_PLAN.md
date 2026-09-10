@@ -893,6 +893,20 @@ after the local scale and leak checks pass. Run at least:
 Scale is a resource-bound admission problem. The test must prove graceful
 rejection at the limit, not merely find the point where the machine crashes.
 
+The repository-supported entry point for the active browser/controller/stream
+gate is:
+
+```bash
+pnpm --filter @chariox/cli run browser-computer:soak -- --preflight
+pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
+pnpm --filter @chariox/cli run browser-computer:soak -- --detach
+```
+
+The detached command defaults to eight hours. Do not start it unless preflight
+and the short smoke pass at the same source head. Retain its external evidence
+directory, including PID/status/result files, resource samples, failure marker,
+process logs, latest screen capture, and cleanup ledger.
+
 ## Regression matrix for adjacent Chariox features
 
 Browser/computer work touches kernel, relay, slice, Cloud, provider, security,
