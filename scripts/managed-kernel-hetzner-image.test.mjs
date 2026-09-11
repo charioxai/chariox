@@ -16,6 +16,10 @@ const providerRuntimeBindUrl = new URL(
   "../deploy/managed-kernel/verify-provider-runtime-bind.sh",
   import.meta.url,
 )
+const publicationAccessDrillUrl = new URL(
+  "../deploy/managed-kernel/verify-slice-publication-access.sh",
+  import.meta.url,
+)
 const versionsUrl = new URL("../deploy/managed-kernel/provider-versions.env", import.meta.url)
 const publicationDockerfileUrl = new URL("../docker/publication/Dockerfile", import.meta.url)
 const sliceDockerfileUrl = new URL("../apps/kernel/slice-linux-docker/docker/Dockerfile", import.meta.url)
@@ -27,6 +31,14 @@ const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-do
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
 const installerUrl = new URL("../deploy/managed-kernel/install-image.sh", import.meta.url)
 const publicationAccessUrl = new URL("../apps/kernel/slice-linux-docker/managed-publication-access.sh", import.meta.url)
+const sliceDevelopmentRuntimeStateUrl = new URL(
+  "../apps/kernel/src/runtime/state/slice_development_runtime_state.rs",
+  import.meta.url,
+)
+const sliceEmptyDevelopmentUrl = new URL(
+  "../apps/kernel/src/runtime/state/slice_empty_development.rs",
+  import.meta.url,
+)
 const managedBrokerUrl = new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url)
 const rootlessNamespaceUrl = new URL(
   "../apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh",
@@ -430,6 +442,24 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(managedBroker, /spawnSync\("\/usr\/bin\/umount", \[path\]/)
   assert.doesNotMatch(managedBroker, /symlinkSync/)
   assert.doesNotMatch(managedBroker, /CHARIOX_SLICE_CLOUD_RELAY_CONFIG/)
+})
+
+test("recovered managed development publications verify ACLs without rewriting content", async () => {
+  const accessHelper = await readFile(publicationAccessUrl, "utf8")
+  const runtimeState = await readFile(sliceDevelopmentRuntimeStateUrl, "utf8")
+  const emptyDevelopment = await readFile(sliceEmptyDevelopmentUrl, "utf8")
+  const accessDrill = await readFile(publicationAccessDrillUrl, "utf8")
+
+  assert.match(accessHelper, /\[ "\$action" = verify \]/)
+  assert.match(accessHelper, /verify_publication_access/)
+  assert.match(runtimeState, /expected_publication\.is_some\(\).*"verify"/s)
+  assert.match(emptyDevelopment, /expected\.is_some\(\).*"verify"/s)
+  assert.doesNotMatch(
+    accessHelper.match(/elif \[ "\$action" = verify \]; then(?<branch>.*?)\n  else/s)?.groups?.branch ?? "",
+    /setfacl/,
+  )
+  assert.match(accessDrill, /"\$helper" verify/)
+  assert.match(accessDrill, /\[ "\$before_verify" = "\$after_verify" \]/)
 })
 
 test("managed slice provider namespaces receive the required outer Docker compatibility policy", async () => {
