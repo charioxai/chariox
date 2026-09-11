@@ -2412,12 +2412,7 @@ fn validate_managed_context_materialization_shape(
 ) -> Result<(), DaemonError> {
     let (required, allowed): (&str, &[&str]) = match provider {
         "codex" => ("auth.json", &["auth.json"]),
-        "claude" => {
-            return Err(registry_error(
-                "materialize managed account profile",
-                "Claude managed-context credential transfer is disabled; use the kernel-managed Chariox-vault setup-token launch path",
-            ));
-        }
+        "claude" => (".credentials.json", &[".credentials.json"]),
         "opencode" => ("data/opencode/auth.json", &["data/opencode/auth.json"]),
         _ => return Err(unsupported_provider(provider)),
     };
@@ -2434,6 +2429,29 @@ fn validate_managed_context_materialization_shape(
             "materialize managed account profile",
             "provider account materialization does not match the managed-context credential allowlist",
         ));
+    }
+    if provider == "claude" {
+        let credentials = materialization
+            .files
+            .iter()
+            .find(|file| file.relative_path == required)
+            .and_then(|file| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&file.contents_base64)
+                    .ok()
+            });
+        if !credentials
+            .as_deref()
+            .is_some_and(claude_credentials_are_portable)
+        {
+            return Err(registry_error(
+                "materialize managed account profile",
+                format!(
+                    "{provider} account profile `{}` has no transferable credentials",
+                    materialization.profile.profile_id
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -5513,16 +5531,21 @@ mod tests {
             .export_managed_context_materialization("owner-a", "claude", &profile.profile_id)
             .unwrap();
 
+        let mut empty = valid.clone();
+        empty.files[0].contents_base64 = base64::engine::general_purpose::STANDARD.encode(b"");
         let mut nonrefreshable = valid.clone();
         nonrefreshable.files[0].contents_base64 = base64::engine::general_purpose::STANDARD
             .encode(br#"{"claudeAiOauth":{"accessToken":"expired"}}"#);
         let mut with_extra_file = valid.clone();
-        with_extra_file.files.push(ProviderAccountMaterializationFile {
-            relative_path: "settings.json".to_string(),
-            contents_base64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
-        });
+        with_extra_file
+            .files
+            .push(ProviderAccountMaterializationFile {
+                relative_path: "settings.json".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            });
 
         for (context_id, materialization, expected) in [
+            ("context-claude-empty", empty, "no transferable credentials"),
             (
                 "context-claude-nonrefreshable",
                 nonrefreshable,
