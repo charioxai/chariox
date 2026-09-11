@@ -12,6 +12,7 @@ use crate::managed_bootstrap::state::{
 struct WorkerCloud {
     calls: Mutex<Vec<DisposableWorkerExchangeRequest>>,
     reject: bool,
+    fail_transport: bool,
 }
 
 impl BootstrapCloudClient for WorkerCloud {
@@ -29,6 +30,12 @@ impl BootstrapCloudClient for WorkerCloud {
         request: &DisposableWorkerExchangeRequest,
     ) -> Result<DisposableWorkerExchangeOutcome, DaemonError> {
         self.calls.lock().unwrap().push(request.clone());
+        if self.fail_transport {
+            return Err(DaemonError::LocalTransport {
+                operation: "test disposable worker exchange",
+                message: "indeterminate exchange outcome".into(),
+            });
+        }
         if self.reject {
             return Ok(DisposableWorkerExchangeOutcome::Rejected);
         }
@@ -148,7 +155,7 @@ fn disposable_worker_envelope_is_strict_and_distinct() {
     value["expiresAt"] = serde_json::json!("tomorrow");
     fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(BootstrapEnvelope::read(&fixture.config.envelope_path).is_err());
-    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false };
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false, fail_transport: false };
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
     fixture.cleanup();
@@ -161,7 +168,7 @@ fn disposable_worker_exchanges_once_and_resumes_from_receipt() {
     std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
     let binding = worker_binding(&fixture);
     write_worker_envelope(&fixture, &binding);
-    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false };
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false, fail_transport: false };
 
     let prepared = prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
     assert!(prepared.confirmation.is_none());
@@ -187,7 +194,7 @@ fn disposable_worker_binding_mismatch_and_terminal_rejection_remove_envelope() {
     value["expiresAt"] =
         serde_json::json!((fixture.now + chrono::Duration::minutes(31)).to_rfc3339());
     fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false };
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false, fail_transport: false };
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
 
@@ -196,14 +203,30 @@ fn disposable_worker_binding_mismatch_and_terminal_rejection_remove_envelope() {
         serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
     value["binding"]["allocationId"] = serde_json::json!("allocation-tampered");
     fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false };
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false, fail_transport: false };
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
 
     write_worker_envelope(&fixture, &binding);
-    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: true };
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: true, fail_transport: false };
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
+    fixture.cleanup();
+}
+
+#[test]
+fn disposable_worker_indeterminate_exchange_is_not_replayed_after_restart() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-indeterminate");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let binding = worker_binding(&fixture);
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false, fail_transport: true };
+
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+    assert!(fixture.config.envelope_path.exists());
     fixture.cleanup();
 }
 
