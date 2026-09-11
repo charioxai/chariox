@@ -69,10 +69,7 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     mut read: AttachedExternalObserverRead,
 ) -> Result<AttachedExternalObserverAppendOutcome, DaemonError> {
     if read.target.observation_generation == 0 {
-        reserve_external_observation_generations(
-            app,
-            std::slice::from_mut(&mut read.target),
-        );
+        reserve_external_observation_generations(app, std::slice::from_mut(&mut read.target));
     }
     let mut outcome = AttachedExternalObserverAppendOutcome {
         session_id: read.target.session_id.clone(),
@@ -207,14 +204,12 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     if changed > 0 || cursor_changed {
         persist_attached_external_observer_cursor(app, &read.target, last_cursor.clone())?;
     }
-    let external_active_prompt = if observation_contains_new_active_turn(
-        &read.target,
-        &candidate_turns,
-    ) {
-        projected_external_active_prompt(&read.target, &candidate_turns, &last_cursor)
-    } else {
-        None
-    };
+    let external_active_prompt =
+        if observation_contains_new_active_turn(&read.target, &candidate_turns) {
+            projected_external_active_prompt(&read.target, &candidate_turns, &last_cursor)
+        } else {
+            None
+        };
     let activity_changed = app
         .session_state_projection_store()
         .sync_external_observed_active_prompt_generation(
@@ -238,12 +233,14 @@ fn observation_contains_new_active_turn(
     target: &AttachedExternalObserverTarget,
     turns: &[ObservedExternalProviderTurn],
 ) -> bool {
-    let Some(last_observed_turn_id) = target.observed_cursor.last_observed_turn_id.as_deref() else {
+    let Some(last_observed_turn_id) = target.observed_cursor.last_observed_turn_id.as_deref()
+    else {
         return false;
     };
-    let Some(last_observed_index) = turns.iter().rposition(|turn| {
-        turn.provider_turn_id_or_fallback() == last_observed_turn_id
-    }) else {
+    let Some(last_observed_index) = turns
+        .iter()
+        .rposition(|turn| turn.provider_turn_id_or_fallback() == last_observed_turn_id)
+    else {
         return false;
     };
     turns[last_observed_index.saturating_add(1)..]

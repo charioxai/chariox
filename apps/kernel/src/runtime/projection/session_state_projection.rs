@@ -212,8 +212,7 @@ impl SessionStateProjectionStore {
                 state.session_list = Some(session_list.into());
             }
             state.projection_revision = state.projection_revision.saturating_add(1);
-            state.external_working_generation =
-                state.external_working_generation.saturating_add(1);
+            state.external_working_generation = state.external_working_generation.saturating_add(1);
         }
         self.changes.record_change();
         self.session_change_signal(session_id).record_change();
@@ -230,11 +229,7 @@ impl SessionStateProjectionStore {
         external_session_id: &str,
         active_prompt: Option<PromptQueueItem>,
     ) -> bool {
-        let generation = self.begin_external_observation(
-            session_id,
-            agent_id,
-            external_session_id,
-        );
+        let generation = self.begin_external_observation(session_id, agent_id, external_session_id);
         self.sync_external_observed_active_prompt_generation(
             session_id,
             agent_id,
@@ -554,16 +549,16 @@ fn prune_external_observed_activity(
     session: &RuntimeSession,
 ) -> bool {
     let previous_active = external_observed_working_agents(state);
-    state.external_observed_activity.retain(
-        |(projected_session_id, projected_agent_id, _), _| {
+    state
+        .external_observed_activity
+        .retain(|(projected_session_id, projected_agent_id, _), _| {
             projected_session_id != session.id()
                 || (session.status() != SessionStatus::Ended
                     && session
                         .agents()
                         .iter()
                         .any(|agent| agent.id() == projected_agent_id))
-        },
-    );
+        });
     previous_active != external_observed_working_agents(state)
 }
 
@@ -928,11 +923,7 @@ mod tests {
             "external prompt",
         );
 
-        let older = store.begin_external_observation(
-            "session-1",
-            "agent-1",
-            "provider-session-1",
-        );
+        let older = store.begin_external_observation("session-1", "agent-1", "provider-session-1");
         assert!(store.sync_external_observed_active_prompt_generation(
             "session-1",
             "agent-1",
@@ -949,11 +940,8 @@ mod tests {
             )])
         );
 
-        let settled = store.begin_external_observation(
-            "session-1",
-            "agent-1",
-            "provider-session-1",
-        );
+        let settled =
+            store.begin_external_observation("session-1", "agent-1", "provider-session-1");
         assert!(store.sync_external_observed_active_prompt_generation(
             "session-1",
             "agent-1",
