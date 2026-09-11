@@ -103,8 +103,7 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
         if (pending.get(frame.request_id) !== entry) return;
         if (entry.delivery) {
           const delivered = result?.BrowserImportDelivered;
-          if (!delivered || !Number.isSafeInteger(delivered.cookie_count)
-              || delivered.cookie_count < 0 || delivered.cookie_count > 512
+          if (!validDelivery(delivered,entry.domains)
               || Object.keys(result).length !== 1 || Object.keys(delivered).length !== 1) throw failure();
         } else {
           const consent = result?.BrowserImportConsent;
@@ -170,12 +169,13 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
         bytes.fill(0);
       } catch { throw failure(); }
       const id = crypto.randomUUID();
-      const plaintext = JSON.stringify({browser_import_delivery:{request_id:requestId,
+      let plaintext = JSON.stringify({browser_import_delivery:{request_id:requestId,
         selection:selected,payload_base64:payload}});
       payload = '';
       if (plaintext.length > maxFrameChars) throw failure();
       return new Promise((resolveRequest,rejectRequest) => {
         const entry = {resolve:resolveRequest,reject:rejectRequest,nonce:null,decoding:false,delivery:true,
+          domains:[...selected.domains],
           requestId,status:null,signal:requestSignal,abort:() => settle(id,null,true),
           timer:setTimeout(() => settle(id,null,true),delay)};
         pending.set(id,entry);
@@ -187,6 +187,7 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
         async function send() {
           try {
             const encrypted = await encryptRelayPayload(kernelPublicKey,plaintext,sender);
+            plaintext = '';
             if (closed || pending.get(id) !== entry) return;
             entry.nonce = encrypted.payload.nonce;
             const frame = JSON.stringify({kind:'client_request',request_id:id,
@@ -229,4 +230,18 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode(...bytes.subarray(offset,offset + 0x8000));
   }
   return btoa(binary);
+}
+
+function validDelivery(delivered,domains) {
+  if (!delivered || !Array.isArray(delivered.results) || delivered.results.length !== domains.length) return false;
+  let total=0;
+  return delivered.results.every((result,index) => {
+    if (!result || Object.keys(result).sort().join(',') !== 'cookie_count,domain,status'
+        || result.domain !== domains[index] || !Number.isSafeInteger(result.cookie_count)
+        || result.cookie_count < 0 || result.cookie_count > 512
+        || !['imported','no_cookies'].includes(result.status)
+        || (result.status === 'imported') !== (result.cookie_count > 0)) return false;
+    total += result.cookie_count;
+    return total <= 512;
+  });
 }

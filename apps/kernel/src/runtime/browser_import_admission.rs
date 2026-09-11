@@ -216,7 +216,7 @@ impl BrowserImportAdmission {
         id: &ImportRequestId,
         user_id: &str,
         room_id: &str,
-    ) -> Result<(), ImportAdmissionError> {
+    ) -> Result<bool, ImportAdmissionError> {
         let mut entries = self
             .entries
             .lock()
@@ -225,12 +225,13 @@ impl BrowserImportAdmission {
         if entry.binding.user_id != user_id || entry.binding.room_id != room_id {
             return Err(ImportAdmissionError::Denied);
         }
-        if matches!(entry.phase, Phase::Applying | Phase::Cancelled) {
+        let active = matches!(entry.phase, Phase::Applying | Phase::Cancelled);
+        if active {
             entry.phase = Phase::Cancelled;
         } else {
             entries.remove(id);
         }
-        Ok(())
+        Ok(active)
     }
 
     /// Trusted execution completion only, after successful verification or recovery.

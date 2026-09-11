@@ -107,8 +107,15 @@ export async function handleBrowserControllerRequest(
       browserImportModule ??= import(modulePath);
       const {applyProductionBrowserImport} = await browserImportModule;
       return successResponse(request.id,await applyProductionBrowserImport({
-        controller:browser,params:request.params,
+        controller:browser,params:request.params,signal,
       }));
+    }
+    if (request.method === "browser.cookies.recover") {
+      const modulePath = process.env.CHARIOX_BROWSER_IMPORT_MODULE
+        ?? new URL("../../../browser-session-import/production-destination.mjs",import.meta.url).href;
+      browserImportModule ??= import(modulePath);
+      const {recoverProductionBrowserImport} = await browserImportModule;
+      return successResponse(request.id,await recoverProductionBrowserImport({controller:browser,params:request.params}));
     }
     if (request.method === "shutdown") {
       await browser.close();

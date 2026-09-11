@@ -28,12 +28,37 @@ impl KernelRuntimeState {
         session_id: &str,
         command: Command,
     ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(session_id, command, false)
+            .await
+    }
+
+    pub(super) async fn room_browser_controller_recovery_command(
+        &self,
+        session_id: &str,
+        command: Command,
+    ) -> Result<Response, DaemonError> {
+        self.room_browser_controller_command_inner(session_id, command, true)
+            .await
+    }
+
+    async fn room_browser_controller_command_inner(
+        &self,
+        session_id: &str,
+        command: Command,
+        recovery_authority: bool,
+    ) -> Result<Response, DaemonError> {
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
-        if !matches!(
-            &command,
-            Command::CancelAction { .. } | Command::ImportCookies { .. } | Command::Release
-        ) {
+        if !recovery_authority
+            && !matches!(
+                &command,
+                Command::CancelAction { .. }
+                    | Command::CancelCookieImport { .. }
+                    | Command::ImportCookies { .. }
+                    | Command::RecoverCookieImport { .. }
+                    | Command::Release
+            )
+        {
             self.ensure_browser_import_execution_allowed(session_id)
                 .map_err(browser_import_execution_gate::execution_error)?;
         }
@@ -488,6 +513,9 @@ async fn execute_local(
                 || processes.cancel_browser_action(&session_id, &execution_id);
             Ok(Response::CancellationRequested { accepted })
         }
+        Command::CancelCookieImport { request_id } => Ok(Response::CancellationRequested {
+            accepted: processes.cancel_browser_import_and_wait(&session_id, &request_id),
+        }),
         Command::Acquire => processes
             .acquire(&session_id)
             .map(|snapshot| Response::Process { snapshot }),
@@ -711,30 +739,24 @@ async fn execute_local(
             partition_sites,
             overwrite,
             payload,
-        } => processes
-            .import_browser_cookies(
-                &session_id,
-                &binding,
-                browser_generation,
-                &target_id,
-                &document_id,
-                &source_store_id,
-                &domains,
-                &partition_sites,
-                overwrite,
-                &payload,
-            )
-            .and_then(|cookie_count| {
-                cookie_count.ok_or_else(|| "browser controller is unavailable".to_string())
+        } => processes.perform_cancellable_browser_import(
+            &session_id,
+            &binding,
+            browser_generation,
+            &target_id,
+            &document_id,
+            &source_store_id,
+            &domains,
+            &partition_sites,
+            overwrite,
+            &payload,
+        ),
+        Command::RecoverCookieImport { binding, target_id } => processes
+            .recover_browser_cookie_import(&session_id, &binding, &target_id)
+            .and_then(|result| {
+                result.ok_or_else(|| "browser controller is unavailable".to_string())
             })
-            .map(|outcome| match outcome {
-                crate::runtime::browser_controller_process::BrowserCookieImportOutcome::Applied(
-                    cookie_count,
-                ) => Response::CookiesImported { cookie_count },
-                crate::runtime::browser_controller_process::BrowserCookieImportOutcome::RolledBack => {
-                    Response::CookieImportRolledBack
-                }
-            }),
+            .map(|()| Response::CookieImportRecovered),
     })
     .await
     .map_err(|error| controller_route_error(&error.to_string()))?;

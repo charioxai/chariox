@@ -149,13 +149,12 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
       const response = await deliver({requestId,selection:selected,cookies:result.cookies},
         {signal:active.signal,timeoutMs:Math.min(30000,Math.max(1,deadline - performance.now()))});
       const delivered = response?.BrowserImportDelivered;
-      if (!delivered || !Number.isSafeInteger(delivered.cookie_count)
-          || delivered.cookie_count < 0 || delivered.cookie_count > 512
+      if (!validDelivery(delivered,selected.domains)
           || Object.keys(response).length !== 1 || Object.keys(delivered).length !== 1) {
         throw error('cookie_destination_unavailable');
       }
       state = 'delivered';
-      return {cookieCount:delivered.cookie_count};
+      return {results:delivered.results};
     } catch (failure) {
       if (state === 'delivering') state = 'delivery_uncertain';
       if (failure?.code?.startsWith('cookie_source_')) throw failure;
@@ -179,6 +178,18 @@ function matches(response,id,status) {
 }
 
 function error(code) { return Object.assign(new Error(code),{code}); }
+function validDelivery(delivered,domains) {
+  if (!delivered || !Array.isArray(delivered.results) || delivered.results.length !== domains.length) return false;
+  let total=0;
+  return delivered.results.every((result,index) => {
+    if (!result || Object.keys(result).sort().join(',') !== 'cookie_count,domain,status'
+        || result.domain !== domains[index] || !Number.isSafeInteger(result.cookie_count)
+        || result.cookie_count < 0 || result.cookie_count > 512
+        || !['imported','no_cookies'].includes(result.status)
+        || (result.status === 'imported') !== (result.cookie_count > 0)) return false;
+    total += result.cookie_count; return total <= 512;
+  });
+}
 function safeError(failure) {
   const codes = ['cookie_source_denied','cookie_source_cancelled','cookie_source_timeout',
     'cookie_source_unavailable','cookie_source_too_large'];

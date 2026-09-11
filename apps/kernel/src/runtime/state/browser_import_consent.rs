@@ -47,13 +47,96 @@ impl BrowserImportDestination {
 }
 
 impl KernelRuntimeState {
+    /// Kernel-owned startup/reconnect recovery. No client request can select or
+    /// clear this state; the durable Room row is the sole authority.
+    pub(crate) async fn recover_pending_browser_import(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let pending = self
+            .owned
+            .durable_state_store
+            .pending_browser_import_for_room(session_id)?
+            .ok_or_else(denied)?;
+        let guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .write_owned()
+            .await;
+        let process = self
+            .room_browser_controller_recovery_command(
+                session_id,
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::Acquire,
+            )
+            .await?;
+        if !matches!(
+            process,
+            crate::transport::room_browser_controller::RoomBrowserControllerResult::Process {
+                snapshot: Some(_)
+            }
+        ) {
+            return Err(denied());
+        }
+        let viewport = self
+            .room_environment_snapshot(session_id)
+            .map_err(|_| denied())?
+            .viewport;
+        let reconciled = self.room_browser_controller_recovery_command(session_id,
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Reconcile { viewport }).await?;
+        let crate::transport::room_browser_controller::RoomBrowserControllerResult::Reconciled {
+            reconciliation: Some(reconciliation),
+        } = reconciled
+        else {
+            return Err(denied());
+        };
+        let target_id = reconciliation
+            .browser
+            .focused_target_id
+            .or_else(|| {
+                reconciliation
+                    .browser
+                    .tabs
+                    .first()
+                    .map(|tab| tab.target_id.clone())
+            })
+            .ok_or_else(denied)?;
+        let id = ImportRequestId::from_wire(&pending.request_id).map_err(|_| denied())?;
+        let binding = crate::transport::room_browser_controller::RoomBrowserImportBinding {
+            request_id: pending.request_id.clone(),
+            user_id: pending.user_id.clone(),
+            room_id: pending.room_id.clone(),
+            environment_id: pending.environment_id.clone(),
+        };
+        let recovered = self.room_browser_controller_recovery_command(session_id,
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::RecoverCookieImport {
+                binding,target_id,
+            }).await?;
+        if !matches!(recovered,crate::transport::room_browser_controller::RoomBrowserControllerResult::CookieImportRecovered) {
+            return Err(denied());
+        }
+        if pending.recovery_required {
+            self.owned
+                .durable_state_store
+                .mark_browser_import_recovered(&pending.environment_id, id.as_str())?;
+        }
+        drop(guard);
+        self.resume_browser_import_cleanup(session_id, id.as_str())
+            .await?
+            .complete_after_verification(async { Ok(()) })
+            .await
+    }
+
     /// Private encrypted-transport destination entry point. The delivery payload
     /// is never projected through LocalDaemonRequest or an Environment action.
     pub(crate) async fn execute_browser_import_delivery(
         &self,
         command: &KernelCommand,
         request: crate::runtime::browser_import_payload::BrowserImportDeliveryRequest,
-    ) -> Result<u16, DaemonError> {
+    ) -> Result<
+        Vec<crate::transport::room_browser_controller::BrowserImportDomainResult>,
+        DaemonError,
+    > {
         let (request_id, selection, payload) = request.into_parts();
         let destination = self
             .claim_browser_import_destination(command, &selection, &request_id)
@@ -70,6 +153,7 @@ impl KernelRuntimeState {
             room_id: selection.session_id.clone(),
             environment_id: selection.environment_id.clone(),
         };
+        let frozen_domains = selection.domains.clone();
         let result = self
             .room_browser_controller_command(
                 &selection.session_id,
@@ -88,12 +172,13 @@ impl KernelRuntimeState {
             .await?;
         match result {
             crate::transport::room_browser_controller::RoomBrowserControllerResult::CookiesImported {
-                cookie_count,
+                results,
             } => {
+                if !exact_domain_results(&results,&frozen_domains) { return Err(denied()); }
                 destination
                     .complete_after_verification(async { Ok(()) })
                     .await?;
-                Ok(cookie_count)
+                Ok(results)
             }
             crate::transport::room_browser_controller::RoomBrowserControllerResult::CookieImportRolledBack => {
                 destination
@@ -107,7 +192,8 @@ impl KernelRuntimeState {
 
     /// Resume cleanup only when verification was durably acknowledged. This
     /// does not authorize replay of cookie writes or treat missing state as success.
-    pub(crate) async fn resume_browser_import_cleanup(
+    #[cfg(test)]
+    pub(crate) async fn resume_browser_import_cleanup_for_human(
         &self,
         command: &KernelCommand,
         session_id: &str,
@@ -145,6 +231,35 @@ impl KernelRuntimeState {
         Ok(BrowserImportDestination {
             runtime: self.clone(),
             environment_id: environment.environment_id,
+            id,
+            verified: true,
+            _guard: guard,
+        })
+    }
+
+    pub(crate) async fn resume_browser_import_cleanup(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<BrowserImportDestination, DaemonError> {
+        let guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .write_owned()
+            .await;
+        let pending = self
+            .owned
+            .durable_state_store
+            .pending_browser_import_for_room(session_id)?
+            .ok_or_else(denied)?;
+        if pending.recovery_required || pending.request_id != request_id {
+            return Err(denied());
+        }
+        let id = ImportRequestId::from_wire(request_id).map_err(|_| denied())?;
+        Ok(BrowserImportDestination {
+            runtime: self.clone(),
+            environment_id: pending.environment_id,
             id,
             verified: true,
             _guard: guard,
@@ -241,9 +356,18 @@ impl KernelRuntimeState {
                     .browser_import_human(command, &request.session_id, &request.attachment_id)
                     .await?;
                 let id = ImportRequestId::from_wire(&request.request_id).map_err(|_| denied())?;
-                store
+                let active = store
                     .cancel(&id, &user_id, &request.session_id)
                     .map_err(|_| denied())?;
+                if active {
+                    let response = self.room_browser_controller_command(&request.session_id,
+                        crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelCookieImport {
+                            request_id:id.as_str().to_string(),
+                        }).await?;
+                    if !matches!(response,crate::transport::room_browser_controller::RoomBrowserControllerResult::CancellationRequested { accepted:true }) {
+                        return Err(denied());
+                    }
+                }
                 (id, BrowserImportConsentStatus::Cancelled)
             }
             _ => return Err(denied()),
@@ -365,6 +489,28 @@ impl KernelRuntimeState {
             format!("{:x}", Sha256::digest(identity)),
         ))
     }
+}
+
+fn exact_domain_results(
+    results: &[crate::transport::room_browser_controller::BrowserImportDomainResult],
+    domains: &[String],
+) -> bool {
+    results.len() == domains.len()
+        && results
+            .iter()
+            .map(|result| usize::from(result.cookie_count))
+            .sum::<usize>()
+            <= 512
+        && results.iter().zip(domains).all(|(result, domain)| {
+            result.domain == *domain && match result.status {
+                crate::transport::room_browser_controller::BrowserImportDomainStatus::Imported => {
+                    result.cookie_count > 0
+                }
+                crate::transport::room_browser_controller::BrowserImportDomainStatus::NoCookies => {
+                    result.cookie_count == 0
+                }
+            }
+        })
 }
 
 fn denied() -> DaemonError {

@@ -48,6 +48,13 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, DaemonError> {
+        if self
+            .owned
+            .durable_state_store
+            .browser_import_pending_for_room(session_id)?
+        {
+            self.recover_pending_browser_import(session_id).await?;
+        }
         let RoomBrowserControllerResult::Process { snapshot } = self
             .room_browser_controller_command(session_id, RoomBrowserControllerCommand::Acquire)
             .await?

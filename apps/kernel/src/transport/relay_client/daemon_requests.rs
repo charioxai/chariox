@@ -24,6 +24,17 @@ use super::sender_identity::{
     validate_browser_import_sender,
 };
 
+const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
+const MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES: usize = 32;
+static ACTIVE_BROWSER_IMPORT_DELIVERIES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+struct BrowserImportDeliveryGuard;
+impl Drop for BrowserImportDeliveryGuard {
+    fn drop(&mut self) {
+        ACTIVE_BROWSER_IMPORT_DELIVERIES.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
     pub(super) encrypted_response: Option<EncryptedRelayPayload>,
@@ -37,6 +48,21 @@ pub(super) async fn handle_daemon_request(
     encrypted_request: EncryptedRelayPayload,
     command_result_cache: &Arc<CommandResultCache>,
 ) -> RelayRequestOutcome {
+    if relay_crypto::validate_encrypted_payload_shape(
+        &encrypted_request,
+        MAX_BROWSER_IMPORT_ENCRYPTED_BYTES,
+    )
+    .is_err()
+    {
+        return RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(relay_error(
+                "invalid_request",
+                "invalid relay request payload",
+                false,
+            )),
+        };
+    }
     if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
     {
         return RelayRequestOutcome {
@@ -108,6 +134,22 @@ pub(super) async fn handle_daemon_request(
             )
         }
         ParsedRelayClientMessage::BrowserImportDelivery(request) => {
+            if ACTIVE_BROWSER_IMPORT_DELIVERIES
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    (active < MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES).then_some(active + 1)
+                })
+                .is_err()
+            {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "browser_import_busy",
+                        "browser import capacity is exhausted",
+                        true,
+                    )),
+                };
+            }
+            let _delivery_guard = BrowserImportDeliveryGuard;
             let identity =
                 match require_browser_import_sender(caller_identity.as_ref(), &encrypted_request) {
                     Ok(identity) => identity.clone(),
@@ -142,9 +184,9 @@ pub(super) async fn handle_daemon_request(
                 .runtime_state()
                 .execute_browser_import_delivery(&command, request)
                 .await
-                .map(|cookie_count| {
+                .map(|results| {
                     RelayDispatchOutcome::Response(serde_json::json!({
-                        "BrowserImportDelivered": {"cookie_count": cookie_count}
+                        "BrowserImportDelivered": {"results": results}
                     }))
                 })
                 .unwrap_or_else(|_| {

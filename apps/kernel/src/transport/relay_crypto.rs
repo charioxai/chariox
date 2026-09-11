@@ -11,6 +11,7 @@ use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use p256::{EncodedPoint, PublicKey, SecretKey};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::error::DaemonError;
 
@@ -32,7 +33,7 @@ struct PeerCryptoContext {
 
 #[derive(Debug, Clone)]
 pub struct DecryptedRelayPayload {
-    pub plaintext: Vec<u8>,
+    pub plaintext: Zeroizing<Vec<u8>>,
     pub sender_public_key: String,
 }
 
@@ -60,7 +61,7 @@ pub fn decrypt_payload_for_private_key(
         .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
         .map_err(|error| relay_crypto_error("decrypt relay payload", &error.to_string()))?;
     Ok(DecryptedRelayPayload {
-        plaintext,
+        plaintext: Zeroizing::new(plaintext),
         sender_public_key: payload.sender_public_key.clone(),
     })
 }
@@ -147,7 +148,7 @@ pub(crate) fn decrypt_payload_for_private_key_bound(
         )
         .map_err(|error| relay_crypto_error("decrypt bound peer payload", &error.to_string()))?;
     Ok(DecryptedRelayPayload {
-        plaintext,
+        plaintext: Zeroizing::new(plaintext),
         sender_public_key: payload.sender_public_key.clone(),
     })
 }
@@ -332,7 +333,7 @@ mod tests {
             .expect("payload should encrypt");
         let decrypted = decrypt_payload_for_private_key(&receiver_private, &payload)
             .expect("payload should decrypt");
-        assert_eq!(decrypted.plaintext, b"hello relay");
+        assert_eq!(decrypted.plaintext.as_slice(), b"hello relay");
     }
 
     #[test]
@@ -394,7 +395,8 @@ mod tests {
                 b"environment=one",
             )
             .expect("bound payload should decrypt")
-            .plaintext,
+            .plaintext
+            .as_slice(),
             b"secret material"
         );
         assert!(decrypt_payload_for_private_key_bound(

@@ -77,6 +77,8 @@ test('preserves host-only HttpOnly session cookies without inventing an expiry o
     name: 'session', value: 'fixture-only', url: 'https://example.test/',
     path: '/', httpOnly: true, secure: true, sameSite: 'Lax',
   }]);
-  assert.deepEqual(result.summary, { cookieCount: 1, domains: ['example.test'] });
+  assert.deepEqual(result.summary, { cookieCount: 1, domains: ['example.test'],results:[
+    {domain:'example.test',status:'imported',cookie_count:1},
+  ] });
   assert.deepEqual(source, before);
 });

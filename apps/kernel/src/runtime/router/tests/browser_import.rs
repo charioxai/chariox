@@ -347,7 +347,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
             assert!(dispatch(&router, &caller, prepare.clone()).await.is_err());
             assert!(
                 state
-                    .resume_browser_import_cleanup(
+                    .resume_browser_import_cleanup_for_human(
                         &destination_command(denied_caller.clone()),
                         session.id(),
                         attachment.id(),
@@ -367,7 +367,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
                 .unwrap();
             assert!(
                 state
-                    .resume_browser_import_cleanup(
+                    .resume_browser_import_cleanup_for_human(
                         &destination_command(caller.clone()),
                         session.id(),
                         attachment.id(),
@@ -385,7 +385,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
                 .unwrap();
             drop(recovery_database);
             assert!(state
-                .resume_browser_import_cleanup(
+                .resume_browser_import_cleanup_for_human(
                     &destination_command(caller.clone()),
                     session.id(),
                     attachment.id(),
@@ -394,7 +394,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
                 .await
                 .is_err());
             let resumed = state
-                .resume_browser_import_cleanup(
+                .resume_browser_import_cleanup_for_human(
                     &destination_command(caller.clone()),
                     session.id(),
                     attachment.id(),

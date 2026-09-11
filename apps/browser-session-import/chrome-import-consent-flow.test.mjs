@@ -75,10 +75,10 @@ test('trusted confirmation delivers directly and scrubs the source batch after e
     delivered = value;
     assert.equal(value.requestId,id);
     assert.equal(value.cookies[0].value,generatedValue);
-    return {BrowserImportDelivered:{cookie_count:1}};
+    return {BrowserImportDelivered:{results:[{domain:'example.test',status:'imported',cookie_count:1}]}};
   });
   assert.equal(f.count('permission'),1);
-  assert.deepEqual(await completing,{cookieCount:1});
+  assert.deepEqual(await completing,{results:[{domain:'example.test',status:'imported',cookie_count:1}]});
   assert.equal(flow.state,'delivered');
   assert.equal(delivered.cookies[0].value,'');
   assert.equal(JSON.stringify(f.calls).includes(generatedValue),false);
