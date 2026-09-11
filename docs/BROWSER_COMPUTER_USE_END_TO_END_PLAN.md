@@ -292,6 +292,10 @@ Store persistent local development state under:
 
 Use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, kernel state,
 logs, drill scratch, browser profiles, or slice homes inside a repository.
+The idle authenticated-browser runner is stricter: its authoritative retained
+evidence belongs under
+`~/.codex/evidence/browser-computer-use/idle-authenticated-browser-soak/`;
+development state may hold only removable runtime scratch.
 
 Each evidence manifest must include:
 
@@ -896,6 +900,16 @@ after the local scale and leak checks pass. Run at least:
 
 Scale is a resource-bound admission problem. The test must prove graceful
 rejection at the limit, not merely find the point where the machine crashes.
+
+The idle authenticated-browser soak must use monotonic duration accounting,
+meet its checkpoint cadence minimum, and finish with a fresh authenticated
+browser request plus exact ready Controller PID. It must restart Chromium once
+against the same profile and observe both the session cookie and a
+browser-storage marker after restart, without turning the idle interval into a
+navigation loop. A pass is valid only after terminal status/result/log scanning
+and exact owned-process/listener cleanup. Its credential-free loopback fixture
+does not substitute for Google authentication or full managed-machine
+recreation evidence.
 
 The repository-supported entry point for the active browser/controller/stream
 gate is:
