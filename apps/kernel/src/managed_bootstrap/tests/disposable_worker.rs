@@ -126,6 +126,9 @@ fn disposable_worker_envelope_is_strict_and_distinct() {
     value["expiresAt"] = serde_json::json!("tomorrow");
     fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(BootstrapEnvelope::read(&fixture.config.envelope_path).is_err());
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false };
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert!(!fixture.config.envelope_path.exists());
     fixture.cleanup();
 }
 
@@ -156,6 +159,16 @@ fn disposable_worker_binding_mismatch_and_terminal_rejection_remove_envelope() {
     let fixture = Fixture::new("worker-reject");
     std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
     let binding = worker_binding(&fixture);
+    write_worker_envelope(&fixture, &binding);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
+    value["expiresAt"] =
+        serde_json::json!((fixture.now + chrono::Duration::minutes(31)).to_rfc3339());
+    fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let cloud = WorkerCloud { calls: Mutex::new(Vec::new()), reject: false };
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert!(!fixture.config.envelope_path.exists());
+
     write_worker_envelope(&fixture, &binding);
     let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
