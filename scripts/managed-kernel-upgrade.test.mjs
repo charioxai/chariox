@@ -368,10 +368,10 @@ test("managed kernel recovery restores a hotpatch facade after interrupted activ
   assert.equal(interrupted.signal, "SIGKILL")
   assert.equal(await readlink(facade), "current/usr/lib/chariox/slice-build-context")
 
-  await put(join(harness.state, "fail-health-once"), "fail\n")
+  await put(join(harness.target.rootfs, "usr/local/bin/chariox-kernel"), "#!/bin/sh\nexit 1\n", 0o755)
   const recovered = harness.run()
   assert.equal(recovered.status, 1)
-  assert.match(recovered.stderr, /health check failed; restored previous managed kernel release/)
+  assert.match(recovered.stderr, /release artifact chariox-kernel is corrupted/)
   assert.equal(await readlink(facade), hotpatch)
 })
 

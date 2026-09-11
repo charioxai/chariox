@@ -135,7 +135,6 @@ for repository in "$@"; do
     fi
   elif [ "$action" = verify ]; then
     verify_publication_access "$repository"
-    verify_traversal_access "$repository"
   else
     setfacl -P -R -x "u:$mapped_slice_uid,u:$docker_user" -- "$repository" 2>/dev/null || true
     find -P "$repository" -type d -exec setfacl -P -x \

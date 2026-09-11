@@ -20,6 +20,8 @@ service_name=chariox-managed-bootstrap.service
 chariox_root=$install_root/usr/lib/chariox
 releases_root=$chariox_root/releases
 current_link=$chariox_root/current
+slice_build_context_link=$chariox_root/slice-build-context
+signed_slice_build_context_target=current/usr/lib/chariox/slice-build-context
 receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/home/managed/bootstrap-receipt.json}
 transaction_root=$chariox_root/.managed-kernel-upgrade
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
@@ -221,6 +223,26 @@ write_phase() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
 }
 
+verify_slice_build_context_facade() {
+  expected_target=$1
+  if [ ! -L "$slice_build_context_link" ] \
+    || [ "$(readlink "$slice_build_context_link")" != "$expected_target" ] \
+    || [ ! -d "$slice_build_context_link" ]; then
+    echo "managed kernel slice build context facade is invalid" >&2
+    return 1
+  fi
+}
+
+verify_signed_slice_build_context_facade() {
+  verify_slice_build_context_facade "$signed_slice_build_context_target" || return 1
+  facade_path=$(readlink -f "$slice_build_context_link") || return 1
+  signed_path=$(readlink -f "$current_link/usr/lib/chariox/slice-build-context") || return 1
+  if [ "$facade_path" != "$signed_path" ]; then
+    echo "managed kernel slice build context facade is outside the current signed release" >&2
+    return 1
+  fi
+}
+
 protocol_version() {
   binary=$1
   version=$(timeout 5s "$binary" --print-local-daemon-protocol-version 2>/dev/null) || {
@@ -270,6 +292,7 @@ rollback_transaction() {
   rolling_back=1
   previous_target=$(read_single_line "$transaction_root/previous-current") || return 1
   previous_digest=$(read_single_line "$transaction_root/previous-digest") || return 1
+  previous_slice_build_context=$(read_single_line "$transaction_root/previous-slice-build-context") || return 1
   validate_digest "$previous_digest" || {
     echo "managed kernel upgrade transaction has an invalid previous digest" >&2
     return 1
@@ -286,6 +309,8 @@ rollback_transaction() {
   fi
   atomic_receipt "$transaction_root/previous-receipt.json" || return 1
   atomic_symlink "$previous_target" "$current_link" || return 1
+  atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
+  verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   systemctl daemon-reload || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
@@ -314,6 +339,9 @@ recover_transaction() {
     validate_digest "$target_digest" || return 1
     [ "$target_current" = "releases/${target_digest#sha256:}" ] || return 1
     [ "$(readlink "$current_link")" = "$target_current" ] || return 1
+    target_slice_build_context=$(read_single_line "$transaction_root/target-slice-build-context") || return 1
+    [ "$target_slice_build_context" = "$signed_slice_build_context_target" ] || return 1
+    verify_signed_slice_build_context_facade || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest"
     rm -rf -- "$transaction_root"
@@ -378,6 +406,12 @@ if [ ! -L "$current_link" ]; then
   echo "registered managed kernel current release link is missing" >&2
   exit 1
 fi
+if [ ! -L "$slice_build_context_link" ]; then
+  echo "registered managed kernel slice build context facade is missing" >&2
+  exit 1
+fi
+previous_slice_build_context=$(readlink "$slice_build_context_link")
+verify_slice_build_context_facade "$previous_slice_build_context"
 current_target=$(readlink "$current_link")
 expected_current_target=releases/${expected_current_digest#sha256:}
 if [ "$current_target" != "$expected_current_target" ]; then
@@ -442,8 +476,10 @@ node "$script_root/managed-kernel-upgrade-state.mjs" prepare-receipt \
   "$receipt_path" "$expected_current_digest" "$expected_new_digest" "$pending_transaction/target-receipt.json"
 printf '%s\n' "$current_target" > "$pending_transaction/previous-current"
 printf '%s\n' "$expected_current_digest" > "$pending_transaction/previous-digest"
+printf '%s\n' "$previous_slice_build_context" > "$pending_transaction/previous-slice-build-context"
 printf '%s\n' "releases/$release_name" > "$pending_transaction/target-current"
 printf '%s\n' "$expected_new_digest" > "$pending_transaction/target-digest"
+printf '%s\n' "$signed_slice_build_context_target" > "$pending_transaction/target-slice-build-context"
 printf '%s\n' prepared > "$pending_transaction/phase"
 chmod 0600 "$pending_transaction"/*
 node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_transaction"
@@ -462,7 +498,9 @@ if ! systemctl stop "$service_name"; then
 fi
 write_phase stopped
 if ! atomic_receipt "$transaction_root/target-receipt.json" \
-  || ! atomic_symlink "releases/$release_name" "$current_link"; then
+  || ! atomic_symlink "releases/$release_name" "$current_link" \
+  || ! atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \
+  || ! verify_signed_slice_build_context_facade; then
   if rollback_transaction; then
     echo "managed kernel activation failed; restored previous managed kernel release" >&2
   else
