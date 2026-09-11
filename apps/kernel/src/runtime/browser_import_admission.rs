@@ -234,11 +234,27 @@ impl BrowserImportAdmission {
         Ok(active)
     }
 
-    /// Trusted execution completion only, after successful verification or recovery.
-    /// Cancellation alone must not release an in-flight destination writer.
-    /// Missing volatile state is expected after kernel restart; durable completion
-    /// remains the caller's authority for invoking this operation.
+    /// Normal trusted execution completion only, after successful verification.
+    /// Cancellation and missing volatile state require the durable recovery path.
     pub(crate) fn finish(&self, id: &ImportRequestId) -> Result<(), ImportAdmissionError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| ImportAdmissionError::Denied)?;
+        let entry = entries.get(id).ok_or(ImportAdmissionError::Denied)?;
+        if entry.phase != Phase::Applying {
+            return Err(ImportAdmissionError::Denied);
+        }
+        entries.remove(id);
+        Ok(())
+    }
+
+    /// Durable recovery is the only authority allowed to retire a cancelled
+    /// admission, and remains valid after volatile admission state is lost.
+    pub(crate) fn finish_recovery(
+        &self,
+        id: &ImportRequestId,
+    ) -> Result<(), ImportAdmissionError> {
         let mut entries = self
             .entries
             .lock()
@@ -437,7 +453,8 @@ mod tests {
             store.prepare(scope.clone(), now),
             Err(ImportAdmissionError::Busy)
         );
-        store.finish(&id).unwrap();
+        assert_eq!(store.finish(&id), Err(ImportAdmissionError::Denied));
+        store.finish_recovery(&id).unwrap();
         store.prepare(scope, now).unwrap();
     }
 
@@ -484,7 +501,8 @@ mod tests {
             other.prepare(scope.clone(), now),
             Err(ImportAdmissionError::Busy)
         );
-        store.finish(&id).unwrap();
+        assert_eq!(store.finish(&id), Err(ImportAdmissionError::Denied));
+        store.finish_recovery(&id).unwrap();
         other.prepare(scope, now).unwrap();
     }
 

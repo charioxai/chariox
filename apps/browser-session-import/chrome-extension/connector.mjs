@@ -142,9 +142,10 @@ addEventListener('pagehide',() => { lifetime.abort(); void flow?.cancel(); relay
 async function cancelImport() {
   if (busy && !flow) return;
   lifetime.abort();
-  await flow?.cancel();
+  const cancellation = await flow?.cancel();
   relay?.close();
-  show({type:'result',status:'failed',code:'cookie_source_cancelled'});
+  show({type:'result',status:'failed',code:cancellation?.kernelCancellationConfirmed === true
+    ? 'cookie_source_cancelled' : 'browser_import_cancellation_unconfirmed'});
   element('start').disabled = true;
   element('cancel').disabled = true;
 }
@@ -167,6 +168,7 @@ function show(message) {
 function failureLabel(code) {
   if (code === 'browser_import_delivery_unavailable') return 'This connector needs the production browser-import runtime delivery command.';
   if (code === 'cookie_source_cancelled') return 'Import cancelled.';
+  if (code === 'browser_import_cancellation_unconfirmed') return 'Cancellation could not be confirmed. The Environment remains quarantined pending recovery.';
   if (code === 'cookie_source_timeout') return 'Import expired. Start again.';
   if (code === 'connector_pairing_denied') return 'Pairing was rejected. Create a new pairing response in Chariox.';
   return 'Import could not continue. No cookies were delivered.';
