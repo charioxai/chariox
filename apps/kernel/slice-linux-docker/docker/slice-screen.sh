@@ -12,9 +12,6 @@ NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
 VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-novnc}"
 CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.chariox/browser/chromium}"
-# Development-only opt-in. Production and explicitly empty configuration must
-# retain Chromium's normal secure-context restrictions.
-CHROME_TRUSTED_INSECURE_ORIGINS="${CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-}"
 
 export DISPLAY="$DISPLAY_ID"
 
@@ -138,37 +135,6 @@ chromium_has_restorable_session() {
   [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
 }
 
-configure_chromium_profile_preferences() {
-  python3 - "$CHROME_PROFILE" <<'PY' >/dev/null 2>&1 || true
-import json
-import os
-import sys
-
-profile = sys.argv[1]
-default_dir = os.path.join(profile, "Default")
-os.makedirs(default_dir, exist_ok=True)
-path = os.path.join(default_dir, "Preferences")
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        prefs = json.load(handle)
-except Exception:
-    prefs = {}
-
-signin = prefs.setdefault("signin", {})
-signin["allowed"] = False
-prefs.setdefault("sync", {})["requested"] = False
-prefs["credentials_enable_service"] = False
-profile_prefs = prefs.setdefault("profile", {})
-profile_prefs["password_manager_enabled"] = False
-profile_prefs["password_manager_leak_detection"] = False
-
-tmp = f"{path}.tmp"
-with open(tmp, "w", encoding="utf-8") as handle:
-    json.dump(prefs, handle, separators=(",", ":"))
-os.replace(tmp, path)
-PY
-}
-
 screen_missing_components() {
   local missing=()
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
@@ -234,16 +200,9 @@ require_screen_available() {
 }
 
 launch_chromium() {
-  local -a chrome_secure_context_args=()
   local -a chrome_startup_target_args=()
-  if [[ -n "$CHROME_TRUSTED_INSECURE_ORIGINS" ]]; then
-    chrome_secure_context_args+=(
-      "--unsafely-treat-insecure-origin-as-secure=$CHROME_TRUSTED_INSECURE_ORIGINS"
-    )
-  fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     clear_chromium_profile_locks
-    configure_chromium_profile_preferences
     if chromium_has_restorable_session; then
       chrome_startup_target_args+=(--restore-last-session)
     fi
@@ -264,7 +223,6 @@ launch_chromium() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
-    "${chrome_secure_context_args[@]}" \
     "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
 }
 

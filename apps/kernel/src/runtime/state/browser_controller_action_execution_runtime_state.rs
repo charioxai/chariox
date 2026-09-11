@@ -41,6 +41,12 @@ impl KernelRuntimeState {
         agent_id: &str,
         input: RoomComputerInputAction,
     ) -> Result<ComputerControllerActionExecution, DaemonError> {
+        let _execution_guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .read_owned()
+            .await;
         let environment = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(action_environment_error)?;
@@ -231,6 +237,12 @@ impl KernelRuntimeState {
     where
         F: Future<Output = Result<T, DaemonError>>,
     {
+        let _execution_guard = self
+            .owned
+            .environment_execution_gates
+            .for_room(session_id)
+            .read_owned()
+            .await;
         let actor_id = request.actor_id.clone();
         let runtime_generation = request.runtime_generation;
         let tab_preconditions = request.tab_preconditions.clone();
@@ -275,6 +287,7 @@ impl KernelRuntimeState {
         let preconditions = self
             .room_environment_snapshot(session_id)
             .and_then(|current| {
+                self.ensure_browser_import_execution_allowed(session_id)?;
                 if current.runtime_generation != runtime_generation {
                     return Err(EnvironmentError::StaleRuntimeGeneration {
                         expected: current.runtime_generation,
@@ -362,13 +375,17 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn wait_for_environment_action_admission(
+    pub(super) async fn wait_for_environment_action_admission(
         &self,
         session_id: &str,
         action_id: &str,
     ) -> Result<(), DaemonError> {
         let started = Instant::now();
         loop {
+            if let Err(error) = self.ensure_browser_import_execution_allowed(session_id) {
+                let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
+                return Err(action_environment_error(error));
+            }
             let environment = self
                 .room_environment_snapshot(session_id)
                 .map_err(action_environment_error)?;
@@ -462,6 +479,26 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn same_tab_controller_mutations_execute_in_ledger_order() {
+        queued_mutation_scenario(ImportScenario::None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_import_cancels_already_queued_controller_mutation() {
+        queued_mutation_scenario(ImportScenario::PendingRecovery).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exclusive_import_drains_controller_actions_before_recording_recovery() {
+        queued_mutation_scenario(ImportScenario::ExclusiveStart).await;
+    }
+
+    enum ImportScenario {
+        None,
+        PendingRecovery,
+        ExclusiveStart,
+    }
+
+    async fn queued_mutation_scenario(import_scenario: ImportScenario) {
         let test_root = TestRoot::new("browser-action-ledger");
         let test_root_path = test_root.path().to_string_lossy().into_owned();
         let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -597,6 +634,75 @@ mod tests {
                 EnvironmentActionState::Queued
             ]
         );
+
+        if matches!(import_scenario, ImportScenario::ExclusiveStart) {
+            let mut import = Box::pin(runtime.begin_exclusive_browser_import(
+                &session_id,
+                "fixture-import",
+                "fixture-user",
+            ));
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut import)
+                .await
+                .is_err());
+            assert!(!runtime
+                .owned
+                .durable_state_store
+                .browser_import_pending(&queued.environment_id)
+                .unwrap());
+            release_first_tx.send(()).unwrap();
+            first.await.unwrap().unwrap();
+            second.await.unwrap().unwrap();
+            let guard = tokio::time::timeout(Duration::from_secs(2), import)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(runtime
+                .owned
+                .durable_state_store
+                .browser_import_pending(&queued.environment_id)
+                .unwrap());
+            assert!(runtime
+                .owned
+                .environment_execution_gates
+                .for_room(&session_id)
+                .try_read()
+                .is_err());
+            drop(guard);
+            assert!(runtime
+                .ensure_browser_import_execution_allowed(&session_id)
+                .is_err());
+            return;
+        }
+
+        if matches!(import_scenario, ImportScenario::PendingRecovery) {
+            runtime
+                .owned
+                .durable_state_store
+                .begin_browser_import_recovery(
+                    &queued.environment_id,
+                    "fixture-import",
+                    "fixture-user",
+                    &session_id,
+                )
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(2), second)
+                .await
+                .expect("queued task must settle")
+                .expect("queued task must join");
+            assert!(result.is_err());
+            assert!(
+                second_started_rx.await.is_err(),
+                "queued execution must not run"
+            );
+            let blocked = runtime.room_environment_snapshot(&session_id).unwrap();
+            assert_eq!(
+                blocked.actions.last().unwrap().state,
+                EnvironmentActionState::Cancelled
+            );
+            release_first_tx.send(()).unwrap();
+            first.await.unwrap().unwrap();
+            return;
+        }
 
         release_first_tx
             .send(())

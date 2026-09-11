@@ -208,6 +208,10 @@ pub use api::{
     DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 pub use api::{
+    ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
+    BrowserImportSourceRequest, CancelBrowserImportRequest, PrepareBrowserImportRequest,
+};
+pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
     ReadRoomEnvironmentScreenshotChunkRequest, RoomEnvironmentScreenshotArtifact,
     RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,

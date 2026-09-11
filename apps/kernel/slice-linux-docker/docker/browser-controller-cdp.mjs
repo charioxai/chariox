@@ -33,9 +33,11 @@ import {
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
+import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 
 export class BrowserControllerError extends Error {
   constructor(code, message) {
@@ -82,6 +84,9 @@ export class BrowserCdpClient {
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.dialogDefaults = new BrowserDialogDefaults();
+    this.networkRequestsBySession = new Map();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
   }
 
   async reconcile(rawViewport) {
@@ -92,10 +97,18 @@ export class BrowserCdpClient {
       const pages = targetInfos.filter(
         (target) => target?.type === "page" && typeof target.targetId === "string",
       );
-      const pageTargetIds = new Set(pages.map((target) => target.targetId));
+      const writerTargets = targetInfos.filter(
+        (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
+          && typeof target.targetId === "string",
+      );
+      const persistentTargetIds = new Set(
+        [...pages, ...writerTargets].map((target) => target.targetId),
+      );
       for (const targetId of this.sessionsByTarget.keys()) {
-        if (!pageTargetIds.has(targetId)) {
-          this.targetsBySession.delete(this.sessionsByTarget.get(targetId));
+        if (!persistentTargetIds.has(targetId)) {
+          const sessionId = this.sessionsByTarget.get(targetId);
+          this.targetsBySession.delete(sessionId);
+          this.networkRequestsBySession.delete(sessionId);
           this.sessionsByTarget.delete(targetId);
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
@@ -106,6 +119,9 @@ export class BrowserCdpClient {
       }
       const inspected = await Promise.all(
         pages.map((target) => this.inspectPage(connection, target, viewport)),
+      );
+      await Promise.all(
+        writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
       );
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
@@ -128,6 +144,9 @@ export class BrowserCdpClient {
         this.downloadDiskCheckRequested = false;
         this.documentIdsByTarget.clear();
         this.dialogDefaults.clear();
+        this.networkRequestsBySession.clear();
+        this.cookieWriterFence = null;
+        this.cookieWriterFenceInUse = false;
       }
       throw normalizeControllerError(error);
     }
@@ -149,8 +168,88 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
+    this.networkRequestsBySession.clear();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
     if (connection) {
       await connection.close();
+    }
+  }
+
+  async withCookieWritersQuiesced(operation) {
+    if (typeof operation !== "function" || this.cookieWriterFenceInUse) {
+      throw new BrowserControllerError(
+        "browser_cookie_writer_fence_busy",
+        "browser cookie writer fence is already in use",
+      );
+    }
+    const connection = await this.ensureConnection();
+    if (!this.cookieWriterFence) {
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      const pageTargets = targetInfos.filter(
+        (target) => target?.type === "page" && typeof target.targetId === "string",
+      );
+      const pageSessions = await Promise.all(
+        pageTargets.map((target) => this.ensureTargetSession(connection, target.targetId)),
+      );
+      const writerTargets = targetInfos.filter(
+        (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
+          && typeof target.targetId === "string",
+      );
+      const knownWriterTargets = writerTargets.flatMap(({ targetId }) => {
+        const sessionId = this.sessionsByTarget.get(targetId);
+        return sessionId ? [{ targetId, sessionId }] : [];
+      });
+      this.cookieWriterFence = await acquireBrowserCookieWriterFence({
+        connection,
+        pageSessions,
+        knownWriterTargets,
+        waitForNetworkIdle: (sessions) => this.waitForNetworkIdle(sessions),
+        waitForWriterTargetsGone: (targetIds) => this.waitForWriterTargetsGone(connection, targetIds),
+      });
+    }
+    const fence = this.cookieWriterFence;
+    this.cookieWriterFenceInUse = true;
+    let retained = false;
+    try {
+      return await operation({ retain: () => { retained = true; } });
+    } finally {
+      this.cookieWriterFenceInUse = false;
+      if (!retained && this.cookieWriterFence === fence) {
+        this.cookieWriterFence = null;
+        await fence.release();
+      }
+    }
+  }
+
+  async waitForNetworkIdle(sessionIds) {
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (sessionIds.some((sessionId) => (this.networkRequestsBySession.get(sessionId)?.size ?? 0) > 0)) {
+      if (Date.now() >= deadline) {
+        throw new BrowserControllerError(
+          "browser_cookie_writer_fence_timeout",
+          "browser network did not quiesce before cookie import",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  async waitForWriterTargetsGone(connection, targetIds) {
+    const pending = new Set(targetIds);
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (true) {
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      const live = targetInfos.some((target) => pending.has(target?.targetId));
+      if (!live) return;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new BrowserControllerError(
+          "browser_cookie_writer_fence_timeout",
+          "browser writer targets did not close before cookie import",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
     }
   }
 
@@ -171,6 +270,9 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
+    this.networkRequestsBySession.clear();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
     const connection = this.connectionFactory
       ? await this.connectionFactory()
       : await connectToBrowser({
@@ -684,14 +786,59 @@ export class BrowserCdpClient {
     return sessionId;
   }
 
+  async ensureWriterTargetSession(connection, targetId) {
+    let sessionId = this.sessionsByTarget.get(targetId);
+    if (sessionId) return sessionId;
+    const attached = await connection.send("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    });
+    if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
+      throw new BrowserControllerError(
+        "browser_attach_failed",
+        `browser writer target ${JSON.stringify(targetId)} did not return a session`,
+      );
+    }
+    sessionId = attached.sessionId;
+    this.sessionsByTarget.set(targetId, sessionId);
+    this.targetsBySession.set(sessionId, targetId);
+    try {
+      await Promise.all([
+        connection.send("Network.enable", {}, sessionId),
+        connection.send("Debugger.enable", {}, sessionId),
+      ]);
+    } catch (error) {
+      this.sessionsByTarget.delete(targetId);
+      this.targetsBySession.delete(sessionId);
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      throw error;
+    }
+    return sessionId;
+  }
+
   recordConnectionEvent(message) {
+    if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
+        && typeof message.params?.requestId === "string") {
+      const requests = this.networkRequestsBySession.get(message.sessionId) ?? new Set();
+      requests.add(message.params.requestId);
+      this.networkRequestsBySession.set(message.sessionId, requests);
+    }
+    if (["Network.loadingFinished", "Network.loadingFailed"].includes(message?.method)
+        && typeof message.sessionId === "string" && typeof message.params?.requestId === "string") {
+      const requests = this.networkRequestsBySession.get(message.sessionId);
+      requests?.delete(message.params.requestId);
+      if (requests?.size === 0) this.networkRequestsBySession.delete(message.sessionId);
+    }
     if (this.frameSessions.observe(message, this.connection)) return;
     const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
     this.dialogDefaults.observe(message, dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
-      if (typeof sessionId === "string") this.targetsBySession.delete(sessionId);
+      if (typeof sessionId === "string") {
+        this.targetsBySession.delete(sessionId);
+        this.networkRequestsBySession.delete(sessionId);
+      }
       if (typeof targetId === "string") {
         this.sessionsByTarget.delete(targetId);
         this.dialogDefaults.delete(targetId);

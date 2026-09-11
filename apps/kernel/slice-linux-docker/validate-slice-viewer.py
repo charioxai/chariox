@@ -52,7 +52,6 @@ field.addEventListener('input', () => {
             "CHARIOX_SLICE_CHROME_URL": f"http://127.0.0.1:{fixture_port}/{fixture.name}",
             "CHARIOX_SLICE_SCREEN_GEOMETRY": "640x480x24",
             "CHARIOX_SLICE_VIEWER_BACKEND": "selkies", "OMP_NUM_THREADS": "1",
-            "CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS": "",
         }
 
         def screen(action, *args, expected=0):

@@ -960,6 +960,72 @@ physical result remains authoritative. Queued URL navigation keeps the Tab
 selected at admission even if browser focus changes. Existing client minimum
 versions remain unchanged; workers must negotiate peer v46.
 
+Protocol v313 adds `PrepareBrowserImport`, `ApproveBrowserImport` and
+`CancelBrowserImport` terminal requests. These carry consent metadata only,
+never cookies. The kernel derives the initiating user from trusted local or
+verified relay caller context, checks Room membership, verifies attachment
+ownership and interactive capability, and requires relay client identity to
+match that attachment. Consent binds the source client/key/realm, source store,
+exact domain/partition selection, overwrite choice, destination Environment,
+runtime generation, Tab and document revision. Approval must repeat the exact
+selection while it is current; it cannot be replayed. Agents, services, peers,
+unverified relay callers and automation-only attachments cannot approve imports.
+Cancellation requires the owning user and Room but may follow navigation or
+Environment shutdown. Pending consent expires after 120 seconds.
+
+The response is `BrowserImportConsent` with an opaque request ID and status
+`prepared`, `approved` or `cancelled`. Approval alone does not apply cookies.
+Encrypted connector pairing, exclusive destination application, writer
+quiescence and durable crash recovery remain required before an apply request
+can be exposed. Existing Web/TUI minimum versions and relay peer version stay
+unchanged; clients using these new consent requests require protocol 313.
+
+Protocol v314 adds `ClaimBrowserImportSource` and `AuthorizeBrowserImportSource`,
+each carrying `{request_id, selection}` with the same strict metadata-only
+selection. Claiming consumes an approval once and returns `source_claimed`.
+Authorization returns `source_authorized` only while that read remains current.
+Both requests revalidate the authenticated initiating client/key/realm, Room
+membership, interactive attachment ownership and destination generation/document.
+The source connector must check authorization before reading cookies, between
+queries and before releasing the batch. A cancelled, expired or stale read must
+discard its result. Authorization does not extend the original 120-second expiry.
+
+The reading phase owns no destination writer: cancellation removes it and expiry
+allows a new request. Destination application still requires a private, separate
+claim within trusted exclusive execution. Once that claim succeeds, source-read
+authorization is no longer valid. There is no public apply request, cookie payload
+or crash-recovery bypass in these requests. Source clients require protocol 314;
+existing Web/TUI minimums and the relay peer version remain unchanged.
+
+Protocol v315 requires live import-consent validation on transport replay. All
+five browser-import requests bypass the shared command-result cache. Reusing a
+command ID cannot return an earlier approval, source claim or authorization after
+cancellation, expiry or destination changes. The ledger remains the authority
+for one-use transitions; clients must treat a failed replay as denial, not retry
+cookie reads using a previously successful response. Import clients require
+protocol 315; unrelated Web/TUI and peer minimum versions are unchanged.
+
+Protocol v316 binds all five import relay requests to the authenticated client's
+sender key. After decrypting the request and before dispatch, the kernel requires
+a Client identity with a future expiry and a public-key thumbprint matching the
+encrypted sender key. A copied token alone cannot authorize import reads, change
+consent or cancel an import. Missing identity, missing key, expired identity and
+non-client subjects are denied before ledger mutation. Ordinary browser requests
+retain their existing ephemeral-key behavior. Import connectors must use their
+paired key throughout consent and source reads and require protocol 316; general
+Web/TUI and peer minimums are unchanged.
+
+Protocol v317 wraps the encrypted response to each of those five import requests
+as `{request_nonce, response}`. The nonce is copied from the authenticated request
+envelope, not its outer relay request ID or reusable command ID. Import clients
+must pin the kernel sender key and compare this nonce with the exact request
+attempt before accepting its response. A retry uses a fresh encryption nonce and
+cannot accept an earlier attempt's response, even when its command ID is reused.
+This prevents a relay from replaying or swapping old consent replies under new
+outer request IDs when the client retains its paired key. Pre-317 unbound replies
+must be rejected. Import clients require 317; ordinary relay replies, local IPC
+response shapes, general Web/TUI minimums and relay peer version are unchanged.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.

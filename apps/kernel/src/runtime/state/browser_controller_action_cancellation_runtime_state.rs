@@ -15,6 +15,8 @@ impl KernelRuntimeState {
         execution_id: &str,
         execution: impl Future<Output = Result<T, DaemonError>>,
     ) -> Result<T, DaemonError> {
+        self.ensure_browser_import_execution_allowed(session_id)
+            .map_err(super::browser_import_execution_gate::execution_error)?;
         tokio::pin!(execution);
         let mut poll = tokio::time::interval(Duration::from_millis(20));
         let mut cancellation_delivered = false;
@@ -23,7 +25,7 @@ impl KernelRuntimeState {
                 result = &mut execution => return result,
                 _ = poll.tick() => {
                     if cancellation_delivered { continue; }
-                    let cancel = match self.room_environment_snapshot(session_id) {
+                    let cancel = self.ensure_browser_import_execution_allowed(session_id).is_err() || match self.room_environment_snapshot(session_id) {
                         Ok(room) => room.actions.iter().find(|action| action.action_id == action_id)
                             .is_none_or(|action| action.cancellation_requested || action.state != EnvironmentActionState::Running),
                         Err(_) => false,
