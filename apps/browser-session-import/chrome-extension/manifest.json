@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Chariox Browser Import",
+  "description": "Attended, encrypted import from this Chrome profile to a selected Chariox browser session.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab"],
+  "optional_permissions": ["cookies"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "apps/browser-session-import/chrome-extension/background.mjs",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Import this Chrome session to Chariox"
+  }
+}

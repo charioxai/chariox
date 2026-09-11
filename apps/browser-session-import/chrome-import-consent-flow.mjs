@@ -148,6 +148,7 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
     }
   }
   return Object.freeze({selection:selected,sourceTabId,
+    get requestId() { return requestId; },
     get state() { return state; },confirmAndRead,confirmAndDeliver,cancel});
 }
 
