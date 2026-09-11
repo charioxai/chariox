@@ -903,6 +903,7 @@ impl SliceStore {
         worker_machine_id: &str,
         providers: &[String],
         now_ms: u64,
+        persist: impl FnOnce(&SliceRecord) -> Result<(), DaemonError>,
     ) -> Result<Option<SliceRecord>, DaemonError> {
         let mut state = self
             .inner
@@ -926,22 +927,20 @@ impl SliceStore {
         if pending_backup_restore_for_slice(&state, &slice_id).is_some() {
             return Ok(None);
         }
-        let record =
-            state
-                .records
-                .get_mut(&slice_id)
-                .ok_or_else(|| DaemonError::InternalInvariant {
-                    operation: "slice.worker_presence.reconcile",
-                    message: format!(
-                        "matched slice `{slice_id}` disappeared during reconciliation"
-                    ),
-                })?;
+        let mut record = state.records.get(&slice_id).cloned().ok_or_else(|| {
+            DaemonError::InternalInvariant {
+                operation: "slice.worker_presence.reconcile",
+                message: format!("matched slice `{slice_id}` disappeared during reconciliation"),
+            }
+        })?;
         record.status = SliceStatus::Running;
         record.providers = providers.to_vec();
         record.last_error = None;
         record.last_operation_at_ms = Some(now_ms);
         record.updated_at_ms = now_ms;
-        Ok(Some(record.clone()))
+        persist(&record)?;
+        state.records.insert(slice_id, record.clone());
+        Ok(Some(record))
     }
 
     pub fn claim_starting_worker_identity(

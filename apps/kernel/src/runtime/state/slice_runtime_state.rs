@@ -739,11 +739,11 @@ impl KernelRuntimeState {
                 &worker.machine_id,
                 &worker.available_providers,
                 crate::session::unix_epoch_ms(),
+                |slice| self.append_slice_durable_event("slice.updated", slice),
             )?
         else {
             return Ok(false);
         };
-        self.append_slice_durable_event("slice.updated", &slice)?;
         crate::logging::info_with_fields(
             "daemon.slice_reconcile",
             "repaired transient slice health from authenticated worker presence",

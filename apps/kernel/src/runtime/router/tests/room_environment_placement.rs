@@ -1,4 +1,5 @@
 use super::*;
+use crate::slice::{SliceHostRuntimeState, SliceOperationStatus, SliceStatus};
 use serde_json::{json, Value};
 
 mod execution;
@@ -479,4 +480,82 @@ async fn does_not_publish_a_failed_durable_write() {
     dispatch_json(&router, bind(&rooms[1], "durable"))
         .await
         .expect("failed commit did not reserve the profile");
+}
+
+#[test]
+fn authenticated_worker_repair_append_failure_remains_unhealthy_and_retryable() {
+    run_test(append_failure_remains_unhealthy_and_retryable);
+}
+
+async fn append_failure_remains_unhealthy_and_retryable() {
+    let state = TestState::new();
+    let (router, _) = state.router();
+    create_desktop(&router, "transient-health").await;
+    let slices = router.app.lock().await.slices().clone();
+    let slice = slices
+        .resolve("transient-health")
+        .expect("transient slice should resolve");
+    let worker_machine_id = format!("slice:{}", slice.id);
+    slices
+        .set_worker_presence(
+            &slice.id,
+            Some("worker-1".to_string()),
+            Some(worker_machine_id.clone()),
+            vec!["codex".to_string()],
+            43,
+        )
+        .expect("worker presence should update");
+    slices
+        .set_status(&slice.id, SliceStatus::Running, 44)
+        .expect("slice should be running before restart reconciliation");
+    slices.reconcile_after_kernel_restart_with_host_state(45, |_| SliceHostRuntimeState::Unknown);
+    let worker = chariox_relay::protocol::RelayKernelPresence {
+        kernel_id: "worker-1".to_string(),
+        machine_id: worker_machine_id,
+        machine_alias: None,
+        relay_alias: None,
+        kernel_alias: None,
+        available_providers: vec!["codex".to_string(), "opencode".to_string()],
+        provider_accounts: Vec::new(),
+        capabilities: Vec::new(),
+        accepting_remote_leases: true,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        public_key: "authenticated-worker-key".to_string(),
+    };
+    let database =
+        rusqlite::Connection::open(state.config.user_config.state.path.as_ref().unwrap()).unwrap();
+    database.execute_batch("CREATE TRIGGER reject_worker_repair BEFORE INSERT ON durable_state_events
+        WHEN NEW.kind = 'slice.updated' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;").unwrap();
+
+    router
+        .runtime_state
+        .reconcile_authenticated_slice_worker_presence(&worker)
+        .expect_err("append failure must reject the repair");
+    let retained = slices
+        .resolve(&slice.id)
+        .expect("slice should remain available after append failure");
+    assert_eq!(retained.status, SliceStatus::Unhealthy);
+    assert_eq!(
+        retained.last_operation.as_deref(),
+        Some("restart_reconcile")
+    );
+    assert_eq!(
+        retained.last_operation_status,
+        Some(SliceOperationStatus::Reconciled)
+    );
+    assert_eq!(retained.providers, vec!["codex"]);
+
+    database
+        .execute_batch("DROP TRIGGER reject_worker_repair;")
+        .unwrap();
+    assert!(router
+        .runtime_state
+        .reconcile_authenticated_slice_worker_presence(&worker)
+        .expect("retry should durably repair the slice"));
+    let repaired = slices
+        .resolve(&slice.id)
+        .expect("repaired slice should remain available");
+    assert_eq!(repaired.status, SliceStatus::Running);
+    assert_eq!(repaired.providers, vec!["codex", "opencode"]);
 }
