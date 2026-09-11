@@ -6,8 +6,10 @@ import path from "node:path"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   loadReviewedManagedParityAdapterModule,
+  loadReviewedManagedParityInspectorModule,
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
+  validateManagedParityEvidenceDirectory,
 } from "./lib/managed-browser-computer-parity-cli.mjs"
 import { runManagedBrowserComputerParityHarness } from "./lib/managed-browser-computer-parity-harness.mjs"
 
@@ -21,6 +23,7 @@ process.once("SIGTERM", interrupt)
 try {
   const options = parseManagedBrowserComputerParityArgs(process.argv.slice(2), { repoRoot })
   const config = await readPrivateManagedParityConfig(options.configPath)
+  await validateManagedParityEvidenceDirectory(options.evidenceRoot, repoRoot)
   const { imported, verification: adapterVerification } = await loadReviewedManagedParityAdapterModule(
     options.transportModulePath,
     config.adapter,
@@ -28,23 +31,31 @@ try {
   if (typeof imported.createManagedBrowserComputerParityTransport !== "function") {
     throw new Error("transport module must export createManagedBrowserComputerParityTransport")
   }
+  const { imported: importedInspector, verification: inspectorVerification } = await loadReviewedManagedParityInspectorModule(
+    options.inspectorModulePath,
+    config.inspector,
+  )
+  if (typeof importedInspector.createManagedBrowserComputerParityInspector !== "function") {
+    throw new Error("inspector module must export createManagedBrowserComputerParityInspector")
+  }
   const runDir = path.join(options.evidenceRoot, config.runId)
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(config.runId ?? "")) {
     throw new Error("managed parity run id is invalid")
   }
   incompleteRunDir = runDir
   await mkdir(runDir, { recursive: true, mode: 0o700 })
-  const product = await imported.createManagedBrowserComputerParityTransport({
+  await validateManagedParityEvidenceDirectory(runDir, repoRoot)
+  const transport = await imported.createManagedBrowserComputerParityTransport({
     evidenceRoot: runDir,
   })
-  if (!product || product.transport === product.inspector) {
-    throw new Error("reviewed adapter must return distinct transport and independent inspector objects")
-  }
+  const inspector = await importedInspector.createManagedBrowserComputerParityInspector({ runId: config.runId })
   const report = await runManagedBrowserComputerParityHarness({
     config,
-    transport: product.transport,
-    inspector: product.inspector,
+    transport,
+    inspector,
     adapterVerification,
+    inspectorVerification,
+    evidenceRoot: runDir,
     signal: interruption.signal,
   })
   const resultPath = path.join(runDir, "managed-browser-computer-parity.json")

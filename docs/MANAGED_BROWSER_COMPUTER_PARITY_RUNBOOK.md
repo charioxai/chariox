@@ -31,13 +31,17 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 7. Product-managed Git authentication and an attended, synthetic-test vault
    entry. The adapter receives only fixture name `synthetic-vault-marker-v1`,
    never its value.
-8. A reviewed adapter module with an immutable identity and SHA-256 pinned in
-   the private config. It exports that identity as
+8. A reviewed, self-contained adapter module with an immutable identity and
+   SHA-256 pinned in the private config. It exports that identity as
    `MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY` and exports
-   `createManagedBrowserComputerParityTransport`. The factory returns distinct
-   `{ transport, inspector }` objects; the inspector independently inventories
-   cleanup and must not delegate to the product transport. Construction must be
-   side-effect free. Product steps must use the released BrowserKernelClient,
+   `createManagedBrowserComputerParityTransport`. A separately reviewed and
+   pinned inspector module exports its own identity as
+   `MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY` and exports
+   `createManagedBrowserComputerParityInspector`; it independently inventories
+   cleanup and must not delegate to or share implementation with the product
+   transport. Both modules are imported directly from their already-hashed
+   bytes, so they must be single-file bundles with no relative imports.
+   Construction must be side-effect free. Product steps must use the released BrowserKernelClient,
    local IPC, and remote relay paths—not Cloud runtime APIs or another
    authority—and return product-origin evidence and operation IDs.
    The factory receives only the external evidence directory. Preflight must
@@ -63,6 +67,10 @@ contains no credential or secret value:
   },
   "adapter": {
     "identity": "<reviewed product adapter identity>",
+    "sha256": "sha256:<64 lowercase hex>"
+  },
+  "inspector": {
+    "identity": "<separately reviewed cleanup inspector identity>",
     "sha256": "sha256:<64 lowercase hex>"
   },
   "versions": {
@@ -104,6 +112,7 @@ authentication stays in the already-authenticated product clients:
 node apps/cli/scripts/live-managed-browser-computer-parity-drill.mjs \
   --config /absolute/private/cha-16-managed-parity.json \
   --transport-module /absolute/reviewed/managed-parity-product-transport.mjs \
+  --inspector-module /absolute/reviewed/managed-parity-cleanup-inspector.mjs \
   --evidence-root /absolute/external/evidence/browser-computer-use/cha-16
 ```
 
@@ -113,9 +122,10 @@ fixtures. The adapter uses only existing authenticated product stores.
 
 ## Orchestrated product sequence
 
-The executable hashes the regular adapter module before construction and binds
-the exported identity to the reviewed config pin. Adapter self-attestation or
-an injected/generic transport cannot produce acceptance. After verifying the
+The executable opens each regular module without following symlinks, bounds and
+hashes its bytes, imports those exact bytes, and issues an in-process proof bound
+to the reviewed config pin. Plain-object self-attestation or an injected/generic
+transport or inspector cannot produce acceptance. After verifying the
 real release-verifier result, running digest, source/protocol/relay/target
 metadata, exact component versions, heartbeat, capabilities, and `before`
 resource headroom, the orchestrator:
@@ -137,8 +147,9 @@ resource headroom, the orchestrator:
    physical effect, and zero duplicate actions or browsers.
 10. Destroys Selkies, creates the explicit noVNC rollback, attaches all three
     clients to the same bound identity, records it as rollback-only, and destroys it.
-11. Requires `during` resources, then enumerates every adapter evidence file
-    with its digest, size, and a completed zero-finding forbidden-value scan.
+11. Requires `during` resources, then independently enumerates every adapter
+    evidence file from the external evidence root, bounds its size/count, hashes
+    and secret-scans it, and requires an exact match with the adapter manifest.
 
 Browser/Computer input and takeover results must causally link distinct input,
 frame mutation, human takeover, cancellation, and attribution operations.
@@ -154,7 +165,8 @@ claim fails the run.
 
 On cancellation or timeout the adapter operation must settle after abort before
 cleanup begins; an adapter that does not quiesce fails closed. Cleanup runs
-exactly once after adapter settlement. Remove only
+exactly once after adapter settlement, then the adapter must settle again before
+the independently pinned inspector runs. Remove only
 drill-owned OpenShip/Cloud records, Room/environment/slice state, containers,
 volumes, networks, processes, listeners, profiles, tunnels, temporary files,
 and synthetic grants. Never prune shared resources.

@@ -1,17 +1,45 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { createHash } from "node:crypto"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { after, test } from "node:test"
 
 import {
   MANAGED_BROWSER_COMPUTER_PARITY_SCHEMA,
   runManagedBrowserComputerParityHarness,
 } from "./managed-browser-computer-parity-harness.mjs"
+import {
+  loadReviewedManagedParityAdapterModule,
+  loadReviewedManagedParityInspectorModule,
+} from "./managed-browser-computer-parity-cli.mjs"
 
 const OSS_SHA = "1".repeat(40)
 const CLOUD_SHA = "2".repeat(40)
 const IMAGE_DIGEST = `sha256:${"3".repeat(64)}`
 const ADAPTER_IDENTITY = "chariox.managed-browser-computer.product-adapter.v1"
-const ADAPTER_SHA256 = `sha256:${"5".repeat(64)}`
+const INSPECTOR_IDENTITY = "chariox.managed-browser-computer.cleanup-inspector.v1"
+const ADAPTER_SOURCE = `export const MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY = ${JSON.stringify(ADAPTER_IDENTITY)}\n`
+const INSPECTOR_SOURCE = `export const MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY = ${JSON.stringify(INSPECTOR_IDENTITY)}\n`
+const ADAPTER_SHA256 = `sha256:${createHash("sha256").update(ADAPTER_SOURCE).digest("hex")}`
+const INSPECTOR_SHA256 = `sha256:${createHash("sha256").update(INSPECTOR_SOURCE).digest("hex")}`
+const EVIDENCE_CONTENTS = Object.freeze({
+  "physical-effects.json": '{"effects":"synthetic-test-evidence"}\n',
+  "product-operations.jsonl": '{"operations":"synthetic-test-evidence"}\n',
+})
+const PHYSICAL_EVIDENCE_SHA256 = `sha256:${createHash("sha256").update(EVIDENCE_CONTENTS["physical-effects.json"]).digest("hex")}`
 const RELEASE_VERIFIER_SHA256 = `sha256:${"6".repeat(64)}`
+const proofRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-proof-"))
+const adapterPath = path.join(proofRoot, "adapter.mjs")
+const inspectorPath = path.join(proofRoot, "inspector.mjs")
+const evidenceRoot = path.join(proofRoot, "evidence")
+await mkdir(evidenceRoot)
+await writeFile(adapterPath, ADAPTER_SOURCE, { mode: 0o600 })
+await writeFile(inspectorPath, INSPECTOR_SOURCE, { mode: 0o600 })
+await Promise.all(Object.entries(EVIDENCE_CONTENTS).map(([name, contents]) => writeFile(path.join(evidenceRoot, name), contents, { mode: 0o600 })))
+const { verification: adapterVerification } = await loadReviewedManagedParityAdapterModule(adapterPath, { identity: ADAPTER_IDENTITY, sha256: ADAPTER_SHA256 })
+const { verification: inspectorVerification } = await loadReviewedManagedParityInspectorModule(inspectorPath, { identity: INSPECTOR_IDENTITY, sha256: INSPECTOR_SHA256 })
+after(() => rm(proofRoot, { recursive: true, force: true }))
 const VERSIONS = Object.freeze({
   kernel: "chariox-kernel 1.2.3",
   relay: "chariox-relay 1.2.3",
@@ -35,6 +63,7 @@ function config(overrides = {}) {
       releaseVerifierSha256: RELEASE_VERIFIER_SHA256,
     },
     adapter: { identity: ADAPTER_IDENTITY, sha256: ADAPTER_SHA256 },
+    inspector: { identity: INSPECTOR_IDENTITY, sha256: INSPECTOR_SHA256 },
     versions: { ...VERSIONS },
     expected: {
       kernelId: "kernel-managed-1",
@@ -98,17 +127,18 @@ function preflight(overrides = {}) {
       freeMemoryBytes: 8_000_000_000,
       freeDiskBytes: 100_000_000_000,
     },
-    evidence: productEvidence(["kernel", "relay", "machine"], "preflight"),
+    evidence: productEvidence(["kernel", "relay", "machine"], "preflight", { operationIds: ["op-preflight-kernel", "op-preflight-relay", "op-release-verification"] }),
     ...overrides,
   }
 }
 
-function productEvidence(sources, suffix, { physical = false } = {}) {
-  return sources.map((source) => ({
+function productEvidence(sources, suffix, { physical = false, operationIds = null } = {}) {
+  return sources.map((source, index) => ({
     origin: "chariox-product",
     source,
-    operationId: `op-${suffix}-${source}`,
+    operationId: operationIds?.[index] ?? `op-${suffix}-${source}`,
     physicalEffect: physical,
+    ...(physical ? { artifact: { relativePath: "physical-effects.json", sha256: PHYSICAL_EVIDENCE_SHA256 } } : {}),
   }))
 }
 
@@ -153,6 +183,10 @@ function cleanInventory(overrides = {}) {
     resources: {
       phase: "after",
       operationId: "op-resource-after",
+      rssBytes: 201_000_000,
+      cpuPercent: 4,
+      freeMemoryBytes: 7_900_000_000,
+      freeDiskBytes: 99_999_999_000,
       rssDeltaBytes: 1_000_000,
       diskDeltaBytes: 1_000,
     },
@@ -167,9 +201,9 @@ function successfulResult(step, input) {
   if (step.endsWith(".attach")) return { ...target(input.displayBackend), client: input.client, evidence: productEvidence(["kernel"], `${step}-${input.client}`) }
   const binding = target(input.displayBackend)
   if (step.endsWith(".providers")) return { ...binding, providers: { codex: "official", opencode: "official", claude: "official" }, providerStateCopied: false, evidence: productEvidence(["provider"], step) }
-  if (step.endsWith(".browser")) return { ...binding, structuredActions: true, mutationCount: 1, browserCount: 1, causal: { actionOperationId: `op-${step}-action`, observedMutationOperationId: `op-${step}-mutation`, physicalEffect: true }, evidence: productEvidence(["browser"], step, { physical: true }) }
-  if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true, causal: { pointerOperationId: `op-${step}-pointer`, keyboardOperationId: `op-${step}-keyboard`, beforeFrameDigest: `sha256:${"7".repeat(64)}`, afterFrameDigest: `sha256:${"8".repeat(64)}`, physicalEffect: true }, evidence: productEvidence(["computer"], step, { physical: true }) }
-  if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true, causal: { agentInputOperationId: `op-${step}-agent`, humanInputOperationId: `op-${step}-human`, cancellationOperationId: `op-${step}-cancel`, attributedActor: "human", physicalEffect: true }, evidence: productEvidence(["computer"], step, { physical: true }) }
+  if (step.endsWith(".browser")) return { ...binding, structuredActions: true, mutationCount: 1, browserCount: 1, causal: { actionOperationId: `op-${step}-action`, observedMutationOperationId: `op-${step}-mutation`, physicalEffect: true }, evidence: productEvidence(["browser", "browser"], step, { physical: true, operationIds: [`op-${step}-action`, `op-${step}-mutation`] }) }
+  if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true, causal: { pointerOperationId: `op-${step}-pointer`, keyboardOperationId: `op-${step}-keyboard`, beforeFrameDigest: `sha256:${"7".repeat(64)}`, afterFrameDigest: `sha256:${"8".repeat(64)}`, physicalEffect: true }, evidence: productEvidence(["computer", "computer"], step, { physical: true, operationIds: [`op-${step}-pointer`, `op-${step}-keyboard`] }) }
+  if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true, causal: { agentInputOperationId: `op-${step}-agent`, humanInputOperationId: `op-${step}-human`, cancellationOperationId: `op-${step}-cancel`, attributedActor: "human", physicalEffect: true }, evidence: productEvidence(["computer", "computer", "computer"], step, { physical: true, operationIds: [`op-${step}-agent`, `op-${step}-human`, `op-${step}-cancel`] }) }
   if (step.endsWith(".persistence")) return { ...binding, saved: true, restarted: true, sameRoom: true, sameEnvironment: true, sameProfile: true, evidence: productEvidence(["kernel", "machine"], step, { physical: true }) }
   if (step.endsWith(".vault")) return { ...binding,
     syntheticValueInserted: true,
@@ -178,7 +212,7 @@ function successfulResult(step, input) {
     evidence: productEvidence(["vault"], step, { physical: true }),
   }
   if (step.endsWith(".git")) return { ...binding, available: true, source: "product-managed", evidence: productEvidence(["git"], step, { physical: true }) }
-  if (step.endsWith(".reconnect")) return { ...binding, faultInjected: true, reconnected: true, duplicateActions: 0, duplicateBrowsers: 0, causal: { disconnectOperationId: `op-${step}-disconnect`, reconnectOperationId: `op-${step}-connect`, postReconnectOperationId: `op-${step}-after`, physicalEffect: true }, evidence: productEvidence(["relay"], step, { physical: true }) }
+  if (step.endsWith(".reconnect")) return { ...binding, faultInjected: true, reconnected: true, duplicateActions: 0, duplicateBrowsers: 0, causal: { disconnectOperationId: `op-${step}-disconnect`, reconnectOperationId: `op-${step}-connect`, postReconnectOperationId: `op-${step}-after`, physicalEffect: true }, evidence: productEvidence(["relay", "relay", "relay"], step, { physical: true, operationIds: [`op-${step}-disconnect`, `op-${step}-connect`, `op-${step}-after`] }) }
   if (step.endsWith(".destroy")) return { ...binding, destroyed: true, evidence: productEvidence(["machine"], step, { physical: true }) }
   if (step === "novnc.rollback") return { ...binding, rollbackReachable: true, finalAcceptance: false, evidence: productEvidence(["kernel"], step) }
   if (step === "resources.during") return { phase: "during", operationId: "op-resource-during", rssBytes: 300_000_000, cpuPercent: 8, freeMemoryBytes: 7_000_000_000, freeDiskBytes: 99_000_000_000, evidence: productEvidence(["machine"], step) }
@@ -186,10 +220,10 @@ function successfulResult(step, input) {
     enumerationComplete: true,
     enumeratedFileCount: 2,
     evidence: productEvidence(["machine"], step),
-    files: ["product-operations.jsonl", "physical-effects.json"].map((relativePath, index) => ({
+    files: Object.keys(EVIDENCE_CONTENTS).sort().map((relativePath) => ({
       relativePath,
-      sha256: `sha256:${index === 0 ? "9".repeat(64) : "a".repeat(64)}`,
-      sizeBytes: 128 + index,
+      sha256: `sha256:${createHash("sha256").update(EVIDENCE_CONTENTS[relativePath]).digest("hex")}`,
+      sizeBytes: Buffer.byteLength(EVIDENCE_CONTENTS[relativePath]),
       scan: { completed: true, forbiddenMatches: 0 },
     })),
   }
@@ -199,10 +233,11 @@ function successfulResult(step, input) {
 
 function transport({ mutate = {}, failStep = null, synthetic = false } = {}) {
   const calls = []
+  let settlementCount = 0
   return {
     calls,
     authority: synthetic ? { kind: "injected-test" } : { kind: "product", identity: ADAPTER_IDENTITY, sha256: ADAPTER_SHA256 },
-    async settle() { calls.push({ step: "adapter.settle", input: {} }); return { settled: true, operationId: "op-adapter-settle" } },
+    async settle() { settlementCount += 1; calls.push({ step: "adapter.settle", input: {} }); return { settled: true, operationId: `op-adapter-settle-${settlementCount}` } },
     async run(step, input) {
       calls.push({ step, input })
       if (step === failStep) throw new Error("injected partial failure")
@@ -216,7 +251,7 @@ function inspector({ mutate = {} } = {}) {
   const calls = []
   return {
     calls,
-    authority: { kind: "independent-product-inspector" },
+    authority: { kind: "independent-product-inspector", identity: INSPECTOR_IDENTITY, sha256: INSPECTOR_SHA256 },
     async run(step, input) {
       calls.push({ step, input })
       assert.equal(step, "cleanup.inspect")
@@ -232,13 +267,18 @@ function run(options = {}) {
     config: options.config ?? config(),
     transport: injected,
     inspector: options.inspector ?? inspector(),
-    adapterVerification: options.adapterVerification ?? {
-      identity: ADAPTER_IDENTITY,
-      sha256: ADAPTER_SHA256,
-      verifiedBy: "chariox-harness-loader",
-    },
+    adapterVerification: options.adapterVerification ?? adapterVerification,
+    inspectorVerification: options.inspectorVerification ?? inspectorVerification,
+    evidenceRoot: options.evidenceRoot ?? evidenceRoot,
     ...(options.signal ? { signal: options.signal } : {}),
   })
+}
+
+async function createEvidenceCase(context, extraFiles = {}) {
+  const root = await mkdtemp(path.join(proofRoot, "evidence-case-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await Promise.all(Object.entries({ ...EVIDENCE_CONTENTS, ...extraFiles }).map(([name, contents]) => writeFile(path.join(root, name), contents, { mode: 0o600 })))
+  return root
 }
 
 test("managed parity harness accepts Selkies only after all released Web and TUI paths pass", async () => {
@@ -274,8 +314,26 @@ test("adapter self-attestation without independent loader verification is reject
   assert.equal(report.failure.code, "reviewed_adapter_verification_required")
 })
 
+test("a caller cannot forge loader verification with a plain object", async () => {
+  const report = await run({
+    adapterVerification: {
+      identity: ADAPTER_IDENTITY,
+      sha256: ADAPTER_SHA256,
+      verifiedBy: "chariox-harness-loader",
+    },
+  })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "reviewed_adapter_verification_required")
+})
+
+test("the cleanup inspector requires a distinct loader-issued reviewed proof", async () => {
+  const report = await run({ inspectorVerification: { identity: INSPECTOR_IDENTITY, sha256: INSPECTOR_SHA256 } })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "reviewed_inspector_verification_required")
+})
+
 test("a non-pinned product adapter is rejected", async () => {
-  const report = await run({ adapterVerification: { identity: ADAPTER_IDENTITY, sha256: `sha256:${"a".repeat(64)}`, verifiedBy: "chariox-harness-loader" } })
+  const report = await run({ config: config({ adapter: { identity: ADAPTER_IDENTITY, sha256: `sha256:${"a".repeat(64)}` } }) })
   assert.equal(report.failure.code, "reviewed_adapter_mismatch")
 })
 
@@ -285,6 +343,18 @@ test("missing causal input, takeover, or reconnect proof is rejected", async () 
     const report = await run({ transport: injected })
     assert.equal(report.failure.code, "causal_physical_effect_required")
   }
+})
+
+test("causal operation IDs must be backed by the same step's physical evidence", async () => {
+  const injected = transport({ mutate: {
+    "selkies.browser": (value) => ({
+      ...value,
+      causal: { ...value.causal, actionOperationId: "op-fabricated-action", observedMutationOperationId: "op-fabricated-mutation" },
+    }),
+  } })
+  const report = await run({ transport: injected })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "causal_physical_effect_required")
 })
 
 test("every enumerated evidence file must be secret-scanned", async () => {
@@ -312,11 +382,40 @@ test("an extra evidence file with a forbidden-value finding fails acceptance", a
   assert.equal(report.failure.code, "evidence_inventory_incomplete")
 })
 
+test("independent enumeration rejects an evidence file omitted by the adapter", async (context) => {
+  const root = await createEvidenceCase(context, { "omitted.log": "not listed by adapter\n" })
+  const report = await run({ evidenceRoot: root })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "evidence_inventory_incomplete")
+})
+
+test("independent scanning rejects a secret even when the adapter claims zero findings", async (context) => {
+  const secret = `Bearer ${"x".repeat(32)}\n`
+  const root = await createEvidenceCase(context, { "hidden.log": secret })
+  const injected = transport({ mutate: {
+    "evidence.inspect": (value) => ({
+      ...value,
+      enumeratedFileCount: value.files.length + 1,
+      files: [...value.files, {
+        relativePath: "hidden.log",
+        sha256: `sha256:${createHash("sha256").update(secret).digest("hex")}`,
+        sizeBytes: Buffer.byteLength(secret),
+        scan: { completed: true, forbiddenMatches: 0 },
+      }],
+    }),
+  } })
+  const report = await run({ evidenceRoot: root, transport: injected })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "evidence_inventory_incomplete")
+})
+
 test("exact product versions and before/during/after resource phases are mandatory", async () => {
   const wrongVersion = transport({ mutate: { preflight: (value) => ({ ...value, versions: { ...value.versions, browser: "unknown" } }) } })
   assert.equal((await run({ transport: wrongVersion })).failure.code, "exact_product_versions_required")
   const wrongPhase = transport({ mutate: { "resources.during": (value) => ({ ...value, phase: "before" }) } })
   assert.equal((await run({ transport: wrongPhase })).failure.code, "resource_headroom_required")
+  const missingAfter = inspector({ mutate: { "cleanup.inspect": (value) => ({ ...value, resources: { ...value.resources, freeMemoryBytes: undefined } }) } })
+  assert.equal((await run({ inspector: missingAfter })).failure.code, "cleanup_incomplete")
 })
 
 test("cleanup inventory must independently enumerate every task-owned resource class", async () => {
@@ -325,6 +424,18 @@ test("cleanup inventory must independently enumerate every task-owned resource c
     return incomplete
   } } }) })
   assert.equal(report.failure.code, "cleanup_incomplete")
+})
+
+test("a stalled independent cleanup inspector is bounded", async () => {
+  const stalled = inspector()
+  stalled.run = () => new Promise(() => {})
+  const outcome = await Promise.race([
+    run({ config: config({ quiesceTimeoutMs: 5 }), inspector: stalled }),
+    new Promise((resolve) => setTimeout(() => resolve("unbounded"), 100)),
+  ])
+  assert.notEqual(outcome, "unbounded")
+  assert.equal(outcome.status, "failed")
+  assert.equal(outcome.failure.code, "cleanup_incomplete")
 })
 
 test("managed parity harness rejects a run id that could escape its evidence root", async () => {
@@ -433,7 +544,7 @@ test("partial failure still runs cleanup exactly once and cannot report success"
   assert.equal(report.status, "failed")
   assert.equal(report.failure.code, "managed_parity_step_failed")
   assert.equal(injected.calls.filter(({ step }) => step === "cleanup.perform").length, 1)
-  assert.equal(injected.calls.filter(({ step }) => step === "adapter.settle").length, 1)
+  assert.equal(injected.calls.filter(({ step }) => step === "adapter.settle").length, 2)
   assert.equal(injected.calls.some(({ step }) => step === "novnc.create"), false)
 })
 
@@ -474,6 +585,36 @@ test("a late post-timeout mutation settles before cleanup begins", async () => {
   const report = await run({ config: config({ stepTimeoutMs: 5 }), transport: injected })
   assert.equal(report.failure.code, "managed_parity_step_timeout")
   assert.equal(cleanupSawMutation, true)
+})
+
+test("an operation that remains live after abort cannot be hidden by adapter settlement", async () => {
+  const injected = transport()
+  const originalRun = injected.run
+  injected.run = async (step, input, options) => {
+    if (step !== "selkies.computer") return originalRun(step, input, options)
+    return new Promise(() => {})
+  }
+  const cleanupInspector = inspector()
+  const report = await run({ config: config({ stepTimeoutMs: 5, quiesceTimeoutMs: 5 }), transport: injected, inspector: cleanupInspector })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "adapter_not_quiescent")
+  assert.equal(injected.calls.some(({ step }) => step === "cleanup.perform"), false)
+  assert.equal(cleanupInspector.calls.length, 0)
+})
+
+test("cleanup must quiesce again before the independent inspector runs", async () => {
+  const injected = transport()
+  let settlements = 0
+  injected.settle = async () => {
+    settlements += 1
+    if (settlements === 1) return { settled: true, operationId: "op-before-cleanup-settle" }
+    return new Promise(() => {})
+  }
+  const cleanupInspector = inspector()
+  const report = await run({ config: config({ quiesceTimeoutMs: 5 }), transport: injected, inspector: cleanupInspector })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "adapter_not_quiescent")
+  assert.equal(cleanupInspector.calls.length, 0)
 })
 
 test("operator interruption aborts the active step but still completes cleanup", async () => {
