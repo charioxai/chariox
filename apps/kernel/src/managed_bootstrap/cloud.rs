@@ -8,6 +8,7 @@ use crate::error::DaemonError;
 use super::context_plan::ManagedKernelContextPlan;
 
 const MAX_RESPONSE_BYTES: u64 = 96 * 1024;
+const DISPOSABLE_WORKER_EXCHANGE_PATH: &str = "/v1/disposable-workers/bootstrap/exchange";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +38,6 @@ pub(super) struct DisposableWorkerExchangeRequest {
     pub(super) allocation_id: String,
     pub(super) worker_machine_id: String,
     pub(super) worker_kernel_id: String,
-    pub(super) relay_public_key: String,
     pub(super) image_digest: String,
     pub(super) runtime_release_digest: String,
     pub(super) manager_operation_id: String,
@@ -45,9 +45,9 @@ pub(super) struct DisposableWorkerExchangeRequest {
     pub(super) manager_request_digest: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DisposableWorkerExchangeResponse {
+pub(super) struct DisposableWorkerEnrollmentReceipt {
     pub(super) grant_id: String,
     pub(super) allocation_id: String,
     pub(super) worker_machine_id: String,
@@ -55,12 +55,28 @@ pub(super) struct DisposableWorkerExchangeResponse {
     pub(super) image_digest: String,
     pub(super) runtime_release_digest: String,
     pub(super) exchanged_at: String,
+}
+
+// This is an internal supervisor result, not a Cloud wire contract. A client may
+// construct it only after Cloud authenticated the registered home-kernel sender
+// and returned the exact enrollment receipt plus the worker's relay profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DisposableWorkerBootstrapResult {
+    pub(super) enrollment_receipt: DisposableWorkerEnrollmentReceipt,
     pub(super) cloud_relay: ManagedCloudRelayProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DisposableWorkerExchangeOutcome {
-    Accepted(DisposableWorkerExchangeResponse),
+    Accepted(DisposableWorkerEnrollmentReceipt),
+    Pending,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DisposableWorkerRecoveryOutcome {
+    Ready(DisposableWorkerBootstrapResult),
+    Pending,
     Rejected,
 }
 
@@ -108,7 +124,20 @@ pub(super) trait BootstrapCloudClient {
         request: &DisposableWorkerExchangeRequest,
     ) -> Result<DisposableWorkerExchangeOutcome, DaemonError> {
         let _ = (api_url, request);
-        Err(cloud_error("disposable worker bootstrap is unsupported"))
+        Err(cloud_error(
+            "disposable worker bootstrap requires verified home-kernel sender proof",
+        ))
+    }
+    fn recover_disposable_worker_exchange(
+        &self,
+        api_url: &str,
+        binding_digest: &str,
+        binding: &super::state::DisposableWorkerBinding,
+    ) -> Result<DisposableWorkerRecoveryOutcome, DaemonError> {
+        let _ = (api_url, binding_digest, binding);
+        Err(cloud_error(
+            "disposable worker bootstrap recovery requires verified home-kernel sender proof",
+        ))
     }
     fn confirm(
         &self,
@@ -145,15 +174,24 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &DisposableWorkerExchangeRequest,
     ) -> Result<DisposableWorkerExchangeOutcome, DaemonError> {
-        match self.post(
-            api_url,
-            "/v1/disposable-workers/bootstrap/exchange",
-            request,
-        ) {
-            Ok(response) => Ok(DisposableWorkerExchangeOutcome::Accepted(response)),
-            Err(PostError::Rejected) => Ok(DisposableWorkerExchangeOutcome::Rejected),
-            Err(PostError::Failure(error)) => Err(error),
-        }
+        let _ = (api_url, request, DISPOSABLE_WORKER_EXCHANGE_PATH);
+        Err(cloud_error(
+            "disposable worker exchange is unavailable until Cloud supplies verified \
+             home-kernel sender proof and idempotent result recovery",
+        ))
+    }
+
+    fn recover_disposable_worker_exchange(
+        &self,
+        api_url: &str,
+        binding_digest: &str,
+        binding: &super::state::DisposableWorkerBinding,
+    ) -> Result<DisposableWorkerRecoveryOutcome, DaemonError> {
+        let _ = (api_url, binding_digest, binding);
+        Err(cloud_error(
+            "disposable worker exchange recovery is unavailable until Cloud supplies an \
+             authenticated result endpoint",
+        ))
     }
 
     fn confirm(

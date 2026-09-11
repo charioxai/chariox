@@ -17,17 +17,19 @@ use crate::config::{
 use crate::error::DaemonError;
 
 use cloud::{
-    BootstrapCloudClient, ConfirmRequest, DisposableWorkerExchangeOutcome,
-    DisposableWorkerExchangeRequest, DisposableWorkerExchangeResponse, ExchangeRequest,
-    HttpBootstrapCloudClient, ManagedCloudRelayProfile,
+    BootstrapCloudClient, ConfirmRequest, DisposableWorkerBootstrapResult,
+    DisposableWorkerExchangeOutcome, DisposableWorkerExchangeRequest,
+    DisposableWorkerRecoveryOutcome, ExchangeRequest, HttpBootstrapCloudClient,
+    ManagedCloudRelayProfile,
 };
 pub use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, VerifiedRelease};
 use state::{
     remove_envelope, remove_receipt, valid_disposable_identifier, valid_identifier, valid_secret,
     BootstrapConfig, BootstrapEnvelope, BootstrapReceipt, BootstrapReceiptDocument,
-    BootstrapReceiptStatus, DisposableWorkerBootstrapEnvelope, DisposableWorkerBootstrapReceipt,
-    DisposableWorkerBootstrapReceiptStatus, ManagedBootstrapEnvelope,
+    BootstrapReceiptStatus, DisposableWorkerBinding, DisposableWorkerBootstrapEnvelope,
+    DisposableWorkerBootstrapReceipt, DisposableWorkerBootstrapReceiptStatus,
+    ManagedBootstrapEnvelope,
 };
 
 const MAX_DISPOSABLE_WORKER_ENVELOPE_TTL_SECONDS: i64 = 30 * 60;
@@ -148,7 +150,7 @@ fn prepare_managed_kernel(
                     value.runtime_release_digest.as_str()
                 }
                 BootstrapReceiptDocument::DisposableWorker(value) => {
-                    value.runtime_release_digest.as_str()
+                    value.binding.runtime_release_digest.as_str()
                 }
             })
         })
@@ -192,7 +194,7 @@ fn prepare_managed_kernel(
                 }
                 None => None,
             };
-            resume_disposable_worker(config, envelope.as_ref(), &receipt, &identity)?;
+            resume_disposable_worker(config, cloud, now, envelope.as_ref(), &receipt, &identity)?;
             None
         }
         (None, Some(BootstrapEnvelope::ManagedEnvironment(envelope))) => {
@@ -296,15 +298,7 @@ fn begin_disposable_worker(
     envelope: &DisposableWorkerBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
 ) -> Result<(), DaemonError> {
-    let expiry = envelope.expires_at()?;
-    if expiry <= now
-        || expiry > now + chrono::Duration::seconds(MAX_DISPOSABLE_WORKER_ENVELOPE_TTL_SECONDS)
-    {
-        remove_envelope(&config.envelope_path)?;
-        return Err(bootstrap_error(
-            "disposable worker bootstrap expiry is outside the permitted window",
-        ));
-    }
+    validate_disposable_worker_expiry(config, now, envelope)?;
     let binding = &envelope.binding;
     if binding.worker_machine_id != identity.machine_id
         || binding.worker_kernel_id != identity.kernel_id
@@ -318,18 +312,132 @@ fn begin_disposable_worker(
         schema_version: 1,
         kind: "disposable_worker".to_string(),
         status: DisposableWorkerBootstrapReceiptStatus::ExchangePending,
-        allocation_id: binding.allocation_id.clone(),
-        user_id: binding.user_id.clone(),
-        realm_id: binding.realm_id.clone(),
-        machine_id: identity.machine_id.clone(),
-        kernel_id: identity.kernel_id.clone(),
+        cloud_api_url: normalized_api_url(&envelope.cloud_api_url),
         relay_public_key: identity.relay_public_key.clone(),
-        runtime_release_digest: binding.runtime_release_digest.clone(),
         binding_digest: envelope.binding_digest.clone(),
-        exchanged_at: None,
+        binding: binding.clone(),
+        enrollment_receipt: None,
         cloud_relay: None,
     };
     pending_receipt.persist(&config.receipt_path)?;
+    exchange_disposable_worker(config, cloud, envelope, pending_receipt)
+}
+
+fn resume_disposable_worker(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    now: DateTime<Utc>,
+    envelope: Option<&DisposableWorkerBootstrapEnvelope>,
+    receipt: &DisposableWorkerBootstrapReceipt,
+    identity: &ManagedRuntimeIdentity,
+) -> Result<(), DaemonError> {
+    if receipt.binding.worker_machine_id != identity.machine_id
+        || receipt.binding.worker_kernel_id != identity.kernel_id
+        || receipt.relay_public_key != identity.relay_public_key
+    {
+        return Err(bootstrap_error(
+            "disposable worker receipt does not match the local identity",
+        ));
+    }
+    if let Some(envelope) = envelope {
+        if envelope.binding != receipt.binding
+            || envelope.binding_digest != receipt.binding_digest
+            || normalized_api_url(&envelope.cloud_api_url) != receipt.cloud_api_url
+        {
+            remove_envelope(&config.envelope_path)?;
+            return Err(bootstrap_error(
+                "disposable worker envelope conflicts with its receipt",
+            ));
+        }
+    }
+    if matches!(
+        receipt.status,
+        DisposableWorkerBootstrapReceiptStatus::ExchangePending
+            | DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted
+    ) {
+        return match cloud.recover_disposable_worker_exchange(
+            &receipt.cloud_api_url,
+            &receipt.binding_digest,
+            &receipt.binding,
+        )? {
+            DisposableWorkerRecoveryOutcome::Ready(result) => {
+                finish_disposable_worker(config, receipt.clone(), result)
+            }
+            DisposableWorkerRecoveryOutcome::Rejected => {
+                remove_receipt(&config.receipt_path)?;
+                if config.envelope_path.exists() {
+                    remove_envelope(&config.envelope_path)?;
+                }
+                Err(bootstrap_error(
+                    "Cloud terminally rejected the disposable worker bootstrap",
+                ))
+            }
+            DisposableWorkerRecoveryOutcome::Pending => match (receipt.status, envelope) {
+                (DisposableWorkerBootstrapReceiptStatus::ExchangePending, Some(envelope)) => {
+                    validate_disposable_worker_expiry(config, now, envelope)?;
+                    exchange_disposable_worker(config, cloud, envelope, receipt.clone())
+                }
+                _ => Err(bootstrap_error(
+                    "disposable worker exchange result is not yet recoverable",
+                )),
+            },
+        };
+    }
+    validate_disposable_worker_result(receipt)?;
+    let receipt_relay = receipt.cloud_relay.clone().ok_or_else(|| {
+        bootstrap_error("disposable worker relay receipt is missing")
+    })?;
+    let expected_profile = persisted_profile(receipt_relay);
+    let profile = match load_managed_cloud_relay_profile() {
+        Some(profile) => profile,
+        None => {
+            persist_managed_cloud_relay_profile(expected_profile.clone())?;
+            load_managed_cloud_relay_profile().ok_or_else(|| {
+                bootstrap_error("disposable worker Cloud profile did not persist")
+            })?
+        }
+    };
+    if profile != expected_profile {
+        if config.envelope_path.exists() {
+            remove_envelope(&config.envelope_path)?;
+        }
+        return Err(bootstrap_error(
+            "disposable worker Cloud profile does not exactly match its receipt",
+        ));
+    }
+    if config.envelope_path.exists() {
+        remove_envelope(&config.envelope_path)?;
+    }
+    Ok(())
+}
+
+fn validate_disposable_worker_expiry(
+    config: &BootstrapConfig,
+    now: DateTime<Utc>,
+    envelope: &DisposableWorkerBootstrapEnvelope,
+) -> Result<(), DaemonError> {
+    let expiry = envelope.expires_at()?;
+    if expiry <= now
+        || expiry > now + chrono::Duration::seconds(MAX_DISPOSABLE_WORKER_ENVELOPE_TTL_SECONDS)
+    {
+        if config.receipt_path.exists() {
+            remove_receipt(&config.receipt_path)?;
+        }
+        remove_envelope(&config.envelope_path)?;
+        return Err(bootstrap_error(
+            "disposable worker bootstrap expiry is outside the permitted window",
+        ));
+    }
+    Ok(())
+}
+
+fn exchange_disposable_worker(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    envelope: &DisposableWorkerBootstrapEnvelope,
+    pending_receipt: DisposableWorkerBootstrapReceipt,
+) -> Result<(), DaemonError> {
+    let binding = &pending_receipt.binding;
     let request = DisposableWorkerExchangeRequest {
         token: envelope.token.clone(),
         allocation_id: binding.allocation_id.clone(),
@@ -340,105 +448,114 @@ fn begin_disposable_worker(
         manager_operation_id: binding.manager_operation_id.clone(),
         manager_operation_fence: binding.manager_operation_fence,
         manager_request_digest: binding.manager_request_digest.clone(),
-        relay_public_key: identity.relay_public_key.clone(),
     };
-    let exchanged = match cloud.exchange_disposable_worker(
-        &normalized_api_url(&envelope.cloud_api_url),
-        &request,
-    )? {
-        DisposableWorkerExchangeOutcome::Accepted(value) => value,
+    match cloud.exchange_disposable_worker(&pending_receipt.cloud_api_url, &request)? {
+        DisposableWorkerExchangeOutcome::Accepted(enrollment_receipt) => {
+            accept_disposable_worker_enrollment(
+                config,
+                cloud,
+                pending_receipt,
+                enrollment_receipt,
+            )
+        }
+        DisposableWorkerExchangeOutcome::Pending => Err(bootstrap_error(
+            "Cloud has not completed the disposable worker bootstrap exchange",
+        )),
         DisposableWorkerExchangeOutcome::Rejected => {
             remove_receipt(&config.receipt_path)?;
             remove_envelope(&config.envelope_path)?;
-            return Err(bootstrap_error(
+            Err(bootstrap_error(
                 "Cloud terminally rejected the disposable worker bootstrap",
-            ));
+            ))
         }
-    };
-    if let Err(error) = validate_disposable_worker_exchange(envelope, identity, &exchanged) {
+    }
+}
+
+fn accept_disposable_worker_enrollment(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    mut receipt: DisposableWorkerBootstrapReceipt,
+    enrollment_receipt: cloud::DisposableWorkerEnrollmentReceipt,
+) -> Result<(), DaemonError> {
+    receipt.status = DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted;
+    receipt.enrollment_receipt = Some(enrollment_receipt);
+    if let Err(error) = validate_disposable_worker_enrollment(&receipt) {
         remove_receipt(&config.receipt_path)?;
-        remove_envelope(&config.envelope_path)?;
+        if config.envelope_path.exists() {
+            remove_envelope(&config.envelope_path)?;
+        }
         return Err(error);
     }
-    let receipt = DisposableWorkerBootstrapReceipt {
-        schema_version: 1,
-        kind: "disposable_worker".to_string(),
-        status: DisposableWorkerBootstrapReceiptStatus::Exchanged,
-        allocation_id: binding.allocation_id.clone(),
-        user_id: binding.user_id.clone(),
-        realm_id: binding.realm_id.clone(),
-        machine_id: identity.machine_id.clone(),
-        kernel_id: identity.kernel_id.clone(),
-        relay_public_key: identity.relay_public_key.clone(),
-        runtime_release_digest: binding.runtime_release_digest.clone(),
-        binding_digest: envelope.binding_digest.clone(),
-        exchanged_at: Some(exchanged.exchanged_at),
-        cloud_relay: Some(exchanged.cloud_relay),
-    };
     receipt.persist(&config.receipt_path)?;
-    persist_managed_cloud_relay_profile(persisted_profile(
+    match cloud.recover_disposable_worker_exchange(
+        &receipt.cloud_api_url,
+        &receipt.binding_digest,
+        &receipt.binding,
+    )? {
+        DisposableWorkerRecoveryOutcome::Ready(result) => {
+            finish_disposable_worker(config, receipt, result)
+        }
+        DisposableWorkerRecoveryOutcome::Pending => Err(bootstrap_error(
+            "disposable worker exchange result is not yet recoverable",
+        )),
+        DisposableWorkerRecoveryOutcome::Rejected => {
+            remove_receipt(&config.receipt_path)?;
+            if config.envelope_path.exists() {
+                remove_envelope(&config.envelope_path)?;
+            }
+            Err(bootstrap_error(
+                "Cloud terminally rejected the disposable worker bootstrap result",
+            ))
+        }
+    }
+}
+
+fn finish_disposable_worker(
+    config: &BootstrapConfig,
+    mut receipt: DisposableWorkerBootstrapReceipt,
+    result: DisposableWorkerBootstrapResult,
+) -> Result<(), DaemonError> {
+    if receipt
+        .enrollment_receipt
+        .as_ref()
+        .is_some_and(|expected| expected != &result.enrollment_receipt)
+    {
+        remove_receipt(&config.receipt_path)?;
+        if config.envelope_path.exists() {
+            remove_envelope(&config.envelope_path)?;
+        }
+        return Err(bootstrap_error(
+            "recovered disposable worker receipt changed after exchange",
+        ));
+    }
+    receipt.status = DisposableWorkerBootstrapReceiptStatus::Exchanged;
+    receipt.enrollment_receipt = Some(result.enrollment_receipt);
+    receipt.cloud_relay = Some(result.cloud_relay);
+    if let Err(error) = validate_disposable_worker_result(&receipt) {
+        remove_receipt(&config.receipt_path)?;
+        if config.envelope_path.exists() {
+            remove_envelope(&config.envelope_path)?;
+        }
+        return Err(error);
+    }
+    receipt.persist(&config.receipt_path)?;
+    let expected_profile = persisted_profile(
         receipt
             .cloud_relay
             .clone()
             .ok_or_else(|| bootstrap_error("disposable worker relay receipt is missing"))?,
-    ))?;
-    remove_envelope(&config.envelope_path)
-}
-
-fn resume_disposable_worker(
-    config: &BootstrapConfig,
-    envelope: Option<&DisposableWorkerBootstrapEnvelope>,
-    receipt: &DisposableWorkerBootstrapReceipt,
-    identity: &ManagedRuntimeIdentity,
-) -> Result<(), DaemonError> {
-    if receipt.machine_id != identity.machine_id
-        || receipt.kernel_id != identity.kernel_id
-        || receipt.relay_public_key != identity.relay_public_key
-    {
-        return Err(bootstrap_error(
-            "disposable worker receipt does not match the local identity",
-        ));
-    }
-    if let Some(envelope) = envelope {
-        if envelope.binding.allocation_id != receipt.allocation_id
-            || envelope.binding.runtime_release_digest != receipt.runtime_release_digest
-            || envelope.binding_digest != receipt.binding_digest
-        {
-            remove_envelope(&config.envelope_path)?;
+    );
+    match load_managed_cloud_relay_profile() {
+        Some(profile) if profile != expected_profile => {
+            if config.envelope_path.exists() {
+                remove_envelope(&config.envelope_path)?;
+            }
             return Err(bootstrap_error(
-                "disposable worker envelope conflicts with its receipt",
+                "existing Cloud profile conflicts with the disposable worker receipt",
             ));
         }
-    }
-    if receipt.status == DisposableWorkerBootstrapReceiptStatus::ExchangePending {
-        return Err(bootstrap_error(
-            "disposable worker exchange outcome is indeterminate; refusing replay",
-        ));
-    }
-    let receipt_relay = receipt
-        .cloud_relay
-        .clone()
-        .ok_or_else(|| bootstrap_error("disposable worker relay receipt is missing"))?;
-    let profile = match load_managed_cloud_relay_profile() {
-        Some(profile) => profile,
-        None => {
-            let profile = persisted_profile(receipt_relay);
-            persist_managed_cloud_relay_profile(profile.clone())?;
-            profile
-        }
-    };
-    if profile.machine_id.as_deref() != Some(receipt.machine_id.as_str())
-        || profile.user_id != receipt.user_id
-        || profile.realm_id != receipt.realm_id
-        || profile
-            .machine_credential
-            .as_deref()
-            .is_none_or(|value| !valid_secret(value, "mcred_"))
-        || !valid_managed_relay_url(&profile.relay_url)
-    {
-        return Err(bootstrap_error(
-            "disposable worker Cloud profile does not match its receipt",
-        ));
+        Some(_) => {}
+        None => persist_managed_cloud_relay_profile(expected_profile)?,
     }
     if config.envelope_path.exists() {
         remove_envelope(&config.envelope_path)?;
@@ -446,36 +563,52 @@ fn resume_disposable_worker(
     Ok(())
 }
 
-fn validate_disposable_worker_exchange(
-    envelope: &DisposableWorkerBootstrapEnvelope,
-    identity: &ManagedRuntimeIdentity,
-    response: &DisposableWorkerExchangeResponse,
+fn validate_disposable_worker_result(
+    receipt: &DisposableWorkerBootstrapReceipt,
 ) -> Result<(), DaemonError> {
-    let binding = &envelope.binding;
-    if !valid_disposable_identifier(&response.grant_id)
-        || response.allocation_id != binding.allocation_id
-        || response.worker_machine_id != binding.worker_machine_id
-        || response.worker_kernel_id != binding.worker_kernel_id
-        || response.image_digest != binding.image_digest
-        || response.runtime_release_digest != binding.runtime_release_digest
-        || DateTime::parse_from_rfc3339(&response.exchanged_at).is_err()
-        || response.cloud_relay.machine_id != identity.machine_id
-        || response.cloud_relay.user_id != binding.user_id
-        || response.cloud_relay.realm_id != binding.realm_id
-        || normalized_api_url(&response.cloud_relay.api_url)
-            != normalized_api_url(&envelope.cloud_api_url)
-        || !valid_managed_relay_url(&response.cloud_relay.relay_url)
-        || !valid_secret(&response.cloud_relay.machine_credential, "mcred_")
-        || !valid_identifier(&response.cloud_relay.account_id)
-        || !valid_identifier(&response.cloud_relay.account_slug)
-        || !valid_identifier(&response.cloud_relay.issuer_id)
-        || response.cloud_relay.email.trim().is_empty()
-        || response.cloud_relay.email.len() > 320
-        || response.cloud_relay.machine_alias.trim().is_empty()
-        || response.cloud_relay.machine_alias.len() > 256
+    validate_disposable_worker_enrollment(receipt)?;
+    let binding = &receipt.binding;
+    let relay = receipt.cloud_relay.as_ref().ok_or_else(|| {
+        bootstrap_error("disposable worker relay receipt is missing")
+    })?;
+    if relay.machine_id != binding.worker_machine_id
+        || relay.user_id != binding.user_id
+        || relay.realm_id != binding.realm_id
+        || relay.api_url != receipt.cloud_api_url
+        || !valid_managed_relay_url(&relay.relay_url)
+        || !valid_secret(&relay.machine_credential, "mcred_")
+        || !valid_identifier(&relay.account_id)
+        || !valid_identifier(&relay.account_slug)
+        || !valid_identifier(&relay.issuer_id)
+        || relay.email.trim().is_empty()
+        || relay.email.len() > 320
+        || relay.machine_alias.trim().is_empty()
+        || relay.machine_alias.len() > 256
     {
         return Err(bootstrap_error(
             "Cloud disposable worker response does not match its immutable binding",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_disposable_worker_enrollment(
+    receipt: &DisposableWorkerBootstrapReceipt,
+) -> Result<(), DaemonError> {
+    let binding = &receipt.binding;
+    let enrollment = receipt.enrollment_receipt.as_ref().ok_or_else(|| {
+        bootstrap_error("disposable worker enrollment receipt is missing")
+    })?;
+    if !valid_disposable_identifier(&enrollment.grant_id)
+        || enrollment.allocation_id != binding.allocation_id
+        || enrollment.worker_machine_id != binding.worker_machine_id
+        || enrollment.worker_kernel_id != binding.worker_kernel_id
+        || enrollment.image_digest != binding.image_digest
+        || enrollment.runtime_release_digest != binding.runtime_release_digest
+        || DateTime::parse_from_rfc3339(&enrollment.exchanged_at).is_err()
+    {
+        return Err(bootstrap_error(
+            "Cloud disposable worker enrollment receipt does not match its immutable binding",
         ));
     }
     Ok(())

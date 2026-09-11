@@ -11,7 +11,7 @@ use crate::config::write_private_file;
 use crate::error::DaemonError;
 
 use super::context_plan::ManagedKernelContextPlan;
-use super::cloud::ManagedCloudRelayProfile;
+use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
 
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 
@@ -46,7 +46,7 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) runtime_release_digest: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct DisposableWorkerBinding {
     pub(super) allocation_id: String,
@@ -100,6 +100,7 @@ pub(super) struct BootstrapReceipt {
 #[serde(rename_all = "snake_case")]
 pub(super) enum DisposableWorkerBootstrapReceiptStatus {
     ExchangePending,
+    ExchangeAccepted,
     Exchanged,
 }
 
@@ -109,15 +110,11 @@ pub(super) struct DisposableWorkerBootstrapReceipt {
     pub(super) schema_version: u32,
     pub(super) kind: String,
     pub(super) status: DisposableWorkerBootstrapReceiptStatus,
-    pub(super) allocation_id: String,
-    pub(super) user_id: String,
-    pub(super) realm_id: String,
-    pub(super) machine_id: String,
-    pub(super) kernel_id: String,
+    pub(super) cloud_api_url: String,
     pub(super) relay_public_key: String,
-    pub(super) runtime_release_digest: String,
     pub(super) binding_digest: String,
-    pub(super) exchanged_at: Option<String>,
+    pub(super) binding: DisposableWorkerBinding,
+    pub(super) enrollment_receipt: Option<DisposableWorkerEnrollmentReceipt>,
     pub(super) cloud_relay: Option<ManagedCloudRelayProfile>,
 }
 
@@ -234,30 +231,39 @@ impl DisposableWorkerBootstrapEnvelope {
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
-        let binding = &self.binding;
         if self.schema_version != 1
             || !valid_secret(&self.token, "dwboot_")
             || self.token.len() > "dwboot_".len() + 128
             || !valid_digest(&self.binding_digest)
-            || !valid_disposable_identifier(&binding.allocation_id)
-            || !valid_disposable_identifier(&binding.expected_home_kernel_id)
-            || !valid_disposable_identifier(&binding.user_id)
-            || !valid_disposable_identifier(&binding.realm_id)
-            || !valid_disposable_identifier(&binding.worker_machine_id)
-            || !valid_disposable_identifier(&binding.worker_kernel_id)
-            || !valid_digest(&binding.image_digest)
-            || !valid_digest(&binding.runtime_release_digest)
-            || !valid_disposable_identifier(&binding.manager_operation_id)
-            || binding.manager_operation_fence == 0
-            || binding.manager_operation_fence > 9_007_199_254_740_991
-            || !valid_digest(&binding.manager_request_digest)
-            || !valid_digest(&binding.sender_key_thumbprint)
-            || disposable_worker_binding_digest(binding)? != self.binding_digest
+            || self.binding.validate().is_err()
+            || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
         {
             return Err(state_error("disposable worker bootstrap envelope is invalid"));
         }
         self.expires_at()?;
         validate_cloud_url(&self.cloud_api_url)
+    }
+}
+
+impl DisposableWorkerBinding {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if !valid_disposable_identifier(&self.allocation_id)
+            || !valid_disposable_identifier(&self.expected_home_kernel_id)
+            || !valid_disposable_identifier(&self.user_id)
+            || !valid_disposable_identifier(&self.realm_id)
+            || !valid_disposable_identifier(&self.worker_machine_id)
+            || !valid_disposable_identifier(&self.worker_kernel_id)
+            || !valid_digest(&self.image_digest)
+            || !valid_digest(&self.runtime_release_digest)
+            || !valid_disposable_identifier(&self.manager_operation_id)
+            || self.manager_operation_fence == 0
+            || self.manager_operation_fence > 9_007_199_254_740_991
+            || !valid_digest(&self.manager_request_digest)
+            || !valid_digest(&self.sender_key_thumbprint)
+        {
+            return Err(state_error("disposable worker binding is invalid"));
+        }
+        Ok(())
     }
 }
 
@@ -331,19 +337,27 @@ impl DisposableWorkerBootstrapReceipt {
     fn validate(&self) -> Result<(), DaemonError> {
         if self.schema_version != 1
             || self.kind != "disposable_worker"
-            || !valid_disposable_identifier(&self.allocation_id)
-            || !valid_disposable_identifier(&self.user_id)
-            || !valid_disposable_identifier(&self.realm_id)
-            || !valid_disposable_identifier(&self.machine_id)
-            || !valid_disposable_identifier(&self.kernel_id)
+            || validate_cloud_url(&self.cloud_api_url).is_err()
             || self.relay_public_key.trim().is_empty()
-            || !valid_digest(&self.runtime_release_digest)
             || !valid_digest(&self.binding_digest)
-            || match (&self.status, self.exchanged_at.as_deref(), &self.cloud_relay) {
+            || self.binding.validate().is_err()
+            || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
+            || match (
+                &self.status,
+                self.enrollment_receipt.as_ref(),
+                self.cloud_relay.as_ref(),
+            ) {
                 (DisposableWorkerBootstrapReceiptStatus::ExchangePending, None, None) => false,
-                (DisposableWorkerBootstrapReceiptStatus::Exchanged, Some(value), Some(_)) => {
-                    DateTime::parse_from_rfc3339(value).is_err()
-                }
+                (
+                    DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted,
+                    Some(receipt),
+                    None,
+                ) => DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err(),
+                (
+                    DisposableWorkerBootstrapReceiptStatus::Exchanged,
+                    Some(receipt),
+                    Some(_),
+                ) => DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err(),
                 _ => true,
             }
         {

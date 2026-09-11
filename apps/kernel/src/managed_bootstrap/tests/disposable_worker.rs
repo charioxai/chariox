@@ -5,15 +5,17 @@ use crate::config::{
 use crate::managed_bootstrap::cloud::{
     DisposableWorkerBootstrapResult, DisposableWorkerEnrollmentReceipt,
     DisposableWorkerExchangeOutcome, DisposableWorkerExchangeRequest,
+    DisposableWorkerRecoveryOutcome, HttpBootstrapCloudClient,
 };
 use crate::managed_bootstrap::state::{
     disposable_worker_binding_digest, BootstrapEnvelope, BootstrapReceiptDocument,
-    DisposableWorkerBinding,
+    DisposableWorkerBinding, DisposableWorkerBootstrapReceiptStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FirstExchange {
     Accept,
+    AcceptResultLater,
     Reject,
     FailBeforeAccept,
     LoseAcceptedResponse,
@@ -23,15 +25,22 @@ struct WorkerCloud {
     exchange_calls: Mutex<Vec<DisposableWorkerExchangeRequest>>,
     recovery_calls: Mutex<Vec<String>>,
     first_exchange: Mutex<FirstExchange>,
+    pending_recoveries: Mutex<usize>,
     accepted: Mutex<Option<DisposableWorkerBootstrapResult>>,
 }
 
 impl WorkerCloud {
     fn new(first_exchange: FirstExchange) -> Self {
+        let pending_recoveries = if first_exchange == FirstExchange::AcceptResultLater {
+            1
+        } else {
+            0
+        };
         Self {
             exchange_calls: Mutex::new(Vec::new()),
             recovery_calls: Mutex::new(Vec::new()),
             first_exchange: Mutex::new(first_exchange),
+            pending_recoveries: Mutex::new(pending_recoveries),
             accepted: Mutex::new(None),
         }
     }
@@ -96,10 +105,12 @@ impl BootstrapCloudClient for WorkerCloud {
                     message: "accepted response was lost".into(),
                 })
             }
-            FirstExchange::Accept => {
+            FirstExchange::Accept | FirstExchange::AcceptResultLater => {
                 let result = Self::result(request);
                 *self.accepted.lock().unwrap() = Some(result.clone());
-                Ok(DisposableWorkerExchangeOutcome::Accepted(result))
+                Ok(DisposableWorkerExchangeOutcome::Accepted(
+                    result.enrollment_receipt,
+                ))
             }
         }
     }
@@ -109,18 +120,23 @@ impl BootstrapCloudClient for WorkerCloud {
         _api_url: &str,
         binding_digest: &str,
         _binding: &DisposableWorkerBinding,
-    ) -> Result<DisposableWorkerExchangeOutcome, DaemonError> {
+    ) -> Result<DisposableWorkerRecoveryOutcome, DaemonError> {
         self.recovery_calls
             .lock()
             .unwrap()
             .push(binding_digest.to_string());
+        let mut pending = self.pending_recoveries.lock().unwrap();
+        if *pending > 0 {
+            *pending -= 1;
+            return Ok(DisposableWorkerRecoveryOutcome::Pending);
+        }
         Ok(self
             .accepted
             .lock()
             .unwrap()
             .clone()
-            .map(DisposableWorkerExchangeOutcome::Accepted)
-            .unwrap_or(DisposableWorkerExchangeOutcome::Pending))
+            .map(DisposableWorkerRecoveryOutcome::Ready)
+            .unwrap_or(DisposableWorkerRecoveryOutcome::Pending))
     }
 
     fn confirm(
@@ -229,9 +245,36 @@ fn disposable_worker_cloud_shapes_match_the_approved_contract_exactly() {
         exchanged_at: "2026-09-11T00:00:00Z".into(),
     };
     assert_eq!(
-        serde_json::to_value(&receipt).unwrap().as_object().unwrap().len(),
-        7
+        serde_json::to_value(&receipt).unwrap(),
+        serde_json::json!({
+            "grantId": "grant-1",
+            "allocationId": "allocation-1",
+            "workerMachineId": "machine-1",
+            "workerKernelId": "kernel-1",
+            "imageDigest": format!("sha256:{}", "b".repeat(64)),
+            "runtimeReleaseDigest": format!("sha256:{}", "c".repeat(64)),
+            "exchangedAt": "2026-09-11T00:00:00Z",
+        })
     );
+}
+
+#[test]
+fn ordinary_http_client_does_not_forge_the_home_kernel_caller_boundary() {
+    let request = DisposableWorkerExchangeRequest {
+        token: format!("dwboot_{}", "a".repeat(43)),
+        allocation_id: "allocation-1".into(),
+        worker_machine_id: "machine-1".into(),
+        worker_kernel_id: "kernel-1".into(),
+        image_digest: format!("sha256:{}", "b".repeat(64)),
+        runtime_release_digest: format!("sha256:{}", "c".repeat(64)),
+        manager_operation_id: "operation-1".into(),
+        manager_operation_fence: 7,
+        manager_request_digest: format!("sha256:{}", "d".repeat(64)),
+    };
+    let error = HttpBootstrapCloudClient::default()
+        .exchange_disposable_worker("https://cloud.example.test", &request)
+        .unwrap_err();
+    assert!(error.to_string().contains("verified home-kernel sender proof"));
 }
 
 #[test]
@@ -286,7 +329,7 @@ fn disposable_worker_exchanges_once_and_persists_the_complete_binding() {
     );
     prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
     assert_eq!(cloud.exchange_calls.lock().unwrap().len(), 1);
-    assert!(cloud.recovery_calls.lock().unwrap().is_empty());
+    assert_eq!(cloud.recovery_calls.lock().unwrap().len(), 1);
     fixture.cleanup();
 }
 
@@ -308,6 +351,32 @@ fn disposable_worker_recovers_a_lost_accepted_response_without_reexchange() {
 }
 
 #[test]
+fn disposable_worker_recovers_after_the_exchange_receipt_was_persisted() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-receipt-recovery");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let binding = worker_binding(&fixture);
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud::new(FirstExchange::AcceptResultLater);
+
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    let Some(BootstrapReceiptDocument::DisposableWorker(receipt)) =
+        BootstrapReceiptDocument::read(&fixture.config.receipt_path).unwrap()
+    else {
+        panic!("accepted receipt must survive until result recovery")
+    };
+    assert_eq!(
+        receipt.status,
+        DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted
+    );
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
+    assert_eq!(cloud.exchange_calls.lock().unwrap().len(), 1);
+    assert_eq!(cloud.recovery_calls.lock().unwrap().len(), 2);
+    assert!(!fixture.config.envelope_path.exists());
+    fixture.cleanup();
+}
+
+#[test]
 fn disposable_worker_retries_only_after_recovery_proves_the_send_was_not_accepted() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("worker-send-loss");
@@ -319,7 +388,7 @@ fn disposable_worker_retries_only_after_recovery_proves_the_send_was_not_accepte
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
     assert_eq!(cloud.exchange_calls.lock().unwrap().len(), 2);
-    assert_eq!(cloud.recovery_calls.lock().unwrap().len(), 1);
+    assert_eq!(cloud.recovery_calls.lock().unwrap().len(), 2);
     assert!(!fixture.config.envelope_path.exists());
     fixture.cleanup();
 }
@@ -346,9 +415,32 @@ fn disposable_worker_recovers_missing_profile_and_rejects_any_stale_profile() {
 
     let mut persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
-    persisted["cloudRelay"]["machineCredential"] =
+    persisted["cloud_relay"]["machine_credential"] =
         serde_json::json!(format!("mcred_{}", "z".repeat(43)));
     fs::write(&profile_path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    fixture.cleanup();
+}
+
+#[test]
+fn disposable_worker_rejects_a_stale_enrollment_receipt() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-stale-receipt");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let binding = worker_binding(&fixture);
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud::new(FirstExchange::Accept);
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
+
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.config.receipt_path).unwrap()).unwrap();
+    receipt["enrollmentReceipt"]["imageDigest"] =
+        serde_json::json!(format!("sha256:{}", "f".repeat(64)));
+    fs::write(
+        &fixture.config.receipt_path,
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     fixture.cleanup();
 }
