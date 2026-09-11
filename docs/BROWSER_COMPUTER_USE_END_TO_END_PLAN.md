@@ -862,7 +862,7 @@ them without an explicitly approved tradeoff.
 | Human takeover during reconnect | ownership does not revert silently to the agent |
 | Web disconnect while TUI remains | TUI and kernel continue; Web reconnects to the same authoritative state |
 | Agent navigation or history refresh | the Web terminal keeps the current workspace grid rendered, scopes loading to the target pane, and never replaces the whole terminal with an unlabelled grey screen while authoritative history loads |
-| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
+| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; retained provider/transcript history is never treated as liveness; the waiting-room cache keys external-working generations atomically with the session revision; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
 | TUI disconnect while Web remains | Web and kernel continue; TUI replay does not duplicate interactions |
 | DNS, TLS, or relay endpoint failure | connection fails loudly, uses no unsafe fallback, and recovers after the endpoint is healthy |
 | Clock skew and expired tokens | refresh or rejection is deterministic and does not bypass authorization |
@@ -1088,7 +1088,7 @@ CHA-16 is complete only when:
 - kernel-routed agent-to-agent messages never appear as queued user prompts and pass active, idle, reconnect, deduplication, ordering, cancellation, and Web/TUI projection drills
 - provider termination and queued-prompt advancement use one kernel-owned lifecycle across local, registered managed, relay-attached, and leased agents; progress-without-final, provider closure, reconnect/reload, stale event ordering, preserved conversation context, exactly-once backlog promotion, and the next accepted prompt leave card, tooltip, timer, transcript, and durable history consistent
 - focused-agent navigation and history refresh preserve the rendered Web terminal grid, expose bounded target-pane loading and failure states, and never flash an unlabelled whole-workspace placeholder
-- `WORKING` status, elapsed timer, provider/tool trace, and queued-prompt admission share one freshness contract; a stale provider/tool heartbeat cannot leave a silent multi-hour turn or hide the active operation, and reconciliation is identical before and after Web reconnect/reload
+- `WORKING` status, elapsed timer, provider/tool trace, and queued-prompt admission share one freshness contract; retained external/provider history cannot manufacture live work, external-working state and the session revision are read and cached atomically, a stale provider/tool heartbeat cannot leave a silent multi-hour turn or hide the active operation, and reconciliation is identical before and after Web reconnect/reload
 - state, installed programs, browser authentication, and provider threads
   survive save/restart and full recreation
 - vault-backed public-service work passes leak scans
