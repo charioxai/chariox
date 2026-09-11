@@ -16,6 +16,7 @@ type ExecutionOutcome = Result<Response, String>;
 pub(super) struct CancellationSignal {
     requested: AtomicBool,
     stopped: AtomicBool,
+    accepted: AtomicBool,
     fenced: AtomicBool,
 }
 
@@ -24,6 +25,10 @@ impl CancellationSignal {
         self.requested.load(Ordering::Acquire)
     }
     pub(super) fn confirm_stop(&self) {
+        self.accepted.store(true, Ordering::Release);
+        self.stopped.store(true, Ordering::Release);
+    }
+    pub(super) fn reject_after_stop(&self) {
         self.stopped.store(true, Ordering::Release);
     }
     pub(super) fn confirm_fence(&self) {
@@ -32,6 +37,9 @@ impl CancellationSignal {
     }
     fn fenced(&self) -> bool {
         self.fenced.load(Ordering::Acquire)
+    }
+    fn accepted(&self) -> bool {
+        self.accepted.load(Ordering::Acquire)
     }
 }
 
@@ -268,7 +276,7 @@ impl BrowserControllerProcessStore {
         while !record.signal.stopped.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        record.signal.stopped.load(Ordering::Acquire)
+        record.signal.stopped.load(Ordering::Acquire) && record.signal.accepted()
     }
     #[cfg(test)]
     pub(crate) fn test_forget_completed_browser_actions(&self) {
@@ -443,7 +451,7 @@ impl BrowserControllerProcessStore {
         ownership.supervisor.backend.action_cancellation = Some(Arc::clone(&active.signal));
         let result = operation(&mut ownership);
         ownership.supervisor.backend.action_cancellation = None;
-        let outcome = if active.signal.stopped.load(Ordering::Acquire) {
+        let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
             let controller_fenced = active.signal.fenced();
             Ok(Response::ActionCancelled { controller_fenced })
         } else {

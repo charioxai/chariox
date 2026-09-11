@@ -24,7 +24,7 @@ extension. A release system may zip the directory contents without changing the
 tree; it must apply normal extension signing/publication controls separately.
 The source Chrome executable and profile are never modified by the packager.
 
-The manifest has only `activeTab` initially. `cookies` and broad HTTP/HTTPS host
+The manifest has `activeTab`, `storage`, and `alarms` initially. `cookies` and broad HTTP/HTTPS host
 patterns are declarations under `optional_permissions` and
 `optional_host_permissions`, not grants. When the user clicks the extension
 action, its service worker captures that one source tab and opens a durable
@@ -66,13 +66,19 @@ Before the confirmation gesture, the connector snapshots `cookies` and each
 exact host permission independently and reserves those needs with the shared MV3
 service worker. Chrome's permission-added event plus post-grant activation marks
 only grants absent from that snapshot as connector-owned. Completion, denial,
-cancellation, timeout, page disconnect and delivery failure all release the
+cancellation, timeout, explicit page release, tab close and delivery failure all release the
 lease. A grant is removed only when connector-owned and no other active connector
 page needs it; permissions that predated the operation are never removed.
 
-The connector declares no storage permission and uses no extension storage,
-content script, externally connectable endpoint, web-accessible resource or page
-message bridge. Cookie values exist only in the short-lived source batch passed
+The coordinator stores only its versioned operation ID, owner tab ID, exact
+permission names/origins, preexisting/acquired/pending sets and active state in
+`chrome.storage.session`. This Chrome-120-supported worker-lifecycle seam lets a
+fresh service worker recover leases idempotently, coordinate concurrent pages,
+and retry late-grant cleanup from a 30-second alarm without busy polling. A port
+disconnect is not treated as page close because service-worker suspension also
+disconnects ports; explicit release and `tabs.onRemoved` are authoritative.
+The connector uses no local/sync extension storage, content script, externally
+connectable endpoint, web-accessible resource or page message bridge. Cookie values exist only in the short-lived source batch passed
 to the private delivery adapter. They never enter extension storage, DOM text,
 logs, browser history, analytics, prompts, screenshots, pairing data, progress,
 results, consent requests or other public protocol requests.
@@ -650,9 +656,12 @@ under exclusive Environment ownership, and creates durable quarantine before
 routing the private controller command. The controller fence and encrypted
 journal provide writer exclusion, verification, rollback, and fail-closed cleanup.
 Kernel-owned controller startup/reconnect resumes matching cleanup or performs
-rollback before releasing quarantine. Active cancellation is routed by request
-ID to the worker and acknowledged only after the controller stops advancing the
-transaction. Results contain exact metadata-only coverage of the selected domains.
+rollback before releasing quarantine. Active cancellation is bound to the exact
+request/execution ID in both the Rust stdio path and Node controller registry,
+passes an `AbortSignal` through the production destination/transaction, and is
+acknowledged to the caller only after the controller stops and authoritative
+rollback/cleanup releases durable quarantine. Results contain exact metadata-only
+coverage of the selected domains.
 
 The bridge is called only by the private protocol-321 delivery path after the
 home kernel consumes sender-bound consent and creates durable quarantine. The

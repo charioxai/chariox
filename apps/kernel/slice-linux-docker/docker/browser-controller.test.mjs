@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  BrowserControllerStdioServer,
   handleBrowserControllerRequest,
   parseMinimumDownloadFreeBytes,
 } from "./browser-controller.mjs";
+import {
+  cancellationFixtureState,
+  resetCancellationFixture,
+  waitForCancellationFixture,
+} from "./browser-import-cancellation-fixture.mjs";
 
 test("controller derives download headroom from the shared slice setting", () => {
   assert.equal(parseMinimumDownloadFreeBytes(undefined), 256 * 1024 * 1024);
@@ -37,6 +44,51 @@ test("controller rejects invalid and unknown requests", async () => {
     (await handleBrowserControllerRequest({ method: "health" })).error.code,
     "invalid_request",
   );
+});
+
+test("stdio controller cancels the exact active cookie import and waits for rollback cleanup", async (t) => {
+  resetCancellationFixture();
+  const prior = process.env.CHARIOX_BROWSER_IMPORT_MODULE;
+  process.env.CHARIOX_BROWSER_IMPORT_MODULE = new URL("./browser-import-cancellation-fixture.mjs",import.meta.url).href;
+  t.after(() => {
+    if (prior === undefined) delete process.env.CHARIOX_BROWSER_IMPORT_MODULE;
+    else process.env.CHARIOX_BROWSER_IMPORT_MODULE = prior;
+  });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const lines = readline.createInterface({input:output,crlfDelay:Infinity});
+  const iterator = lines[Symbol.asyncIterator]();
+  const server = new BrowserControllerStdioServer({input,output,browser:{}});
+  const running = server.run();
+  input.write(`${JSON.stringify({id:41,method:"browser.cookies.import",params:{
+    binding:{request_id:"a".repeat(32)},domains:["example.test"],
+  }})}\n`);
+  await waitForCancellationFixture();
+  input.write(`${JSON.stringify({id:42,method:"browser.cancel",params:{request_id:41}})}\n`);
+  // The terminal rollback is emitted before cancellation is acknowledged.
+  const terminal = JSON.parse((await iterator.next()).value);
+  assert.equal(terminal.id,41);
+  assert.equal(terminal.ok,true);
+  assert.deepEqual(terminal.result,{status:"rolled_back",results:[]});
+  const cancellation = JSON.parse((await iterator.next()).value);
+  assert.deepEqual(cancellation,{id:42,ok:true,result:{accepted:true}});
+  assert.deepEqual(cancellationFixtureState(),{
+    started:true,mutations:0,rolledBack:true,cleanupComplete:true,
+  });
+
+  // A transaction that reached an applied terminal state cannot be reported
+  // as cancelled merely because its registry entry was still draining.
+  resetCancellationFixture();
+  input.write(`${JSON.stringify({id:43,method:"browser.cookies.import",params:{
+    binding:{request_id:"b".repeat(32)},domains:["example.test"],ignore_abort:true,
+  }})}\n`);
+  await waitForCancellationFixture();
+  input.write(`${JSON.stringify({id:44,method:"browser.cancel",params:{request_id:43}})}\n`);
+  assert.equal(JSON.parse((await iterator.next()).value).result.status,"applied");
+  assert.deepEqual(JSON.parse((await iterator.next()).value),{id:44,ok:true,result:{accepted:false}});
+  input.end();
+  await running;
+  lines.close();
 });
 
 test("controller delegates browser observations and closes CDP on shutdown", async () => {

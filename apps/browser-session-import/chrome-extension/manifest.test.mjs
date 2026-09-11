@@ -7,7 +7,7 @@ const manifest = JSON.parse(await readFile(new URL('manifest.json',root),'utf8')
 
 test('MV3 manifest is installable and keeps cookie and host access optional', () => {
   assert.equal(manifest.manifest_version,3);
-  assert.deepEqual(manifest.permissions,['activeTab']);
+  assert.deepEqual(manifest.permissions,['activeTab','storage','alarms']);
   assert.deepEqual(manifest.optional_permissions,['cookies']);
   assert.deepEqual(manifest.optional_host_permissions,['http://*/*','https://*/*']);
   assert.equal(manifest.host_permissions,undefined);
@@ -16,14 +16,15 @@ test('MV3 manifest is installable and keeps cookie and host access optional', ()
   assert.equal(manifest.web_accessible_resources,undefined);
 });
 
-test('connector has no persistence, public page bridge, logging or mock-success path', async () => {
+test('connector persists only permission lease metadata in session storage and has no public bridge, logging or mock-success path', async () => {
   const files = ['background.mjs','connector.mjs','connector-core.mjs','delivery-adapter.mjs',
     'permission-coordinator.mjs'];
   const source = (await Promise.all(files.map(file => readFile(new URL(file,root),'utf8')))).join('\n');
-  for (const forbidden of ['chrome.storage','localStorage','sessionStorage','window.postMessage',
+  for (const forbidden of ['chrome.storage.local','chrome.storage.sync','localStorage','sessionStorage','window.postMessage',
     'onMessageExternal','console.','history.','analytics','captureVisibleTab','executeScript']) {
     assert.equal(source.includes(forbidden),false,forbidden);
   }
+  assert.match(source,/chrome\.storage\.session/);
   assert.match(source,/permissions\.request/);
   assert.match(source,/deliverBrowserImport/);
   assert.match(source,/browser_import_delivery_unavailable/);
