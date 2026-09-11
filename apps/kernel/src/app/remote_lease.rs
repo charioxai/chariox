@@ -644,7 +644,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .filter(|run| {
                             run.session_id() == agent.backing_session_id
                                 && run.agent_instance_id() == Some(agent.backing_agent_id.as_str())
-                                && run.state() != ProviderRunState::Ended
                         })
                         .collect::<Vec<_>>();
                     for provider_run in provider_runs {
@@ -653,8 +652,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             provider_run.session_id(),
                             provider_run.id(),
                         )?;
+                        self.app
+                            .update_provider_run_projection(outcome.run().clone());
                         #[cfg(test)]
-                        if self.app.leased_agent_provider_cleanup_failures.get(leased_agent_id)
+                        if self
+                            .app
+                            .leased_agent_provider_cleanup_failures
+                            .get(leased_agent_id)
                             == Some(&ProviderCleanupFailurePoint::ActivePointer)
                         {
                             self.app
@@ -665,12 +669,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 message: "injected provider cleanup failure".to_string(),
                             });
                         }
-                        self.app
-                            .sessions
-                            .set_active_provider_run(outcome.run().session_id(), None)?;
-                        self.app.update_provider_run_projection(outcome.into_run());
+                        crate::app::provider_liveness::clear_active_provider_run_session_pointer(
+                            self.app,
+                            outcome.run().session_id(),
+                            outcome.run().id(),
+                        )?;
                         #[cfg(test)]
-                        if self.app.leased_agent_provider_cleanup_failures.get(leased_agent_id)
+                        if self
+                            .app
+                            .leased_agent_provider_cleanup_failures
+                            .get(leased_agent_id)
                             == Some(&ProviderCleanupFailurePoint::ProcessRemoval)
                         {
                             self.app
@@ -681,8 +689,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 message: "injected provider cleanup failure".to_string(),
                             });
                         }
-                        let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
-                            .remove_run(&run_id);
+                        crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
+                            .remove_run(&run_id)?;
                     }
                     Ok::<_, DaemonError>(())
                 })(),

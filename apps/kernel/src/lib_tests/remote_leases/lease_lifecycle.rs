@@ -1,7 +1,5 @@
 use super::*;
-use crate::app::{
-    LeaseCallerBinding, LeasedAgentCleanupPhase, ProviderCleanupFailurePoint,
-};
+use crate::app::{LeaseCallerBinding, LeasedAgentCleanupPhase, ProviderCleanupFailurePoint};
 
 #[test]
 fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
@@ -344,10 +342,8 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
                 },
             );
         }
-        RemoteLeaseRuntime::new(&mut app).inject_next_leased_agent_provider_cleanup_failure(
-            &leased_agent.id,
-            failure_point,
-        );
+        RemoteLeaseRuntime::new(&mut app)
+            .inject_next_leased_agent_provider_cleanup_failure(&leased_agent.id, failure_point);
 
         let error = RemoteLeaseRuntime::new(&mut app)
             .destroy_execution_lease_for_caller(&lease.id, &caller)

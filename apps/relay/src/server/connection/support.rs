@@ -637,7 +637,7 @@ pub(super) async fn route_daemon_peer_request(
         &RelayEnvelope::DaemonIncomingPeerRequest {
             relay_request_id: relay_request_id.clone(),
             from_daemon_id: requester_daemon_key.daemon_id.clone(),
-            caller_identity: peer_identity(registry, peer_addr).await,
+            caller_identity: peer_request_identity(registry, peer_addr).await,
             encrypted_request,
         },
     )
@@ -904,6 +904,46 @@ pub(super) async fn peer_identity(
         .and_then(|peer| peer.identity.clone())
 }
 
+async fn peer_request_identity(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+) -> Option<RelayCallerIdentity> {
+    let guard = registry.read().await;
+    let peer = guard.peers.get(&peer_addr)?;
+    let mut identity = peer.identity.clone()?;
+    let registration = peer.daemon_registration.as_ref()?;
+    if identity.subject_kind == RelaySubjectKind::Kernel
+        && identity.token_id.is_some()
+        && identity.public_key_thumbprint.is_some()
+        && registration_daemon_is_exact_kernel_or_temporary_peer(
+            &registration.daemon_id,
+            &identity.subject,
+        )
+        && !registration.machine_id.trim().is_empty()
+    {
+        identity.subject = registration.machine_id.clone();
+        identity.subject_kind = RelaySubjectKind::Machine;
+    }
+    Some(identity)
+}
+
+fn registration_daemon_is_exact_kernel_or_temporary_peer(
+    registered_daemon_id: &str,
+    kernel_subject: &str,
+) -> bool {
+    if registered_daemon_id == kernel_subject {
+        return true;
+    }
+    let Some(suffix) = registered_daemon_id.strip_prefix(kernel_subject) else {
+        return false;
+    };
+    suffix
+        .strip_prefix(":peer-tmp:daemon-peer-tmp-")
+        .is_some_and(|sequence| {
+            !sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
 pub(super) async fn peer_allows_action(
     registry: &Arc<RwLock<RelayRegistry>>,
     peer_addr: SocketAddr,
@@ -1153,6 +1193,13 @@ pub(super) fn validate_daemon_registration_identity(
     };
     if !subject_matches {
         return Err("relay token subject does not match daemon registration");
+    }
+    if identity
+        .machine_id
+        .as_deref()
+        .is_some_and(|machine_id| machine_id != registration.machine_id)
+    {
+        return Err("relay token machine does not match daemon registration");
     }
     if let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() {
         use sha2::{Digest, Sha256};
