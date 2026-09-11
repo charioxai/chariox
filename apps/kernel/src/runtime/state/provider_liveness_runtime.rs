@@ -26,9 +26,32 @@ impl KernelRuntimeState {
                 .connector_adapter_processes
                 .shutdown_run(provider_run_id)
                 .await;
-            let session_outcome = self
-                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
-                .await?;
+            let session_outcome = if owned
+                .provider_run_has_active_prompt(session_id, &exit.ended_run)?
+            {
+                let termination = crate::provider::ProviderRunTermination::runtime_failure(
+                    "provider run was already ended during liveness reconciliation",
+                    crate::session::unix_epoch_ms(),
+                );
+                let diagnosed = owned
+                    .provider_store
+                    .record_terminal_diagnostic(provider_run_id, termination.reason.clone())?;
+                owned.provider_run_projection.update(diagnosed);
+                self.settle_unexpected_provider_run_exit(
+                    session_id,
+                    provider_run_id,
+                    exit.ended_run.agent_instance_id().ok_or_else(|| {
+                        DaemonError::AgentNotFound {
+                            agent_id: "provider run has no agent".to_string(),
+                        }
+                    })?,
+                    termination,
+                )
+                .await?
+            } else {
+                self.settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+                    .await?
+            };
             if session_outcome.had_active_prompt {
                 let recipients = owned
                     .attachment_store
