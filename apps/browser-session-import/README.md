@@ -79,11 +79,12 @@ results, consent requests or other public protocol requests.
 
 ### Final-delivery adapter contract
 
-`chrome-extension/delivery-adapter.mjs` is the only integration seam for the
-pending production runtime. Today `deliverBrowserImport()` always throws the
-fixed `browser_import_delivery_unavailable` code. Do not route the batch through
-`connectBrowserImportRelay().request`: that method deliberately accepts only the
-five metadata-only consent/source requests.
+`chrome-extension/delivery-adapter.mjs` is the connector integration seam for the
+integrated protocol-321 runtime delivery. Today `deliverBrowserImport()` always
+throws the fixed `browser_import_delivery_unavailable` code while the reviewed
+connector/Web binding and live signed validation remain. Do not route the batch
+through `connectBrowserImportRelay().request`: that method deliberately accepts
+only the five metadata-only consent/source requests.
 
 The production adapter must use the already paired sender key and pinned kernel
 key to encrypt this exact plaintext (no `summary` or extra fields):
@@ -134,13 +135,14 @@ The resulting private runtime command envelope is exactly:
 }
 ```
 
-The pending kernel command must be private to authenticated connector relay
-admission, not added to the general browser/local daemon request union. It must
-pin the enrolled sender key, decrypt with the selected kernel key, bind the inner
-request ID and selection byte-for-byte to the outer metadata and existing source
-claim, reject every reused nonce/request, acquire the destination's exclusive
-writer and durable recovery journal, apply through the existing controller
-transaction, and return only request-bound progress/result metadata. A wrong
+The integrated protocol-321 kernel command is private to authenticated connector
+relay admission, not added to the general browser/local daemon request union. It
+must pin the enrolled sender key, decrypt with the selected kernel key, and bind
+the inner request ID and selection byte-for-byte to the outer metadata and
+existing source claim, reject every reused nonce/request, acquire the
+destination's exclusive writer and durable recovery journal, apply through the
+existing controller transaction, and return only request-bound progress/result
+metadata. A wrong
 kernel, sender, nonce, generation, document, source store, domain, partition or
 overwrite value fails before application.
 
@@ -523,10 +525,11 @@ no destination writer. Destination execution has a separate private claim and
 cannot start from an unclaimed approval.
 
 The grant-aware reader wires these requests to the source authorization
-checkpoints. Protocol 320 wires the paired connector's encrypted delivery to the
-private destination claim; no public cookie-apply request exists. The MV3
-connector supplies attended pairing and permission UX; its final adapter and the
-Web entry remain disabled until the complete reviewed runtime lifecycle lands.
+checkpoints. Protocol-321 runtime delivery integrates the paired connector's
+encrypted delivery with the private destination claim; no public cookie-apply
+request exists. The MV3 connector supplies attended pairing and permission UX;
+its final adapter and the Web entry remain disabled while the reviewed
+connector/Web binding and live signed validation remain.
 
 `applyCookieImport` and `createCdpCookieStore` provide the destination operation
 used by the private bound browser-controller process. It is not exposed through
