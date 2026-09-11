@@ -45,6 +45,8 @@ export function buildSanitizedChildEnvironment(base, additions = {}) {
   ])
 }
 
+const helperEnvironment = () => buildSanitizedChildEnvironment(process.env)
+
 export function redactEvidence(value, { secretValues = retainedSecretValues } = {}) {
   if (Array.isArray(value)) return value.map((entry) => redactEvidence(entry, { secretValues }))
   if (value && typeof value === "object") {
@@ -68,6 +70,7 @@ function redactText(value, secretValues = retainedSecretValues) {
 export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "docker" }, {
   exec = execFileAsync,
   readKey = readFile,
+  baseEnvironment = process.env,
 } = {}) {
   if (typeof imageRef !== "string" || imageRef.trim() === "") throw new Error("verified image requires --image-ref or CHARIOX_SLICE_IMAGE")
   if (/\s|:\/\//.test(imageRef) || imageRef.replace(/@sha256:[0-9a-f]{64}$/, "").includes("@")) {
@@ -77,9 +80,9 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
   if (!new Set(["docker", "podman"]).has(engine)) throw new Error("container engine must be docker or podman")
   let inspected
   try {
-    const engineEnvironment = buildSanitizedChildEnvironment(process.env, Object.fromEntries(
+    const engineEnvironment = buildSanitizedChildEnvironment(baseEnvironment, Object.fromEntries(
       ["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"]
-        .filter((name) => typeof process.env[name] === "string").map((name) => [name, process.env[name]]),
+        .filter((name) => typeof baseEnvironment[name] === "string").map((name) => [name, baseEnvironment[name]]),
     ))
     const { stdout } = await exec(engine, ["image", "inspect", "--format", "{{json .}}", imageRef], { timeout: 20_000, env: engineEnvironment })
     inspected = JSON.parse(String(stdout).trim())
@@ -99,7 +102,7 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
   const digest = identity.slice(identity.lastIndexOf("@") + 1)
   const keyBytes = await readKey(signatureKey).catch(() => { throw new Error("image signature key unavailable") })
   if (!Buffer.isBuffer(keyBytes) || keyBytes.length === 0 || keyBytes.length > 64 * 1024) throw new Error("image signature key is empty or unreasonably large")
-  const verificationEnv = buildSanitizedChildEnvironment(process.env, { COSIGN_PUBLIC_KEY: keyBytes.toString("utf8") })
+  const verificationEnv = buildSanitizedChildEnvironment(baseEnvironment, { COSIGN_PUBLIC_KEY: keyBytes.toString("utf8") })
   const verify = async (kind, args) => {
     let stdout
     try { ({ stdout } = await exec("cosign", args, { timeout: 60_000, env: verificationEnv, maxBuffer: 1024 * 1024 })) } catch {
@@ -120,6 +123,43 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
     engineImageId: inspected.Id,
     signature: { verified: true, verifier: "cosign", keySha256: createHash("sha256").update(keyBytes).digest("hex"), bundleSha256: signatureBundleDigest },
     attestation: { verified: true, type: "slsaprovenance", bundleSha256: attestationBundleDigest },
+  }
+}
+
+export async function inspectDigestBoundRuntime({ containerId, image }, {
+  exec = execFileAsync,
+  baseEnvironment = process.env,
+} = {}) {
+  if (!/^[0-9a-f]{12,64}$/.test(containerId ?? "")) {
+    throw new Error("runtime container identity is required")
+  }
+  const environment = buildSanitizedChildEnvironment(baseEnvironment, Object.fromEntries(
+    ["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"]
+      .filter((name) => typeof baseEnvironment[name] === "string").map((name) => [name, baseEnvironment[name]]),
+  ))
+  let inspected
+  try {
+    const { stdout } = await exec(image.engine, ["container", "inspect", "--format", "{{json .}}", containerId], {
+      timeout: 20_000, env: environment, maxBuffer: 1024 * 1024,
+    })
+    inspected = JSON.parse(String(stdout).trim())
+  } catch {
+    throw new Error("runtime container inspection failed")
+  }
+  if (!/^[0-9a-f]{64}$/.test(inspected?.Id ?? "")
+    || !(inspected.Id === containerId || inspected.Id.startsWith(containerId))) {
+    throw new Error("runtime container inspection returned a different container identity")
+  }
+  if (inspected?.State?.Running !== true) throw new Error("runtime container is not running")
+  if (inspected?.Image !== image.engineImageId || inspected?.Config?.Image !== image.identity) {
+    throw new Error("runtime image does not match the verified image digest and engine image ID")
+  }
+  return { containerId: inspected.Id, imageId: inspected.Image, identity: inspected.Config.Image, running: true }
+}
+
+export function assertCurrentContainerIdentity(containerId, hostname = os.hostname()) {
+  if (typeof hostname !== "string" || hostname.length < 12 || !containerId?.startsWith(hostname)) {
+    throw new Error("inspected runtime container is not the container executing the soak")
   }
 }
 
@@ -248,26 +288,27 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
     if (options.mode === "detach") {
       await assertSourceUnchanged(repoRoot, source)
       const args = detachedArgs({ options, paths, allocation })
-      const descriptor = await open(paths.log, "a", 0o600)
-      const child = spawn(process.execPath, [scriptPath, ...args], {
+      const child = await launchDetachedRunner({
+        command: process.execPath,
+        args: [scriptPath, ...args],
         cwd: repoRoot,
+        logPath: paths.log,
         env: buildSanitizedChildEnvironment(process.env, {
           CHARIOX_SLICE_IMAGE: options.imageRef,
           CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
           CHARIOX_CONTAINER_ENGINE: options.containerEngine,
         }),
-        detached: true,
-        stdio: ["ignore", descriptor.fd, descriptor.fd],
-      })
-      child.unref()
-      await descriptor.close()
-      await writeFile(paths.pid, `${child.pid}\n`, { mode: 0o600 })
-      await writeJson(paths.status, {
-        schema,
-        status: "starting",
-        pid: child.pid,
-        startedAt,
-        runDir: paths.runDir,
+      }, {
+        writeStartupEvidence: async (startedChild) => {
+          await writeFile(paths.pid, `${startedChild.pid}\n`, { mode: 0o600 })
+          await writeJson(paths.status, {
+            schema,
+            status: "starting",
+            pid: startedChild.pid,
+            startedAt,
+            runDir: paths.runDir,
+          })
+        },
       })
       console.log(JSON.stringify(detachedLaunchSummary(paths, child.pid)))
       return
@@ -279,6 +320,44 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
   } catch (error) {
     if (await exists(paths.runDir) && !await exists(paths.result)) {
       await persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt })
+    }
+    throw error
+  }
+}
+
+export async function launchDetachedRunner({ command, args, cwd, env, logPath }, {
+  openLog = (candidate) => open(candidate, "a", 0o600),
+  spawnChild = spawn,
+  captureIdentity = (name, child) => captureSpawnedIdentity(name, child),
+  writeStartupEvidence,
+  terminate = terminateOwnedProcessGroup,
+} = {}) {
+  let descriptor = null
+  let child = null
+  try {
+    descriptor = await openLog(logPath)
+    child = spawnChild(command, args, { cwd, env, detached: true, stdio: ["ignore", descriptor.fd, descriptor.fd] })
+    child.ownedIdentity = await captureIdentity("detached runner", child)
+    await descriptor.close()
+    descriptor = null
+    await writeStartupEvidence(child)
+    child.unref()
+    return child
+  } catch (cause) {
+    if (descriptor) await descriptor.close().catch(() => {})
+    const action = child
+      ? await terminate("detached-runner-rollback", child)
+      : { name: "detached-runner-rollback", ok: true, notStarted: true, pidReuseSafe: true }
+    const error = cause instanceof Error ? cause : new Error(bounded(cause))
+    error.terminalCleanup = {
+      schema: "chariox.browser_computer_soak_cleanup.v1",
+      at: new Date().toISOString(),
+      phase: "startup",
+      actions: [action],
+      remainingPids: action.ok ? [] : [child?.pid].filter(Number.isSafeInteger),
+      pidReuseSafe: action.pidReuseSafe === true,
+      verificationCompleted: true,
+      clean: action.ok === true && action.pidReuseSafe === true,
     }
     throw error
   }
@@ -385,13 +464,13 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     })
     await assertRuntimeStillAvailable(allocation)
     fixture = await startFixtureServer()
-    const xvfb = spawnLogged("xvfb", "Xvfb", [display, "-screen", "0", "800x600x24", "-ac", "+extension", "RANDR", "+extension", "XTEST"], {
+    const xvfb = await spawnLogged("xvfb", "Xvfb", [display, "-screen", "0", "800x600x24", "-ac", "+extension", "RANDR", "+extension", "XTEST"], {
       env: environment, cwd: repoRoot, logsRoot,
     })
     owned.set("xvfb", xvfb)
     await waitForDisplay(display, environment)
-    owned.set("openbox", spawnLogged("openbox", "openbox", [], { env: environment, cwd: repoRoot, logsRoot }))
-    owned.set("tint2", spawnLogged("tint2", "tint2", ["-c", path.join(sourceRoot, "tint2rc")], { env: environment, cwd: repoRoot, logsRoot }))
+    owned.set("openbox", await spawnLogged("openbox", "openbox", [], { env: environment, cwd: repoRoot, logsRoot }))
+    owned.set("tint2", await spawnLogged("tint2", "tint2", ["-c", path.join(sourceRoot, "tint2rc")], { env: environment, cwd: repoRoot, logsRoot }))
 
     const chromiumArgs = [
       `--user-data-dir=${profileRoot}`,
@@ -406,7 +485,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       "--window-size=800,600",
       fixture.url,
     ]
-    owned.set("chromium", spawnLogged("chromium", "chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
+    owned.set("chromium", await spawnLogged("chromium", "chromium", chromiumArgs, { env: environment, cwd: repoRoot, logsRoot }))
     await waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000)
 
     const selkies = await execJson("/opt/chariox-selkies/bin/python", [path.join(sourceRoot, "slice-selkies.py"), "start"], {
@@ -414,11 +493,12 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     })
     if (selkies.available !== true || !Number.isSafeInteger(selkies.pid)) throw new Error("Selkies did not report a healthy owned process")
     selkiesPid = selkies.pid
+    ownedIdentities.push(...await captureOwnedIdentities([["viewer", selkiesPid]]))
 
-    controller = new ControllerClient(spawnProtocol("browser-controller", process.execPath, [path.join(sourceRoot, "browser-controller.mjs"), "stdio"], {
+    controller = new ControllerClient(await spawnProtocol("browser-controller", process.execPath, [path.join(sourceRoot, "browser-controller.mjs"), "stdio"], {
       env: environment, cwd: repoRoot, logsRoot,
     }))
-    stream = new StreamClient(spawnProtocol("selkies-stream", "/opt/chariox-selkies/bin/python", [
+    stream = new StreamClient(await spawnProtocol("selkies-stream", "/opt/chariox-selkies/bin/python", [
       path.join(sourceRoot, "slice-selkies-stream.py"), "--lease-ms", "60000",
     ], { env: environment, cwd: sourceRoot, logsRoot }))
     await stream.waitReady(15_000)
@@ -659,7 +739,7 @@ async function runPreflight({ options, allocation, paths, repoRoot, source, base
   const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
   const commands = ["Xvfb", "openbox", "tint2", "chromium", "scrot", "xdpyinfo", "xdotool", "ps"]
   const commandPaths = {}
-  for (const command of commands) commandPaths[command] = (await execFileAsync("which", [command], { timeout: 5_000 })).stdout.trim()
+  for (const command of commands) commandPaths[command] = (await execFileAsync("which", [command], { timeout: 5_000, env: helperEnvironment() })).stdout.trim()
   const files = [
     "browser-controller.mjs",
     "browser-controller-cdp.mjs",
@@ -735,12 +815,14 @@ async function cleanupRuntime({ controller, stream, owned, ownedIdentities, selk
   if (stream?.child) actions.push(await terminateGroup("selkies-stream-process", stream.child))
   if (controller?.child) actions.push(await terminateGroup("browser-controller-process", controller.child))
   if (Number.isSafeInteger(selkiesPid)) try {
+    const expected = ownedIdentities.find((entry) => entry.name === "viewer")
+    actions.push(await terminateCapturedProcessGroup("selkies-process", expected))
     const stopped = await execJson("/opt/chariox-selkies/bin/python", [path.join(sourceRoot, "slice-selkies.py"), "stop", "--allow-forced"], {
       cwd: sourceRoot, env: environment, timeout: 20_000,
     })
-    actions.push({ name: "selkies-stop", ok: stopped.stopped === true, forced: stopped.forced === true })
+    actions.push({ name: "selkies-state-clear", ok: stopped.stopped === true && stopped.forced !== true })
   } catch (error) {
-    actions.push({ name: "selkies-stop", ok: false, error: bounded(error?.message ?? error) })
+    actions.push({ name: "selkies-state-clear", ok: false, error: bounded(error?.message ?? error) })
   }
   for (const [name, child] of [...owned.entries()].reverse()) actions.push(await terminateGroup(name, child))
   try { await fixture?.close(); actions.push({ name: "fixture-close", ok: true }) } catch (error) {
@@ -763,19 +845,22 @@ async function cleanupRuntime({ controller, stream, owned, ownedIdentities, selk
   const displayReleased = !await exists(`/tmp/.X11-unix/X${allocation.displayNumber}`) && !await exists(`/tmp/.X${allocation.displayNumber}-lock`)
   const stateRemoved = stateRoot == null || !await exists(stateRoot)
   const leakScan = await scanRuntimeLeaks({ stateRoot, allocation })
+  const signalActions = actions.filter((entry) => entry.name === "selkies-process" || entry.name === "selkies-stream-process"
+    || entry.name === "browser-controller-process" || owned.has(entry.name))
+  const pidReuseSafe = signalActions.length > 0 && signalActions.every((entry) => entry.pidReuseSafe === true)
   return {
     schema: "chariox.browser_computer_soak_cleanup.v1",
     at: new Date().toISOString(),
     actions,
     remainingPids,
     reusedPids,
-    pidReuseSafe: true,
+    pidReuseSafe,
     remainingListeners,
     leakScan,
     portsReleased: portsReleased.every(Boolean),
     displayReleased,
     stateRemoved,
-    clean: remainingPids.length === 0 && remainingListeners.length === 0 && leakScan.clean
+    clean: pidReuseSafe && remainingPids.length === 0 && remainingListeners.length === 0 && leakScan.clean
       && displayReleased && stateRemoved && actions.every((entry) => entry.ok),
   }
 }
@@ -825,14 +910,17 @@ async function processIdentity(pid) {
     const close = statText.lastIndexOf(")")
     const fields = statText.slice(close + 2).split(" ")
     const startedAtTicks = fields[19]
-    const executable = await readlink(`/proc/${pid}/exe`).catch(() => null)
-    return { pid, startedAtTicks, executable }
+    const processGroupId = Number(fields[2])
+    const executable = await readlink(`/proc/${pid}/exe`)
+    if (!/^\d+$/.test(startedAtTicks ?? "") || !Number.isSafeInteger(processGroupId) || typeof executable !== "string") return null
+    return { pid, startedAtTicks, executable, processGroupId }
   } catch { return null }
 }
 
 export function processIdentityMatches(expected, observed) {
   return Boolean(expected && observed && expected.pid === observed.pid
-    && expected.startedAtTicks === observed.startedAtTicks && expected.executable === observed.executable)
+    && expected.startedAtTicks === observed.startedAtTicks && expected.executable === observed.executable
+    && expected.processGroupId === observed.processGroupId)
 }
 
 function assertOwnedPidHealth(expected, label) {
@@ -847,7 +935,10 @@ function processIdentitySync(pid) {
     const statText = readFileSync(`/proc/${pid}/stat`, "utf8")
     const close = statText.lastIndexOf(")")
     const fields = statText.slice(close + 2).split(" ")
-    return { pid, startedAtTicks: fields[19], executable: readlinkSync(`/proc/${pid}/exe`) }
+    const processGroupId = Number(fields[2])
+    const executable = readlinkSync(`/proc/${pid}/exe`)
+    if (!/^\d+$/.test(fields[19] ?? "") || !Number.isSafeInteger(processGroupId)) return null
+    return { pid, startedAtTicks: fields[19], executable, processGroupId }
   } catch { return null }
 }
 
@@ -862,7 +953,7 @@ export function createLifecycleGuard() {
 }
 
 async function scanRuntimeLeaks({ stateRoot, allocation }) {
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], { timeout: 10_000 })
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], { timeout: 10_000, env: helperEnvironment() })
   const markers = [stateRoot, `Xvfb :${allocation.displayNumber}`, `--display :${allocation.displayNumber}`].filter(Boolean)
   const matches = findRuntimeLeakMatches(stdout, { markers, currentPid: process.pid })
   return { clean: matches.length === 0, matches }
@@ -990,9 +1081,10 @@ class StreamClient {
   }
 }
 
-function spawnLogged(name, command, args, { env, cwd, logsRoot }) {
+async function spawnLogged(name, command, args, { env, cwd, logsRoot }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.log`), { flags: "a", mode: 0o600 })
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
+  child.ownedIdentity = await captureSpawnedIdentity(name, child)
   log.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
   child.retainedLogFinished = new Promise((resolve) => log.once("close", resolve))
   const output = createRedactingTransform()
@@ -1007,15 +1099,32 @@ function spawnLogged(name, command, args, { env, cwd, logsRoot }) {
   return child
 }
 
-function spawnProtocol(name, command, args, { env, cwd, logsRoot }) {
+async function spawnProtocol(name, command, args, { env, cwd, logsRoot }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.stderr.log`), { flags: "a", mode: 0o600 })
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] })
+  child.ownedIdentity = await captureSpawnedIdentity(name, child)
   log.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
   child.retainedLogFinished = new Promise((resolve) => log.once("close", resolve))
   const output = createRedactingTransform()
   output.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
   child.stderr.pipe(output).pipe(log)
   return child
+}
+
+async function captureSpawnedIdentity(name, child) {
+  if (!Number.isSafeInteger(child.pid)) throw new Error(`${name} did not expose a PID after spawn`)
+  await new Promise((resolve, reject) => {
+    if (child.spawnfile) return resolve()
+    child.once("spawn", resolve)
+    child.once("error", reject)
+  })
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const identity = await processIdentity(child.pid)
+    if (identity?.processGroupId === child.pid) return identity
+    await sleep(10)
+  }
+  try { child.kill("SIGKILL") } catch {}
+  throw new Error(`${name} detached process identity could not be captured`)
 }
 
 export function createRedactingTransform({ secretValues = retainedSecretValues } = {}) {
@@ -1052,21 +1161,72 @@ export function createRedactingTransform({ secretValues = retainedSecretValues }
   })
 }
 
-async function terminateGroup(name, child) {
+export async function terminateOwnedProcessGroup(name, child, {
+  identity = processIdentity,
+  signal = process.kill,
+  wait = waitForExit,
+  waitForLog = waitForRetainedLog,
+} = {}) {
   if (!child) return { name, ok: true, notStarted: true }
   if (childExited(child)) {
-    await waitForRetainedLog(child)
-    return { name, ok: !child.retainedLogError, alreadyExited: true, error: child.retainedLogError }
+    await waitForLog(child)
+    return { name, ok: !child.retainedLogError, alreadyExited: true, pidReuseSafe: Boolean(child.ownedIdentity), error: child.retainedLogError }
+  }
+  const expected = child.ownedIdentity
+  const beforeTerm = await identity(child.pid)
+  if (!processIdentityMatches(expected, beforeTerm) || beforeTerm.processGroupId !== expected.pid) {
+    return { name, ok: false, pidReuseSafe: false, error: "owned process identity changed before SIGTERM" }
   }
   let forced = false
-  try { process.kill(-child.pid, "SIGTERM") } catch {}
-  if (!await waitForExit(child, 5_000, false)) {
-    forced = true
-    try { process.kill(-child.pid, "SIGKILL") } catch {}
-    await waitForExit(child, 2_000, false)
+  try { signal(-expected.processGroupId, "SIGTERM") } catch (error) {
+    if (error?.code !== "ESRCH") return { name, ok: false, pidReuseSafe: true, error: bounded(error?.message ?? error) }
   }
-  await waitForRetainedLog(child)
-  return { name, ok: childExited(child) && !child.retainedLogError, forced, error: child.retainedLogError }
+  if (!await wait(child, 5_000, false)) {
+    forced = true
+    const beforeKill = await identity(child.pid)
+    if (!processIdentityMatches(expected, beforeKill) || beforeKill.processGroupId !== expected.pid) {
+      return { name, ok: false, forced, pidReuseSafe: false, error: "owned process identity changed before SIGKILL" }
+    }
+    try { signal(-expected.processGroupId, "SIGKILL") } catch (error) {
+      if (error?.code !== "ESRCH") return { name, ok: false, forced, pidReuseSafe: true, error: bounded(error?.message ?? error) }
+    }
+    await wait(child, 2_000, false)
+  }
+  await waitForLog(child)
+  return { name, ok: childExited(child) && !child.retainedLogError, forced, pidReuseSafe: true, error: child.retainedLogError }
+}
+
+const terminateGroup = terminateOwnedProcessGroup
+
+async function terminateCapturedProcessGroup(name, expected, {
+  identity = processIdentity,
+  signal = process.kill,
+} = {}) {
+  if (!expected) return { name, ok: false, pidReuseSafe: false, error: "owned process identity was not captured" }
+  const observed = await identity(expected.pid)
+  if (observed == null) return { name, ok: true, alreadyExited: true, pidReuseSafe: true }
+  if (!processIdentityMatches(expected, observed) || observed.processGroupId !== expected.pid) {
+    return { name, ok: false, pidReuseSafe: false, error: "owned process identity changed before SIGTERM" }
+  }
+  try { signal(-expected.processGroupId, "SIGTERM") } catch (error) {
+    if (error?.code !== "ESRCH") return { name, ok: false, pidReuseSafe: true, error: bounded(error?.message ?? error) }
+  }
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processIdentityMatches(expected, await identity(expected.pid))) return { name, ok: true, forced: false, pidReuseSafe: true }
+    await sleep(50)
+  }
+  const beforeKill = await identity(expected.pid)
+  if (!processIdentityMatches(expected, beforeKill) || beforeKill.processGroupId !== expected.pid) {
+    return { name, ok: false, forced: true, pidReuseSafe: false, error: "owned process identity changed before SIGKILL" }
+  }
+  try { signal(-expected.processGroupId, "SIGKILL") } catch (error) {
+    if (error?.code !== "ESRCH") return { name, ok: false, forced: true, pidReuseSafe: true, error: bounded(error?.message ?? error) }
+  }
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (!processIdentityMatches(expected, await identity(expected.pid))) return { name, ok: true, forced: true, pidReuseSafe: true }
+    await sleep(50)
+  }
+  return { name, ok: false, forced: true, pidReuseSafe: true, error: "owned process remained after SIGKILL" }
 }
 
 async function waitForRetainedLog(child) {
@@ -1079,7 +1239,7 @@ async function waitForRetainedLog(child) {
 }
 
 async function resourceSnapshot(label, rootPids, diskPath) {
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,rss=,%cpu=,comm="], { timeout: 10_000 })
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,rss=,%cpu=,comm="], { timeout: 10_000, env: helperEnvironment() })
   const rows = stdout.split("\n").map((line) => line.trim().split(/\s+/, 5)).filter((parts) => parts.length === 5).map(([pid, ppid, rss, cpu, command]) => ({
     pid: Number(pid), ppid: Number(ppid), rssKb: Number(rss), cpuPercent: Number(cpu), command,
   })).filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid))
@@ -1133,24 +1293,46 @@ async function networkSnapshot(ownedIds) {
   return { receivedBytes, transmittedBytes, totalBytes: receivedBytes + transmittedBytes, attribution }
 }
 
-async function networkNamespaceAttribution(ownedIds, maximumForeignPids = 32) {
+export async function networkNamespaceAttribution(ownedIds, maximumForeignPids = 32, {
+  currentPid = process.pid,
+  listProc = () => readdir("/proc"),
+  readNamespace = (candidate) => readlink(candidate),
+} = {}) {
   let namespace
-  try { namespace = await readlink(`/proc/${process.pid}/ns/net`) } catch {
+  try { namespace = await readNamespace(`/proc/${currentPid}/ns/net`) } catch {
     return { exclusive: false, foreignPids: [], reason: "network namespace identity unavailable" }
   }
   const foreignPids = []
-  for (const name of await readdir("/proc")) {
+  const unreadablePids = []
+  const mismatchedOwnedPids = []
+  let names
+  try { names = await listProc() } catch {
+    return { exclusive: false, namespace, foreignPids, unreadablePids, reason: "network namespace inventory unavailable" }
+  }
+  for (const name of names) {
     if (!/^\d+$/.test(name)) continue
     const pid = Number(name)
-    if (ownedIds.has(pid)) continue
+    if (pid === currentPid) continue
     let observed
-    try { observed = await readlink(`/proc/${pid}/ns/net`) } catch { continue }
-    if (observed === namespace) {
+    try { observed = await readNamespace(`/proc/${pid}/ns/net`) } catch {
+      unreadablePids.push(pid)
+      continue
+    }
+    if (ownedIds.has(pid)) {
+      if (observed !== namespace) mismatchedOwnedPids.push(pid)
+    } else if (observed === namespace) {
       foreignPids.push(pid)
       if (foreignPids.length >= maximumForeignPids) break
     }
   }
-  return { exclusive: foreignPids.length === 0, namespace, foreignPids }
+  return {
+    exclusive: foreignPids.length === 0 && unreadablePids.length === 0 && mismatchedOwnedPids.length === 0,
+    namespace,
+    foreignPids,
+    unreadablePids,
+    mismatchedOwnedPids,
+    reason: unreadablePids.length > 0 || mismatchedOwnedPids.length > 0 ? "network namespace inventory incomplete" : undefined,
+  }
 }
 
 async function ownedDiskBytes(roots, maximumEntries = 100_000) {
@@ -1199,11 +1381,12 @@ function descendantIds(rows, roots) {
 }
 
 async function sourceIdentity(repoRoot) {
+  const env = helperEnvironment()
   const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }] = await Promise.all([
-    execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000 }),
-    execFileAsync("git", ["rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000 }),
-    execFileAsync("git", ["branch", "--show-current"], { cwd: repoRoot, timeout: 10_000 }),
-    execFileAsync("git", ["status", "--short"], { cwd: repoRoot, timeout: 10_000 }),
+    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000, env }),
+    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000, env }),
+    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "branch", "--show-current"], { cwd: repoRoot, timeout: 10_000, env }),
+    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "status", "--short"], { cwd: repoRoot, timeout: 10_000, env }),
   ])
   return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
 }
@@ -1224,11 +1407,14 @@ async function captureProvenance({ options, repoRoot, source }) {
   const protocolSource = await readFile(path.join(repoRoot, "apps", "kernel", "src", "local", "api", "types.rs"), "utf8")
   const protocol = Number(protocolSource.match(/LOCAL_DAEMON_PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)/)?.[1])
   if (!Number.isSafeInteger(protocol)) throw new Error("could not identify the local daemon protocol version")
+  assertCurrentContainerIdentity(options.runtimeContainerId)
+  const runtimeImage = await inspectDigestBoundRuntime({ containerId: options.runtimeContainerId, image })
   return {
     schema: "chariox.browser_computer_soak_provenance.v1",
     capturedAt: new Date().toISOString(),
     source,
     image,
+    runtimeImage,
     limits: options.limits,
     viewer: { backend: options.viewerBackend },
     localDaemonProtocolVersion: protocol,
@@ -1290,6 +1476,7 @@ function detachedArgs({ options, paths, allocation }) {
     "--debug-port", String(allocation.debugPort),
     "--viewer-port", String(allocation.viewerPort),
     "--viewer-backend", options.viewerBackend,
+    "--runtime-container-id", options.runtimeContainerId,
     "--max-cadence-gap-seconds", String(options.limits.maxCadenceGapMs / 1_000),
     "--max-rss-mib", String(options.limits.maxRssBytes / 1024 / 1024),
     "--max-cpu-percent", String(options.limits.maxCpuPercent),
@@ -1502,7 +1689,7 @@ async function waitForExit(child, timeoutMs, reject = true) {
 async function persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt }) {
   const completedAt = new Date().toISOString()
   const marker = bounded(error?.stack ?? error)
-  const cleanup = {
+  const cleanup = error?.terminalCleanup ?? {
     schema: "chariox.browser_computer_soak_cleanup.v1",
     at: completedAt,
     phase: "startup",
