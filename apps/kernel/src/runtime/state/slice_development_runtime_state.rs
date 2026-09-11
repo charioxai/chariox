@@ -190,6 +190,11 @@ fn materialize_slice_development_publication(
     repositories: &[DevelopmentSourceRepositoryBinding],
     expected_publication: Option<&crate::slice::SliceDevelopmentPublication>,
 ) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
+    let access_action = if expected_publication.is_some() {
+        "verify"
+    } else {
+        "grant"
+    };
     ensure_private_real_directory(publication_parent)?;
     let canonical_publication_parent = fs::canonicalize(publication_parent)
         .map_err(|error| slice_development_io_error("resolve", publication_parent, error))?;
@@ -265,7 +270,7 @@ fn materialize_slice_development_publication(
         primary_repository_path: path_to_string(&primary.destination_path)?,
         repository_paths,
     };
-    update_managed_publication_access("grant", &publication_parent, &publication)?;
+    update_managed_publication_access(access_action, &publication_parent, &publication)?;
     Ok(publication)
 }
 
@@ -346,20 +351,31 @@ fn update_managed_publication_access(
     if !crate::slice::managed_docker_broker_configured() {
         return Ok(());
     }
-    let status = Command::new(MANAGED_PUBLICATION_ACCESS_HELPER)
+    let output = Command::new(MANAGED_PUBLICATION_ACCESS_HELPER)
         .arg(action)
         .arg(storage_root)
         .arg(&publication.destination_root)
         .args(&publication.repository_paths)
-        .status()
+        .output()
         .map_err(|error| {
             slice_development_error(format!("run managed publication access helper: {error}"))
         })?;
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let diagnostic = stderr
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("managed-publication-access.sh:"));
+        let detail = if let Some(diagnostic) = diagnostic {
+            format!(": {}", diagnostic.chars().take(4096).collect::<String>())
+        } else {
+            String::new()
+        };
         Err(slice_development_error(format!(
-            "managed publication access helper failed with {status}"
+            "managed publication access helper failed with {}{detail}",
+            output.status
         )))
     }
 }

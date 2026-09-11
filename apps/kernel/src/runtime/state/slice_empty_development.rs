@@ -69,6 +69,11 @@ pub(super) fn materialize(
     parent: &Path,
     expected: Option<&SliceDevelopmentPublication>,
 ) -> Result<SliceDevelopmentPublication, DaemonError> {
+    let access_action = if expected.is_some() {
+        "verify"
+    } else {
+        "grant"
+    };
     ensure_private_real_directory(parent)?;
     real_directory(parent)?;
     let publication = publication(parent)?;
@@ -103,7 +108,7 @@ pub(super) fn materialize(
         Err(error) => return Err(slice_development_io_error("recover", &destination, error)),
     }
     validate(parent)?;
-    update_managed_publication_access("grant", parent, &publication)?;
+    update_managed_publication_access(access_action, parent, &publication)?;
     Ok(publication)
 }
 
