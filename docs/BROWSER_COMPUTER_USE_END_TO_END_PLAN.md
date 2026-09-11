@@ -845,6 +845,7 @@ them without an explicitly approved tradeoff.
 | Selkies crash | View degrades and retries without blocking kernel work |
 | Viewer closes mid-action | agent action ownership remains deterministic |
 | Queue saturation | fail-fast or bounded backpressure, relay readers stay live |
+| Provider run terminates with queued prompts | the kernel records one authoritative bounded termination reason, closes the active run once, promotes the queued backlog exactly once, preserves provider-thread/history continuity, and projects the same card, tooltip, timer, transcript, and next-prompt state before and after reconnect |
 | Slow viewer | other viewers and agents remain unaffected |
 | Network latency and loss | measured degradation and no protocol corruption |
 | Low memory | admission rejection or graceful stop before OOM |
@@ -1083,6 +1084,7 @@ CHA-16 is complete only when:
 - all three providers pass structured browser and computer fallback drills
 - user takeover, multi-agent concurrency, permissions, and actor traces pass
 - kernel-routed agent-to-agent messages never appear as queued user prompts and pass active, idle, reconnect, deduplication, ordering, cancellation, and Web/TUI projection drills
+- provider termination and queued-prompt advancement use one kernel-owned lifecycle across local, registered managed, relay-attached, and leased agents; progress-without-final, provider closure, reconnect/reload, stale event ordering, preserved conversation context, exactly-once backlog promotion, and the next accepted prompt leave card, tooltip, timer, transcript, and durable history consistent
 - state, installed programs, browser authentication, and provider threads
   survive save/restart and full recreation
 - vault-backed public-service work passes leak scans
