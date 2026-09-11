@@ -8,11 +8,11 @@ impl CommandRouter {
         self.config_projection.snapshot().kernel_runtime_role
     }
 
-    pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String, String)> {
+    pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String)> {
         self.config_projection
             .snapshot()
             .cloud_relay
-            .and_then(|profile| Some((profile.realm_id, profile.user_id, profile.machine_id?)))
+            .map(|profile| (profile.realm_id, profile.user_id))
     }
 
     pub(crate) async fn relay_authorize_execution_lease_caller(

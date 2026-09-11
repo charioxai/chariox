@@ -1595,7 +1595,14 @@ fn authenticated_lease_worker_caller(
     identity: Option<&RelayCallerIdentity>,
     encrypted_request: &EncryptedRelayPayload,
 ) -> Result<crate::app::LeaseCallerBinding, chariox_relay::protocol::RelayError> {
-    let identity = require_bound_kernel_sender(identity, encrypted_request)?;
+    let identity = require_bound_daemon_sender(identity, encrypted_request)?;
+    if identity.subject_kind != chariox_relay::auth::RelaySubjectKind::Machine {
+        return Err(relay_error(
+            "unauthorized",
+            "execution lease caller must use an authenticated machine identity",
+            false,
+        ));
+    }
     let home_kernel_id = canonical_peer_daemon_id(from_daemon_id).ok_or_else(|| {
         relay_error(
             "unauthorized",
@@ -1603,13 +1610,6 @@ fn authenticated_lease_worker_caller(
             false,
         )
     })?;
-    if identity.subject != home_kernel_id {
-        return Err(relay_error(
-            "unauthorized",
-            "execution lease transport identity does not match authenticated kernel subject",
-            false,
-        ));
-    }
     let owner_user_id = identity.user_id.as_deref().ok_or_else(|| {
         relay_error(
             "unauthorized",
@@ -1624,9 +1624,7 @@ fn authenticated_lease_worker_caller(
             false,
         )
     })?;
-    let Some((worker_realm_id, worker_user_id, authenticated_machine_id)) =
-        router.lease_worker_enrollment()
-    else {
+    let Some((worker_realm_id, worker_user_id)) = router.lease_worker_enrollment() else {
         return Err(relay_error(
             "unauthorized",
             "remote lease worker has no Cloud relay enrollment",
@@ -1645,7 +1643,7 @@ fn authenticated_lease_worker_caller(
     }
     Ok(crate::app::LeaseCallerBinding {
         home_kernel_id: home_kernel_id.to_string(),
-        authenticated_machine_id,
+        authenticated_machine_id: identity.subject.clone(),
         owner_user_id: owner_user_id.to_string(),
         realm_id: identity.realm_id.clone(),
         public_key_thumbprint: public_key_thumbprint.to_string(),
@@ -1920,8 +1918,10 @@ mod tests {
         let source_public_key =
             relay_crypto::public_key_from_private_key_base64(&source_private_key)
                 .expect("source public key");
-        let identity =
-            scoped_kernel_identity(Some(public_key_thumbprint(&source_public_key)), u64::MAX);
+        let identity = scoped_machine_identity(
+            "machine-home-1",
+            Some(public_key_thumbprint(&source_public_key)),
+        );
         let request =
             |home_kernel_id: &str, owner_user_id: &str| RelayPeerRequest::CreateExecutionLease {
                 home_kernel_id: home_kernel_id.to_string(),
@@ -1951,6 +1951,24 @@ mod tests {
                 "unauthorized"
             );
         }
+        let kernel_identity_denied = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            scoped_kernel_identity(Some(public_key_thumbprint(&source_public_key)), u64::MAX),
+            &source_private_key,
+            &target_public_key,
+            request("source-kernel-1", "user-1"),
+        )
+        .await;
+        assert_eq!(
+            kernel_identity_denied
+                .error
+                .expect("kernel-scoped identity must not supply machine authority")
+                .code,
+            "unauthorized"
+        );
         let confused_home = send_lease_worker_request(
             &router,
             &state,
@@ -1959,13 +1977,13 @@ mod tests {
             identity.clone(),
             &source_private_key,
             &target_public_key,
-            request("forged-home", "user-1"),
+            request("source-kernel-1", "user-1"),
         )
         .await;
         assert_eq!(
             confused_home
                 .error
-                .expect("transport name must match authenticated kernel subject")
+                .expect("transport name must match the claimed home kernel")
                 .code,
             "unauthorized"
         );
@@ -2001,8 +2019,10 @@ mod tests {
         let rotated_public_key =
             relay_crypto::public_key_from_private_key_base64(&rotated_private_key)
                 .expect("rotated public key");
-        let rotated_identity =
-            scoped_kernel_identity(Some(public_key_thumbprint(&rotated_public_key)), u64::MAX);
+        let rotated_identity = scoped_machine_identity(
+            "machine-home-1",
+            Some(public_key_thumbprint(&rotated_public_key)),
+        );
         let destroy = RelayPeerRequest::DestroyExecutionLease {
             lease_id: lease.id.clone(),
         };
@@ -2025,20 +2045,17 @@ mod tests {
             "unauthorized"
         );
 
-        let attacker_private_key = relay_crypto::generate_private_key_base64();
-        let attacker_public_key =
-            relay_crypto::public_key_from_private_key_base64(&attacker_private_key)
-                .expect("attacker public key");
-        let mut attacker =
-            scoped_kernel_identity(Some(public_key_thumbprint(&attacker_public_key)), u64::MAX);
-        attacker.subject = "attacker-kernel".to_string();
+        let attacker = scoped_machine_identity(
+            "machine-attacker",
+            Some(public_key_thumbprint(&source_public_key)),
+        );
         let denied = send_lease_worker_request(
             &router,
             &state,
             &outgoing_tx,
-            "attacker-kernel",
+            "source-kernel-1",
             attacker.clone(),
-            &attacker_private_key,
+            &source_private_key,
             &target_public_key,
             destroy.clone(),
         )
@@ -2069,9 +2086,9 @@ mod tests {
             &router,
             &state,
             &outgoing_tx,
-            "attacker-kernel",
+            "source-kernel-1",
             attacker,
-            &attacker_private_key,
+            &source_private_key,
             &target_public_key,
             destroy,
         )
