@@ -21,6 +21,8 @@ use crate::protocol::{
 use crate::registry::DaemonKey;
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::collections::BTreeMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -101,6 +103,20 @@ fn scoped_claim(
         public_key_thumbprint: None,
         entitlements_version: None,
     }
+}
+
+fn hosted_kernel_jwt(claims: &RelayTokenClaims, issuer_secret: &str) -> String {
+    let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(claims).expect("hosted claims should serialize"));
+    let signing_input = format!("{header}.{payload}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(issuer_secret.as_bytes())
+        .expect("HMAC accepts an arbitrary issuer secret");
+    mac.update(signing_input.as_bytes());
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(mac.finalize().into_bytes());
+    format!("{signing_input}.{signature}")
 }
 
 async fn connect_async_with_retry(

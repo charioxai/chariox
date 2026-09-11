@@ -134,6 +134,8 @@ pub(crate) use remote_lease::{
     LeaseCallerBinding, LeasedAgentCleanupPhase, PreparedLeasedProviderRun, RemoteLeaseRuntime,
     RemoteProviderFailure,
 };
+#[cfg(test)]
+pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -194,6 +196,9 @@ pub struct DaemonApp {
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]
     leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
+    #[cfg(test)]
+    leased_agent_provider_cleanup_failures:
+        BTreeMap<String, remote_lease::ProviderCleanupFailurePoint>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -372,6 +377,8 @@ impl DaemonApp {
             leased_agent_cleanup_phases: BTreeMap::new(),
             #[cfg(test)]
             leased_agent_cleanup_failures: BTreeMap::new(),
+            #[cfg(test)]
+            leased_agent_provider_cleanup_failures: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:

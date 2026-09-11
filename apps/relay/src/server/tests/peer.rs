@@ -1,6 +1,195 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promotion() {
+    let issuer_secret = "hosted-issuer-secret";
+    let mut issuers = BTreeMap::new();
+    issuers.insert("hosted-cloud".to_string(), issuer_secret.to_string());
+    let server = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: None,
+        },
+        RelayAuthVerifier::scoped_hmac(issuers, Some(10_000)),
+    );
+    let listener = server.bind_listener().await.expect("relay listener");
+    let addr = listener.local_addr().expect("relay address");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut home, _) = connect_async_with_retry(&url).await.expect("home connects");
+    let (mut worker, _) = connect_async_with_retry(&url).await.expect("worker connects");
+    let (mut alias_home, _) = connect_async_with_retry(&url)
+        .await
+        .expect("alias home connects");
+
+    let claims = |token_id: &str, subject: &str, user_id: &str, thumbprint: &str| {
+        RelayTokenClaims {
+            issuer: "hosted-cloud".to_string(),
+            subject: subject.to_string(),
+            subject_kind: RelaySubjectKind::Kernel,
+            realm_id: "realm-home".to_string(),
+            allowed_actions: vec![RelayAction::DaemonRegister, RelayAction::PeerRequest],
+            allowed_targets: None,
+            issued_at_ms: 1,
+            expires_at_ms: 20_000,
+            token_id: token_id.to_string(),
+            account_id: Some("account-home".to_string()),
+            organization_id: None,
+            user_id: Some(user_id.to_string()),
+            device_id: None,
+            machine_id: Some("machine-home".to_string()),
+            client_id: None,
+            session_id: None,
+            public_key_thumbprint: Some(thumbprint.to_string()),
+            entitlements_version: None,
+        }
+    };
+    let thumbprint = |public_key: &str| {
+        use sha2::Digest;
+        Sha256::digest(public_key.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let registrations = [
+        (
+            &mut home,
+            "home-kernel:peer-tmp:daemon-peer-tmp-1",
+            None,
+            "machine-home",
+            "home-public-key",
+            claims(
+                "home-token",
+                "home-kernel",
+                "user-home",
+                &thumbprint("home-public-key"),
+            ),
+        ),
+        (
+            &mut worker,
+            "worker-kernel",
+            None,
+            "machine-worker",
+            "worker-public-key",
+            claims(
+                "worker-token",
+                "worker-kernel",
+                "user-home",
+                &thumbprint("worker-public-key"),
+            ),
+        ),
+        (
+            &mut alias_home,
+            "forged-home:peer-tmp:daemon-peer-tmp-2",
+            Some("home-alias"),
+            "machine-forged",
+            "alias-public-key",
+            claims(
+                "alias-token",
+                "home-alias",
+                "user-home",
+                &thumbprint("alias-public-key"),
+            ),
+        ),
+    ];
+    for (socket, daemon_id, daemon_alias, machine_id, public_key, claims) in registrations {
+        let token = hosted_kernel_jwt(&claims, issuer_secret);
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: DaemonRegistration {
+                        auth_token: token,
+                        daemon_id: daemon_id.to_string(),
+                        machine_id: machine_id.to_string(),
+                        machine_alias: None,
+                        os_name: Some("Linux".to_string()),
+                        kernel_started_at_ms: 10,
+                        daemon_alias: daemon_alias.map(str::to_string),
+                        kernel_alias: None,
+                        public_key: public_key.to_string(),
+                        capabilities: vec!["kernel_ws".to_string()],
+                        available_providers: Vec::new(),
+                        provider_accounts: Vec::new(),
+                        accepting_remote_leases: true,
+                        leased_agent_count: 0,
+                        local_session_count: 0,
+                    },
+                })
+                .expect("registration serializes")
+                .into(),
+            ))
+            .await
+            .expect("registration sends");
+    }
+    sleep(Duration::from_millis(50)).await;
+
+    for (socket, request_id) in [(&mut home, "hosted-home"), (&mut alias_home, "alias-home")] {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
+                    request_id: request_id.to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("worker-kernel".to_string()),
+                        daemon_alias: None,
+                    },
+                    encrypted_request: EncryptedRelayPayload {
+                        sender_public_key: if request_id == "hosted-home" {
+                            "home-public-key".to_string()
+                        } else {
+                            "alias-public-key".to_string()
+                        },
+                        nonce: "nonce".to_string(),
+                        ciphertext: "ciphertext".to_string(),
+                    },
+                })
+                .expect("peer request serializes")
+                .into(),
+            ))
+            .await
+            .expect("peer request sends");
+        let Some(Ok(Message::Text(text))) = worker.next().await else {
+            panic!("worker should receive peer request")
+        };
+        let RelayEnvelope::DaemonIncomingPeerRequest {
+            caller_identity: Some(identity),
+            ..
+        } = serde_json::from_str(&text).expect("incoming request decodes")
+        else {
+            panic!("unexpected incoming peer request")
+        };
+        if request_id == "hosted-home" {
+            assert_eq!(identity.subject_kind, RelaySubjectKind::Machine);
+            assert_eq!(identity.subject, "machine-home");
+            assert_eq!(identity.realm_id, "realm-home");
+            assert_eq!(identity.user_id.as_deref(), Some("user-home"));
+            assert_eq!(
+                identity.public_key_thumbprint.as_deref(),
+                Some(thumbprint("home-public-key").as_str())
+            );
+        } else {
+            assert_eq!(identity.subject_kind, RelaySubjectKind::Kernel);
+            assert_eq!(identity.subject, "home-alias");
+        }
+    }
+
+    let _ = home.close(None).await;
+    let _ = alias_home.close(None).await;
+    let _ = worker.close(None).await;
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("relay task joins");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn daemon_peer_requests_are_routed_between_registered_kernels() {
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),

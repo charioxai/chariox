@@ -73,6 +73,13 @@ pub(crate) enum LeasedAgentCleanupPhase {
     BackingSessionDelete,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderCleanupFailurePoint {
+    ActivePointer,
+    ProcessRemoval,
+}
+
 impl LeasedAgentCleanupPhase {
     fn next(self) -> Option<Self> {
         match self {
@@ -646,10 +653,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             provider_run.session_id(),
                             provider_run.id(),
                         )?;
+                        #[cfg(test)]
+                        if self.app.leased_agent_provider_cleanup_failures.get(leased_agent_id)
+                            == Some(&ProviderCleanupFailurePoint::ActivePointer)
+                        {
+                            self.app
+                                .leased_agent_provider_cleanup_failures
+                                .remove(leased_agent_id);
+                            return Err(DaemonError::LocalTransport {
+                                operation: "leased_agent.cleanup.provider.active_pointer",
+                                message: "injected provider cleanup failure".to_string(),
+                            });
+                        }
                         self.app
                             .sessions
                             .set_active_provider_run(outcome.run().session_id(), None)?;
                         self.app.update_provider_run_projection(outcome.into_run());
+                        #[cfg(test)]
+                        if self.app.leased_agent_provider_cleanup_failures.get(leased_agent_id)
+                            == Some(&ProviderCleanupFailurePoint::ProcessRemoval)
+                        {
+                            self.app
+                                .leased_agent_provider_cleanup_failures
+                                .remove(leased_agent_id);
+                            return Err(DaemonError::LocalTransport {
+                                operation: "leased_agent.cleanup.provider.process_removal",
+                                message: "injected provider cleanup failure".to_string(),
+                            });
+                        }
                         let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
                             .remove_run(&run_id);
                     }
@@ -729,6 +760,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.app
             .leased_agent_cleanup_failures
             .insert(leased_agent_id.to_string(), phase);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_leased_agent_provider_cleanup_failure(
+        &mut self,
+        leased_agent_id: &str,
+        point: ProviderCleanupFailurePoint,
+    ) {
+        self.app
+            .leased_agent_provider_cleanup_failures
+            .insert(leased_agent_id.to_string(), point);
     }
 
     pub(crate) fn destroy_leased_agent_for_caller(
