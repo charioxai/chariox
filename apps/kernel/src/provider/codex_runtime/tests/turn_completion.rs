@@ -1660,6 +1660,46 @@ fn completed_tool_evidence_has_finite_authoritative_reconciliation_during_silent
 }
 
 #[test]
+fn completed_tool_evidence_stays_bounded_across_ordinary_activity_bursts() {
+    use std::time::{Duration, Instant};
+
+    for endpoint_mode in [
+        crate::provider::AgentEndpointMode::Managed,
+        crate::provider::AgentEndpointMode::External,
+    ] {
+        let mut tracker = CodexTurnTracker::default();
+        tracker.note_tool_started("tool-1");
+        tracker.note_tool_completed("tool-1");
+
+        let mut full_thread_requests = 0;
+        let mut gate = CodexAuthoritativeBackfillGate::default();
+        let mut now = Instant::now();
+        for _ in 0..10_000 {
+            tracker.note_activity();
+            tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+            assert!(codex_turn_should_backfill(
+                endpoint_mode,
+                true,
+                &tracker,
+                true,
+            ));
+            let recovery_evidence = codex_turn_recovery_evidence(
+                endpoint_mode,
+                true,
+                &tracker,
+                true,
+            );
+            if gate.is_due(true, recovery_evidence, now) {
+                full_thread_requests += 1;
+            }
+            now += Duration::from_millis(500);
+        }
+
+        assert_eq!(full_thread_requests, 14, "{endpoint_mode:?}");
+    }
+}
+
+#[test]
 fn completion_evidence_rearms_authoritative_backfill_after_a_bounded_gate() {
     use std::time::{Duration, Instant};
 
