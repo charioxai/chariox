@@ -203,10 +203,16 @@ pnpm --filter @chariox/cli run browser-computer:soak -- --detach
 ```
 
 Run all three commands from the same clean checkout and final runtime image,
-with the same limit flags and evidence root. Set `CHARIOX_SLICE_IMAGE_ID` to
-the immutable final-image digest when the image runtime exposes one. Preflight
-and smoke receipts expire after one hour; detach refuses missing, stale, dirty,
-or mismatched source/tree, runtime-image, viewer-backend, or limit evidence.
+with the same limit flags and evidence root. Set `CHARIOX_SLICE_IMAGE` to the
+engine-local final-image tag (or digest) and `CHARIOX_SLICE_IMAGE_SIGNATURE_KEY`
+to its Cosign public key. Before preflight, each command resolves the image's
+immutable engine `RepoDigest`, verifies its Cosign signature, and verifies a
+signed `slsaprovenance` attestation bound to that digest. A declared
+`CHARIOX_SLICE_IMAGE_ID`, a tag alone, and runtime file metadata are never
+accepted as image proof. Preflight and smoke receipts expire after one hour;
+detach refuses missing, stale, dirty, or mismatched source/tree, verified image,
+viewer backend, protocol, or limit evidence. Final detach additionally requires
+Selkies, source protocol 322 or newer, and at least 28,800 seconds.
 
 The real mode defaults to 28,800 seconds. `--duration-seconds` configures a
 bounded duration up to 24 hours; `--activity-interval-seconds` and
@@ -215,11 +221,14 @@ The runner owns an isolated X display, Chromium profile and debugging port,
 one long-lived Browser Controller, and one read-only display-stream consumer.
 Every activity cycle changes the deterministic fixture through a stable
 controller reference, verifies the physical browser effect, performs physical
-Computer pointer input, requests a video keyframe, and captures the screen.
+Computer pointer input, reads the pointer before and after, and requires the
+requested coordinates independently of the animated page before requesting a
+video keyframe and capturing the screen.
 Monotonic cadence and final controller/stream freshness are mandatory. Samples
 bound owned CPU, RSS, process and open-file counts, owned disk inventory, and
-accounted fixture/display-stream traffic; host disk/network counters remain as
-context rather than being misattributed to the runner.
+network-interface deltas only when every process sharing the runner's Linux
+network namespace belongs to its sampled process tree. Preflight fails closed
+when that attributable network isolation is unavailable.
 
 Evidence defaults to
 `~/.chariox/dev/browser-computer-use-soak/<run-id>/`. It contains the exact

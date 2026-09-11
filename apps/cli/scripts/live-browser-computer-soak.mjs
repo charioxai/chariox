@@ -5,7 +5,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { parseBrowserComputerSoakArgs } from "./lib/browser-computer-soak.mjs"
-import { runBrowserComputerSoak } from "./lib/browser-computer-soak-runtime.mjs"
+import { redactEvidence, runBrowserComputerSoak } from "./lib/browser-computer-soak-runtime.mjs"
 
 const scriptPath = fileURLToPath(import.meta.url)
 const repoRoot = path.resolve(path.dirname(scriptPath), "..", "..", "..")
@@ -29,6 +29,9 @@ function usage() {
     "  --debug-port N                    Chromium CDP port (automatic by default)",
     "  --viewer-port N                   Private display-stream port (automatic by default)",
     "  --viewer-backend NAME             selkies (current) or novnc (never final-gate eligible)",
+    "  --image-ref IMAGE                 Engine-local image tag or digest with a RepoDigest",
+    "  --image-signature-key PATH        Cosign public key for signature and SLSA attestation",
+    "  --container-engine NAME           docker (default) or podman",
     "  --max-cadence-gap-seconds N       Fail on monotonic activity gaps (default: 30)",
     "  --max-rss-mib N                   Owned RSS bound (default: 4096)",
     "  --max-cpu-percent N               Owned aggregate CPU bound (default: 800)",
@@ -48,6 +51,6 @@ try {
   if (options.help) usage()
   else await runBrowserComputerSoak({ options, repoRoot, scriptPath })
 } catch (error) {
-  console.error(`[browser-computer-soak] ${String(error?.message ?? error).slice(0, 2_000)}`)
+  console.error(`[browser-computer-soak] ${String(redactEvidence(error?.message ?? error)).slice(0, 2_000)}`)
   process.exitCode = 1
 }

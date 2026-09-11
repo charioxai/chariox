@@ -2,6 +2,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 
 export const DEFAULT_SOAK_DURATION_SECONDS = 8 * 60 * 60
+export const MINIMUM_FINAL_GATE_DURATION_SECONDS = 8 * 60 * 60
 export const SMOKE_DURATION_SECONDS = 12
 export const MAXIMUM_SOAK_DURATION_SECONDS = 24 * 60 * 60
 export const GATE_RECEIPT_MAX_AGE_MS = 60 * 60 * 1_000
@@ -20,6 +21,9 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
     "--debug-port",
     "--viewer-port",
     "--viewer-backend",
+    "--image-ref",
+    "--image-signature-key",
+    "--container-engine",
     "--max-cadence-gap-seconds",
     "--max-rss-mib",
     "--max-cpu-percent",
@@ -74,6 +78,8 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
 
   const viewerBackend = values.get("--viewer-backend") ?? process.env.CHARIOX_SLICE_VIEWER_BACKEND ?? "selkies"
   if (!new Set(["selkies", "novnc"]).has(viewerBackend)) throw new Error("viewer-backend must be selkies or novnc")
+  const containerEngine = values.get("--container-engine") ?? process.env.CHARIOX_CONTAINER_ENGINE ?? "docker"
+  if (!new Set(["docker", "podman"]).has(containerEngine)) throw new Error("container-engine must be docker or podman")
   const defaultCadenceGapSeconds = Math.max(30, activityIntervalSeconds * 3, sampleIntervalSeconds * 3)
   const maxCadenceGapSeconds = integer(values.get("--max-cadence-gap-seconds") ?? String(defaultCadenceGapSeconds), "max-cadence-gap-seconds", 2, 900)
   if (maxCadenceGapSeconds <= Math.max(activityIntervalSeconds, sampleIntervalSeconds)) {
@@ -92,6 +98,9 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
     debugPort: optionalInteger(values.get("--debug-port"), "debug-port", 1024, 65_535),
     viewerPort: optionalInteger(values.get("--viewer-port"), "viewer-port", 1024, 65_535),
     viewerBackend,
+    imageRef: values.get("--image-ref") ?? process.env.CHARIOX_SLICE_IMAGE ?? null,
+    imageSignatureKey: values.get("--image-signature-key") ?? process.env.CHARIOX_SLICE_IMAGE_SIGNATURE_KEY ?? null,
+    containerEngine,
     limits: {
       maxCadenceGapMs: maxCadenceGapSeconds * 1_000,
       maxRssBytes: integer(values.get("--max-rss-mib") ?? "4096", "max-rss-mib", 128, 65_536) * 1024 * 1024,
@@ -156,7 +165,7 @@ export function validateCompletedSoakResult(value) {
     || provenance.source?.dirty !== false
     || !/^[0-9a-f]{40}$/.test(provenance.source?.commit ?? "")
     || !/^[0-9a-f]{40}$/.test(provenance.source?.tree ?? "")
-    || typeof provenance.image?.identity !== "string" || provenance.image.identity.length === 0
+    || !validVerifiedImage(provenance.image)
     || stableJson(provenance.limits) !== stableJson(value.resources?.limits)
     || provenance.viewer?.backend !== value.viewer?.backend
     || stableJson(provenance.source) !== stableJson(value.source)
@@ -200,6 +209,8 @@ export function validateCompletedSoakResult(value) {
   if (!Number.isFinite(value.timing?.expectedDurationMs) || !Number.isFinite(value.timing?.monotonicElapsedMs)
     || !Number.isFinite(value.timing?.maxCadenceGapMs) || !Number.isFinite(value.timing?.observedMaxCadenceGapMs)
     || !Number.isFinite(value.timing?.wallMonotonicSkewMs)
+    || !Number.isSafeInteger(value.durationSeconds) || value.durationSeconds <= 0
+    || value.timing.expectedDurationMs !== value.durationSeconds * 1_000
     || value.timing.monotonicElapsedMs < value.timing.expectedDurationMs
     || value.timing.observedMaxCadenceGapMs > value.timing.maxCadenceGapMs
     || Math.abs(value.timing.wallMonotonicSkewMs) > value.timing.maxCadenceGapMs) {
@@ -239,8 +250,12 @@ export function validateCompletedSoakResult(value) {
   const protocol = provenance.localDaemonProtocolVersion
   const selkiesEligible = value.viewer.backend === "selkies" && Number.isSafeInteger(protocol)
     && protocol >= SELKIES_REQUIRED_PROTOCOL_VERSION
+    && value.timing.expectedDurationMs >= MINIMUM_FINAL_GATE_DURATION_SECONDS * 1_000
   const expectedGateReason = selkiesEligible ? null : value.viewer.backend === "novnc"
-    ? "novnc_not_final_gate" : `protocol_${SELKIES_REQUIRED_PROTOCOL_VERSION}_not_integrated`
+    ? "novnc_not_final_gate"
+    : protocol < SELKIES_REQUIRED_PROTOCOL_VERSION
+      ? `protocol_${SELKIES_REQUIRED_PROTOCOL_VERSION}_not_integrated`
+      : `duration_below_${MINIMUM_FINAL_GATE_DURATION_SECONDS}_seconds`
   if (value.viewer.backend === "novnc" && value.gate?.eligible === true) {
     throw new Error("noVNC evidence cannot close the final gate")
   }
@@ -256,11 +271,15 @@ export function gateFingerprint(provenance) {
     image: provenance?.image,
     limits: provenance?.limits,
     viewer: provenance?.viewer,
+    localDaemonProtocolVersion: provenance?.localDaemonProtocolVersion,
   })).digest("hex")
 }
 
 export function validateGatePrerequisites({ preflight, smoke, provenance, now = Date.now() }) {
   if (provenance?.source?.dirty !== false) throw new Error("gate requires a clean source tree")
+  if (!validVerifiedImage(provenance?.image)) {
+    throw new Error("gate requires a verified immutable image signature and attestation")
+  }
   const expected = gateFingerprint(provenance)
   for (const [phase, receipt] of [["preflight", preflight], ["smoke", smoke]]) {
     if (receipt?.schema !== "chariox.browser_computer_soak_gate_receipt.v1"
@@ -306,4 +325,17 @@ function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
   if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`
   return JSON.stringify(value)
+}
+
+function validVerifiedImage(image) {
+  return /^.+@sha256:[0-9a-f]{64}$/.test(image?.identity ?? "")
+    && /^sha256:[0-9a-f]{64}$/.test(image?.digest ?? "")
+    && image.identity.endsWith(`@${image.digest}`)
+    && /^sha256:[0-9a-f]{64}$/.test(image?.engineImageId ?? "")
+    && new Set(["docker", "podman"]).has(image?.engine)
+    && image?.signature?.verified === true && image.signature.verifier === "cosign"
+    && /^[0-9a-f]{64}$/.test(image.signature.keySha256 ?? "")
+    && /^[0-9a-f]{64}$/.test(image.signature.bundleSha256 ?? "")
+    && image?.attestation?.verified === true && image.attestation.type === "slsaprovenance"
+    && /^[0-9a-f]{64}$/.test(image.attestation.bundleSha256 ?? "")
 }

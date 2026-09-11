@@ -7,10 +7,12 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { performance } from "node:perf_hooks"
+import { Transform } from "node:stream"
 import { promisify } from "node:util"
 
 import {
   SELKIES_REQUIRED_PROTOCOL_VERSION,
+  MINIMUM_FINAL_GATE_DURATION_SECONDS,
   buildGateReceiptPaths,
   buildSoakPaths,
   detachedLaunchSummary,
@@ -22,6 +24,11 @@ import {
 const execFileAsync = promisify(execFile)
 const schema = "chariox.browser_computer_soak.v1"
 const minimumFreeBytes = 512 * 1024 * 1024
+const maximumRetainedProcessLogBytes = 8 * 1024 * 1024
+const sensitiveEnvironmentName = /(authorization|cookie|credential|key|pass(word)?|secret|session|token)/i
+const retainedSecretValues = [...new Set(Object.entries(process.env)
+  .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === "string" && value.length >= 4)
+  .map(([, value]) => value))]
 const viewport = {
   css_width: 800,
   css_height: 600,
@@ -30,26 +37,207 @@ const viewport = {
   desktop_pixel_height: 600,
 }
 
+export function buildSanitizedChildEnvironment(base, additions = {}) {
+  const allowed = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"]
+  return Object.fromEntries([
+    ...allowed.filter((name) => typeof base?.[name] === "string").map((name) => [name, base[name]]),
+    ...Object.entries(additions).filter(([, value]) => typeof value === "string"),
+  ])
+}
+
+export function redactEvidence(value, { secretValues = retainedSecretValues } = {}) {
+  if (Array.isArray(value)) return value.map((entry) => redactEvidence(entry, { secretValues }))
+  if (value && typeof value === "object") {
+    if (value instanceof Error) return redactText(value.stack ?? value.message, secretValues)
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactEvidence(entry, { secretValues })]))
+  }
+  return typeof value === "string" ? redactText(value, secretValues) : value
+}
+
+function redactText(value, secretValues = retainedSecretValues) {
+  let result = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+  for (const secret of [...secretValues].filter((entry) => typeof entry === "string" && entry.length >= 4).sort((a, b) => b.length - a.length)) {
+    result = result.split(secret).join("[REDACTED]")
+  }
+  return result
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
+    .replace(/\b([A-Za-z0-9_]*(?:token|secret|password|credential|cookie|authorization|api[_-]?key)[A-Za-z0-9_]*)\s*[=:]\s*([^\s,;]+)/gi, "$1=[REDACTED]")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+(@)/gi, "$1[REDACTED]$2")
+}
+
+export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "docker" }, {
+  exec = execFileAsync,
+  readKey = readFile,
+} = {}) {
+  if (typeof imageRef !== "string" || imageRef.trim() === "") throw new Error("verified image requires --image-ref or CHARIOX_SLICE_IMAGE")
+  if (/\s|:\/\//.test(imageRef) || imageRef.replace(/@sha256:[0-9a-f]{64}$/, "").includes("@")) {
+    throw new Error("image reference must not contain whitespace, a URL scheme, or embedded credentials")
+  }
+  if (typeof signatureKey !== "string" || signatureKey.trim() === "") throw new Error("verified image requires a cosign signature key")
+  if (!new Set(["docker", "podman"]).has(engine)) throw new Error("container engine must be docker or podman")
+  let inspected
+  try {
+    const engineEnvironment = buildSanitizedChildEnvironment(process.env, Object.fromEntries(
+      ["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"]
+        .filter((name) => typeof process.env[name] === "string").map((name) => [name, process.env[name]]),
+    ))
+    const { stdout } = await exec(engine, ["image", "inspect", "--format", "{{json .}}", imageRef], { timeout: 20_000, env: engineEnvironment })
+    inspected = JSON.parse(String(stdout).trim())
+  } catch (error) {
+    throw new Error("image engine inspection failed")
+  }
+  const candidates = Array.isArray(inspected?.RepoDigests)
+    ? inspected.RepoDigests.filter((entry) => /^.+@sha256:[0-9a-f]{64}$/.test(entry)) : []
+  if (!/^sha256:[0-9a-f]{64}$/.test(inspected?.Id ?? "")) throw new Error("image engine did not return an immutable local image ID")
+  if (candidates.length === 0) throw new Error("image has no immutable engine RepoDigest")
+  const repository = imageRef.replace(/@sha256:[0-9a-f]{64}$/, "").replace(/:[^/:]+$/, "")
+  const configuredDigest = imageRef.match(/@(sha256:[0-9a-f]{64})$/)?.[1]
+  const identity = configuredDigest
+    ? candidates.find((entry) => entry === `${repository}@${configuredDigest}`)
+    : candidates.find((entry) => entry.slice(0, entry.lastIndexOf("@")) === repository)
+  if (!identity) throw new Error("image engine RepoDigest does not match the configured repository")
+  const digest = identity.slice(identity.lastIndexOf("@") + 1)
+  const keyBytes = await readKey(signatureKey).catch(() => { throw new Error("image signature key unavailable") })
+  if (!Buffer.isBuffer(keyBytes) || keyBytes.length === 0 || keyBytes.length > 64 * 1024) throw new Error("image signature key is empty or unreasonably large")
+  const verificationEnv = buildSanitizedChildEnvironment(process.env, { COSIGN_PUBLIC_KEY: keyBytes.toString("utf8") })
+  const verify = async (kind, args) => {
+    let stdout
+    try { ({ stdout } = await exec("cosign", args, { timeout: 60_000, env: verificationEnv, maxBuffer: 1024 * 1024 })) } catch {
+      throw new Error(`image ${kind} verification failed`)
+    }
+    const text = String(stdout).trim()
+    if (!verificationOutputBindsDigest(text, digest)) throw new Error(`image ${kind} verification did not bind the engine digest`)
+    let canonical
+    try { canonical = canonicalVerificationOutput(text) } catch { throw new Error(`image ${kind} verification returned malformed evidence`) }
+    return createHash("sha256").update(canonical).digest("hex")
+  }
+  const signatureBundleDigest = await verify("signature", ["verify", "--key", "env://COSIGN_PUBLIC_KEY", "--output", "json", identity])
+  const attestationBundleDigest = await verify("attestation", ["verify-attestation", "--key", "env://COSIGN_PUBLIC_KEY", "--type", "slsaprovenance", "--output", "json", identity])
+  return {
+    identity,
+    digest,
+    engine,
+    engineImageId: inspected.Id,
+    signature: { verified: true, verifier: "cosign", keySha256: createHash("sha256").update(keyBytes).digest("hex"), bundleSha256: signatureBundleDigest },
+    attestation: { verified: true, type: "slsaprovenance", bundleSha256: attestationBundleDigest },
+  }
+}
+
+function verificationOutputBindsDigest(text, digest) {
+  if (!text) return false
+  const values = []
+  try { values.push(JSON.parse(text)) } catch {
+    for (const line of text.split("\n").filter(Boolean)) try { values.push(JSON.parse(line)) } catch {}
+  }
+  const digestHex = digest.slice("sha256:".length)
+  const bound = (value) => {
+    if (Array.isArray(value)) return value.some(bound)
+    if (!value || typeof value !== "object") return false
+    if (value.critical?.image?.["docker-manifest-digest"] === digest) return true
+    if (Array.isArray(value.subject) && value.subject.some((subject) => subject?.digest?.sha256 === digestHex)) return true
+    if (typeof value.payload === "string" && value.payload.length <= 2 * 1024 * 1024) {
+      try { if (bound(JSON.parse(Buffer.from(value.payload, "base64").toString("utf8")))) return true } catch {}
+    }
+    return Object.values(value).some((entry) => typeof entry === "object" && bound(entry))
+  }
+  return values.some(bound)
+}
+
+function canonicalVerificationOutput(text) {
+  let values
+  try { values = [JSON.parse(text)] } catch {
+    values = text.split("\n").filter(Boolean).map((line) => JSON.parse(line))
+  }
+  const canonical = (value) => {
+    if (Array.isArray(value)) return `[${value.map(canonical).sort().join(",")}]`
+    if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
+    return JSON.stringify(value)
+  }
+  return values.map(canonical).sort().join("\n")
+}
+
+export function assertFinalDetachPrerequisites(options, provenance) {
+  if (options.mode !== "detach") return
+  if (options.viewerBackend !== "selkies" || provenance?.viewer?.backend !== "selkies") throw new Error("final detach requires Selkies")
+  if (provenance?.localDaemonProtocolVersion < SELKIES_REQUIRED_PROTOCOL_VERSION) throw new Error("final detach requires source protocol 322 or newer")
+  if (options.durationSeconds < MINIMUM_FINAL_GATE_DURATION_SECONDS) throw new Error("final detach requires at least 28,800 seconds")
+}
+
+export function attributableNetworkDelta(baseline, current, attribution) {
+  if (baseline?.attribution?.exclusive !== true || attribution?.exclusive !== true
+    || baseline.attribution.namespace !== attribution.namespace) {
+    throw new Error(`attributable network accounting unavailable${attribution?.foreignPids?.length ? `; foreign namespace PIDs: ${attribution.foreignPids.join(",")}` : ""}`)
+  }
+  const difference = current?.totalBytes - baseline?.totalBytes
+  if (!Number.isFinite(difference) || difference < 0) throw new Error("owned network counters regressed or are invalid")
+  return difference
+}
+
+export async function createRuntimeState(paths, {
+  makeTemporary = mkdtemp,
+  makeDirectory = mkdir,
+  write = writeFile,
+  remove = rm,
+  pathExists = exists,
+  temporaryRoot = os.tmpdir(),
+} = {}) {
+  let stateRoot = null
+  try {
+    stateRoot = await makeTemporary(path.join(temporaryRoot, "chariox-browser-computer-soak-"))
+    const runtimeRoot = path.join(stateRoot, "runtime")
+    const profileRoot = path.join(stateRoot, "chromium-profile")
+    const logsRoot = path.join(paths.runDir, "process-logs")
+    for (const candidate of [runtimeRoot, profileRoot, logsRoot]) {
+      await makeDirectory(candidate, { recursive: true, mode: 0o700 })
+    }
+    await write(paths.pid, `${process.pid}\n`, { mode: 0o600 })
+    return { stateRoot, runtimeRoot, profileRoot, logsRoot }
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(bounded(error))
+    let removeError = null
+    if (stateRoot) try { await remove(stateRoot, { recursive: true, force: true }) } catch (cause) { removeError = cause }
+    let verificationError = null
+    let stateRemoved = stateRoot == null
+    if (stateRoot) try { stateRemoved = !await pathExists(stateRoot) } catch (cause) { verificationError = cause }
+    failure.terminalCleanup = {
+      schema: "chariox.browser_computer_soak_cleanup.v1",
+      at: new Date().toISOString(),
+      phase: "partial-setup",
+      actions: [{
+        name: "partial-state-remove",
+        ok: stateRemoved && removeError == null && verificationError == null,
+        error: removeError || verificationError ? bounded((removeError ?? verificationError)?.message ?? (removeError ?? verificationError)) : undefined,
+      }],
+      stateRemoved,
+      verificationCompleted: verificationError == null,
+      clean: stateRemoved && removeError == null && verificationError == null,
+    }
+    throw failure
+  }
+}
+
 export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) {
   const runId = new Date().toISOString().replace(/[:.]/g, "-")
   const paths = options.runDir
     ? buildSoakPaths(path.dirname(options.runDir), path.basename(options.runDir))
     : buildSoakPaths(options.evidenceRoot, runId)
-  await mkdir(paths.runDir, { recursive: true, mode: 0o700 })
   const startedAt = new Date().toISOString()
   let allocation = null
   let source = null
   let baseline = null
   try {
+    await mkdir(paths.runDir, { recursive: true, mode: 0o700 })
     if (options.mode === "run") {
       await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 })
       await writeJson(paths.status, { schema, status: "starting", pid: process.pid, startedAt, runDir: paths.runDir })
     }
-    allocation = await allocateRuntime(options)
     source = await sourceIdentity(repoRoot)
-    baseline = await baselineResourceSnapshot(paths)
     const provenance = await captureProvenance({ options, repoRoot, source })
+    assertFinalDetachPrerequisites(options, provenance)
+    allocation = await allocateRuntime(options)
+    baseline = await baselineResourceSnapshot(paths)
     const preflight = await runPreflight({ options, allocation, paths, repoRoot, source, baseline, provenance })
+    await assertSourceUnchanged(repoRoot, source)
     await writeJson(paths.preflight, preflight)
     if (options.mode === "preflight") {
       await writeGateReceipt(options.evidenceRoot, "preflight", preflight, provenance)
@@ -58,11 +246,16 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
     }
     await requireGateReceipts(options.evidenceRoot, provenance, { smoke: !options.smoke })
     if (options.mode === "detach") {
+      await assertSourceUnchanged(repoRoot, source)
       const args = detachedArgs({ options, paths, allocation })
       const descriptor = await open(paths.log, "a", 0o600)
       const child = spawn(process.execPath, [scriptPath, ...args], {
         cwd: repoRoot,
-        env: process.env,
+        env: buildSanitizedChildEnvironment(process.env, {
+          CHARIOX_SLICE_IMAGE: options.imageRef,
+          CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
+          CHARIOX_CONTAINER_ENGINE: options.containerEngine,
+        }),
         detached: true,
         stdio: ["ignore", descriptor.fd, descriptor.fd],
       })
@@ -84,7 +277,7 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
       await writeGateReceipt(options.evidenceRoot, "smoke", result, provenance)
     }
   } catch (error) {
-    if (!await exists(paths.result)) {
+    if (await exists(paths.runDir) && !await exists(paths.result)) {
       await persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt })
     }
     throw error
@@ -94,16 +287,10 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
 async function executeSoak({ options, allocation, paths, repoRoot, source, baseline, provenance }) {
   const startedAt = new Date().toISOString()
   const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
-  const stateRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-browser-computer-soak-"))
-  const runtimeRoot = path.join(stateRoot, "runtime")
-  const profileRoot = path.join(stateRoot, "chromium-profile")
+  let stateRoot = null
+  let runtimeRoot = null
+  let profileRoot = null
   const logsRoot = path.join(paths.runDir, "process-logs")
-  await Promise.all([
-    mkdir(runtimeRoot, { recursive: true, mode: 0o700 }),
-    mkdir(profileRoot, { recursive: true, mode: 0o700 }),
-    mkdir(logsRoot, { recursive: true, mode: 0o700 }),
-  ])
-  await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 })
   const owned = new Map()
   let fixture = null
   let controller = null
@@ -138,16 +325,16 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
   let finalStreamMetrics = null
   let activeMonotonicElapsedMs = 0
   let activeWallElapsedMs = 0
+  let setupCleanup = null
 
   const signalHandler = (signal) => { interrupted ??= signal }
   process.once("SIGINT", signalHandler)
   process.once("SIGTERM", signalHandler)
 
   const display = `:${allocation.displayNumber}`
-  const environment = {
-    ...process.env,
+  let environment = null
+  const environmentAdditions = {
     DISPLAY: display,
-    XDG_RUNTIME_DIR: runtimeRoot,
     CHARIOX_SLICE_DISPLAY: display,
     CHARIOX_SLICE_NOVNC_PORT: String(allocation.viewerPort),
     CHARIOX_SLICE_VIEWER_BACKEND: options.viewerBackend,
@@ -181,11 +368,21 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     stream: { ready: false, binaryFrames: 0, binaryBytes: 0, changingFrameDigests: 0, textMarkers: [] },
     resources: { sampleCount: 0, peakOwnedRssBytes: 0, peakOwnedCpuPercent: 0, baseline },
     timing: null,
-    gate: finalGateEligibility(options.viewerBackend, provenance.localDaemonProtocolVersion),
+    gate: finalGateEligibility(options.viewerBackend, provenance.localDaemonProtocolVersion, options.durationSeconds),
     cleanup: null,
   }
 
   try {
+    const setup = await createRuntimeState(paths)
+    stateRoot = setup.stateRoot
+    runtimeRoot = setup.runtimeRoot
+    profileRoot = setup.profileRoot
+    environment = buildSanitizedChildEnvironment(process.env, {
+      ...environmentAdditions,
+      HOME: stateRoot,
+      TMPDIR: stateRoot,
+      XDG_RUNTIME_DIR: runtimeRoot,
+    })
     await assertRuntimeStillAvailable(allocation)
     fixture = await startFixtureServer()
     const xvfb = spawnLogged("xvfb", "Xvfb", [display, "-screen", "0", "800x600x24", "-ac", "+extension", "RANDR", "+extension", "XTEST"], {
@@ -277,9 +474,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
         if (observedMarker !== marker) throw new Error("Chromium mutation did not reach the active fixture")
         chromiumMutations += 1
         stream.requestKeyframe()
-        await execFileAsync("xdotool", ["mousemove", String(20 + iterations % 200), String(20 + iterations % 120)], {
-          cwd: repoRoot, env: environment, timeout: 10_000,
-        })
+        const inputProof = await verifyComputerInputEffect({ iteration: iterations, cwd: repoRoot, env: environment })
         computerInputs += 1
         const screenshotPath = path.join(paths.runDir, "latest-screen.png")
         await execFileAsync("scrot", [screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
@@ -288,7 +483,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
         computerScreenshots += 1
         iterations += 1
         lastActivityAt = new Date().toISOString()
-        await appendFile(paths.activity, `${JSON.stringify({
+        await appendFile(paths.activity, `${evidenceJson({
           at: lastActivityAt,
           monotonicElapsedMs: performance.now() - monotonicStartedAt,
           iteration: iterations,
@@ -297,6 +492,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           structuredBrowserActions,
           computerScreenshots,
           computerInputs,
+          inputProof,
           screenshotDigest,
           stream: stream.metrics(),
         })}\n`, { mode: 0o600 })
@@ -336,8 +532,10 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     activeMonotonicElapsedMs = finalCadenceAt - monotonicStartedAt
     activeWallElapsedMs = Date.now() - wallStartedAt
     finalStreamMetrics = stream.metrics()
+    await assertSourceUnchanged(repoRoot, source)
     status = "passed"
   } catch (error) {
+    setupCleanup = error?.terminalCleanup ?? null
     status = interrupted ? "interrupted" : "failed"
     failure = bounded(error?.stack ?? error)
   } finally {
@@ -351,6 +549,12 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
       status = "failed"
       failure = bounded(`cleanup failed: ${error?.stack ?? error}`)
       cleanup = failedCleanupEvidence(error)
+    }
+    if (setupCleanup) {
+      cleanup.actions.unshift(...setupCleanup.actions)
+      cleanup.stateRemoved = cleanup.stateRemoved && setupCleanup.stateRemoved
+      cleanup.clean = cleanup.clean && setupCleanup.clean
+      cleanup.partialSetupVerificationCompleted = setupCleanup.verificationCompleted
     }
     await writeJson(paths.cleanup, cleanup)
     const streamMetrics = finalStreamMetrics ?? stream?.metrics() ?? result.stream
@@ -430,7 +634,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     sample.monotonicElapsedMs = monotonicStartedAt == null ? null : performance.now() - monotonicStartedAt
     ownedIdentities = await mergeSampledIdentities(ownedIdentities, sample.owned.processes)
     sample.owned.diskBytes = await ownedDiskBytes([paths.runDir, stateRoot])
-    sample.owned.networkBytes = (fixture?.metrics().bytes ?? 0) + (stream?.metrics().binaryBytes ?? 0)
+    sample.owned.networkBytes = attributableNetworkDelta(baseline.network, sample.network, sample.network.attribution)
     sampleCount += 1
     peakOwnedRssBytes = Math.max(peakOwnedRssBytes, sample.owned.rssBytes)
     peakOwnedCpuPercent = Math.max(peakOwnedCpuPercent, sample.owned.cpuPercent)
@@ -441,7 +645,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     if (!resourceBoundsPass({ peakOwnedRssBytes, peakOwnedCpuPercent, peakOwnedProcessCount, peakOwnedOpenFiles, diskGrowthBytes, networkBytes }, options.limits)) {
       throw new Error("soak resource evidence exceeded configured bounds")
     }
-    await appendFile(paths.samples, `${JSON.stringify(sample)}\n`, { mode: 0o600 })
+    await appendFile(paths.samples, `${evidenceJson(sample)}\n`, { mode: 0o600 })
     await chmod(paths.samples, 0o600)
   }
 }
@@ -471,6 +675,9 @@ async function runPreflight({ options, allocation, paths, repoRoot, source, base
   ])
   if (baseline.host.freeMemoryBytes < minimumFreeBytes) throw new Error("preflight requires at least 512 MiB free RAM")
   if (baseline.disk.availableBytes < minimumFreeBytes) throw new Error("preflight requires at least 512 MiB free disk")
+  if (baseline.network?.attribution?.exclusive !== true) {
+    throw new Error("preflight requires exclusive network-namespace accounting for an owned network bound")
+  }
   await assertRuntimeStillAvailable(allocation)
   return {
     schema: "chariox.browser_computer_soak_preflight.v1",
@@ -527,7 +734,7 @@ async function cleanupRuntime({ controller, stream, owned, ownedIdentities, selk
   }
   if (stream?.child) actions.push(await terminateGroup("selkies-stream-process", stream.child))
   if (controller?.child) actions.push(await terminateGroup("browser-controller-process", controller.child))
-  try {
+  if (Number.isSafeInteger(selkiesPid)) try {
     const stopped = await execJson("/opt/chariox-selkies/bin/python", [path.join(sourceRoot, "slice-selkies.py"), "stop", "--allow-forced"], {
       cwd: sourceRoot, env: environment, timeout: 20_000,
     })
@@ -539,9 +746,9 @@ async function cleanupRuntime({ controller, stream, owned, ownedIdentities, selk
   try { await fixture?.close(); actions.push({ name: "fixture-close", ok: true }) } catch (error) {
     actions.push({ name: "fixture-close", ok: false, error: bounded(error?.message ?? error) })
   }
-  try { await rm(stateRoot, { recursive: true, force: true }); actions.push({ name: "state-remove", ok: true }) } catch (error) {
+  if (stateRoot) try { await rm(stateRoot, { recursive: true, force: true }); actions.push({ name: "state-remove", ok: true }) } catch (error) {
     actions.push({ name: "state-remove", ok: false, error: bounded(error?.message ?? error) })
-  }
+  } else actions.push({ name: "state-remove", ok: true, notCreated: true })
   await sleep(250)
   const identityChecks = await Promise.all(ownedIdentities.filter((entry) => entry.name !== "runner").map(async (expected) => {
     const observed = await processIdentity(expected.pid)
@@ -554,7 +761,7 @@ async function cleanupRuntime({ controller, stream, owned, ownedIdentities, selk
   const remainingListeners = ownedPorts
     .filter((_port, index) => !portsReleased[index]).map((port) => `127.0.0.1:${port}`)
   const displayReleased = !await exists(`/tmp/.X11-unix/X${allocation.displayNumber}`) && !await exists(`/tmp/.X${allocation.displayNumber}-lock`)
-  const stateRemoved = !await exists(stateRoot)
+  const stateRemoved = stateRoot == null || !await exists(stateRoot)
   const leakScan = await scanRuntimeLeaks({ stateRoot, allocation })
   return {
     schema: "chariox.browser_computer_soak_cleanup.v1",
@@ -656,7 +863,7 @@ export function createLifecycleGuard() {
 
 async function scanRuntimeLeaks({ stateRoot, allocation }) {
   const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], { timeout: 10_000 })
-  const markers = [stateRoot, `Xvfb :${allocation.displayNumber}`, `--display :${allocation.displayNumber}`]
+  const markers = [stateRoot, `Xvfb :${allocation.displayNumber}`, `--display :${allocation.displayNumber}`].filter(Boolean)
   const matches = findRuntimeLeakMatches(stdout, { markers, currentPid: process.pid })
   return { clean: matches.length === 0, matches }
 }
@@ -786,22 +993,71 @@ class StreamClient {
 function spawnLogged(name, command, args, { env, cwd, logsRoot }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.log`), { flags: "a", mode: 0o600 })
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
-  child.stdout.pipe(log, { end: false })
-  child.stderr.pipe(log, { end: false })
-  child.once("exit", () => log.end())
+  log.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
+  child.retainedLogFinished = new Promise((resolve) => log.once("close", resolve))
+  const output = createRedactingTransform()
+  output.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
+  child.stdout.pipe(output, { end: false })
+  child.stderr.pipe(output, { end: false })
+  output.pipe(log)
+  let streams = 2
+  const endOutput = () => { streams -= 1; if (streams === 0) output.end() }
+  child.stdout.once("end", endOutput)
+  child.stderr.once("end", endOutput)
   return child
 }
 
 function spawnProtocol(name, command, args, { env, cwd, logsRoot }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.stderr.log`), { flags: "a", mode: 0o600 })
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] })
-  child.stderr.pipe(log)
-  child.once("exit", () => log.end())
+  log.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
+  child.retainedLogFinished = new Promise((resolve) => log.once("close", resolve))
+  const output = createRedactingTransform()
+  output.once("error", (error) => { child.retainedLogError = bounded(error?.message ?? error) })
+  child.stderr.pipe(output).pipe(log)
   return child
 }
 
+export function createRedactingTransform({ secretValues = retainedSecretValues } = {}) {
+  const overlap = Math.max(512, Math.min(65_536, secretValues.reduce((maximum, value) => Math.max(maximum, value.length + 64), 0)))
+  let buffered = ""
+  let retained = 0
+  let truncated = false
+  const marker = Buffer.from("\n[REDACTED LOG TRUNCATED]\n")
+  const contentLimit = maximumRetainedProcessLogBytes - marker.length
+  const emit = function (stream, sanitized) {
+    const encoded = Buffer.from(sanitized)
+    const available = Math.max(0, contentLimit - retained)
+    const emitted = encoded.subarray(0, available)
+    retained += emitted.length
+    if (emitted.length > 0) stream.push(emitted)
+    if (emitted.length < encoded.length) truncated = true
+  }
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      buffered += chunk.toString("utf8")
+      const safeLength = Math.max(0, buffered.length - overlap)
+      if (safeLength > 0) {
+        const sanitized = redactText(buffered.slice(0, safeLength), secretValues)
+        buffered = buffered.slice(safeLength)
+        emit(this, sanitized)
+      }
+      callback()
+    },
+    flush(callback) {
+      emit(this, redactText(buffered, secretValues))
+      if (truncated) this.push(marker)
+      callback()
+    },
+  })
+}
+
 async function terminateGroup(name, child) {
-  if (!child || childExited(child)) return { name, ok: true, alreadyExited: true }
+  if (!child) return { name, ok: true, notStarted: true }
+  if (childExited(child)) {
+    await waitForRetainedLog(child)
+    return { name, ok: !child.retainedLogError, alreadyExited: true, error: child.retainedLogError }
+  }
   let forced = false
   try { process.kill(-child.pid, "SIGTERM") } catch {}
   if (!await waitForExit(child, 5_000, false)) {
@@ -809,7 +1065,13 @@ async function terminateGroup(name, child) {
     try { process.kill(-child.pid, "SIGKILL") } catch {}
     await waitForExit(child, 2_000, false)
   }
-  return { name, ok: childExited(child), forced }
+  await waitForRetainedLog(child)
+  return { name, ok: childExited(child) && !child.retainedLogError, forced, error: child.retainedLogError }
+}
+
+async function waitForRetainedLog(child) {
+  if (!child?.retainedLogFinished) return
+  await Promise.race([child.retainedLogFinished, sleep(2_000)])
 }
 
 async function resourceSnapshot(label, rootPids, diskPath) {
@@ -823,7 +1085,7 @@ async function resourceSnapshot(label, rootPids, diskPath) {
   const openFiles = (await Promise.all([...ownedIds].map(async (pid) => {
     try { return (await readdir(`/proc/${pid}/fd`)).length } catch { return 0 }
   }))).reduce((sum, count) => sum + count, 0)
-  const network = await networkSnapshot()
+  const network = await networkSnapshot(ownedIds)
   const memory = await linuxMemorySnapshot()
   return {
     label,
@@ -853,7 +1115,7 @@ async function resourceSnapshot(label, rootPids, diskPath) {
   }
 }
 
-async function networkSnapshot() {
+async function networkSnapshot(ownedIds) {
   const text = await readFile("/proc/net/dev", "utf8")
   let receivedBytes = 0
   let transmittedBytes = 0
@@ -863,7 +1125,28 @@ async function networkSnapshot() {
     receivedBytes += Number(match[2])
     transmittedBytes += Number(match[3])
   }
-  return { receivedBytes, transmittedBytes, totalBytes: receivedBytes + transmittedBytes }
+  const attribution = await networkNamespaceAttribution(ownedIds)
+  return { receivedBytes, transmittedBytes, totalBytes: receivedBytes + transmittedBytes, attribution }
+}
+
+async function networkNamespaceAttribution(ownedIds, maximumForeignPids = 32) {
+  let namespace
+  try { namespace = await readlink(`/proc/${process.pid}/ns/net`) } catch {
+    return { exclusive: false, foreignPids: [], reason: "network namespace identity unavailable" }
+  }
+  const foreignPids = []
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) continue
+    const pid = Number(name)
+    if (ownedIds.has(pid)) continue
+    let observed
+    try { observed = await readlink(`/proc/${pid}/ns/net`) } catch { continue }
+    if (observed === namespace) {
+      foreignPids.push(pid)
+      if (foreignPids.length >= maximumForeignPids) break
+    }
+  }
+  return { exclusive: foreignPids.length === 0, namespace, foreignPids }
 }
 
 async function ownedDiskBytes(roots, maximumEntries = 100_000) {
@@ -921,25 +1204,19 @@ async function sourceIdentity(repoRoot) {
   return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
 }
 
-async function captureProvenance({ options, repoRoot, source }) {
-  const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
-  const inputs = [
-    path.join(sourceRoot, "Dockerfile"),
-    path.join(sourceRoot, "browser-controller.mjs"),
-    path.join(sourceRoot, "browser-controller-cdp.mjs"),
-    path.join(sourceRoot, "slice-screen.sh"),
-    path.join(sourceRoot, "slice-selkies.py"),
-    path.join(sourceRoot, "slice-selkies-stream.py"),
-  ]
-  const hashes = {}
-  for (const candidate of inputs) hashes[path.relative(repoRoot, candidate)] = createHash("sha256").update(await readFile(candidate)).digest("hex")
-  const runtimeFiles = ["/opt/chariox-selkies/bin/python", "/opt/chariox-selkies/bin/selkies"]
-  const runtime = {}
-  for (const candidate of runtimeFiles) {
-    const metadata = await stat(candidate)
-    runtime[candidate] = { size: metadata.size, modifiedMs: Math.trunc(metadata.mtimeMs), mode: metadata.mode & 0o777 }
+async function assertSourceUnchanged(repoRoot, expected) {
+  const observed = await sourceIdentity(repoRoot)
+  if (observed.dirty || observed.commit !== expected?.commit || observed.tree !== expected?.tree || observed.branch !== expected?.branch) {
+    throw new Error("source changed after provenance capture")
   }
-  const imageMaterial = { declaredIdentity: process.env.CHARIOX_SLICE_IMAGE_ID ?? null, hashes, runtime }
+}
+
+async function captureProvenance({ options, repoRoot, source }) {
+  const image = await resolveVerifiedImage({
+    imageRef: options.imageRef,
+    signatureKey: options.imageSignatureKey,
+    engine: options.containerEngine,
+  })
   const protocolSource = await readFile(path.join(repoRoot, "apps", "kernel", "src", "local", "api", "types.rs"), "utf8")
   const protocol = Number(protocolSource.match(/LOCAL_DAEMON_PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)/)?.[1])
   if (!Number.isSafeInteger(protocol)) throw new Error("could not identify the local daemon protocol version")
@@ -947,10 +1224,7 @@ async function captureProvenance({ options, repoRoot, source }) {
     schema: "chariox.browser_computer_soak_provenance.v1",
     capturedAt: new Date().toISOString(),
     source,
-    image: {
-      identity: imageMaterial.declaredIdentity ?? `runtime-sha256:${createHash("sha256").update(JSON.stringify(imageMaterial)).digest("hex")}`,
-      ...imageMaterial,
-    },
+    image,
     limits: options.limits,
     viewer: { backend: options.viewerBackend },
     localDaemonProtocolVersion: protocol,
@@ -991,9 +1265,10 @@ async function readJson(candidate, label) {
   }
 }
 
-export function finalGateEligibility(backend, protocol) {
+export function finalGateEligibility(backend, protocol, durationSeconds = MINIMUM_FINAL_GATE_DURATION_SECONDS) {
   if (backend === "novnc") return { eligible: false, reason: "novnc_not_final_gate" }
   if (protocol < SELKIES_REQUIRED_PROTOCOL_VERSION) return { eligible: false, reason: `protocol_${SELKIES_REQUIRED_PROTOCOL_VERSION}_not_integrated` }
+  if (durationSeconds < MINIMUM_FINAL_GATE_DURATION_SECONDS) return { eligible: false, reason: `duration_below_${MINIMUM_FINAL_GATE_DURATION_SECONDS}_seconds` }
   return { eligible: true, reason: null }
 }
 
@@ -1033,6 +1308,9 @@ function commandEvidence({ options, paths, allocation }) {
     `--debug-port ${allocation.debugPort}`,
     `--viewer-port ${allocation.viewerPort}`,
     `--viewer-backend ${options.viewerBackend}`,
+    "--image-ref [VERIFIED_IN_PROVENANCE]",
+    "--image-signature-key [REDACTED_PATH]",
+    `--container-engine ${options.containerEngine}`,
     `--max-cadence-gap-seconds ${options.limits.maxCadenceGapMs / 1_000}`,
     `--max-rss-mib ${options.limits.maxRssBytes / 1024 / 1024}`,
     `--max-cpu-percent ${options.limits.maxCpuPercent}`,
@@ -1100,15 +1378,37 @@ async function retry(operation, timeoutMs, message) {
 export function assertProcessHealth(owned, controller, stream, now = Date.now()) {
   for (const [name, child] of owned) {
     if (childExited(child)) throw new Error(`${name} exited during soak with ${childExitDescription(child)}`)
+    if (child.retainedLogError) throw new Error(`${name} retained log failed: ${child.retainedLogError}`)
   }
   if (childExited(controller.child)) throw new Error(`Browser Controller exited during soak with ${childExitDescription(controller.child)}`)
+  if (controller.child.retainedLogError) throw new Error(`Browser Controller retained log failed: ${controller.child.retainedLogError}`)
   if (childExited(stream.child)) throw new Error(`Selkies stream exited during soak with ${childExitDescription(stream.child)}`)
+  if (stream.child.retainedLogError) throw new Error(`Selkies stream retained log failed: ${stream.child.retainedLogError}`)
   if (stream.readyAt && !stream.lastBinaryFrameAt && now - stream.readyAt > 30_000) {
     throw new Error("Selkies stream did not deliver its first video frame")
   }
   if (stream.lastBinaryFrameAt && now - stream.lastBinaryFrameAt > 30_000) {
     throw new Error("Selkies stream stopped delivering video frames")
   }
+}
+
+export async function verifyComputerInputEffect({ iteration, env, cwd }, { exec = execFileAsync } = {}) {
+  const readPointer = async () => {
+    const { stdout } = await exec("xdotool", ["getmouselocation", "--shell"], { cwd, env, timeout: 10_000 })
+    const x = Number(String(stdout).match(/^X=(\d+)$/m)?.[1])
+    const y = Number(String(stdout).match(/^Y=(\d+)$/m)?.[1])
+    if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) throw new Error("Computer input could not read the physical pointer position")
+    return { x, y }
+  }
+  const before = await readPointer()
+  let target = { x: 25 + iteration % 700, y: 30 + iteration % 500 }
+  if (target.x === before.x && target.y === before.y) target = { x: (target.x + 37) % 780, y: (target.y + 41) % 580 }
+  await exec("xdotool", ["mousemove", "--sync", String(target.x), String(target.y)], { cwd, env, timeout: 10_000 })
+  const after = await readPointer()
+  if (after.x !== target.x || after.y !== target.y || (after.x === before.x && after.y === before.y)) {
+    throw new Error("Computer physical pointer did not move to the requested coordinates")
+  }
+  return { before, requested: target, after }
 }
 
 export async function baselineResourceSnapshot(paths, {
@@ -1154,9 +1454,14 @@ async function execJson(command, args, options) {
 
 async function writeJson(target, value) {
   const temporary = `${target}.${process.pid}.tmp`
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
-  await chmod(temporary, 0o600)
-  await rename(temporary, target)
+  try {
+    await writeFile(temporary, `${JSON.stringify(redactEvidence(value), null, 2)}\n`, { mode: 0o600 })
+    await chmod(temporary, 0o600)
+    await rename(temporary, target)
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 async function availablePort(start, end, excluded = new Set()) {
@@ -1197,11 +1502,12 @@ async function persistStartupFailure({ error, options, allocation, paths, source
     schema: "chariox.browser_computer_soak_cleanup.v1",
     at: completedAt,
     phase: "startup",
-    actions: [],
+    actions: [{ name: "terminal-lifecycle-boundary", ok: true, ownedRuntimeStarted: false }],
     remainingPids: [],
-    portsReleased: true,
-    displayReleased: true,
-    stateRemoved: true,
+    portsReleased: null,
+    displayReleased: null,
+    stateRemoved: null,
+    verificationCompleted: true,
     clean: true,
   }
   const result = {
@@ -1251,5 +1557,6 @@ function pids(owned) { return [...owned.values()].map((child) => child?.pid).fil
 function running(pid) { try { process.kill(pid, 0); return true } catch { return false } }
 async function exists(candidate) { try { await stat(candidate); return true } catch { return false } }
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
-const bounded = (value, limit = 2_000) => String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(-limit)
+const bounded = (value, limit = 2_000) => redactText(value).slice(-limit)
+const evidenceJson = (value) => JSON.stringify(redactEvidence(value))
 const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
