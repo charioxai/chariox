@@ -75,10 +75,11 @@ test('trusted confirmation delivers directly and scrubs the source batch after e
     delivered = value;
     assert.equal(value.requestId,id);
     assert.equal(value.cookies[0].value,generatedValue);
-    return {BrowserImportDelivered:{results:[{domain:'example.test',status:'imported',cookie_count:1}]}};
+    return {requestId:id,status:'completed',domains:[{domain:'example.test',status:'imported'}]};
   });
   assert.equal(f.count('permission'),1);
-  assert.deepEqual(await completing,{results:[{domain:'example.test',status:'imported',cookie_count:1}]});
+  assert.deepEqual(await completing,
+    {requestId:id,status:'completed',domains:[{domain:'example.test',status:'imported'}]});
   assert.equal(flow.state,'delivered');
   assert.equal(delivered.cookies[0].value,'');
   assert.equal(JSON.stringify(f.calls).includes(generatedValue),false);
@@ -103,6 +104,40 @@ test('permission lifecycle reserves before confirmation, activates after grant a
   await flow.releasePermissions();
   assert.deepEqual(lifecycle.map(([kind]) => kind),['reserve','activate','release']);
   assert.equal(flow.permissionsReleased,true);
+});
+
+test('confirm and deliver releases permissions after success without later cancellation', async () => {
+  const f = fixture();
+  const lifecycle = [];
+  f.options.permissionLifecycle = {reserve:async () => lifecycle.push('reserve'),
+    activate:async () => lifecycle.push('activate'),release:async () => lifecycle.push('release')};
+  const flow = await prepareChromeCookieImport(f.options);
+  const delivered = flow.confirmAndDeliver(async value => {
+    assert.equal(value.cookies[0].value,'fixture-secret');
+    return {requestId:id,status:'completed',domains:[{domain:'example.test',status:'imported'}]};
+  });
+  assert.equal(f.count('permission'),1);
+  assert.deepEqual(await delivered,
+    {requestId:id,status:'completed',domains:[{domain:'example.test',status:'imported'}]});
+  assert.deepEqual(lifecycle,['reserve','activate','release']);
+  assert.deepEqual(await flow.cancel(),{kernelCancellationConfirmed:false});
+  assert.equal(f.count('CancelBrowserImport'),0);
+});
+
+test('failed delivery releases permissions and sends request-scoped cancellation at most once', async () => {
+  const f = fixture();
+  const lifecycle = [];
+  f.options.permissionLifecycle = {reserve:async () => lifecycle.push('reserve'),
+    activate:async () => lifecycle.push('activate'),release:async () => lifecycle.push('release')};
+  const flow = await prepareChromeCookieImport(f.options);
+  const completing = flow.confirmAndDeliver(async () => {
+    throw Object.assign(new Error('private-marker'),{code:'browser_import_delivery_unavailable'});
+  });
+  await assert.rejects(completing,{code:'browser_import_delivery_unavailable'});
+  assert.deepEqual(await flow.cancel(),{kernelCancellationConfirmed:true});
+  assert.deepEqual(await flow.cancel(),{kernelCancellationConfirmed:true});
+  assert.equal(f.count('CancelBrowserImport'),1);
+  assert.deepEqual(lifecycle,['reserve','activate','release']);
 });
 
 test('permission lifecycle releases on denial, cancellation and idle timeout', async () => {

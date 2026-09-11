@@ -20,6 +20,13 @@ test('packager emits a loadable extension tree and transpiles shared browser mod
   assert.equal(requests.includes('export type'),false);
   const connector = await readFile(path.join(root,'apps/browser-session-import/chrome-extension/connector.mjs'),'utf8');
   assert.match(connector,/browser-relay-crypto\.js/);
+  assert.match(connector,/flow\.confirmAndDeliver/);
+  assert.match(connector,/relay\.deliver/);
+  assert.doesNotMatch(connector,/flow\.confirmAndRead/);
+  const delivery = await readFile(path.join(root,
+    'apps/browser-session-import/chrome-extension/delivery-adapter.mjs'),'utf8');
+  assert.match(delivery,/deliverBrowserImport/);
+  assert.doesNotMatch(delivery,/expectedDeliveryEnvelope|cookie_count:1/);
   const permissions = await readFile(path.join(root,
     'apps/browser-session-import/chrome-extension/permission-coordinator.mjs'),'utf8');
   assert.match(permissions,/PermissionGrantCoordinator/);

@@ -26,7 +26,7 @@ export function acceptAuthenticatedBootstrap(value,{senderPublicKey,discovered,n
         || value.connector_sender_public_key !== senderPublicKey || !relayKey(value.kernel_public_key)
         || !Number.isSafeInteger(value.expires_at_ms) || value.expires_at_ms <= now
         || value.expires_at_ms > now + 120_000 || !text(value.daemon_id,512)
-        || value.protocol_version < 320 || !Number.isInteger(value.protocol_version)
+        || value.protocol_version < 321 || !Number.isInteger(value.protocol_version)
         || value.source.current_profile !== true || value.source.hostname !== discovered.hostname
         || value.source.store_id !== '0' || selection.source_store_id !== value.source.store_id) throw new Error();
     const bootstrap = Object.freeze({bootstrapId:value.bootstrap_id,expiresAtMs:value.expires_at_ms,

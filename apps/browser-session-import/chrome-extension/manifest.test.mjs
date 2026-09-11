@@ -30,7 +30,7 @@ test('connector has no persistence, public page bridge, logging or mock-success 
   const connector = await readFile(new URL('connector.mjs',root),'utf8');
   const click = connector.slice(connector.indexOf("element('start').addEventListener"),
     connector.indexOf('async function finishImport'));
-  assert.ok(click.indexOf('flow.confirmAndRead()') < click.indexOf('finishImport(reading)'));
+  assert.ok(click.indexOf('flow.confirmAndDeliver') < click.indexOf('finishImport(delivery)'));
   assert.equal(click.includes('await '),false);
   assert.match(connector,/finally \{\s*await flow\?\.releasePermissions\(\)/);
   assert.match(connector,/pagehide.*flow\?\.cancel\(\)/);

@@ -104,7 +104,7 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
   // Call directly in the extension's confirmation click handler. No await,
   // permission preflight or kernel round trip may precede permissions.request:
   // Chrome enforces that optional permission requests originate in a gesture.
-  async function confirmAndRead() {
+  async function confirmAndRead(retainLifetime = false) {
     if (state !== 'prepared') throw error('cookie_source_denied');
     state = 'requesting_permission';
     try {
@@ -125,7 +125,7 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
         timeoutMs:Math.min(30000,deadline - performance.now())});
       live();
       state = 'source_read';
-      detach();
+      if (!retainLifetime) detach();
       // Leave the one-use kernel source claim for the destination executor.
       // No cookie payload is retained in this flow's state or request metadata.
       return result;
@@ -135,34 +135,37 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
     }
   }
 
-  // Trusted connector completion path. Invoke directly from the confirmation
-  // click just like confirmAndRead: that call synchronously reaches Chrome's
-  // permission request before the first await. `deliver` must be the paired
-  // relay connector's encrypted-only delivery method, never a page callback.
+  // Trusted connector completion path. Calling this directly from the click
+  // reaches permissions.request synchronously through confirmAndRead.
   async function confirmAndDeliver(deliver) {
-    if (typeof deliver !== 'function') throw error('cookie_destination_unavailable');
-    const reading = confirmAndRead();
+    if (typeof deliver !== 'function') {
+      await cancel();
+      throw error('browser_import_delivery_unavailable');
+    }
+    const reading = confirmAndRead(true);
     let result;
     try {
       result = await reading;
+      live();
       state = 'delivering';
       const response = await deliver({requestId,selection:selected,cookies:result.cookies},
         {signal:active.signal,timeoutMs:Math.min(30000,Math.max(1,deadline - performance.now()))});
-      const delivered = response?.BrowserImportDelivered;
-      if (!validDelivery(delivered,selected.domains)
-          || Object.keys(response).length !== 1 || Object.keys(delivered).length !== 1) {
-        throw error('cookie_destination_unavailable');
-      }
+      live();
       state = 'delivered';
-      return {results:delivered.results};
+      ended = true;
+      detach();
+      cleanup = Promise.resolve({kernelCancellationConfirmed:false});
+      return response;
     } catch (failure) {
-      if (state === 'delivering') state = 'delivery_uncertain';
-      if (failure?.code?.startsWith('cookie_source_')) throw failure;
-      throw error('cookie_destination_unavailable');
+      await cancel();
+      if (failure?.code?.startsWith('cookie_source_')
+          || failure?.code === 'browser_import_delivery_unavailable') throw failure;
+      throw error('browser_import_delivery_unavailable');
     } finally {
       if (Array.isArray(result?.cookies)) {
         for (const cookie of result.cookies) if (cookie && typeof cookie === 'object') cookie.value = '';
       }
+      await releasePermissions();
     }
   }
   return Object.freeze({selection:selected,sourceTabId,
@@ -178,18 +181,6 @@ function matches(response,id,status) {
 }
 
 function error(code) { return Object.assign(new Error(code),{code}); }
-function validDelivery(delivered,domains) {
-  if (!delivered || !Array.isArray(delivered.results) || delivered.results.length !== domains.length) return false;
-  let total=0;
-  return delivered.results.every((result,index) => {
-    if (!result || Object.keys(result).sort().join(',') !== 'cookie_count,domain,status'
-        || result.domain !== domains[index] || !Number.isSafeInteger(result.cookie_count)
-        || result.cookie_count < 0 || result.cookie_count > 512
-        || !['imported','no_cookies'].includes(result.status)
-        || (result.status === 'imported') !== (result.cookie_count > 0)) return false;
-    total += result.cookie_count; return total <= 512;
-  });
-}
 function safeError(failure) {
   const codes = ['cookie_source_denied','cookie_source_cancelled','cookie_source_timeout',
     'cookie_source_unavailable','cookie_source_too_large'];

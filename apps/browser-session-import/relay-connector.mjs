@@ -102,9 +102,7 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
           kernelPublicKey,entry.nonce);
         if (pending.get(frame.request_id) !== entry) return;
         if (entry.delivery) {
-          const delivered = result?.BrowserImportDelivered;
-          if (!validDelivery(delivered,entry.domains)
-              || Object.keys(result).length !== 1 || Object.keys(delivered).length !== 1) throw failure();
+          validateDeliveryResult(result,entry.domains);
         } else {
           const consent = result?.BrowserImportConsent;
           if (!consent || typeof consent.request_id !== 'string' || !/^[a-fA-F0-9]{32}$/.test(consent.request_id)
@@ -175,9 +173,8 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
       if (plaintext.length > maxFrameChars) throw failure();
       return new Promise((resolveRequest,rejectRequest) => {
         const entry = {resolve:resolveRequest,reject:rejectRequest,nonce:null,decoding:false,delivery:true,
-          domains:[...selected.domains],
-          requestId,status:null,signal:requestSignal,abort:() => settle(id,null,true),
-          timer:setTimeout(() => settle(id,null,true),delay)};
+          domains:Object.freeze([...selected.domains]),requestId,status:null,signal:requestSignal,
+          abort:() => settle(id,null,true),timer:setTimeout(() => settle(id,null,true),delay)};
         pending.set(id,entry);
         try {
           requestSignal?.addEventListener('abort',entry.abort,{once:true});
@@ -194,7 +191,7 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
               target:{daemon_id:daemonId},encrypted_request:encrypted.payload});
             if (frame.length > maxFrameChars || socket.bufferedAmount > maxBufferedChars) throw failure();
             socket.send(frame);
-          } catch { settle(id,null,true); }
+          } catch { plaintext = ''; settle(id,null,true); }
         }
       });
     }
@@ -232,16 +229,18 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-function validDelivery(delivered,domains) {
-  if (!delivered || !Array.isArray(delivered.results) || delivered.results.length !== domains.length) return false;
-  let total=0;
-  return delivered.results.every((result,index) => {
-    if (!result || Object.keys(result).sort().join(',') !== 'cookie_count,domain,status'
-        || result.domain !== domains[index] || !Number.isSafeInteger(result.cookie_count)
-        || result.cookie_count < 0 || result.cookie_count > 512
-        || !['imported','no_cookies'].includes(result.status)
-        || (result.status === 'imported') !== (result.cookie_count > 0)) return false;
-    total += result.cookie_count;
-    return total <= 512;
-  });
+function validateDeliveryResult(result,domains) {
+  const delivered = result?.BrowserImportDelivered;
+  if (!delivered || Object.keys(result).length !== 1 || Object.keys(delivered).length !== 1
+      || !Array.isArray(delivered.results) || delivered.results.length !== domains.length) throw failure();
+  let total = 0;
+  for (let index = 0; index < domains.length; index += 1) {
+    const item = delivered.results[index];
+    if (!item || Object.keys(item).length !== 3 || item.domain !== domains[index]
+        || !['imported','no_cookies'].includes(item.status)
+        || !Number.isSafeInteger(item.cookie_count) || item.cookie_count < 0 || item.cookie_count > 512
+        || (item.status === 'imported') !== (item.cookie_count > 0)) throw failure();
+    total += item.cookie_count;
+  }
+  if (total > 512) throw failure();
 }

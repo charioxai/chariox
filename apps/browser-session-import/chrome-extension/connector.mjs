@@ -110,32 +110,28 @@ async function pairDestination() {
   } finally { busy = false; }
 }
 
-// This handler must remain a direct click handler. confirmAndRead synchronously
+// This handler must remain a direct click handler. confirmAndDeliver synchronously
 // invokes chrome.permissions.request before its first await so Chrome retains
 // the user's gesture for the exact host grant.
 element('start').addEventListener('click',() => {
   if (busy || !flow) return;
   busy = true;
   show(publicProgress('requesting_permission',0,pairing.selection.domains.length));
-  const reading = flow.confirmAndRead();
-  void finishImport(reading);
+  const delivery = flow.confirmAndDeliver((value,options) =>
+    deliverBrowserImport({deliver:relay.deliver,...value},options));
+  void finishImport(delivery);
 });
 
-async function finishImport(reading) {
-  let source;
+async function finishImport(delivery) {
   try {
     show(publicProgress('verifying_consent',0,pairing.selection.domains.length));
-    source = await reading;
-    show(publicProgress('transferring',pairing.selection.domains.length,pairing.selection.domains.length));
-    const result = await deliverBrowserImport({requestId:flow.requestId,pairing,selection:flow.selection,
-      batch:source,onProgress:show,signal:lifetime.signal});
+    const result = await delivery;
     show(publicResult(result,{requestId:flow.requestId,confirmedDomains:flow.selection.domains}));
   } catch (error) {
     await flow?.cancel();
     show(publicFailure(error));
   } finally {
     await flow?.releasePermissions();
-    source = undefined;
     busy = false;
   }
 }
