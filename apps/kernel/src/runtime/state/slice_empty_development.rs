@@ -74,7 +74,9 @@ pub(super) fn materialize(
     } else {
         "grant"
     };
-    ensure_private_real_directory(parent)?;
+    if expected.is_none() {
+        ensure_private_real_directory(parent)?;
+    }
     real_directory(parent)?;
     let publication = publication(parent)?;
     if expected.is_some_and(|expected| expected != &publication) {
@@ -189,7 +191,20 @@ mod tests {
         let staging = parent.join(STAGING);
         fs::create_dir(&staging).unwrap();
         fs::write(staging.join("partial"), "interrupted preparation").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&parent, fs::Permissions::from_mode(0o710)).unwrap();
+        }
         assert_eq!(materialize(&parent, Some(&published)).unwrap(), published);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+                0o710
+            );
+        }
         assert!(!staging.exists());
         cleanup(&parent).unwrap();
         cleanup(&parent).unwrap();

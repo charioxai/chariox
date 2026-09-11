@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::error::DaemonError;
 use crate::managed_context::development::{
@@ -20,6 +21,7 @@ mod empty_development;
 const SLICE_DEVELOPMENT_PUBLICATION_ID: &str = "development";
 const SLICE_DEVELOPMENT_EXPORT_SCRATCH: &str = ".slice-development-export";
 const MANAGED_PUBLICATION_ACCESS_HELPER: &str = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh";
+const MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES: usize = 16 * 1024;
 
 impl KernelRuntimeState {
     pub(crate) fn prepare_slice_development_storage_parent(
@@ -190,12 +192,36 @@ fn materialize_slice_development_publication(
     repositories: &[DevelopmentSourceRepositoryBinding],
     expected_publication: Option<&crate::slice::SliceDevelopmentPublication>,
 ) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
+    materialize_slice_development_publication_with_access(
+        publication_parent,
+        project_id,
+        repositories,
+        expected_publication,
+        update_managed_publication_access,
+    )
+}
+
+fn materialize_slice_development_publication_with_access(
+    publication_parent: &Path,
+    project_id: &str,
+    repositories: &[DevelopmentSourceRepositoryBinding],
+    expected_publication: Option<&crate::slice::SliceDevelopmentPublication>,
+    update_access: impl Fn(
+        &str,
+        &Path,
+        &crate::slice::SliceDevelopmentPublication,
+    ) -> Result<(), DaemonError>,
+) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
     let access_action = if expected_publication.is_some() {
         "verify"
     } else {
         "grant"
     };
-    ensure_private_real_directory(publication_parent)?;
+    if expected_publication.is_none() {
+        ensure_private_real_directory(publication_parent)?;
+    } else {
+        require_existing_real_directory(publication_parent)?;
+    }
     let canonical_publication_parent = fs::canonicalize(publication_parent)
         .map_err(|error| slice_development_io_error("resolve", publication_parent, error))?;
     if canonical_publication_parent != publication_parent {
@@ -270,7 +296,7 @@ fn materialize_slice_development_publication(
         primary_repository_path: path_to_string(&primary.destination_path)?,
         repository_paths,
     };
-    update_managed_publication_access(access_action, &publication_parent, &publication)?;
+    update_access(access_action, &publication_parent, &publication)?;
     Ok(publication)
 }
 
@@ -351,33 +377,120 @@ fn update_managed_publication_access(
     if !crate::slice::managed_docker_broker_configured() {
         return Ok(());
     }
-    let output = Command::new(MANAGED_PUBLICATION_ACCESS_HELPER)
+    run_managed_publication_access_helper(
+        Path::new(MANAGED_PUBLICATION_ACCESS_HELPER),
+        action,
+        storage_root,
+        publication,
+    )
+}
+
+fn run_managed_publication_access_helper(
+    helper: &Path,
+    action: &str,
+    storage_root: &Path,
+    publication: &crate::slice::SliceDevelopmentPublication,
+) -> Result<(), DaemonError> {
+    let mut child = Command::new(helper)
         .arg(action)
         .arg(storage_root)
         .arg(&publication.destination_root)
         .args(&publication.repository_paths)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             slice_development_error(format!("run managed publication access helper: {error}"))
         })?;
-    if output.status.success() {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| slice_development_error("managed publication helper stdout is missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| slice_development_error("managed publication helper stderr is missing"))?;
+    let stdout_reader = std::thread::spawn(move || read_bounded_helper_output(stdout));
+    let stderr_reader = std::thread::spawn(move || read_bounded_helper_output(stderr));
+    let status = child.wait().map_err(|error| {
+        slice_development_error(format!(
+            "wait for managed publication access helper: {error}"
+        ))
+    })?;
+    let (_, stdout_truncated) = join_helper_output_reader(stdout_reader, "stdout")?;
+    let (stderr, stderr_truncated) = join_helper_output_reader(stderr_reader, "stderr")?;
+    if stdout_truncated || stderr_truncated {
+        return Err(slice_development_error(format!(
+            "managed publication access helper failed with {status}: OUTPUT_LIMIT"
+        )));
+    }
+    if status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let diagnostic = stderr
-            .lines()
-            .rev()
-            .find(|line| line.starts_with("managed-publication-access.sh:"));
-        let detail = if let Some(diagnostic) = diagnostic {
-            format!(": {}", diagnostic.chars().take(4096).collect::<String>())
-        } else {
-            String::new()
-        };
+        let detail = managed_publication_helper_error_code(&stderr)
+            .map(|code| format!(": {code}"))
+            .unwrap_or_default();
         Err(slice_development_error(format!(
             "managed publication access helper failed with {}{detail}",
-            output.status
+            status
         )))
     }
+}
+
+fn read_bounded_helper_output(mut reader: impl Read) -> (Vec<u8>, bool) {
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut truncated = false;
+    loop {
+        let Ok(read) = reader.read(&mut buffer) else {
+            truncated = true;
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    (retained, truncated)
+}
+
+fn join_helper_output_reader(
+    reader: std::thread::JoinHandle<(Vec<u8>, bool)>,
+    stream: &str,
+) -> Result<(Vec<u8>, bool), DaemonError> {
+    reader.join().map_err(|_| {
+        slice_development_error(format!("managed publication helper {stream} reader failed"))
+    })
+}
+
+fn managed_publication_helper_error_code(stderr: &[u8]) -> Option<&'static str> {
+    const CODES: &[&str] = &[
+        "ACL_INSPECTION_FAILED",
+        "ACL_INVALID",
+        "ACL_MUTATION_FAILED",
+        "ACL_VALIDATOR_INVALID",
+        "DESTINATION_ESCAPE",
+        "HARD_LINK_DETECTED",
+        "HARD_LINK_RACE",
+        "INVALID_ACTION",
+        "INVALID_ARGUMENTS",
+        "NONCANONICAL_DIRECTORY",
+        "REPOSITORY_ESCAPE",
+        "STORAGE_ROOT_ESCAPE",
+        "SUBUID_MAPPING_INVALID",
+        "UNSAFE_DIRECTORY",
+        "UNSUPPORTED_FILE_TYPE",
+    ];
+    let stderr = String::from_utf8_lossy(stderr);
+    stderr.lines().rev().find_map(|line| {
+        let code = line
+            .strip_prefix("managed-publication-access.sh: ")?
+            .split_whitespace()
+            .next()?;
+        CODES.iter().copied().find(|candidate| *candidate == code)
+    })
 }
 
 struct SliceDevelopmentScratchCleanup(PathBuf);
@@ -468,6 +581,18 @@ fn ensure_private_real_directory(path: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
+fn require_existing_real_directory(path: &Path) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| slice_development_io_error("inspect", path, error))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(slice_development_error(format!(
+            "slice development root `{}` is not a real directory",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn path_to_string(path: &Path) -> Result<String, DaemonError> {
     path.to_str()
         .map(str::to_string)
@@ -491,7 +616,7 @@ fn slice_development_error(message: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -517,16 +642,52 @@ mod tests {
         let publication_parent = fs::canonicalize(&root)
             .expect("canonical test root")
             .join("slice-root/development/slice-1");
+        let helper = root.join("publication-access-helper.sh");
+        let helper_log = root.join("publication-access-helper.log");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(
+                &helper,
+                format!(
+                    "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$(stat -c %a -- \"$2\")\" >> '{}'\n",
+                    helper_log.display()
+                ),
+            )
+            .expect("write publication access test helper");
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+                .expect("make publication access test helper executable");
+        }
+        let update_access =
+            |action: &str,
+             storage_root: &Path,
+             publication: &crate::slice::SliceDevelopmentPublication| {
+                #[cfg(unix)]
+                {
+                    return run_managed_publication_access_helper(
+                        &helper,
+                        action,
+                        storage_root,
+                        publication,
+                    );
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (action, storage_root, publication);
+                    Ok(())
+                }
+            };
         let stale_scratch = publication_parent.join(SLICE_DEVELOPMENT_EXPORT_SCRATCH);
         fs::create_dir_all(stale_scratch.join("staging")).expect("create stale export scratch");
         fs::write(stale_scratch.join("development.tar.gz"), b"stale plaintext")
             .expect("write stale export archive");
 
-        let publication = materialize_slice_development_publication(
+        let publication = materialize_slice_development_publication_with_access(
             &publication_parent,
             "project-1",
             &repositories,
             None,
+            &update_access,
         )
         .expect("materialize slice Project");
         assert!(!stale_scratch.exists());
@@ -567,18 +728,42 @@ mod tests {
         configure_test_repository_identity(&primary.destination_path);
         git(&primary.destination_path, &["add", "primary.txt"]);
         git(&primary.destination_path, &["commit", "-m", "slice edit"]);
-        let recovered = materialize_slice_development_publication(
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&publication_parent, fs::Permissions::from_mode(0o710))
+                .expect("set recovered publication parent mode");
+        }
+        let recovered = materialize_slice_development_publication_with_access(
             &publication_parent,
             "project-1",
             &repositories,
             Some(&publication),
+            &update_access,
         )
         .expect("recover slice Project after restart");
         assert_eq!(recovered, publication);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&publication_parent)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o710
+            );
+        }
         assert_eq!(
             fs::read_to_string(primary.destination_path.join("primary.txt"))
                 .expect("read recovered primary repository"),
             "preserved slice edit\n"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_to_string(&helper_log).expect("read publication helper observations"),
+            "grant 700\nverify 710\n"
         );
 
         fs::create_dir_all(stale_scratch.join("staging"))
@@ -646,6 +831,74 @@ mod tests {
             slice_development_storage_root(&slice).expect("resolve durable root"),
             PathBuf::from("/old-config-root/development/slice-1")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_access_helper_output_is_bounded_without_pipe_deadlock() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("publication-helper-output-bound");
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 8192 ]; do\n  printf 'stdout-output-0123456789abcdef\\n'\n  printf 'stderr-output-0123456789abcdef\\n' >&2\n  i=$((i + 1))\ndone\nprintf 'managed-publication-access.sh: ACL_INVALID /private/publication/path\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: "development".into(),
+            destination_root: "/unused/development".into(),
+            primary_repository_path: "/unused/development/repository".into(),
+            repository_paths: vec!["/unused/development/repository".into()],
+        };
+
+        let started = Instant::now();
+        let error = run_managed_publication_access_helper(
+            &helper,
+            "verify",
+            Path::new("/unused"),
+            &publication,
+        )
+        .expect_err("oversized helper output must fail closed");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.to_string().contains("OUTPUT_LIMIT"));
+        assert!(!error.to_string().contains("/private/publication/path"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_access_helper_diagnostic_keeps_code_and_redacts_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("publication-helper-redaction");
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nprintf 'managed-publication-access.sh: ACL_INVALID /private/publication/path\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: "development".into(),
+            destination_root: "/unused/development".into(),
+            primary_repository_path: "/unused/development/repository".into(),
+            repository_paths: vec!["/unused/development/repository".into()],
+        };
+
+        let error = run_managed_publication_access_helper(
+            &helper,
+            "verify",
+            Path::new("/unused"),
+            &publication,
+        )
+        .expect_err("helper failure must be projected");
+        assert!(error.to_string().contains("ACL_INVALID"));
+        assert!(!error.to_string().contains("/private/publication/path"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn init_repository(path: &Path, file: &str, contents: &str) {

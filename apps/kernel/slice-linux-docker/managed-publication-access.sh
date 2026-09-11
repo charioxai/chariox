@@ -12,99 +12,87 @@ fail() {
   exit 1
 }
 
-[ "$#" -ge 4 ] || fail "usage: managed-publication-access.sh <grant|verify|revoke> <storage-root> <destination> <repository>..."
+[ "$#" -ge 4 ] || fail INVALID_ARGUMENTS
 action=$1
 storage_root=$2
 destination=$3
 shift 3
-[ "$action" = grant ] || [ "$action" = verify ] || [ "$action" = revoke ] || fail "unsupported action"
+[ "$action" = grant ] || [ "$action" = verify ] || [ "$action" = revoke ] || fail INVALID_ACTION
 cd /
+script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+acl_validator=$script_root/managed-publication-acl.awk
+[ -f "$acl_validator" ] && [ ! -L "$acl_validator" ] || fail ACL_VALIDATOR_INVALID
+acl_snapshot=
+cleanup() {
+  [ -z "$acl_snapshot" ] || rm -f -- "$acl_snapshot"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 canonical_directory() {
   candidate=$1
-  [ -d "$candidate" ] && [ ! -L "$candidate" ] || fail "unsafe publication directory: $candidate"
+  [ -d "$candidate" ] && [ ! -L "$candidate" ] || fail UNSAFE_DIRECTORY
   canonical=$(readlink -f -- "$candidate")
-  [ "$canonical" = "$candidate" ] || fail "publication path is not canonical: $candidate"
+  [ "$canonical" = "$candidate" ] || fail NONCANONICAL_DIRECTORY
   printf '%s\n' "$canonical"
 }
 
 [ "$(grep -Fxc "$docker_user:$subuid_start:65536" /etc/subuid)" -eq 1 ] \
-  || fail "chariox-docker subordinate UID mapping is not pinned"
+  || fail SUBUID_MAPPING_INVALID
 share_root=$(canonical_directory "$share_root")
 storage_root=$(canonical_directory "$storage_root")
 destination=$(canonical_directory "$destination")
-case "$storage_root" in "$share_root"/*) ;; *) fail "storage root escaped the managed share" ;; esac
-[ "$(dirname -- "$destination")" = "$storage_root" ] || fail "publication destination escaped its storage root"
+case "$storage_root" in "$share_root"/*) ;; *) fail STORAGE_ROOT_ESCAPE ;; esac
+[ "$(dirname -- "$destination")" = "$storage_root" ] || fail DESTINATION_ESCAPE
 
 chariox_uid=$(id -u chariox)
 docker_uid=$(id -u "$docker_user")
 
+reset_acl_snapshot() {
+  if [ -z "$acl_snapshot" ]; then
+    acl_snapshot=$(mktemp "${TMPDIR:-/tmp}/chariox-publication-acl.XXXXXX") \
+      || fail ACL_INSPECTION_FAILED
+  fi
+  : >"$acl_snapshot" || fail ACL_INSPECTION_FAILED
+}
+
+validate_acl_output() {
+  mode=$1
+  required=$2
+  shift 2
+  reset_acl_snapshot
+  "$@" >"$acl_snapshot" 2>/dev/null || fail ACL_INSPECTION_FAILED
+  awk -v mode="$mode" -v required="$required" \
+    -v chariox_uid="$chariox_uid" -v docker_uid="$docker_uid" \
+    -v mapped_slice_uid="$mapped_slice_uid" \
+    -f "$acl_validator" "$acl_snapshot" || fail ACL_INVALID
+}
+
 verify_traversal_access() {
-  path=$1
-  acl=$(getfacl -cpEn -- "$path" 2>/dev/null) \
-    || fail "cannot inspect recovered publication traversal ACL"
-  printf '%s\n' "$acl" | grep -Fqx "user:$docker_uid:--x" \
-    || fail "recovered publication traversal ACL is invalid"
-  printf '%s\n' "$acl" | grep -Eq '^mask::..x$' \
-    || fail "recovered publication traversal ACL is invalid"
+  validate_acl_output traversal 1 getfacl -cpEn -- "$1"
+}
+
+reject_hard_links() {
+  repository=$1
+  reset_acl_snapshot
+  find -P "$repository" -xdev -type f -links +1 -print -quit >"$acl_snapshot" 2>/dev/null \
+    || fail ACL_INSPECTION_FAILED
+  [ ! -s "$acl_snapshot" ] || fail HARD_LINK_DETECTED
 }
 
 verify_publication_access() {
   repository=$1
-  if find -P "$repository" -xdev -type f -links +1 -print -quit | grep -q .; then
-    fail "publication contains a multiply linked file"
-  fi
-  find -P "$repository" -xdev -exec getfacl -cEn -- {} + >/dev/null 2>&1 \
-    || fail "cannot inspect recovered publication access ACLs"
-  getfacl -cEnRP --one-file-system -- "$repository" 2>/dev/null | awk \
-    -v chariox_uid="$chariox_uid" -v mapped_slice_uid="$mapped_slice_uid" '
-      BEGIN { RS = "" }
-      {
-        chariox = mapped = group = mask = other = 0
-        default_owner = default_chariox = default_mapped = 0
-        default_group = default_mask = default_other = 0
-        directory = 0
-        for (index = 1; index <= NF; index++) {
-          line = $index
-          if (line == "user:" chariox_uid ":rw-" || line == "user:" chariox_uid ":rwx") chariox = 1
-          if (line == "user:" mapped_slice_uid ":rw-" || line == "user:" mapped_slice_uid ":rwx") mapped = 1
-          if (line == "group::---") group = 1
-          if (line == "mask::rw-" || line == "mask::rwx") mask = 1
-          if (line == "other::---") other = 1
-          if (line == "default:user::rwx") { directory = 1; default_owner = 1 }
-          if (line == "default:user:" chariox_uid ":rwx") default_chariox = 1
-          if (line == "default:user:" mapped_slice_uid ":rwx") default_mapped = 1
-          if (line == "default:group::---") default_group = 1
-          if (line == "default:mask::rwx") default_mask = 1
-          if (line == "default:other::---") default_other = 1
-        }
-        if (!chariox || !mapped || !group || !mask || !other) exit 1
-        if (directory && (!default_owner || !default_chariox || !default_mapped || !default_group || !default_mask || !default_other)) exit 1
-      }
-      END { if (NR == 0) exit 1 }
-    ' || fail "recovered publication access ACLs are invalid"
-  find -P "$repository" -xdev -type d -exec sh -c '
-    chariox_uid=$1
-    mapped_slice_uid=$2
-    shift 2
-    for path do
-      acl=$(getfacl -cpEn -- "$path" 2>/dev/null) || exit 1
-      for expected in \
-        "user:$chariox_uid:rwx" \
-        "user:$mapped_slice_uid:rwx" \
-        "mask::rwx" \
-        "default:user::rwx" \
-        "default:user:$chariox_uid:rwx" \
-        "default:user:$mapped_slice_uid:rwx" \
-        "default:group::---" \
-        "default:mask::rwx" \
-        "default:other::---"
-      do
-        printf "%s\n" "$acl" | grep -Fqx "$expected" || exit 1
-      done
-    done
-  ' _ "$chariox_uid" "$mapped_slice_uid" {} + \
-    || fail "recovered publication directory ACLs are invalid"
+  reject_hard_links "$repository"
+  reset_acl_snapshot
+  find -P "$repository" -xdev ! -type d ! -type f ! -type l -print -quit >"$acl_snapshot" 2>/dev/null \
+    || fail ACL_INSPECTION_FAILED
+  [ ! -s "$acl_snapshot" ] || fail UNSUPPORTED_FILE_TYPE
+  validate_acl_output repository 1 getfacl -cpEn -- "$repository"
+  validate_acl_output directory 0 find -P "$repository" -xdev -mindepth 1 -type d \
+    -exec getfacl -cpEn -- {} +
+  validate_acl_output file 0 find -P "$repository" -xdev -type f \
+    -exec getfacl -cpEn -- {} +
+  reject_hard_links "$repository"
 }
 
 if [ "$action" = grant ] || [ "$action" = verify ]; then
@@ -116,7 +104,7 @@ if [ "$action" = grant ] || [ "$action" = verify ]; then
     current=$current/$component
     canonical_directory "$current" >/dev/null
     if [ "$action" = grant ]; then
-      setfacl -P -m "u:$docker_user:--x" -- "$current"
+      setfacl -P -m "u:$docker_user:--x" -- "$current" || fail ACL_MUTATION_FAILED
     else
       verify_traversal_access "$current"
     fi
@@ -127,20 +115,23 @@ fi
 for repository in "$@"; do
   repository=$(canonical_directory "$repository")
   [ "$(dirname -- "$repository")" = "$destination" ] \
-    || fail "repository is not a direct child of its publication"
+    || fail REPOSITORY_ESCAPE
   if [ "$action" = grant ]; then
-    if find -P "$repository" -xdev -type f -links +1 -print -quit | grep -q .; then
-      fail "publication contains a multiply linked file"
-    fi
-    setfacl -P -R -m "u:$chariox_uid:rwX,u:$mapped_slice_uid:rwX,g::---,m::rwx,o::---" -- "$repository"
-    setfacl -P -m "u:$docker_user:--x" -- "$repository"
+    reject_hard_links "$repository"
+    setfacl -P -R -m "u:$chariox_uid:rwX,u:$mapped_slice_uid:rwX,g::---,m::rwx,o::---" -- "$repository" \
+      || fail ACL_MUTATION_FAILED
+    setfacl -P -m "u:$docker_user:--x" -- "$repository" || fail ACL_MUTATION_FAILED
     find -P "$repository" -type d -exec setfacl -P -m \
-      "d:u::rwx,d:u:$chariox_uid:rwx,d:u:$mapped_slice_uid:rwx,d:g::---,d:m::rwx,d:o::---" -- {} +
-    if find -P "$repository" -xdev -type f -links +1 -print -quit | grep -q .; then
+      "d:u::rwx,d:u:$chariox_uid:rwx,d:u:$mapped_slice_uid:rwx,d:g::---,d:m::rwx,d:o::---" -- {} + \
+      || fail ACL_MUTATION_FAILED
+    reset_acl_snapshot
+    find -P "$repository" -xdev -type f -links +1 -print -quit >"$acl_snapshot" 2>/dev/null \
+      || fail ACL_INSPECTION_FAILED
+    if [ -s "$acl_snapshot" ]; then
       setfacl -P -R -x "u:$mapped_slice_uid,u:$docker_user" -- "$repository" 2>/dev/null || true
       find -P "$repository" -type d -exec setfacl -P -x \
         "d:u:$mapped_slice_uid,d:u:$chariox_uid" -- {} + 2>/dev/null || true
-      fail "publication gained a multiply linked file during access grant"
+      fail HARD_LINK_RACE
     fi
   elif [ "$action" = verify ]; then
     verify_publication_access "$repository"

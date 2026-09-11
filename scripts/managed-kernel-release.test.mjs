@@ -197,6 +197,10 @@ async function makeFixture(root, variant = "") {
     })),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
+    [
+      "apps/kernel/slice-linux-docker/managed-publication-acl.awk",
+      await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-publication-acl.awk")),
+    ],
     ["apps/kernel/slice-linux-docker/toolchain/package-lock.json", "{\"lockfileVersion\":3}\n"],
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
@@ -323,6 +327,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-user-manager.conf",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-acl.awk",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/.managed-release",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
