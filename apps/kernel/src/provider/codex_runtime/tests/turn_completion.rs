@@ -1569,6 +1569,95 @@ fn managed_turn_does_not_backfill_from_pre_tool_commentary() {
 
 #[test]
 fn authoritative_backfill_is_due_even_when_the_notification_drain_is_not_quiet() {
-    assert!(codex_authoritative_backfill_due(true, None));
-    assert!(!codex_authoritative_backfill_due(false, None));
+    let mut tracker = CodexTurnTracker::default();
+    tracker.note_terminal(CodexTerminalSignal {
+        turn_id: "turn-1".to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+    });
+    let recovery_requested = codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &tracker,
+        false,
+    );
+    assert!(recovery_requested);
+    assert!(codex_authoritative_backfill_due(
+        true,
+        recovery_requested,
+        None
+    ));
+    assert!(!codex_authoritative_backfill_due(
+        false,
+        recovery_requested,
+        None
+    ));
+}
+
+#[test]
+fn long_healthy_active_turn_has_bounded_authoritative_reconciliation() {
+    use std::time::{Duration, Instant};
+
+    let mut full_thread_requests = 0;
+    let mut last_backfill_at = None;
+    for _ in 0..10_000 {
+        if codex_authoritative_backfill_due(true, false, last_backfill_at) {
+            full_thread_requests += 1;
+            last_backfill_at = Instant::now().checked_sub(Duration::from_secs(60));
+        }
+    }
+
+    assert_eq!(full_thread_requests, 1);
+}
+
+#[test]
+fn completion_evidence_rearms_authoritative_backfill_after_a_bounded_gate() {
+    use std::time::{Duration, Instant};
+
+    let mut pending_terminal = CodexTurnTracker::default();
+    pending_terminal.note_terminal(CodexTerminalSignal {
+        turn_id: "turn-1".to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+    });
+    let mut legacy_completion = CodexTurnTracker::default();
+    legacy_completion.note_legacy_completion_hint();
+    let mut quiet_terminal_assistant = CodexTurnTracker::default();
+    quiet_terminal_assistant.note_assistant_content();
+    quiet_terminal_assistant.note_assistant_item_completed();
+    quiet_terminal_assistant.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+    let mut quiet_completed_tool = CodexTurnTracker::default();
+    quiet_completed_tool.note_tool_started("tool-1");
+    quiet_completed_tool.note_tool_completed("tool-1");
+    quiet_completed_tool.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    for (tracker, drained_to_quiet) in [
+        (&pending_terminal, false),
+        (&legacy_completion, false),
+        (&quiet_terminal_assistant, true),
+        (&quiet_completed_tool, true),
+    ] {
+        let recovery_requested = codex_turn_should_backfill(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            tracker,
+            drained_to_quiet,
+        );
+        assert!(recovery_requested);
+        assert!(codex_authoritative_backfill_due(
+            true,
+            recovery_requested,
+            None
+        ));
+        assert!(!codex_authoritative_backfill_due(
+            true,
+            recovery_requested,
+            Some(Instant::now())
+        ));
+        assert!(codex_authoritative_backfill_due(
+            true,
+            recovery_requested,
+            Instant::now().checked_sub(Duration::from_millis(500))
+        ));
+    }
 }
