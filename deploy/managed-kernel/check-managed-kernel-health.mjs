@@ -153,7 +153,7 @@ async function checkManagedKernel(
     )) return
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   } while (Date.now() < deadline)
-  fail("managed kernel did not publish a fresh matching healthy presence")
+  fail(`managed kernel did not publish a fresh matching healthy presence in presence directory ${presenceRoot}`)
 }
 
 try {

@@ -523,6 +523,24 @@ test("managed kernel health rejects an unrelated listener without a fresh matchi
   )
 })
 
+test("managed kernel health uses the installed home presence directory for upgrade and rollback", async (context) => {
+  const harness = await makeHarness(context)
+  const presenceRoot = join(harness.installRoot, "var/lib/chariox/home/kernels/active")
+  await put(join(harness.state, "skip-presence-once"), "skip\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes(`presence directory ${presenceRoot}`), result.stderr)
+  assert.doesNotMatch(result.stderr, /home\/\.chariox\/kernels\/active/)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+  assert.equal(
+    await lstat(join(presenceRoot, "kernel-1.json")).then(() => true, () => false),
+    true,
+  )
+})
+
 test("managed kernel health rejects stale, wrong-machine, or oversized presence", async (context) => {
   for (const marker of ["stale-presence-once", "wrong-machine-once", "oversized-presence-once"]) {
     const harness = await makeHarness(context)
