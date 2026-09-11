@@ -23,6 +23,7 @@ import { test } from "node:test"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const upgrade = join(repositoryRoot, "deploy/managed-kernel/upgrade-image.sh")
+const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
 function rawPublicKey(publicKey) {
@@ -135,6 +136,8 @@ async function makeHarness(context, { targetProtocol = 323 } = {}) {
   const releases = join(installRoot, "usr/lib/chariox/releases")
   const currentRelease = join(releases, current.digest.slice("sha256:".length))
   await mkdir(releases, { recursive: true })
+  await chmod(dirname(releases), 0o755)
+  await chmod(releases, 0o755)
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   const receiptPath = join(installRoot, "var/lib/chariox/home/managed/bootstrap-receipt.json")
@@ -149,7 +152,7 @@ async function makeHarness(context, { targetProtocol = 323 } = {}) {
     confirmedAt: "2026-09-11T00:00:00Z",
     contextPlan: { schemaVersion: 1, repositories: [{ id: "repo-1", url: "ssh://example.invalid/repo" }] },
   }
-  await put(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o600)
+  await put(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
   const persistent = {
     credential: join(installRoot, "var/lib/chariox/home/.chariox/vault/vault.json"),
     provider: join(installRoot, "var/lib/chariox/provider-home/provider-state.json"),
@@ -166,14 +169,56 @@ async function makeHarness(context, { targetProtocol = 323 } = {}) {
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
+presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/.chariox/kernels/active/kernel-1.json"
+if [ "$1" = "stop" ]; then
+  rm -f -- "$presence"
+fi
+if [ "$1" = "start" ]; then
+  if [ -f "$HARNESS_STATE/skip-presence-once" ]; then
+    rm -f -- "$HARNESS_STATE/skip-presence-once"
+  else
+    mkdir -p "\${presence%/*}"
+    protocol=$("$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/local/bin/chariox-kernel" --print-local-daemon-protocol-version)
+    now=$(node -e 'process.stdout.write(String(Date.now()))')
+    machine_id=machine-1
+    if [ -f "$HARNESS_STATE/wrong-machine-once" ]; then
+      rm -f -- "$HARNESS_STATE/wrong-machine-once"
+      machine_id=machine-wrong
+    fi
+    if [ -f "$HARNESS_STATE/stale-presence-once" ]; then
+      rm -f -- "$HARNESS_STATE/stale-presence-once"
+      now=1
+    fi
+    if [ -f "$HARNESS_STATE/oversized-presence-once" ]; then
+      rm -f -- "$HARNESS_STATE/oversized-presence-once"
+      node -e 'process.stdout.write("x".repeat(32769))' > "$presence"
+    else
+      printf '{"schema_version":1,"kernel_id":"kernel-1","machine_id":"%s","host":"127.0.0.1","port":%s,"relay_connected":true,"process_id":%s,"started_at_ms":%s,"heartbeat_at_ms":%s,"local_daemon_protocol_version":%s}\n' \
+        "$machine_id" "$CHARIOX_MANAGED_UPGRADE_HEALTH_PORT" "$PPID" "$now" "$now" "$protocol" > "$presence"
+    fi
+  fi
+fi
 if [ "$1" = "is-active" ] && [ -f "$HARNESS_STATE/fail-health-once" ]; then
   rm -f "$HARNESS_STATE/fail-health-once"
   exit 1
 fi
+if [ "$1" = "is-active" ] && [ -f "$HARNESS_STATE/fail-health-always" ]; then
+  exit 1
+fi
 exit 0
 `, 0o755)
-  await put(join(bin, "node"), `#!/bin/sh
+await put(join(bin, "node"), `#!/bin/sh
 set -eu
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
+  && [ "\${2:-}" = "validate-receipt" ] \
+  && [ -f "$HARNESS_STATE/fail-final-receipt-validation" ]; then
+  count_file="$HARNESS_STATE/receipt-validation-count"
+  count=0
+  if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$count_file"
+  if [ "$count" -eq 2 ]; then exit 1; fi
+fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then
@@ -216,6 +261,7 @@ async function persistentSnapshot(paths) {
 test("managed kernel upgrade atomically advances the release and receipt without changing persistent state", async (context) => {
   const harness = await makeHarness(context)
   const before = await persistentSnapshot(harness.persistent)
+  const receiptOwner = await stat(harness.receiptPath)
   const result = harness.run()
   assert.equal(result.status, 0, result.stderr)
   assert.equal(
@@ -224,6 +270,10 @@ test("managed kernel upgrade atomically advances the release and receipt without
   )
   const receipt = JSON.parse(await readFile(harness.receiptPath, "utf8"))
   assert.deepEqual(receipt, { ...harness.receipt, runtimeReleaseDigest: harness.target.digest })
+  const upgradedReceiptOwner = await stat(harness.receiptPath)
+  assert.equal(upgradedReceiptOwner.uid, receiptOwner.uid)
+  assert.equal(upgradedReceiptOwner.gid, receiptOwner.gid)
+  assert.equal(upgradedReceiptOwner.mode & 0o777, receiptOwner.mode & 0o777)
   assert.deepEqual(await persistentSnapshot(harness.persistent), before)
   assert.equal(
     await readFile(join(harness.installRoot, "usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap"), "utf8"),
@@ -235,6 +285,58 @@ test("managed kernel upgrade atomically advances the release and receipt without
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("managed kernel health rejects an unrelated listener without a fresh matching kernel presence", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "skip-presence-once"), "skip\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+})
+
+test("managed kernel health rejects stale, wrong-machine, or oversized presence", async (context) => {
+  for (const marker of ["stale-presence-once", "wrong-machine-once", "oversized-presence-once"]) {
+    const harness = await makeHarness(context)
+    await put(join(harness.state, marker), "reject\n")
+    const result = harness.run()
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
+  }
+})
+
+test("managed kernel upgrade rejects writable release authority and receipt state before stopping service", async (context) => {
+  const writableReleaseRoot = await makeHarness(context)
+  await chmod(join(writableReleaseRoot.installRoot, "usr/lib/chariox/releases"), 0o777)
+  let result = writableReleaseRoot.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /managed kernel upgrade authority permissions are unsafe/)
+  assert.equal(await lstat(join(writableReleaseRoot.state, "systemctl.log")).then(() => true, () => false), false)
+
+  const writableCurrentRelease = await makeHarness(context)
+  await chmod(
+    join(
+      writableCurrentRelease.installRoot,
+      "usr/lib/chariox/releases",
+      writableCurrentRelease.current.digest.slice("sha256:".length),
+    ),
+    0o777,
+  )
+  result = writableCurrentRelease.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /managed kernel upgrade authority permissions are unsafe/)
+  assert.equal(await lstat(join(writableCurrentRelease.state, "systemctl.log")).then(() => true, () => false), false)
+
+  const writableReceipt = await makeHarness(context)
+  await chmod(writableReceipt.receiptPath, 0o660)
+  result = writableReceipt.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /managed bootstrap receipt permissions are unsafe/)
+  assert.equal(await lstat(join(writableReceipt.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
 test("managed kernel upgrade rolls the binary and receipt back together when health fails", async (context) => {
@@ -255,6 +357,38 @@ test("managed kernel upgrade rolls the binary and receipt back together when hea
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("managed kernel rollback never reports success when restored health is unverified", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "fail-health-always"), "fail\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /rollback remains pending/)
+  assert.doesNotMatch(result.stderr, /restored previous managed kernel release/)
+  assert.equal(
+    await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade"))
+      .then((metadata) => metadata.isDirectory(), () => false),
+    true,
+  )
+})
+
+test("managed kernel upgrade immediately rolls back a post-health receipt validation failure", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "fail-final-receipt-validation"), "fail\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /final receipt validation failed; restored previous managed kernel release/)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+  assert.equal(
+    await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade"))
+      .then(() => true, () => false),
+    false,
+  )
 })
 
 test("managed kernel upgrade recovers an interruption between activation stages before retrying", async (context) => {
@@ -322,6 +456,37 @@ test("managed kernel upgrade rejects digest mismatch, a stale precondition, and 
   result = unsigned.run()
   assert.equal(result.status, 1)
   assert.match(result.stderr, /release signature is invalid/)
+
+  const tampered = await makeHarness(context)
+  await put(join(tampered.target.rootfs, "usr/local/bin/chariox-kernel"), "#!/bin/sh\nexit 0\n", 0o755)
+  result = tampered.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /release artifact chariox-kernel is corrupted/)
+})
+
+test("managed kernel upgrade rejects linked authority paths before service mutation", async (context) => {
+  const linkedReceipt = await makeHarness(context)
+  const receiptContents = await readFile(linkedReceipt.receiptPath)
+  const externalReceipt = join(linkedReceipt.root, "external-receipt.json")
+  await put(externalReceipt, receiptContents, 0o600)
+  await rm(linkedReceipt.receiptPath)
+  await symlink(externalReceipt, linkedReceipt.receiptPath)
+  let result = linkedReceipt.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /invalid file/)
+  assert.equal(await lstat(join(linkedReceipt.state, "systemctl.log")).then(() => true, () => false), false)
+
+  const linkedTransaction = await makeHarness(context)
+  const externalTransaction = join(linkedTransaction.root, "external-transaction")
+  await mkdir(externalTransaction)
+  await symlink(
+    externalTransaction,
+    join(linkedTransaction.installRoot, "usr/lib/chariox/.managed-kernel-upgrade"),
+  )
+  result = linkedTransaction.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /transaction path is obstructed/)
+  assert.equal(await lstat(join(linkedTransaction.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
 test("managed kernel upgrade requires the exact confirmed registered-kernel receipt", async (context) => {
@@ -357,6 +522,7 @@ test("managed kernel upgrade rejects a release with an incompatible local daemon
 
 test("managed kernel upgrade remains a dedicated offline release operation", async () => {
   const contents = await readFile(upgrade, "utf8")
+  const serviceContents = await readFile(managedService, "utf8")
   assert.match(contents, /verify-image-release\.mjs/)
   assert.match(contents, /--print-local-daemon-protocol-version/)
   assert.match(contents, /systemctl stop "\$service_name"/)
@@ -367,4 +533,6 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.doesNotMatch(contents, /\b(?:curl|wget|ssh|scp)\b/)
   assert.doesNotMatch(contents, /installation[_-]origin|CHARIOX_INSTALLATION/)
   assert.doesNotMatch(contents, /\.arroba/)
+  assert.match(serviceContents, /ExecStartPre=-\+\/usr\/bin\/systemctl start chariox-slice-broker\.service/)
+  assert.doesNotMatch(serviceContents, /systemctl restart/)
 })

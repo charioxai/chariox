@@ -25,6 +25,7 @@ transaction_root=$chariox_root/.managed-kernel-upgrade
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
 health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-30000}
+presence_root=$install_root/var/lib/chariox/home/.chariox/kernels/active
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-managed-upgrade.XXXXXX")
 chmod 0700 "$staging_root"
 pending_release=
@@ -54,6 +55,35 @@ require_directory() {
   source_path=$1
   if [ -L "$source_path" ] || [ ! -d "$source_path" ]; then
     echo "managed kernel upgrade contains an invalid directory: $source_path" >&2
+    exit 1
+  fi
+}
+
+require_root_owned_directory() {
+  require_directory "$1"
+  if [ "$(stat -c %u "$1")" != 0 ]; then
+    echo "managed kernel upgrade authority owner is unsafe" >&2
+    exit 1
+  fi
+  writable=$(find "$1" -maxdepth 0 -perm /022 -print -quit) || {
+    echo "managed kernel upgrade authority permissions could not be inspected" >&2
+    exit 1
+  }
+  if [ -n "$writable" ]; then
+    echo "managed kernel upgrade authority permissions are unsafe" >&2
+    exit 1
+  fi
+}
+
+require_private_regular_file() {
+  private_file_label=$2
+  require_regular_file "$1"
+  writable=$(find "$1" -maxdepth 0 -perm /022 -print -quit) || {
+    echo "$private_file_label permissions could not be inspected" >&2
+    exit 1
+  }
+  if [ -n "$writable" ]; then
+    echo "$private_file_label permissions are unsafe" >&2
     exit 1
   fi
 }
@@ -100,13 +130,16 @@ protocol_version() {
 
 check_health() {
   expected_protocol=$1
+  not_before_ms=$2
   active_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
   if [ "$active_protocol" != "$expected_protocol" ]; then
     echo "active managed kernel protocol does not match the staged release" >&2
     return 1
   fi
   systemctl is-active --quiet "$service_name" || return 1
-  node "$script_root/check-managed-kernel-health.mjs" "$health_host" "$health_port" "$health_timeout_ms"
+  node "$script_root/check-managed-kernel-health.mjs" \
+    "$health_host" "$health_port" "$health_timeout_ms" \
+    "$receipt_path" "$presence_root" "$expected_protocol" "$not_before_ms"
 }
 
 validate_digest() {
@@ -137,18 +170,19 @@ rollback_transaction() {
     return 1
   }
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
-    "$transaction_root/previous-receipt.json" "$previous_digest"
+    "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
   if ! systemctl stop "$service_name"; then
     echo "managed kernel rollback could not stop the kernel service" >&2
     return 1
   fi
-  atomic_receipt "$transaction_root/previous-receipt.json"
-  atomic_symlink "$previous_target" "$current_link"
-  systemctl daemon-reload
-  systemctl start "$service_name"
-  previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
-  check_health "$previous_protocol"
-  rm -rf -- "$transaction_root"
+  atomic_receipt "$transaction_root/previous-receipt.json" || return 1
+  atomic_symlink "$previous_target" "$current_link" || return 1
+  systemctl daemon-reload || return 1
+  health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
+  systemctl start "$service_name" || return 1
+  previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
+  check_health "$previous_protocol" "$health_not_before_ms" || return 1
+  rm -rf -- "$transaction_root" || return 1
   transaction_active=0
   rolling_back=0
 }
@@ -206,13 +240,17 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
   exit 1
 fi
-require_regular_file "$trusted_public_key"
+require_private_regular_file "$trusted_public_key" "trusted release public key"
 mkdir "$staging_root/image"
 (umask 000; cp -RP "$image_root/." "$staging_root/image/")
 cp "$trusted_public_key" "$staging_root/trusted-public-key"
 image_root=$staging_root/image
 trusted_public_key=$staging_root/trusted-public-key
 require_regular_file "$trusted_public_key"
+
+require_root_owned_directory "$chariox_root"
+require_root_owned_directory "$releases_root"
+require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 
 upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
 exec 9>"$upgrade_lock"
@@ -229,8 +267,9 @@ if [ "$current_target" != "$expected_current_target" ]; then
   echo "installed release does not match the expected current release" >&2
   exit 1
 fi
-require_regular_file "$receipt_path"
+require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt "$receipt_path" "$expected_current_digest"
+require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 node "$script_root/verify-image-release.mjs" \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
 node "$script_root/verify-image-release.mjs" "$image_root" "$expected_new_digest" "$trusted_public_key"
@@ -246,6 +285,7 @@ release_name=${expected_new_digest#sha256:}
 published_release=$releases_root/$release_name
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   require_directory "$published_release"
+  require_root_owned_directory "$published_release"
   node "$script_root/verify-image-release.mjs" "$published_release" "$expected_new_digest" "$trusted_public_key"
 else
   pending_release=$(mktemp -d "$releases_root/.new-$release_name.XXXXXX")
@@ -311,8 +351,9 @@ if ! atomic_receipt "$transaction_root/target-receipt.json" \
 fi
 write_phase activated
 if ! systemctl daemon-reload \
+  || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
-  || ! check_health "$target_protocol"; then
+  || ! check_health "$target_protocol" "$health_not_before_ms"; then
   if rollback_transaction; then
     echo "managed kernel health check failed; restored previous managed kernel release" >&2
   else
@@ -320,8 +361,16 @@ if ! systemctl daemon-reload \
   fi
   exit 1
 fi
-node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt "$receipt_path" "$expected_new_digest"
-write_phase committed
+if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
+  "$receipt_path" "$expected_new_digest" \
+  || ! write_phase committed; then
+  if rollback_transaction; then
+    echo "managed kernel final receipt validation failed; restored previous managed kernel release" >&2
+  else
+    echo "managed kernel final receipt validation failed; rollback remains pending" >&2
+  fi
+  exit 1
+fi
 rm -rf -- "$transaction_root"
 transaction_active=0
 printf 'managed kernel upgraded to %s\n' "$expected_new_digest"

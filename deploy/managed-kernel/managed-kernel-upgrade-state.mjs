@@ -79,9 +79,13 @@ async function fsyncDirectory(path) {
   }
 }
 
-async function writeExclusive(path, bytes, mode) {
+async function writeExclusive(path, bytes, mode, owner) {
   const handle = await open(path, "wx", mode)
   try {
+    if (owner) {
+      await handle.chown(owner.uid, owner.gid)
+      await handle.chmod(mode)
+    }
     await handle.writeFile(bytes)
     await handle.sync()
   } finally {
@@ -90,17 +94,24 @@ async function writeExclusive(path, bytes, mode) {
 }
 
 async function atomicFile(source, destination) {
-  const sourceMetadata = await lstat(source, { bigint: true })
-  if (!sourceMetadata.isFile() || sourceMetadata.size > BigInt(MAX_RECEIPT_BYTES)) {
+  const sourceMetadata = await lstat(source)
+  if (!sourceMetadata.isFile() || sourceMetadata.size > MAX_RECEIPT_BYTES) {
     fail("staged managed bootstrap receipt is invalid")
   }
   const destinationMetadata = await lstat(destination)
   if (!destinationMetadata.isFile()) fail("installed managed bootstrap receipt is invalid")
+  const destinationMode = destinationMetadata.mode & 0o777
+  if ((destinationMode & 0o022) !== 0) {
+    fail("installed managed bootstrap receipt permissions are unsafe")
+  }
   const temporary = `${destination}.upgrade-new`
   await unlink(temporary).catch((error) => {
     if (error.code !== "ENOENT") throw error
   })
-  await writeExclusive(temporary, await readFile(source), 0o600)
+  await writeExclusive(temporary, await readFile(source), destinationMode, {
+    uid: destinationMetadata.uid,
+    gid: destinationMetadata.gid,
+  })
   await rename(temporary, destination)
   await fsyncDirectory(dirname(destination))
 }
