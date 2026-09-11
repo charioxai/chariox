@@ -13,7 +13,7 @@ export async function packageChromeExtension(output,typescript) {
   await mkdir(extensionTarget,{recursive:true});
   await mkdir(clientTarget,{recursive:true});
   for (const file of ['background.mjs','connector.html','connector.css','connector.mjs',
-    'connector-core.mjs','delivery-adapter.mjs']) {
+    'connector-core.mjs','delivery-adapter.mjs','permission-coordinator.mjs']) {
     await copyFile(path.join(extensionSource,file),path.join(extensionTarget,file));
   }
   await copyFile(path.join(extensionSource,'manifest.json'),path.join(output,'manifest.json'));

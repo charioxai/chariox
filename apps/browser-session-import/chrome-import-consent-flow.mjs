@@ -8,7 +8,7 @@ import {readKernelApprovedChromeCookies} from './kernel-source-reader.mjs';
 // Trusted extension UI only. request must belong to an authenticated, paired
 // connector. This creates no page-message endpoint and does not apply cookies.
 export async function prepareChromeCookieImport({chrome,selection,sourceTabId,request,
-  signal,timeoutMs = 120000}) {
+  signal,timeoutMs = 120000,permissionLifecycle}) {
   let selected;
   let permission;
   try {
@@ -22,9 +22,23 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
     Object.freeze(selected.partition_sites);
     Object.freeze(selected);
     permission = {permissions:['cookies'],origins:[...new Set(selected.domains.map(host => `*://${host.toLowerCase()}/*`))]};
-    if (typeof chrome?.permissions?.request !== 'function') throw new Error();
+    if (typeof chrome?.permissions?.request !== 'function'
+        || (permissionLifecycle !== undefined && (typeof permissionLifecycle?.reserve !== 'function'
+          || typeof permissionLifecycle?.activate !== 'function'
+          || typeof permissionLifecycle?.release !== 'function'))) throw new Error();
   } catch { throw error('cookie_source_denied'); }
   if (signal?.aborted) throw error('cookie_source_cancelled');
+
+  let permissionsReleased = false;
+  let permissionRelease;
+  const releasePermissions = () => {
+    if (permissionRelease) return permissionRelease;
+    permissionsReleased = true;
+    permissionRelease = Promise.resolve().then(() => permissionLifecycle?.release()).catch(() => undefined);
+    return permissionRelease;
+  };
+  try { await permissionLifecycle?.reserve(structuredClone(permission)); }
+  catch { await releasePermissions(); throw error('cookie_source_denied'); }
 
   const deadline = performance.now() + timeoutMs;
   const active = new AbortController();
@@ -56,7 +70,10 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
     active.abort();
     detach();
     cleanup = (async () => {
-      if (!requestId) return {kernelCancellationConfirmed:false};
+      if (!requestId) {
+        await releasePermissions();
+        return {kernelCancellationConfirmed:false};
+      }
       const cancellation = new AbortController();
       try {
         const response = await sourceCall(() => request(cancelBrowserImportRequest(
@@ -64,7 +81,7 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
         {signal:cancellation.signal,timeoutMs:5000}),cancellation.signal,performance.now() + 5000);
         return {kernelCancellationConfirmed:matches(response,requestId,'cancelled')};
       } catch { return {kernelCancellationConfirmed:false}; }
-      finally { cancellation.abort(); }
+      finally { cancellation.abort(); await releasePermissions(); }
     })();
     return cleanup;
   }
@@ -94,6 +111,8 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
       live();
       const granted = chrome.permissions.request(structuredClone(permission));
       if (await sourceCall(() => granted,active.signal,deadline) !== true) throw error('cookie_source_denied');
+      live();
+      await sourceCall(() => permissionLifecycle?.activate(),active.signal,deadline);
       live();
       state = 'approving';
       if (!matches(await send(approveBrowserImportRequest(requestId,selected)),requestId,'approved')) {
@@ -149,7 +168,8 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
   }
   return Object.freeze({selection:selected,sourceTabId,
     get requestId() { return requestId; },
-    get state() { return state; },confirmAndRead,confirmAndDeliver,cancel});
+    get state() { return state; },get permissionsReleased() { return permissionsReleased; },
+    confirmAndRead,confirmAndDeliver,cancel,releasePermissions});
 }
 
 function matches(response,id,status) {

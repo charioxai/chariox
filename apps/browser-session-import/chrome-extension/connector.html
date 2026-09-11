@@ -10,17 +10,26 @@
   <main>
     <h1>Import this Chrome session</h1>
     <p id="source">Checking the source tab…</p>
+    <section id="bootstrap" hidden>
+      <h2>1. Select a trusted Chariox destination</h2>
+      <p>Copy this metadata-only request into the authenticated Chariox Browser Import panel.</p>
+      <textarea id="bootstrap-request" readonly aria-label="Bootstrap request"></textarea>
+      <button id="copy-bootstrap" type="button">Copy bootstrap request</button>
+      <label for="bootstrap-response">Paste the authenticated bootstrap for the selected session and kernel</label>
+      <textarea id="bootstrap-response" maxlength="65536" autocomplete="off" spellcheck="false"></textarea>
+      <button id="pin" type="button">Pin selected destination</button>
+    </section>
     <section id="enroll" hidden>
-      <h2>1. Pair with Chariox</h2>
-      <p>Copy this metadata-only request into the Browser Import panel for the destination session.</p>
-      <textarea id="request" readonly aria-label="Pairing request"></textarea>
-      <button id="copy" type="button">Copy pairing request</button>
+      <h2>2. Pair with the pinned kernel</h2>
+      <p>Return this one-time challenge to the same authenticated Chariox panel.</p>
+      <textarea id="pairing-request" readonly aria-label="Pairing request"></textarea>
+      <button id="copy-pairing" type="button">Copy pairing request</button>
       <label for="response">Paste the one-time pairing response from Chariox</label>
       <textarea id="response" maxlength="65536" autocomplete="off" spellcheck="false"></textarea>
       <button id="pair" type="button">Pair destination</button>
     </section>
     <section id="confirm" hidden>
-      <h2>2. Confirm import</h2>
+      <h2>3. Confirm import</h2>
       <p id="destination"></p>
       <p>Chrome will ask for cookie access to only these hosts:</p>
       <ul id="domains"></ul>
