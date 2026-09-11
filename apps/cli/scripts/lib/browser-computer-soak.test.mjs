@@ -32,6 +32,7 @@ import {
   inspectDigestBoundRuntime,
   launchDetachedRunner,
   networkNamespaceAttribution,
+  processIsRunning,
   runHostHelper,
   redactEvidence,
   resolveVerifiedImage,
@@ -141,6 +142,41 @@ test("a ready stream must deliver its first frame before the health deadline", (
     }, 31_001),
     /did not deliver its first video frame/,
   )
+})
+
+test("cleanup treats a process that vanishes after signal-zero as stopped", () => {
+  const probe = () => {}
+  const readStat = () => { throw Object.assign(new Error("vanished"), { code: "ENOENT" }) }
+
+  assert.equal(processIsRunning(13499, { probe, readStat }), false)
+})
+
+test("cleanup process checks preserve zombies and fail closed on uncertain status", () => {
+  const probe = () => {}
+  const stat = (state) => `13499 (soak worker) ${state}`
+
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("Z") }), false)
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("X") }), false)
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("x") }), false)
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("S") }), true)
+  for (const code of ["EACCES", "EIO"]) {
+    const readStat = () => { throw Object.assign(new Error(code), { code }) }
+    assert.equal(processIsRunning(13499, { probe, readStat }), true)
+  }
+  for (const malformed of ["malformed) Z", "999 (soak worker) Z"]) {
+    assert.equal(processIsRunning(13499, { probe, readStat: () => malformed }), true)
+  }
+  assert.equal(processIsRunning(13499, {
+    probe: () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }) },
+  }), true)
+  assert.equal(processIsRunning(13499, {
+    probe: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }) },
+  }), false)
+  assert.equal(processIsRunning(13499, {
+    probe,
+    platform: "darwin",
+    readStat: () => { throw new Error("non-Linux must not read procfs") },
+  }), true)
 })
 
 test("the preflight baseline measures the evidence filesystem", async () => {
@@ -649,6 +685,46 @@ test("pre-signal PID reuse prevents every process-group signal and cannot claim 
   assert.equal(captured.pidReuseSafe, false)
 })
 
+test("cleanup only accepts definitive process disappearance when identity is unavailable", async () => {
+  const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/chromium", processGroupId: 42 }
+  const child = { pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected }
+  const uncertainOwned = await terminateOwnedProcessGroup("chromium", child, {
+    identity: async () => null,
+    isRunning: () => true,
+    signal: () => assert.fail("uncertain identity must not be signaled"),
+    waitForLog: async () => {},
+  })
+  assert.equal(uncertainOwned.ok, false)
+  assert.equal(uncertainOwned.pidReuseSafe, false)
+
+  const vanishedOwned = await terminateOwnedProcessGroup("chromium", child, {
+    identity: async () => null,
+    isRunning: () => false,
+    signal: () => assert.fail("vanished process must not be signaled"),
+    waitForLog: async () => {},
+  })
+  assert.equal(vanishedOwned.ok, true)
+  assert.equal(vanishedOwned.alreadyExited, true)
+  assert.equal(vanishedOwned.pidReuseSafe, true)
+
+  const uncertainCaptured = await terminateCapturedProcessGroup("viewer", expected, {
+    identity: async () => null,
+    isRunning: () => true,
+    signal: () => assert.fail("uncertain identity must not be signaled"),
+  })
+  assert.equal(uncertainCaptured.ok, false)
+  assert.equal(uncertainCaptured.pidReuseSafe, false)
+
+  const vanishedCaptured = await terminateCapturedProcessGroup("viewer", expected, {
+    identity: async () => null,
+    isRunning: () => false,
+    signal: () => assert.fail("vanished process must not be signaled"),
+  })
+  assert.equal(vanishedCaptured.ok, true)
+  assert.equal(vanishedCaptured.alreadyExited, true)
+  assert.equal(vanishedCaptured.pidReuseSafe, true)
+})
+
 test("all helper subprocesses receive only the shared allowlisted environment", async () => {
   const calls = []
   const helperEnv = buildSanitizedChildEnvironment({ PATH: "/usr/bin", LANG: "C.UTF-8", AWS_SECRET_ACCESS_KEY: "leak" })
@@ -715,6 +791,27 @@ test("post-spawn evidence or log-close failure rolls back the exact detached chi
     assert.equal(failure.terminalCleanup.clean, true)
     assert.equal(failure.terminalCleanup.actions[0].name, "detached-runner-rollback")
   }
+})
+
+test("failed detached identity capture never signals an uncertain PID", async () => {
+  const signals = []
+  const child = {
+    pid: 2_147_483_647,
+    exitCode: null,
+    signalCode: null,
+    spawnfile: "/usr/bin/node",
+    kill: (signal) => signals.push(signal),
+  }
+  await assert.rejects(launchDetachedRunner({
+    command: "/usr/bin/node", args: ["runner"], cwd: "/repo", env: {}, logPath: "/evidence/log", gatePath: "/evidence/gate",
+  }, {
+    prepareLaunchGate: async () => {},
+    openLog: async () => ({ fd: 7, close: async () => {} }),
+    spawnChild: () => child,
+    terminate: async () => ({ name: "detached-runner-rollback", ok: false, pidReuseSafe: false }),
+    persistFailure: async () => {},
+  }), /identity could not be captured/)
+  assert.deepEqual(signals, [])
 })
 
 test("detached child remains gated until log close and starting evidence are durable", async () => {
