@@ -251,10 +251,7 @@ impl BrowserImportAdmission {
 
     /// Durable recovery is the only authority allowed to retire a cancelled
     /// admission, and remains valid after volatile admission state is lost.
-    pub(crate) fn finish_recovery(
-        &self,
-        id: &ImportRequestId,
-    ) -> Result<(), ImportAdmissionError> {
+    pub(crate) fn finish_recovery(&self, id: &ImportRequestId) -> Result<(), ImportAdmissionError> {
         let mut entries = self
             .entries
             .lock()

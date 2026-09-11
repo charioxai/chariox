@@ -52,7 +52,7 @@ impl KernelRuntimeState {
                 self.settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
                     .await?
             };
-            if session_outcome.had_active_prompt {
+            if session_outcome.had_active_prompt && !session_outcome.cancelled_prompt {
                 let recipients = owned
                     .attachment_store
                     .list_session_attachment_ids(session_id);
@@ -129,7 +129,7 @@ impl KernelRuntimeState {
                 termination.clone(),
             )
             .await?;
-        if !session_outcome.had_active_prompt {
+        if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
             return Ok(true);
         }
         let recipients = owned
@@ -170,19 +170,25 @@ impl KernelRuntimeState {
         {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
         }
-        let had_active_prompt = self
+        let active_prompt = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
-            .is_some();
-        if !had_active_prompt {
+            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id);
+        let Some(active_prompt) = active_prompt else {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
+                cancelled_prompt: false,
                 started_next_prompt: false,
             });
+        };
+        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            return self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+                .await;
         }
         let message = format!(
             "Provider run `{provider_run_id}` ended unexpectedly: {}.",
@@ -203,6 +209,7 @@ impl KernelRuntimeState {
             .is_some();
         Ok(crate::app::ProviderRunExitSessionSummary {
             had_active_prompt: true,
+            cancelled_prompt: false,
             started_next_prompt,
         })
     }

@@ -4,6 +4,7 @@ mod account_credential;
 mod claude;
 mod claude_runtime;
 pub(crate) use claude_runtime::usage::claude_status_line_usage_snapshot;
+mod account_handoff;
 mod codex;
 mod codex_client;
 mod codex_runtime;
@@ -15,6 +16,7 @@ pub(crate) use credential_environment::{
 };
 mod executable_resolution;
 mod external_observation;
+pub(crate) use account_handoff::encode_account_handoff;
 mod launch_contract;
 mod managed_isolation;
 mod mcp_proxy;
@@ -100,7 +102,7 @@ pub use opencode_client::{
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, provider_retry_status,
+    classify_provider_terminal_failure_text, claude_native_stop_failure, provider_retry_status,
     PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{

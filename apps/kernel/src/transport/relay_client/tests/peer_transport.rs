@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        43
+        50
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -52,10 +52,16 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        43
+        50
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
+        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+            provider: "claude".to_string(),
+            account_profile: "work".to_string(),
+            model: None,
+            effort: None,
+        },
         prompt: "continue".to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),
@@ -115,7 +121,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        43
+        50
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -358,6 +364,12 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         },
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id: "missing-leased-agent".to_string(),
+            expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+                provider: "claude".to_string(),
+                account_profile: "work".to_string(),
+                model: None,
+                effort: None,
+            },
             prompt: "continue".to_string(),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
