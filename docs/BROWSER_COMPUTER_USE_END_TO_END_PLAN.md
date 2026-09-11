@@ -924,6 +924,7 @@ and persistence paths. Every milestone must select and run the relevant rows.
 | Vault | browser controller or traces reveal secrets | full M26 and CHA-29 leak matrix |
 | History and Recall | browser/action events corrupt or overwhelm history | persistence, filtering, replay, and bounded event volume |
 | Workflows | browser tools block scheduler or relay readers | concurrent workflow and browser task with cancel/retry |
+| Agent-to-agent coordination | kernel-originated messages enter the user prompt backlog or stall behind an active turn | deliver into the active provider turn at the next safe message boundary, deliver immediately when idle, and verify reconnect deduplication, ordering, cancellation, and a queue-free Web/TUI projection |
 | Workflow endpoints | managed-machine work changes routing | connected ingress and deployment invocation drill |
 | Workspace Live Sync | downloads/uploads and slice files collide with sync | managed, tracked, cross-branch, conflict, and permission drills |
 | Managed remote kernels | headed slices affect heartbeat and admission | provision, restart, stale heartbeat, resource cap, teardown |
@@ -1081,6 +1082,7 @@ CHA-16 is complete only when:
 - Web and local/remote TUI clients prove parity against one live environment
 - all three providers pass structured browser and computer fallback drills
 - user takeover, multi-agent concurrency, permissions, and actor traces pass
+- kernel-routed agent-to-agent messages never appear as queued user prompts and pass active, idle, reconnect, deduplication, ordering, cancellation, and Web/TUI projection drills
 - state, installed programs, browser authentication, and provider threads
   survive save/restart and full recreation
 - vault-backed public-service work passes leak scans
