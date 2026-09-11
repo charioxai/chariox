@@ -307,6 +307,10 @@ Store persistent local development state under:
 
 Use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, kernel state,
 logs, drill scratch, browser profiles, or slice homes inside a repository.
+The idle authenticated-browser runner is stricter: its authoritative retained
+evidence belongs under
+`~/.codex/evidence/browser-computer-use/idle-authenticated-browser-soak/`;
+development state may hold only removable runtime scratch.
 
 Each evidence manifest must include:
 
@@ -327,7 +331,7 @@ Each evidence manifest must include:
 Linear: CHA-18, with inputs from CHA-23, CHA-25, CHA-26, and CHA-31.
 
 Create the local functional and failure-reproduction harness before replacing
-the current implementation. It must run against the current noVNC and one-shot
+the pre-cutover implementation. It must run against the pre-cutover noVNC and one-shot
 CDP stack, fail for the missing product behavior, and run against each later
 implementation. This milestone establishes correctness tests, not benchmark
 rankings or optimization targets.
@@ -335,7 +339,7 @@ rankings or optimization targets.
 Deliverables:
 
 - reproducible local Mac and local Linux or Docker test profiles
-- current noVNC display behavior capture
+- pre-cutover noVNC display behavior capture
 - current structured-browser, screenshot, OCR, mouse, and keyboard behavior
   capture
 - per-slice memory, CPU, disk, and process measurements used only to keep the
@@ -633,8 +637,9 @@ After all functional, benchmark, and resource gates pass:
 2. Run a soak period with noVNC fallback available.
 3. Compare error rate, reconnect rate, task success, latency, CPU, memory,
    bandwidth, and support incidents against the baseline.
-4. Make Selkies the default only after explicit sign-off.
-5. Retain noVNC fallback for one rollback window.
+4. Validate the Selkies product default on signed images across Web, local TUI,
+   and remote TUI before rollout acceptance.
+5. Retain explicit noVNC fallback for one rollback window.
 6. Remove noVNC packages, code, fixtures, capability names, and documentation
    in a dedicated cleanup PR after the rollback window.
 
@@ -870,6 +875,7 @@ them without an explicitly approved tradeoff.
 | Selkies crash | View degrades and retries without blocking kernel work |
 | Viewer closes mid-action | agent action ownership remains deterministic |
 | Queue saturation | fail-fast or bounded backpressure, relay readers stay live |
+| Provider run terminates with queued prompts | the kernel records one authoritative bounded termination reason, closes the active run once, promotes the queued backlog exactly once, preserves provider-thread/history continuity, and projects the same card, tooltip, timer, transcript, and next-prompt state before and after reconnect |
 | Slow viewer | other viewers and agents remain unaffected |
 | Network latency and loss | measured degradation and no protocol corruption |
 | Low memory | admission rejection or graceful stop before OOM |
@@ -886,6 +892,7 @@ them without an explicitly approved tradeoff.
 | Human takeover during reconnect | ownership does not revert silently to the agent |
 | Web disconnect while TUI remains | TUI and kernel continue; Web reconnects to the same authoritative state |
 | Web relay or inventory reconnect | terminal shell stays mounted and visible; no document reload, full-grey frame, empty route outlet, lost focus, or stale status timer |
+| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; retained provider/transcript history is never treated as liveness; the waiting-room cache keys external-working generations atomically with the session revision; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
 | TUI disconnect while Web remains | Web and kernel continue; TUI replay does not duplicate interactions |
 | DNS, TLS, or relay endpoint failure | connection fails loudly, uses no unsafe fallback, and recovers after the endpoint is healthy |
 | Clock skew and expired tokens | refresh or rejection is deterministic and does not bypass authorization |
@@ -920,6 +927,37 @@ after the local scale and leak checks pass. Run at least:
 Scale is a resource-bound admission problem. The test must prove graceful
 rejection at the limit, not merely find the point where the machine crashes.
 
+The idle authenticated-browser soak must use monotonic duration accounting,
+meet its checkpoint cadence minimum, and finish with a fresh authenticated
+browser request plus exact ready Controller PID. It must restart Chromium once
+against the same profile and observe both the session cookie and a
+browser-storage marker after restart, without turning the idle interval into a
+navigation loop. A pass is valid only after terminal status/result/log scanning
+and exact owned-process/listener cleanup. Its credential-free loopback fixture
+does not substitute for Google authentication or full managed-machine
+recreation evidence.
+
+The repository-supported entry point for the active browser/controller/stream
+gate is:
+
+```bash
+pnpm --filter @chariox/cli run browser-computer:soak -- --preflight
+pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
+pnpm --filter @chariox/cli run browser-computer:soak -- --detach
+```
+
+The detached command defaults to eight hours and refuses a shorter duration,
+source protocol below 322, or a backend other than Selkies. Do not start it
+unless preflight and the short smoke pass from the same clean source tree,
+engine-resolved immutable image digest with a verified Cosign signature and
+signed SLSA provenance attestation, viewer backend, resource limits, and
+external evidence root. The receipts expire after one hour and detach fails
+closed when either is missing, stale, or mismatched. The runner also fails
+preflight unless its Linux network namespace is exclusively attributable to
+the owned process tree. Retain its external evidence directory, including
+PID/status/result files, resource samples, failure marker, process logs, latest
+screen capture, and cleanup ledger.
+
 ## Regression matrix for adjacent Chariox features
 
 Browser/computer work touches kernel, relay, slice, Cloud, provider, security,
@@ -936,6 +974,7 @@ and persistence paths. Every milestone must select and run the relevant rows.
 | Vault | browser controller or traces reveal secrets | full M26 and CHA-29 leak matrix |
 | History and Recall | browser/action events corrupt or overwhelm history | persistence, filtering, replay, and bounded event volume |
 | Workflows | browser tools block scheduler or relay readers | concurrent workflow and browser task with cancel/retry |
+| Agent-to-agent coordination | kernel-originated messages enter the user prompt backlog or stall behind an active turn | deliver into the active provider turn at the next safe message boundary, deliver immediately when idle, and verify reconnect deduplication, ordering, cancellation, and a queue-free Web/TUI projection |
 | Workflow endpoints | managed-machine work changes routing | connected ingress and deployment invocation drill |
 | Workspace Live Sync | downloads/uploads and slice files collide with sync | managed, tracked, cross-branch, conflict, and permission drills |
 | Managed remote kernels | headed slices affect heartbeat and admission | provision, restart, stale heartbeat, resource cap, teardown |
@@ -1102,6 +1141,10 @@ CHA-16 is complete only when:
 - Web and local/remote TUI clients prove parity against one live environment
 - all three providers pass structured browser and computer fallback drills
 - user takeover, multi-agent concurrency, permissions, and actor traces pass
+- kernel-routed agent-to-agent messages never appear as queued user prompts and pass active, idle, reconnect, deduplication, ordering, cancellation, and Web/TUI projection drills
+- provider termination and queued-prompt advancement use one kernel-owned lifecycle across local, registered managed, relay-attached, and leased agents; progress-without-final, provider closure, reconnect/reload, stale event ordering, preserved conversation context, exactly-once backlog promotion, and the next accepted prompt leave card, tooltip, timer, transcript, and durable history consistent
+- focused-agent navigation, history refresh, relay reconnect, and inventory refresh preserve the rendered Web terminal grid, expose bounded target-pane loading and failure states, and never flash an unlabelled whole-workspace placeholder
+- `WORKING` status, elapsed timer, provider/tool trace, and queued-prompt admission share one freshness contract; retained external/provider history cannot manufacture live work, external-working state and the session revision are read and cached atomically, a stale provider/tool heartbeat cannot leave a silent multi-hour turn or hide the active operation, and reconciliation is identical before and after Web reconnect/reload
 - state, installed programs, browser authentication, and provider threads
   survive save/restart and full recreation
 - vault-backed public-service work passes leak scans
