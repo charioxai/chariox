@@ -5450,7 +5450,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_context_transfers_claude_refresh_credentials() {
+    fn managed_context_round_trips_only_claude_refresh_credentials() {
         let (source_root, source) = fixture();
         let profile = source
             .create_managed("owner-a", "claude", "Work")
@@ -5469,6 +5469,86 @@ mod tests {
             .expect("Claude refresh credentials should transfer to managed contexts");
         assert_eq!(materialization.files.len(), 1);
         assert_eq!(materialization.files[0].relative_path, ".credentials.json");
+
+        let (target_root, target) = fixture();
+        let receipt = target
+            .materialize_managed_context_replica(
+                "owner-a",
+                "context-claude",
+                &"a".repeat(64),
+                &materialization,
+            )
+            .expect("materialize Claude refresh credentials");
+        let target_environment = target
+            .resolve_environment("owner-a", "claude", &profile.profile_id)
+            .expect("resolve target Claude account");
+        let target_credentials =
+            Path::new(&target_environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json");
+        assert_eq!(
+            fs::read_to_string(&target_credentials).expect("read target Claude credentials"),
+            r#"{"claudeAiOauth":{"refreshToken":"secret"}}"#
+        );
+        target
+            .rollback_managed_context_replica("owner-a", &receipt)
+            .expect("roll back Claude credentials");
+        assert!(!target_credentials.exists());
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn managed_context_rejects_invalid_claude_payloads_before_provisioning() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "claude", "Work").unwrap();
+        let environment = source
+            .resolve_environment("owner-a", "claude", &profile.profile_id)
+            .unwrap();
+        fs::write(
+            Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"secret"}}"#,
+        )
+        .unwrap();
+        let valid = source
+            .export_managed_context_materialization("owner-a", "claude", &profile.profile_id)
+            .unwrap();
+
+        let mut nonrefreshable = valid.clone();
+        nonrefreshable.files[0].contents_base64 = base64::engine::general_purpose::STANDARD
+            .encode(br#"{"claudeAiOauth":{"accessToken":"expired"}}"#);
+        let mut with_extra_file = valid.clone();
+        with_extra_file.files.push(ProviderAccountMaterializationFile {
+            relative_path: "settings.json".to_string(),
+            contents_base64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+        });
+
+        for (context_id, materialization, expected) in [
+            (
+                "context-claude-nonrefreshable",
+                nonrefreshable,
+                "no transferable credentials",
+            ),
+            (
+                "context-claude-extra",
+                with_extra_file,
+                "managed-context credential allowlist",
+            ),
+        ] {
+            let (target_root, target) = fixture();
+            let error = target
+                .materialize_managed_context_replica(
+                    "owner-a",
+                    context_id,
+                    &"a".repeat(64),
+                    &materialization,
+                )
+                .expect_err("invalid Claude credentials must fail before provisioning");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(target
+                .get("owner-a", "claude", &profile.profile_id)
+                .is_err());
+            let _ = fs::remove_dir_all(target_root);
+        }
         let _ = fs::remove_dir_all(source_root);
     }
 
