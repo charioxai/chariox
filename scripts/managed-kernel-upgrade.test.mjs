@@ -903,6 +903,20 @@ test("managed kernel upgrade recovers interruption after every persisted nonterm
   }
 })
 
+test("managed kernel upgrade recovers interruption after the persisted rolled-back phase", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  await put(join(harness.state, "crash-after-phase-rolled_back"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const retried = harness.run()
+  assert.equal(retried.status, 0, retried.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+})
+
 test("cross-protocol recovery authorizes automatic rollback and re-upgrade before shutdown", async (context) => {
   const harness = await makeHarness(context, {
     currentProtocol: 322,

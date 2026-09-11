@@ -396,6 +396,18 @@ recover_transaction() {
     tombstone_transaction
     return 0
   fi
+  if [ "$phase" = rolled_back ]; then
+    previous_digest=$(read_single_line "$transaction_root/previous-digest") || return 1
+    previous_current=$(read_single_line "$transaction_root/previous-current") || return 1
+    validate_digest "$previous_digest" || return 1
+    [ "$previous_current" = "releases/${previous_digest#sha256:}" ] || return 1
+    [ "$(readlink "$current_link")" = "$previous_current" ] || return 1
+    node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
+      "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
+      "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
+    tombstone_transaction || return 1
+    return 0
+  fi
   case "$phase" in prepared|stopped|activated) rollback_transaction ;;
     *) echo "managed kernel upgrade transaction phase is invalid" >&2; return 1 ;;
   esac
