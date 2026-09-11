@@ -15,23 +15,28 @@ Chariox does not read, parse, log or convert that payload. This is separate from
 the cookie connector described below and does not make password import available
 to an unattended agent.
 
-The launch remains `--disable-sync` and `--no-first-run`: Chrome Sync and
-Chromium's automatic import from a host default browser are intentionally not a
-transfer path. A slice cannot see an arbitrary host Chrome profile unless the
-user explicitly makes source data available. `--password-store=basic` keeps the
-browser store inside the slice profile instead of depending on a host keyring;
-it does not add OS-keyring encryption, so slice/home access controls are the
-store's protection boundary. CDP remains bound to loopback, and no
-sandbox-disabling flag is used. Restarts reuse the
-same `--user-data-dir` and request Chromium's native session restore when a
-restorable session exists.
+The exact fixed headed launch switches are `--password-store=basic`,
+`--no-first-run`, `--no-default-browser-check`, `--disable-sync`,
+`--disable-dev-shm-usage`, `--disable-gpu`,
+`--remote-debugging-address=127.0.0.1`, and
+`--remote-debugging-port=9222`. The launch also supplies the persistent
+`--user-data-dir`. It adds `--restore-last-session` only when that directory has
+a restorable session, and adds `--new-window -- <url>` only for URL recovery;
+otherwise the configured start URL follows `--`. Desktop startup and URL
+recovery use this same launcher.
 
-The other current launch switches are `--no-default-browser-check`,
-`--disable-dev-shm-usage` and `--disable-gpu`. The product may add
-`--unsafely-treat-insecure-origin-as-secure` for the exact origins in
-`CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS`; its current default is only
-`http://host.docker.internal:4321`. This scoped development-origin exception is
-not a renderer-sandbox exception and must not be widened to arbitrary origins.
+The launch never uses `--unsafely-treat-insecure-origin-as-secure`,
+`--no-sandbox`, or another sandbox-disabling switch. Local development pages
+must use a genuinely secure context when they need secure-context browser APIs;
+the managed browser does not promote an HTTP origin. Loopback CDP preserves the
+browser controller/action path without changing page security semantics.
+
+Chrome Sync and Chromium's automatic import from a host default browser are
+intentionally not transfer paths. A slice cannot see an arbitrary host Chrome
+profile unless the user explicitly makes source data available.
+`--password-store=basic` keeps the browser store inside the slice profile
+instead of depending on a host keyring; it does not add OS-keyring encryption,
+so slice/home access controls are the store's protection boundary.
 
 Browser-native password import transfers saved passwords only. It does not
 transfer an authenticated web session, passkeys, payment credentials, Chrome

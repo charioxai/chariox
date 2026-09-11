@@ -39,9 +39,10 @@ browser-owned settings on each launch. Chariox does not inspect or translate
 password payloads. The managed browser still launches with `--disable-sync`,
 `--no-first-run`, a dedicated persistent `--user-data-dir`, a profile-local
 `--password-store=basic`, and loopback-only remote debugging. It never uses a
-sandbox-disabling flag. Consequently, neither Chrome Sync nor Chromium's
-automatic host-default-browser first-run import is a supported Chariox path.
-See the component README for the exact launch boundary and service limits.
+sandbox-disabling flag or promotes an insecure HTTP origin to a secure context.
+Consequently, neither Chrome Sync nor Chromium's automatic host-default-browser
+first-run import is a supported Chariox path. See the component README for the
+exact launch boundary and service limits.
 
 ## Proposed first-creation flow
 

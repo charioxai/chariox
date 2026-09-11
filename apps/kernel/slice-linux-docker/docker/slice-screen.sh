@@ -12,7 +12,6 @@ NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
 VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-novnc}"
 CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.chariox/browser/chromium}"
-CHROME_TRUSTED_INSECURE_ORIGINS="${CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
 
 export DISPLAY="$DISPLAY_ID"
 
@@ -198,13 +197,7 @@ require_screen_available() {
 }
 
 launch_chromium() {
-  local -a chrome_secure_context_args=()
   local -a chrome_startup_target_args=()
-  if [[ -n "$CHROME_TRUSTED_INSECURE_ORIGINS" ]]; then
-    chrome_secure_context_args+=(
-      "--unsafely-treat-insecure-origin-as-secure=$CHROME_TRUSTED_INSECURE_ORIGINS"
-    )
-  fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     clear_chromium_profile_locks
     if chromium_has_restorable_session; then
@@ -227,7 +220,6 @@ launch_chromium() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
-    "${chrome_secure_context_args[@]}" \
     "${chrome_startup_target_args[@]}" >>"$LOGS/chromium-gui.log" 2>&1 &
 }
 

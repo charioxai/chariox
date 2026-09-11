@@ -22,6 +22,12 @@ test("headed, URL fallback and smoke launch paths never disable the renderer san
   }
 });
 
+test("managed Chromium never promotes an insecure origin to a secure context", async () => {
+  const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /--unsafely-treat-insecure-origin-as-secure/);
+  assert.doesNotMatch(source, /CHROME_TRUSTED_INSECURE_ORIGINS/);
+});
+
 test("desktop startup and URL fallback share one Chromium launch configuration", async () => {
   const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
   assert.equal((source.match(/nohup chromium/g) ?? []).length, 1);
@@ -29,6 +35,8 @@ test("desktop startup and URL fallback share one Chromium launch configuration",
   assert.match(source, /launch_chromium "\$1"/);
   assert.match(source, /chrome_startup_target_args\+=\(--new-window -- "\$@"\)/);
   assert.match(source, /chrome_startup_target_args=\(-- "\$CHROME_URL"\)/);
+  assert.match(source, /--remote-debugging-address=127\.0\.0\.1/);
+  assert.match(source, /--remote-debugging-port=9222/);
 });
 
 test("managed startup leaves local credentials under Chromium ownership", async () => {

@@ -9,6 +9,10 @@ loopback CDP endpoint, resource-related flags and session restoration. An
 explicit URL-open action can recover an exited Chromium process only while the
 existing Xvfb display is alive. It cannot create or restart the shared desktop.
 URL arguments follow the option terminator so they cannot become browser flags.
+The launcher does not use `--unsafely-treat-insecure-origin-as-secure` or expose
+an environment override for it; HTTP pages retain Chromium's normal security
+semantics. The loopback CDP endpoint remains available to the kernel-owned
+browser controller independently of the page's secure-context status.
 
 Normal Docker slices use `chromium-seccomp.json`, derived from
 [moby/profiles default.json at 61eaf32614c7c71b60bd8927d3e6a4ffc8ff1f31](https://github.com/moby/profiles/blob/61eaf32614c7c71b60bd8927d3e6a4ffc8ff1f31/seccomp/default.json).

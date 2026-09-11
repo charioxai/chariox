@@ -797,16 +797,16 @@ fn linux_docker_browser_controller_is_private_and_kernel_owned() {
 }
 
 #[test]
-fn linux_docker_headed_browser_trusts_the_local_terminal_origin() {
+fn linux_docker_headed_browser_does_not_promote_insecure_origins() {
     let script = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
     )
     .expect("slice screen script should be readable");
 
-    assert!(script.contains(
-        "CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321"
-    ));
-    assert!(script.contains("--unsafely-treat-insecure-origin-as-secure="));
+    assert!(!script.contains("CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS"));
+    assert!(!script.contains("--unsafely-treat-insecure-origin-as-secure"));
+    assert!(script.contains("--remote-debugging-address=127.0.0.1"));
+    assert!(script.contains("--remote-debugging-port=9222"));
 }
 
 #[test]
