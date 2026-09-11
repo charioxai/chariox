@@ -1,5 +1,6 @@
 import {PermissionGrantCoordinator,createChromeSessionPermissionStateStore,isLiveConnectorDocument}
   from './permission-coordinator.mjs';
+import {installBrowserImportExternalPortBroker} from './external-port-broker.mjs';
 
 const cleanupAlarm = 'browser-import-permission-cleanup-v1';
 const permissionCoordinator = new PermissionGrantCoordinator(
@@ -56,3 +57,7 @@ chrome.runtime.onConnect.addListener(port => {
   // A worker suspension also disconnects this port, so disconnect is not authority
   // that the owning connector tab ended. Explicit release, tab removal, and recovery are.
 });
+
+// Additive to the permission lease coordinator so the durable metadata-only
+// lifecycle can be integrated without replacing either authority.
+installBrowserImportExternalPortBroker(chrome);

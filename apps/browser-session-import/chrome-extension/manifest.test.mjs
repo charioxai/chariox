@@ -12,13 +12,15 @@ test('MV3 manifest is installable and keeps cookie and host access optional', ()
   assert.deepEqual(manifest.optional_host_permissions,['http://*/*','https://*/*']);
   assert.equal(manifest.host_permissions,undefined);
   assert.equal(manifest.content_scripts,undefined);
-  assert.equal(manifest.externally_connectable,undefined);
+  assert.deepEqual(manifest.externally_connectable,{matches:[
+    'https://chariox.com/*','https://staging.chariox.com/*',
+  ]});
   assert.equal(manifest.web_accessible_resources,undefined);
 });
 
-test('connector persists only permission lease metadata in session storage and has no public bridge, logging or mock-success path', async () => {
+test('connector persists only permission lease metadata and exposes only the encrypted external broker', async () => {
   const files = ['background.mjs','connector.mjs','connector-core.mjs','delivery-adapter.mjs',
-    'permission-coordinator.mjs'];
+    'permission-coordinator.mjs','external-port-broker.mjs','web-bridge-protocol.mjs'];
   const source = (await Promise.all(files.map(file => readFile(new URL(file,root),'utf8')))).join('\n');
   for (const forbidden of ['chrome.storage.local','chrome.storage.sync','localStorage','sessionStorage','window.postMessage',
     'onMessageExternal','console.','history.','analytics','captureVisibleTab','executeScript']) {
@@ -39,4 +41,10 @@ test('connector persists only permission lease metadata in session storage and h
   assert.match(connector,/pagehide.*flow\?\.cancel\(\)/);
   assert.match(connector,/kernelCancellationConfirmed === true/);
   assert.match(connector,/browser_import_cancellation_unconfirmed/);
+  const html = await readFile(new URL('connector.html',root),'utf8');
+  assert.doesNotMatch(html,/<textarea|bootstrap-response|relay_auth_token|pairing response/i);
+  assert.match(connector,/acceptEncryptedBootstrap/);
+  assert.match(connector,/acceptEncryptedPairing/);
+  assert.match(connector,/webPort\.onDisconnect\.addListener/);
+  assert.match(connector,/webBridgeDisconnected/);
 });
