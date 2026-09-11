@@ -40,7 +40,12 @@ impl KernelRuntimeState {
         self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
         if self
-            .settle_leased_workflow_provider_failure(session_id, &agent_id, provider_run_id)
+            .settle_leased_workflow_provider_failure(
+                session_id,
+                &agent_id,
+                provider_run_id,
+                provider_termination.clone(),
+            )
             .await?
         {
             self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
@@ -80,10 +85,8 @@ impl KernelRuntimeState {
                 &active_prompt,
                 Some(provider_run_id),
                 message,
-            )?
-        } else {
-            WorkflowPromptDispatches::default()
-        };
+            )?;
+        }
         let completion = owned.fail_local_prompt_without_advance_with_termination(
             session_id,
             &agent_id,
@@ -276,6 +279,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -289,11 +293,13 @@ impl KernelRuntimeState {
         // The home learns failure through the same correlated, replayable runtime
         // projection as completion. Worker settlement must not wait for the home
         // to be reachable or admit another turn on this failed provider.
-        self.owned.fail_local_prompt_without_advance(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        self.owned
+            .fail_local_prompt_without_advance_with_termination(
+                session_id,
+                agent_id,
+                Some(provider_run_id),
+                provider_termination,
+            )?;
         Ok(true)
     }
 

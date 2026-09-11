@@ -181,12 +181,17 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     let remote_execution: crate::agent::RemoteAgentBinding =
         serde_json::from_value(spawned["AgentSpawned"]["agent"]["remote_execution"].clone())
             .expect("remote execution binding");
-    let worker_relay_config = fixture
-        .home
-        .app
-        .lock()
-        .await
-        .relay_config_for_remote_execution(&remote_execution);
+    let (worker_relay_config, expected_profile) = {
+        let app = fixture.home.app.lock().await;
+        let agent = app
+            .agents()
+            .get_agent(&home_agent_id)
+            .expect("home agent should remain available");
+        (
+            app.relay_config_for_remote_execution(&remote_execution),
+            crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
+        )
+    };
     let response = send_peer_request_via_temporary_connection(
         &worker_relay_config,
         ClientTarget {
@@ -195,6 +200,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         },
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
+            expected_profile,
             prompt: "launch the worker provider for the computer secret test".to_string(),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
@@ -893,9 +899,16 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
     let remote_execution: crate::agent::RemoteAgentBinding =
         serde_json::from_value(spawned["AgentSpawned"]["agent"]["remote_execution"].clone())
             .expect("remote execution binding");
-    let worker_relay_config = {
+    let (worker_relay_config, expected_profile) = {
         let app = fixture.home.app.lock().await;
-        app.relay_config_for_remote_execution(&remote_execution)
+        let agent = app
+            .agents()
+            .get_agent(&home_agent_id)
+            .expect("home agent should remain available");
+        (
+            app.relay_config_for_remote_execution(&remote_execution),
+            crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
+        )
     };
 
     let check_result = std::panic::AssertUnwindSafe(async {
@@ -907,6 +920,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             },
             RelayPeerRequest::SubmitLeasedPrompt {
                 leased_agent_id: leased_agent_id.clone(),
+                expected_profile,
                 prompt: "launch the worker provider for the runtime MCP drill".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),

@@ -190,6 +190,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .map(|record| record.message)
             .collect::<Vec<_>>();
+        let termination_prompt_id = self
+            .app
+            .leased_workflow_turns
+            .values()
+            .find(|binding| {
+                binding.leased_agent_id == leased_agent.id
+                    && binding.provider_run_id == provider_run_id
+                    && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
+            })
+            .map(|binding| binding.backing_prompt_id.as_str())
+            .or(home_prompt_id.as_deref());
         let provider_termination = self
             .app
             .completed_git_turn_snapshot_store()
@@ -199,7 +210,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )
             .filter(|turn| {
                 turn.provider_run_id == provider_run_id
-                    && home_prompt_id
+                    && termination_prompt_id
                         .as_deref()
                         .is_none_or(|prompt_id| turn.prompt_id == prompt_id)
             })

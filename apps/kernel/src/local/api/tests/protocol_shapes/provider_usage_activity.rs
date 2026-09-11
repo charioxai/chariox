@@ -174,6 +174,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
             plan: Some("pro".to_string()),
             detected_provider_version: Some("1.2.3".to_string()),
             last_validated_at_ms: Some(1_234),
+            services: Vec::new(),
             usage: crate::account_profile::ProviderAccountUsageSnapshot {
                 profile_id: "work".to_string(),
                 provider: "codex".to_string(),
@@ -181,6 +182,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
                 meters: vec![crate::account_profile::ProviderAccountUsageMeter {
                     meter_id: "primary".to_string(),
                     label: "5 hour limit".to_string(),
+                    service_id: None,
                     kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
                     scope: crate::account_profile::ProviderAccountUsageMeterScope::Account,
                     used_percent: Some(25.0),

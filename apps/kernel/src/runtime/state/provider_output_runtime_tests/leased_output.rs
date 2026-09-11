@@ -83,6 +83,12 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
     let (run_id, _accepted) = runtime
         .submit_relay_leased_prompt(
             &leased.id,
+            crate::transport::relay_peer::RelayAgentExecutionProfile {
+                provider: leased.provider.clone(),
+                account_profile: leased.account_profile.clone(),
+                model: leased.model.clone(),
+                effort: leased.effort.clone(),
+            },
             "inspect the Room",
             "",
             Vec::new(),
