@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::transport::relay_crypto;
 
@@ -185,6 +185,177 @@ pub(crate) fn load_or_create_managed_runtime_identity(
         machine_id: identity.machine_id,
         relay_public_key: identity.relay_public_key,
     })
+}
+
+pub(crate) fn load_or_initialize_disposable_worker_identity(
+    host: &str,
+    port: u16,
+    expected_machine_id: &str,
+    expected_kernel_id: &str,
+) -> Result<ManagedRuntimeIdentity, crate::error::DaemonError> {
+    if expected_machine_id.trim().is_empty() || expected_kernel_id.trim().is_empty() {
+        return Err(managed_identity_error(
+            "disposable worker identity binding is empty",
+        ));
+    }
+
+    let machine_path = DaemonConfig::default_machine_identity_path();
+    let machine_identity = match read_existing_identity::<MachineIdentity>(
+        &machine_path,
+        "disposable worker machine identity",
+    )? {
+        Some(identity) => {
+            if identity.machine_id != expected_machine_id {
+                return Err(managed_identity_error(
+                    "pre-existing machine identity conflicts with the disposable worker binding",
+                ));
+            }
+            identity
+        }
+        None => MachineIdentity {
+            machine_id: expected_machine_id.to_string(),
+            machine_alias: None,
+        },
+    };
+
+    let registry_path = DaemonConfig::default_kernel_registry_path();
+    let mut registry = match read_existing_identity::<KernelRegistry>(
+        &registry_path,
+        "disposable worker kernel registry",
+    )? {
+        Some(registry) => {
+            if registry.version > kernel_registry_version()
+                || registry.machine_id != expected_machine_id
+            {
+                return Err(managed_identity_error(
+                    "pre-existing kernel registry conflicts with the disposable worker binding",
+                ));
+            }
+            registry
+        }
+        None => KernelRegistry {
+            version: kernel_registry_version(),
+            machine_id: expected_machine_id.to_string(),
+            machine_alias: machine_identity.machine_alias.clone(),
+            kernels: BTreeMap::new(),
+        },
+    };
+    registry.version = kernel_registry_version();
+    let endpoint_key = kernel_identity_key(host, port);
+    let now_ms = now_unix_ms();
+    if let Some(record) = registry.kernels.get_mut(&endpoint_key) {
+        if record.kernel_id != expected_kernel_id
+            || record.host != host.trim()
+            || record.port != port
+            || record.relay_public_key.trim().is_empty()
+            || record.relay_private_key.trim().is_empty()
+            || relay_crypto::public_key_from_private_key_base64(&record.relay_private_key)?
+                != record.relay_public_key
+        {
+            return Err(managed_identity_error(
+                "pre-existing kernel identity conflicts with the disposable worker binding",
+            ));
+        }
+        record.last_seen_at_ms = now_ms;
+    } else {
+        let legacy = read_existing_identity::<RuntimeIdentity>(
+            &DaemonConfig::default_runtime_identity_path(),
+            "disposable worker legacy runtime identity",
+        )?;
+        let record = match legacy {
+            Some(identity) => {
+                if identity.daemon_id != expected_kernel_id
+                    || identity.machine_id != expected_machine_id
+                    || identity_is_invalid(&identity)
+                    || relay_crypto::public_key_from_private_key_base64(
+                        &identity.relay_private_key,
+                    )? != identity.relay_public_key
+                {
+                    return Err(managed_identity_error(
+                        "pre-existing runtime identity conflicts with the disposable worker \
+                         binding",
+                    ));
+                }
+                KernelIdentityRecord {
+                    kernel_id: identity.daemon_id,
+                    kernel_alias: identity.daemon_alias,
+                    host: host.trim().to_string(),
+                    port,
+                    relay_public_key: identity.relay_public_key,
+                    relay_private_key: identity.relay_private_key,
+                    created_at_ms: now_ms,
+                    last_seen_at_ms: now_ms,
+                }
+            }
+            None => {
+                let relay_private_key = relay_crypto::generate_private_key_base64();
+                let relay_public_key =
+                    relay_crypto::public_key_from_private_key_base64(&relay_private_key)?;
+                KernelIdentityRecord {
+                    kernel_id: expected_kernel_id.to_string(),
+                    kernel_alias: None,
+                    host: host.trim().to_string(),
+                    port,
+                    relay_public_key,
+                    relay_private_key,
+                    created_at_ms: now_ms,
+                    last_seen_at_ms: now_ms,
+                }
+            }
+        };
+        registry.kernels.insert(endpoint_key, record);
+    }
+
+    persist_identity_json(
+        &machine_path,
+        &machine_identity,
+        "persist disposable worker machine identity",
+    )?;
+    persist_identity_json(
+        &registry_path,
+        &registry,
+        "persist disposable worker kernel registry",
+    )?;
+    let identity = load_or_create_managed_runtime_identity(host, port)?;
+    if identity.machine_id != expected_machine_id || identity.kernel_id != expected_kernel_id {
+        return Err(managed_identity_error(
+            "disposable worker identity did not persist exactly",
+        ));
+    }
+    Ok(identity)
+}
+
+fn read_existing_identity<T: DeserializeOwned>(
+    path: &Path,
+    label: &'static str,
+) -> Result<Option<T>, crate::error::DaemonError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => serde_json::from_str(&contents)
+            .map(Some)
+            .map_err(|_| managed_identity_error(&format!("{label} is invalid"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(managed_identity_error(&format!("{label}: {error}"))),
+    }
+}
+
+fn persist_identity_json(
+    path: &Path,
+    value: &impl Serialize,
+    operation: &'static str,
+) -> Result<(), crate::error::DaemonError> {
+    let contents = serde_json::to_vec_pretty(value)
+        .map_err(|error| managed_identity_error(&error.to_string()))?;
+    write_private_file(path, &contents).map_err(|error| crate::error::DaemonError::LocalTransport {
+        operation,
+        message: error.to_string(),
+    })
+}
+
+fn managed_identity_error(message: &str) -> crate::error::DaemonError {
+    crate::error::DaemonError::LocalTransport {
+        operation: "initialize disposable worker identity",
+        message: message.to_string(),
+    }
 }
 
 fn prune_kernel_registry(registry: &mut KernelRegistry, current_endpoint_key: &str) {

@@ -12,7 +12,8 @@ use rand::Rng;
 
 use crate::config::{
     load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity,
-    persist_managed_cloud_relay_profile, ManagedRuntimeIdentity, PersistedCloudRelayProfile,
+    load_or_initialize_disposable_worker_identity, persist_managed_cloud_relay_profile,
+    ManagedRuntimeIdentity, PersistedCloudRelayProfile,
 };
 use crate::error::DaemonError;
 
@@ -141,18 +142,19 @@ fn prepare_managed_kernel(
     } else {
         None
     };
-    let expected_digest = envelope
-        .as_ref()
-        .map(BootstrapEnvelope::runtime_release_digest)
+    let receipt_digest = receipt.as_ref().map(|value| match value {
+        BootstrapReceiptDocument::ManagedEnvironment(value) => {
+            value.runtime_release_digest.as_str()
+        }
+        BootstrapReceiptDocument::DisposableWorker(value) => {
+            value.binding.runtime_release_digest.as_str()
+        }
+    });
+    let expected_digest = receipt_digest
         .or_else(|| {
-            receipt.as_ref().map(|value| match value {
-                BootstrapReceiptDocument::ManagedEnvironment(value) => {
-                    value.runtime_release_digest.as_str()
-                }
-                BootstrapReceiptDocument::DisposableWorker(value) => {
-                    value.binding.runtime_release_digest.as_str()
-                }
-            })
+            envelope
+                .as_ref()
+                .map(BootstrapEnvelope::runtime_release_digest)
         })
         .ok_or_else(|| {
             bootstrap_error("managed bootstrap envelope and receipt are both missing")
@@ -164,8 +166,39 @@ fn prepare_managed_kernel(
         expected_digest,
         &config.kernel_binary,
     )?;
-    let identity =
-        load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
+    let disposable_binding = match (receipt.as_ref(), envelope.as_ref()) {
+        (Some(BootstrapReceiptDocument::DisposableWorker(receipt)), _) => {
+            Some(&receipt.binding)
+        }
+        (None, Some(BootstrapEnvelope::DisposableWorker(envelope))) => {
+            Some(&envelope.binding)
+        }
+        _ => None,
+    };
+    let identity = if let Some(binding) = disposable_binding {
+        match load_or_initialize_disposable_worker_identity(
+            &config.kernel_host,
+            config.kernel_port,
+            &binding.worker_machine_id,
+            &binding.worker_kernel_id,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                if receipt.is_none()
+                    && matches!(
+                        envelope.as_ref(),
+                        Some(BootstrapEnvelope::DisposableWorker(_))
+                    )
+                    && config.envelope_path.exists()
+                {
+                    remove_envelope(&config.envelope_path)?;
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?
+    };
 
     let confirmation = match (receipt, envelope) {
         (Some(BootstrapReceiptDocument::ManagedEnvironment(receipt)), envelope) => {
