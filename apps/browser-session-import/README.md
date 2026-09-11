@@ -462,9 +462,11 @@ cannot start from an unclaimed approval.
 
 The grant-aware reader wires these requests to the source authorization
 checkpoints. Protocol 321 and `browser_import_final_delivery` v1 wire the paired
-connector's encrypted delivery to the private destination claim. No public
-cookie-apply request exists. The remaining product dependency is the Web adapter
-that issues the authenticated bootstrap/pairing response and presents progress.
+connector's encrypted delivery to the private destination claim. The MV3
+connector supplies the attended pairing and permission UX. No public cookie-apply
+request exists. The remaining product dependency is the reviewed Web adapter
+that issues the authenticated bootstrap/pairing response and presents progress,
+followed by live signed validation.
 
 `applyCookieImport` and `createCdpCookieStore` provide the destination operation
 used by the private bound browser-controller process. It is not exposed through
