@@ -5,6 +5,8 @@ export function listSlicesRequest() {
   return { ListSlices: null }
 }
 
+export const DEFAULT_HEADED_SLICE_DISPLAY_BACKEND = "selkies" as const
+
 export function createSliceRequest(options: {
   name: string
   backend?: "local_docker" | "ssh_docker"
@@ -27,7 +29,11 @@ export function createSliceRequest(options: {
       backend: options.backend ?? "local_docker",
       os: options.os ?? "linux",
       display_mode: options.displayMode ?? "headless",
-      ...(options.displayBackend === undefined ? {} : { display_backend: options.displayBackend }),
+      ...(options.displayMode === "headed"
+        ? { display_backend: options.displayBackend ?? DEFAULT_HEADED_SLICE_DISPLAY_BACKEND }
+        : options.displayBackend === undefined
+          ? {}
+          : { display_backend: options.displayBackend }),
       workspace_id: options.workspaceId ?? null,
       worktree_id: options.worktreeId ?? null,
       workspace_mount: options.workspaceMount ?? null,

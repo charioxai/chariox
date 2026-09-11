@@ -171,12 +171,16 @@ single-use registration, fresh-stream reconnect, denial paths, and bounded
 cleanup with a deterministic adapter. Neither suite is evidence that released
 Web video decoding is already connected.
 
-`CHARIOX_SLICE_VIEWER_BACKEND=selkies` selects it in `slice-screen.sh`.
-`novnc` selects the rollback launcher. During this staged implementation the
-existing noVNC default is unchanged; switching the product default requires
-the shared transport, client validation, and rollout sign-off in the plan.
+`slice-screen.sh` defaults an omitted `CHARIOX_SLICE_VIEWER_BACKEND` to
+`selkies`. `novnc` explicitly selects the rollback launcher. New headed slices
+use Selkies while durable slices retain their recorded endpoint kind; noVNC is
+kept for the acceptance and rollback window rather than selected implicitly.
 A selected Selkies failure never falls back silently. Browser tools do not
 require a healthy viewer process.
+
+Run `pnpm --filter @chariox/cli run slice:display-default-drill` for the focused,
+non-live protocol/client/runtime-default check. Durable legacy endpoint routing
+is covered by the kernel slice regression and remains keyed by endpoint kind.
 
 The `slice-runtime-deps` image target contains the real browser and desktop
 dependencies without building provider CLIs or the Rust kernel. Run

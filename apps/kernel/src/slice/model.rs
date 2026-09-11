@@ -175,14 +175,14 @@ pub enum SliceDisplayEndpointKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SliceDisplayBackend {
-    #[default]
     Novnc,
+    #[default]
     Selkies,
 }
 
 impl SliceDisplayBackend {
-    pub fn is_novnc(&self) -> bool {
-        *self == Self::Novnc
+    pub fn is_selkies(&self) -> bool {
+        *self == Self::Selkies
     }
 
     pub fn as_env_value(self) -> &'static str {

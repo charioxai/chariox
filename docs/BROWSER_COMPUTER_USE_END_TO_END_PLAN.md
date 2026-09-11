@@ -616,8 +616,9 @@ After all functional, benchmark, and resource gates pass:
 2. Run a soak period with noVNC fallback available.
 3. Compare error rate, reconnect rate, task success, latency, CPU, memory,
    bandwidth, and support incidents against the baseline.
-4. Make Selkies the default only after explicit sign-off.
-5. Retain noVNC fallback for one rollback window.
+4. Validate the Selkies product default on signed images across Web, local TUI,
+   and remote TUI before rollout acceptance.
+5. Retain explicit noVNC fallback for one rollback window.
 6. Remove noVNC packages, code, fixtures, capability names, and documentation
    in a dedicated cleanup PR after the rollback window.
 

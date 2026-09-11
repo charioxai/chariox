@@ -70,4 +70,4 @@ pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
 /// Version 320 adds encrypted browser-cookie delivery to a consent-bound Environment.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 321;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 322;

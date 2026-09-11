@@ -111,6 +111,7 @@ test("slice command create passes display mode and current worktree mount", asyn
   assert.deepEqual(harness.createdSlices, [{
     name: "qa",
     displayMode: "headed",
+    displayBackend: "selkies",
     workspaceId: "/repo",
     worktreeId: "/repo/wt",
     workspaceMount: "/repo/wt",
