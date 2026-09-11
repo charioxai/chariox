@@ -362,3 +362,61 @@ test("workflow event attachment requires a compatible reply mode for notificatio
   assert.equal(invalidMode.ok, false)
   assert.match(invalidMode.message ?? "", /notification.reply requires --reply-mode thread or channel/)
 })
+
+test("workflow event attachment opts into provider-run attribution explicitly", async () => {
+  let request: Record<string, unknown> | undefined
+  const result = await executeWorkflowEventPublicationCommand(
+    [
+      "attach",
+      "publication-1",
+      "github",
+      "pull_request.opened",
+      "--generator-version",
+      "1.0.0",
+      "--manifest-digest",
+      "sha256:abc",
+      "--connection",
+      "connection-1",
+      "--scope",
+      "repo:charioxai/chariox",
+      "--provider-run-attribution",
+      "append",
+    ],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    {
+      send: async (next) => {
+        request = next
+        return { WorkflowEventBindingCreated: { binding, session: { id: "session-1" } } }
+      },
+    },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(
+    (request?.CreateWorkflowEventBinding as Record<string, unknown>)?.provider_run_attribution,
+    "append",
+  )
+})
+
+test("workflow event binding update exposes provider-run attribution", async () => {
+  let request: Record<string, unknown> | undefined
+  const result = await executeWorkflowEventPublicationCommand(
+    ["update", "event-binding-1", "--provider-run-attribution", "disabled"],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    {
+      send: async (next) => {
+        request = next
+        return { WorkflowEventBindingUpdated: { binding, session: { id: "session-1" } } }
+      },
+    },
+  )
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(request, {
+    UpdateWorkflowEventBinding: {
+      session_id: "session-1",
+      binding_id: "event-binding-1",
+      provider_run_attribution: "disabled",
+    },
+  })
+})

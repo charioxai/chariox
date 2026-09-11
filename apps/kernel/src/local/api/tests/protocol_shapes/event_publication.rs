@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 324);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -86,6 +86,8 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 queue_ref: Some("priority".to_string()),
                 reply_mode: None,
                 action_ids: Vec::new(),
+                provider_run_attribution:
+                    crate::session::WorkflowEventReplyAttributionPolicy::Append,
             },
         ),
         LocalDaemonRequest::ListWorkflowEventBindings(
@@ -99,6 +101,14 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 session_id: "session-1".to_string(),
                 binding_id: "binding-1".to_string(),
                 status: crate::session::WorkflowEventBindingStatus::Paused,
+            },
+        ),
+        LocalDaemonRequest::UpdateWorkflowEventBinding(
+            crate::local::UpdateWorkflowEventBindingRequest {
+                session_id: "session-1".to_string(),
+                binding_id: "binding-1".to_string(),
+                provider_run_attribution:
+                    crate::session::WorkflowEventReplyAttributionPolicy::Disabled,
             },
         ),
         LocalDaemonRequest::TransferWorkflowEventBinding(
@@ -338,7 +348,11 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         Some(&serde_json::json!("paused"))
     );
     assert_eq!(
-        snapshot.pointer("/requests/8/TransferWorkflowEventBinding/target_publication_ref"),
+        snapshot.pointer("/requests/8/UpdateWorkflowEventBinding/provider_run_attribution"),
+        Some(&serde_json::json!("disabled"))
+    );
+    assert_eq!(
+        snapshot.pointer("/requests/9/TransferWorkflowEventBinding/target_publication_ref"),
         Some(&serde_json::json!("publication-2"))
     );
     assert_eq!(
@@ -368,6 +382,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8d9778e257b53fa2ea9ab1a3aebee4ea1bdf755d5a2f40ab3269e67f379185bd"
+        "UPDATE_AFTER_SOURCE_WORK"
     );
 }
