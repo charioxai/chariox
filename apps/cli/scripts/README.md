@@ -207,7 +207,12 @@ with the same limit flags and evidence root. Set `CHARIOX_SLICE_IMAGE` to the
 engine-local final-image tag (or digest) and `CHARIOX_SLICE_IMAGE_SIGNATURE_KEY`
 to its Cosign public key. Before preflight, each command resolves the image's
 immutable engine `RepoDigest`, verifies its Cosign signature, and verifies a
-signed `slsaprovenance` attestation bound to that digest. A declared
+signed `slsaprovenance` attestation bound to that digest. Set
+`CHARIOX_SOAK_RUNTIME_CONTAINER_ID` to the current container ID and make the
+selected container engine's inspect endpoint available in that container. The
+runner requires its hostname to be a prefix of that ID, then proves the running
+container's engine image ID and configured digest are the verified values; all
+three gates must therefore execute in that exact digest-bound container. A declared
 `CHARIOX_SLICE_IMAGE_ID`, a tag alone, and runtime file metadata are never
 accepted as image proof. Preflight and smoke receipts expire after one hour;
 detach refuses missing, stale, dirty, or mismatched source/tree, verified image,

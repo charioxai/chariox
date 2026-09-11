@@ -32,6 +32,7 @@ function usage() {
     "  --image-ref IMAGE                 Engine-local image tag or digest with a RepoDigest",
     "  --image-signature-key PATH        Cosign public key for signature and SLSA attestation",
     "  --container-engine NAME           docker (default) or podman",
+    "  --runtime-container-id ID         Current digest-bound runtime container ID",
     "  --max-cadence-gap-seconds N       Fail on monotonic activity gaps (default: 30)",
     "  --max-rss-mib N                   Owned RSS bound (default: 4096)",
     "  --max-cpu-percent N               Owned aggregate CPU bound (default: 800)",
