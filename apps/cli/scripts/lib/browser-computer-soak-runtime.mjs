@@ -1817,15 +1817,17 @@ function pids(owned) { return [...owned.values()].map((child) => child?.pid).fil
 export function processIsRunning(pid, {
   probe = (candidate, signal) => process.kill(candidate, signal),
   readStat = (candidate) => readFileSync(candidate, "utf8"),
+  platform = process.platform,
 } = {}) {
-  try { probe(pid, 0) } catch { return false }
+  try { probe(pid, 0) } catch (error) { return error?.code !== "ESRCH" }
+  if (platform !== "linux") return true
   try {
     const statLine = readStat(`/proc/${pid}/stat`)
     const commandEnd = statLine.lastIndexOf(")")
     const state = commandEnd === -1 ? "" : statLine.slice(commandEnd + 1).trimStart().charAt(0)
     return state !== "Z" && state !== "X"
-  } catch {
-    return false
+  } catch (error) {
+    return error?.code !== "ENOENT"
   }
 }
 

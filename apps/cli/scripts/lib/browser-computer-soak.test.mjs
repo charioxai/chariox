@@ -149,6 +149,30 @@ test("cleanup treats a process that vanishes after signal-zero as stopped", () =
   assert.equal(processIsRunning(13499, { probe, readStat }), false)
 })
 
+test("cleanup process checks preserve zombies and fail closed on uncertain status", () => {
+  const probe = () => {}
+  const stat = (state) => `13499 (soak worker) ${state}`
+
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("Z") }), false)
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("X") }), false)
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("S") }), true)
+  for (const code of ["EACCES", "EIO"]) {
+    const readStat = () => { throw Object.assign(new Error(code), { code }) }
+    assert.equal(processIsRunning(13499, { probe, readStat }), true)
+  }
+  assert.equal(processIsRunning(13499, {
+    probe: () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }) },
+  }), true)
+  assert.equal(processIsRunning(13499, {
+    probe: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }) },
+  }), false)
+  assert.equal(processIsRunning(13499, {
+    probe,
+    platform: "darwin",
+    readStat: () => { throw new Error("non-Linux must not read procfs") },
+  }), true)
+})
+
 test("the preflight baseline measures the evidence filesystem", async () => {
   const paths = buildSoakPaths("/evidence", "run")
   let observedDiskPath = null
