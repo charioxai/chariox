@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::config::write_private_file;
@@ -27,14 +28,49 @@ pub(super) struct BootstrapConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub(super) enum BootstrapEnvelope {
+    ManagedEnvironment(ManagedBootstrapEnvelope),
+    DisposableWorker(DisposableWorkerBootstrapEnvelope),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct BootstrapEnvelope {
+pub(super) struct ManagedBootstrapEnvelope {
     pub(super) schema_version: u32,
     pub(super) cloud_api_url: String,
     pub(super) environment_id: String,
     pub(super) token: String,
     pub(super) expires_at: String,
     pub(super) runtime_release_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DisposableWorkerBinding {
+    pub(super) allocation_id: String,
+    pub(super) expected_home_kernel_id: String,
+    pub(super) user_id: String,
+    pub(super) realm_id: String,
+    pub(super) worker_machine_id: String,
+    pub(super) worker_kernel_id: String,
+    pub(super) image_digest: String,
+    pub(super) runtime_release_digest: String,
+    pub(super) manager_operation_id: String,
+    pub(super) manager_operation_fence: u64,
+    pub(super) manager_request_digest: String,
+    pub(super) sender_key_thumbprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DisposableWorkerBootstrapEnvelope {
+    pub(super) schema_version: u32,
+    pub(super) cloud_api_url: String,
+    pub(super) token: String,
+    pub(super) expires_at: String,
+    pub(super) binding_digest: String,
+    pub(super) binding: DisposableWorkerBinding,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +93,29 @@ pub(super) struct BootstrapReceipt {
     pub(super) confirmed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) context_plan: Option<ManagedKernelContextPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DisposableWorkerBootstrapReceipt {
+    pub(super) schema_version: u32,
+    pub(super) kind: String,
+    pub(super) allocation_id: String,
+    pub(super) user_id: String,
+    pub(super) realm_id: String,
+    pub(super) machine_id: String,
+    pub(super) kernel_id: String,
+    pub(super) relay_public_key: String,
+    pub(super) runtime_release_digest: String,
+    pub(super) binding_digest: String,
+    pub(super) exchanged_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub(super) enum BootstrapReceiptDocument {
+    ManagedEnvironment(BootstrapReceipt),
+    DisposableWorker(DisposableWorkerBootstrapReceipt),
 }
 
 impl BootstrapConfig {
@@ -122,10 +181,22 @@ impl BootstrapConfig {
 impl BootstrapEnvelope {
     pub(super) fn read(path: &Path) -> Result<Self, DaemonError> {
         let envelope: Self = read_bounded_json(path, "managed bootstrap envelope")?;
-        envelope.validate()?;
+        match &envelope {
+            Self::ManagedEnvironment(value) => value.validate()?,
+            Self::DisposableWorker(value) => value.validate()?,
+        }
         Ok(envelope)
     }
 
+    pub(super) fn runtime_release_digest(&self) -> &str {
+        match self {
+            Self::ManagedEnvironment(value) => &value.runtime_release_digest,
+            Self::DisposableWorker(value) => &value.binding.runtime_release_digest,
+        }
+    }
+}
+
+impl ManagedBootstrapEnvelope {
     pub(super) fn expires_at(&self) -> Result<DateTime<Utc>, DaemonError> {
         DateTime::parse_from_rfc3339(&self.expires_at)
             .map(|value| value.with_timezone(&Utc))
@@ -145,26 +216,73 @@ impl BootstrapEnvelope {
     }
 }
 
+impl DisposableWorkerBootstrapEnvelope {
+    pub(super) fn expires_at(&self) -> Result<DateTime<Utc>, DaemonError> {
+        DateTime::parse_from_rfc3339(&self.expires_at)
+            .map(|value| value.with_timezone(&Utc))
+            .map_err(|_| state_error("disposable worker bootstrap expiry is invalid"))
+    }
+
+    fn validate(&self) -> Result<(), DaemonError> {
+        let binding = &self.binding;
+        if self.schema_version != 1
+            || !valid_secret(&self.token, "dwboot_")
+            || self.token.len() > "dwboot_".len() + 128
+            || !valid_digest(&self.binding_digest)
+            || !valid_disposable_identifier(&binding.allocation_id)
+            || !valid_disposable_identifier(&binding.expected_home_kernel_id)
+            || !valid_disposable_identifier(&binding.user_id)
+            || !valid_disposable_identifier(&binding.realm_id)
+            || !valid_disposable_identifier(&binding.worker_machine_id)
+            || !valid_disposable_identifier(&binding.worker_kernel_id)
+            || !valid_digest(&binding.image_digest)
+            || !valid_digest(&binding.runtime_release_digest)
+            || !valid_disposable_identifier(&binding.manager_operation_id)
+            || binding.manager_operation_fence == 0
+            || binding.manager_operation_fence > 9_007_199_254_740_991
+            || !valid_digest(&binding.manager_request_digest)
+            || !valid_digest(&binding.sender_key_thumbprint)
+            || disposable_worker_binding_digest(binding)? != self.binding_digest
+        {
+            return Err(state_error("disposable worker bootstrap envelope is invalid"));
+        }
+        self.expires_at()?;
+        validate_cloud_url(&self.cloud_api_url)
+    }
+}
+
+pub(super) fn disposable_worker_binding_digest(
+    binding: &DisposableWorkerBinding,
+) -> Result<String, DaemonError> {
+    let bytes = serde_json::to_vec(binding).map_err(|error| state_error(&error.to_string()))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
 impl BootstrapReceipt {
     pub(super) fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
         if !path.exists() {
             return Ok(None);
         }
         let receipt: Self = read_bounded_json(path, "managed bootstrap receipt")?;
-        let confirmation_is_valid = match (&receipt.status, receipt.confirmed_at.as_deref()) {
+        receipt.validate()?;
+        Ok(Some(receipt))
+    }
+
+    fn validate(&self) -> Result<(), DaemonError> {
+        let confirmation_is_valid = match (&self.status, self.confirmed_at.as_deref()) {
             (BootstrapReceiptStatus::Exchanged, None) => true,
             (BootstrapReceiptStatus::Confirmed, Some(value)) => {
                 DateTime::parse_from_rfc3339(value).is_ok()
             }
             _ => false,
         };
-        if receipt.schema_version != 1
-            || !valid_identifier(&receipt.environment_id)
-            || !valid_identifier(&receipt.machine_id)
-            || !valid_identifier(&receipt.kernel_id)
-            || receipt.relay_public_key.trim().is_empty()
-            || !valid_digest(&receipt.runtime_release_digest)
-            || receipt
+        if self.schema_version != 1
+            || !valid_identifier(&self.environment_id)
+            || !valid_identifier(&self.machine_id)
+            || !valid_identifier(&self.kernel_id)
+            || self.relay_public_key.trim().is_empty()
+            || !valid_digest(&self.runtime_release_digest)
+            || self
                 .context_plan
                 .as_ref()
                 .is_some_and(|plan| plan.validate().is_err())
@@ -172,7 +290,7 @@ impl BootstrapReceipt {
         {
             return Err(state_error("managed bootstrap receipt is invalid"));
         }
-        Ok(Some(receipt))
+        Ok(())
     }
 
     pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
@@ -180,6 +298,49 @@ impl BootstrapReceipt {
             serde_json::to_vec_pretty(self).map_err(|error| state_error(&error.to_string()))?;
         if bytes.len() as u64 > MAX_STATE_BYTES {
             return Err(state_error("managed bootstrap receipt is too large"));
+        }
+        write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
+    }
+}
+
+impl BootstrapReceiptDocument {
+    pub(super) fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let document: Self = read_bounded_json(path, "managed bootstrap receipt")?;
+        match &document {
+            Self::ManagedEnvironment(receipt) => receipt.validate()?,
+            Self::DisposableWorker(receipt) => receipt.validate()?,
+        }
+        Ok(Some(document))
+    }
+}
+
+impl DisposableWorkerBootstrapReceipt {
+    fn validate(&self) -> Result<(), DaemonError> {
+        if self.schema_version != 1
+            || self.kind != "disposable_worker"
+            || !valid_disposable_identifier(&self.allocation_id)
+            || !valid_disposable_identifier(&self.user_id)
+            || !valid_disposable_identifier(&self.realm_id)
+            || !valid_disposable_identifier(&self.machine_id)
+            || !valid_disposable_identifier(&self.kernel_id)
+            || self.relay_public_key.trim().is_empty()
+            || !valid_digest(&self.runtime_release_digest)
+            || !valid_digest(&self.binding_digest)
+            || DateTime::parse_from_rfc3339(&self.exchanged_at).is_err()
+        {
+            return Err(state_error("disposable worker bootstrap receipt is invalid"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| state_error(&error.to_string()))?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            return Err(state_error("disposable worker bootstrap receipt is too large"));
         }
         write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
     }
@@ -258,6 +419,16 @@ fn valid_digest(value: &str) -> bool {
         && value[7..]
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+pub(super) fn valid_disposable_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    value.len() <= 128
+        && first.is_ascii_alphanumeric()
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
 fn required_absolute_env_path(name: &'static str) -> Result<PathBuf, DaemonError> {

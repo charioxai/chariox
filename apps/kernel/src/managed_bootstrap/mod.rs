@@ -17,15 +17,19 @@ use crate::config::{
 use crate::error::DaemonError;
 
 use cloud::{
-    BootstrapCloudClient, ConfirmRequest, ExchangeRequest, HttpBootstrapCloudClient,
-    ManagedCloudRelayProfile,
+    BootstrapCloudClient, ConfirmRequest, DisposableWorkerExchangeOutcome,
+    DisposableWorkerExchangeRequest, DisposableWorkerExchangeResponse, ExchangeRequest,
+    HttpBootstrapCloudClient, ManagedCloudRelayProfile,
 };
 pub use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, VerifiedRelease};
 use state::{
-    remove_envelope, valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope,
-    BootstrapReceipt, BootstrapReceiptStatus,
+    remove_envelope, valid_disposable_identifier, valid_identifier, valid_secret, BootstrapConfig,
+    BootstrapEnvelope, BootstrapReceipt, BootstrapReceiptDocument, BootstrapReceiptStatus,
+    DisposableWorkerBootstrapEnvelope, DisposableWorkerBootstrapReceipt, ManagedBootstrapEnvelope,
 };
+
+const MAX_DISPOSABLE_WORKER_ENVELOPE_TTL_SECONDS: i64 = 30 * 60;
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(60);
@@ -46,7 +50,7 @@ struct PreparedManagedKernel {
 
 #[derive(Debug)]
 struct PendingConfirmation {
-    envelope: BootstrapEnvelope,
+    envelope: ManagedBootstrapEnvelope,
     receipt: BootstrapReceipt,
     profile: PersistedCloudRelayProfile,
 }
@@ -100,7 +104,10 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
-    let Some(receipt) = BootstrapReceipt::read(&config.receipt_path)? else {
+    let Some(receipt) = BootstrapReceiptDocument::read(&config.receipt_path)? else {
+        return Ok(None);
+    };
+    let BootstrapReceiptDocument::ManagedEnvironment(receipt) = receipt else {
         return Ok(None);
     };
     if receipt.status != BootstrapReceiptStatus::Confirmed {
@@ -119,41 +126,34 @@ fn prepare_managed_kernel(
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
 ) -> Result<PreparedManagedKernel, DaemonError> {
-    let receipt = BootstrapReceipt::read(&config.receipt_path)?;
+    let receipt = BootstrapReceiptDocument::read(&config.receipt_path)?;
     let envelope = if config.envelope_path.exists() {
-        Some(BootstrapEnvelope::read(&config.envelope_path)?)
+        match BootstrapEnvelope::read(&config.envelope_path) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                remove_invalid_disposable_worker_envelope(&config.envelope_path)?;
+                return Err(error);
+            }
+        }
     } else {
         None
     };
-    if receipt.is_none()
-        && envelope
-            .as_ref()
-            .is_some_and(|value| value.expires_at().is_ok_and(|expiry| expiry <= now))
-    {
-        return Err(bootstrap_error(
-            "managed bootstrap token expired before exchange",
-        ));
-    }
     let expected_digest = envelope
         .as_ref()
-        .map(|value| value.runtime_release_digest.as_str())
+        .map(BootstrapEnvelope::runtime_release_digest)
         .or_else(|| {
-            receipt
-                .as_ref()
-                .map(|value| value.runtime_release_digest.as_str())
+            receipt.as_ref().map(|value| match value {
+                BootstrapReceiptDocument::ManagedEnvironment(value) => {
+                    value.runtime_release_digest.as_str()
+                }
+                BootstrapReceiptDocument::DisposableWorker(value) => {
+                    value.runtime_release_digest.as_str()
+                }
+            })
         })
         .ok_or_else(|| {
             bootstrap_error("managed bootstrap envelope and receipt are both missing")
         })?;
-    if let (Some(envelope), Some(receipt)) = (&envelope, &receipt) {
-        if envelope.environment_id != receipt.environment_id
-            || envelope.runtime_release_digest != receipt.runtime_release_digest
-        {
-            return Err(bootstrap_error(
-                "managed bootstrap envelope conflicts with its receipt",
-            ));
-        }
-    }
     let release = verify_release(
         &config.manifest_path,
         &config.signature_path,
@@ -164,17 +164,48 @@ fn prepare_managed_kernel(
     let identity =
         load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
 
-    let confirmation = match receipt {
-        Some(receipt) => resume_registration(config, envelope.as_ref(), receipt, &identity)?,
-        None => begin_registration(
-            config,
-            cloud,
-            now,
-            envelope
-                .as_ref()
-                .ok_or_else(|| bootstrap_error("managed bootstrap envelope is missing"))?,
-            &identity,
-        )?,
+    let confirmation = match (receipt, envelope) {
+        (Some(BootstrapReceiptDocument::ManagedEnvironment(receipt)), envelope) => {
+            let envelope = match envelope {
+                Some(BootstrapEnvelope::ManagedEnvironment(value)) => Some(value),
+                Some(BootstrapEnvelope::DisposableWorker(_)) => {
+                    return Err(bootstrap_error("bootstrap envelope conflicts with its receipt"));
+                }
+                None => None,
+            };
+            if envelope.as_ref().is_some_and(|value| {
+                value.environment_id != receipt.environment_id
+                    || value.runtime_release_digest != receipt.runtime_release_digest
+            }) {
+                return Err(bootstrap_error(
+                    "managed bootstrap envelope conflicts with its receipt",
+                ));
+            }
+            resume_registration(config, envelope.as_ref(), receipt, &identity)?
+        }
+        (Some(BootstrapReceiptDocument::DisposableWorker(receipt)), envelope) => {
+            let envelope = match envelope {
+                Some(BootstrapEnvelope::DisposableWorker(value)) => Some(value),
+                Some(BootstrapEnvelope::ManagedEnvironment(_)) => {
+                    return Err(bootstrap_error("bootstrap envelope conflicts with its receipt"));
+                }
+                None => None,
+            };
+            resume_disposable_worker(config, envelope.as_ref(), &receipt, &identity)?;
+            None
+        }
+        (None, Some(BootstrapEnvelope::ManagedEnvironment(envelope))) => {
+            begin_registration(config, cloud, now, &envelope, &identity)?
+        }
+        (None, Some(BootstrapEnvelope::DisposableWorker(envelope))) => {
+            begin_disposable_worker(config, cloud, now, &envelope, &identity)?;
+            None
+        }
+        (None, None) => {
+            return Err(bootstrap_error(
+                "managed bootstrap envelope and receipt are both missing",
+            ));
+        }
     };
     Ok(PreparedManagedKernel {
         release,
@@ -186,7 +217,7 @@ fn begin_registration(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
-    envelope: &BootstrapEnvelope,
+    envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     if envelope.expires_at()? <= now {
@@ -229,7 +260,7 @@ fn begin_registration(
 
 fn resume_registration(
     config: &BootstrapConfig,
-    envelope: Option<&BootstrapEnvelope>,
+    envelope: Option<&ManagedBootstrapEnvelope>,
     receipt: BootstrapReceipt,
     identity: &ManagedRuntimeIdentity,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
@@ -257,6 +288,170 @@ fn resume_registration(
     }
 }
 
+fn begin_disposable_worker(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    now: DateTime<Utc>,
+    envelope: &DisposableWorkerBootstrapEnvelope,
+    identity: &ManagedRuntimeIdentity,
+) -> Result<(), DaemonError> {
+    let expiry = envelope.expires_at()?;
+    if expiry <= now
+        || expiry > now + chrono::Duration::seconds(MAX_DISPOSABLE_WORKER_ENVELOPE_TTL_SECONDS)
+    {
+        remove_envelope(&config.envelope_path)?;
+        return Err(bootstrap_error(
+            "disposable worker bootstrap expiry is outside the permitted window",
+        ));
+    }
+    let binding = &envelope.binding;
+    if binding.worker_machine_id != identity.machine_id
+        || binding.worker_kernel_id != identity.kernel_id
+    {
+        remove_envelope(&config.envelope_path)?;
+        return Err(bootstrap_error(
+            "disposable worker bootstrap binding does not match the local identity",
+        ));
+    }
+    let request = DisposableWorkerExchangeRequest {
+        token: envelope.token.clone(),
+        allocation_id: binding.allocation_id.clone(),
+        worker_machine_id: binding.worker_machine_id.clone(),
+        worker_kernel_id: binding.worker_kernel_id.clone(),
+        image_digest: binding.image_digest.clone(),
+        runtime_release_digest: binding.runtime_release_digest.clone(),
+        manager_operation_id: binding.manager_operation_id.clone(),
+        manager_operation_fence: binding.manager_operation_fence,
+        manager_request_digest: binding.manager_request_digest.clone(),
+        relay_public_key: identity.relay_public_key.clone(),
+    };
+    let exchanged = match cloud.exchange_disposable_worker(
+        &normalized_api_url(&envelope.cloud_api_url),
+        &request,
+    )? {
+        DisposableWorkerExchangeOutcome::Accepted(value) => value,
+        DisposableWorkerExchangeOutcome::Rejected => {
+            remove_envelope(&config.envelope_path)?;
+            return Err(bootstrap_error(
+                "Cloud terminally rejected the disposable worker bootstrap",
+            ));
+        }
+    };
+    if let Err(error) = validate_disposable_worker_exchange(envelope, identity, &exchanged) {
+        remove_envelope(&config.envelope_path)?;
+        return Err(error);
+    }
+    persist_managed_cloud_relay_profile(persisted_profile(exchanged.cloud_relay))?;
+    DisposableWorkerBootstrapReceipt {
+        schema_version: 1,
+        kind: "disposable_worker".to_string(),
+        allocation_id: binding.allocation_id.clone(),
+        user_id: binding.user_id.clone(),
+        realm_id: binding.realm_id.clone(),
+        machine_id: identity.machine_id.clone(),
+        kernel_id: identity.kernel_id.clone(),
+        relay_public_key: identity.relay_public_key.clone(),
+        runtime_release_digest: binding.runtime_release_digest.clone(),
+        binding_digest: envelope.binding_digest.clone(),
+        exchanged_at: exchanged.exchanged_at,
+    }
+    .persist(&config.receipt_path)?;
+    remove_envelope(&config.envelope_path)
+}
+
+fn resume_disposable_worker(
+    config: &BootstrapConfig,
+    envelope: Option<&DisposableWorkerBootstrapEnvelope>,
+    receipt: &DisposableWorkerBootstrapReceipt,
+    identity: &ManagedRuntimeIdentity,
+) -> Result<(), DaemonError> {
+    if receipt.machine_id != identity.machine_id
+        || receipt.kernel_id != identity.kernel_id
+        || receipt.relay_public_key != identity.relay_public_key
+    {
+        return Err(bootstrap_error(
+            "disposable worker receipt does not match the local identity",
+        ));
+    }
+    if let Some(envelope) = envelope {
+        if envelope.binding.allocation_id != receipt.allocation_id
+            || envelope.binding.runtime_release_digest != receipt.runtime_release_digest
+            || envelope.binding_digest != receipt.binding_digest
+        {
+            remove_envelope(&config.envelope_path)?;
+            return Err(bootstrap_error(
+                "disposable worker envelope conflicts with its receipt",
+            ));
+        }
+    }
+    let profile = load_managed_cloud_relay_profile()
+        .ok_or_else(|| bootstrap_error("disposable worker Cloud profile is missing"))?;
+    if profile.machine_id.as_deref() != Some(receipt.machine_id.as_str())
+        || profile.user_id != receipt.user_id
+        || profile.realm_id != receipt.realm_id
+        || profile
+            .machine_credential
+            .as_deref()
+            .is_none_or(|value| !valid_secret(value, "mcred_"))
+        || !valid_managed_relay_url(&profile.relay_url)
+    {
+        return Err(bootstrap_error(
+            "disposable worker Cloud profile does not match its receipt",
+        ));
+    }
+    if config.envelope_path.exists() {
+        remove_envelope(&config.envelope_path)?;
+    }
+    Ok(())
+}
+
+fn validate_disposable_worker_exchange(
+    envelope: &DisposableWorkerBootstrapEnvelope,
+    identity: &ManagedRuntimeIdentity,
+    response: &DisposableWorkerExchangeResponse,
+) -> Result<(), DaemonError> {
+    let binding = &envelope.binding;
+    if !valid_disposable_identifier(&response.grant_id)
+        || response.allocation_id != binding.allocation_id
+        || response.worker_machine_id != binding.worker_machine_id
+        || response.worker_kernel_id != binding.worker_kernel_id
+        || response.image_digest != binding.image_digest
+        || response.runtime_release_digest != binding.runtime_release_digest
+        || DateTime::parse_from_rfc3339(&response.exchanged_at).is_err()
+        || response.cloud_relay.machine_id != identity.machine_id
+        || response.cloud_relay.user_id != binding.user_id
+        || response.cloud_relay.realm_id != binding.realm_id
+        || normalized_api_url(&response.cloud_relay.api_url)
+            != normalized_api_url(&envelope.cloud_api_url)
+        || !valid_managed_relay_url(&response.cloud_relay.relay_url)
+        || !valid_secret(&response.cloud_relay.machine_credential, "mcred_")
+        || !valid_identifier(&response.cloud_relay.account_id)
+        || !valid_identifier(&response.cloud_relay.account_slug)
+        || !valid_identifier(&response.cloud_relay.issuer_id)
+        || response.cloud_relay.email.trim().is_empty()
+        || response.cloud_relay.email.len() > 320
+        || response.cloud_relay.machine_alias.trim().is_empty()
+        || response.cloud_relay.machine_alias.len() > 256
+    {
+        return Err(bootstrap_error(
+            "Cloud disposable worker response does not match its immutable binding",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_invalid_disposable_worker_envelope(path: &std::path::Path) -> Result<(), DaemonError> {
+    let disposable = std::fs::read(path)
+        .ok()
+        .filter(|bytes| bytes.len() <= 96 * 1024)
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|value| value.get("binding").is_some());
+    if disposable {
+        remove_envelope(path)?;
+    }
+    Ok(())
+}
+
 impl PendingConfirmation {
     fn confirm(
         &self,
@@ -279,7 +474,7 @@ fn confirm_registration(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
-    envelope: &BootstrapEnvelope,
+    envelope: &ManagedBootstrapEnvelope,
     mut receipt: BootstrapReceipt,
     profile: &PersistedCloudRelayProfile,
 ) -> Result<(), DaemonError> {
@@ -307,7 +502,7 @@ fn confirm_registration(
 }
 
 fn validate_exchange_response(
-    envelope: &BootstrapEnvelope,
+    envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
     response: &cloud::ExchangeResponse,
 ) -> Result<(), DaemonError> {
