@@ -61,7 +61,10 @@ pub struct WorkflowEventBinding {
     pub action_ids: Vec<String>,
     /// Kernel-owned policy for appending the executing provider run's identity
     /// to replies. Disabled by default for existing bindings.
-    #[serde(default, skip_serializing_if = "WorkflowEventReplyAttributionPolicy::is_disabled")]
+    #[serde(
+        default,
+        skip_serializing_if = "WorkflowEventReplyAttributionPolicy::is_disabled"
+    )]
     pub provider_run_attribution: WorkflowEventReplyAttributionPolicy,
     pub revision: u64,
     pub status: WorkflowEventBindingStatus,
@@ -765,8 +768,12 @@ mod tests {
         .expect("removed publisher namespace should deserialize");
 
         assert_eq!(binding.generator_id, "dev.chariox.github");
-        assert!(!serde_json::to_string(&binding)
-            .expect("binding should serialize")
-            .contains("dev.arroba"));
+        assert_eq!(
+            binding.provider_run_attribution,
+            WorkflowEventReplyAttributionPolicy::Disabled
+        );
+        let serialized = serde_json::to_string(&binding).expect("binding should serialize");
+        assert!(!serialized.contains("dev.arroba"));
+        assert!(!serialized.contains("provider_run_attribution"));
     }
 }

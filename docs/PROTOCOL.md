@@ -650,6 +650,21 @@ OpenCode current runtime note:
 
 ## 4.1.1 Unified Node-Transport Direction
 
+Local daemon protocol v324 adds the opt-in
+`provider_run_attribution` policy to workflow event bindings and their create
+and update requests. The backwards-compatible `disabled` default preserves
+existing reply text. With `append`, the kernel rejects the reserved attribution
+marker in provider-authored text and appends provider, model, effort,
+provider-run ID, and the primary or indexed backup account role from an
+authoritative executing `RuntimeProviderRun` and an `AgentInstance` profile
+snapshot. Both `reply_to_event` and `notification.reply` use the same formatter
+and fail closed when that authority cannot be resolved. Forwarded workflow tools
+carry the kernel-created snapshot over relay peer protocol v51; it is not a
+model-supplied action argument. Existing clients retain their minimum protocol
+version unless they expose this opt-in policy; clients that create or update it
+require local daemon protocol v324. Home and worker kernels must both support
+relay peer protocol v51 for attributed remote replies.
+
 The intended node architecture now assumes that the kernel should eventually act as a general router for:
 
 - local clients

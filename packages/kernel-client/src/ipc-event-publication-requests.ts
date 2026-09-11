@@ -178,6 +178,7 @@ export type CreateWorkflowEventBindingInput = {
   queueRef?: string | null
   replyMode?: 'disabled' | 'thread' | 'channel' | null
   actionIds?: readonly string[]
+  providerRunAttribution?: 'disabled' | 'append'
 }
 
 export function createWorkflowEventBindingRequest(
@@ -203,6 +204,23 @@ export function createWorkflowEventBindingRequest(
       ...(input.actionIds && input.actionIds.length > 0
         ? { action_ids: [...input.actionIds] }
         : {}),
+      ...(input.providerRunAttribution
+        ? { provider_run_attribution: input.providerRunAttribution }
+        : {}),
+    },
+  }
+}
+
+export function updateWorkflowEventBindingRequest(
+  sessionId: string,
+  bindingId: string,
+  providerRunAttribution: 'disabled' | 'append',
+) {
+  return {
+    UpdateWorkflowEventBinding: {
+      session_id: sessionId,
+      binding_id: bindingId,
+      provider_run_attribution: providerRunAttribution,
     },
   }
 }

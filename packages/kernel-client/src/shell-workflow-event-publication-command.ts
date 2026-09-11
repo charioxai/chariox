@@ -24,6 +24,7 @@ import {
   setWorkflowEventBindingStatusRequest,
   testWorkflowEventBindingRequest,
   transferWorkflowEventBindingRequest,
+  updateWorkflowEventBindingRequest,
 } from "./ipc-event-publication-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 
@@ -212,6 +213,28 @@ export async function executeWorkflowEventPublicationCommand(
     return { ok: true, message: `${status} workflow event binding ${bindingId}`, data: payload }
   }
 
+  if (action === "update") {
+    const [bindingId, option, policy, ...extra] = rest
+    if (
+      !bindingId
+      || option !== "--provider-run-attribution"
+      || !policy
+      || extra.length > 0
+      || !["disabled", "append"].includes(policy)
+    ) {
+      return failure("usage: workflow trigger event update <binding-id> --provider-run-attribution <disabled|append>")
+    }
+    const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
+      await client.send(updateWorkflowEventBindingRequest(
+        sessionId,
+        bindingId,
+        policy as "disabled" | "append",
+      )),
+      "WorkflowEventBindingUpdated",
+    )
+    return { ok: true, message: `updated workflow event binding ${bindingId}`, data: payload }
+  }
+
   if (action === "transfer") {
     const [bindingId, targetSessionId, targetPublicationRef] = rest
     if (!bindingId || !targetSessionId || !targetPublicationRef) {
@@ -260,7 +283,7 @@ export async function executeWorkflowEventPublicationCommand(
     return { ok: true, message: formatDeliveryStatus(status), data: status }
   }
 
-  return failure("usage: workflow trigger event catalog|category|show|events|connections|install|resources|list|attach|pause|resume|delete|transfer|test|status")
+  return failure("usage: workflow trigger event catalog|category|show|events|connections|install|resources|list|attach|update|pause|resume|delete|transfer|test|status")
 }
 
 function parseCatalogOptions(args: string[]):
@@ -312,6 +335,7 @@ function parseBindingOptions(args: string[]):
         queueRef?: string
         replyMode?: "disabled" | "thread" | "channel"
         actionIds?: readonly string[]
+        providerRunAttribution?: "disabled" | "append"
       }
     }
   | { ok: false; message: string } {
@@ -361,6 +385,14 @@ function parseBindingOptions(args: string[]):
   if (actionIds?.includes("notification.reply") && replyMode !== "thread" && replyMode !== "channel") {
     return failure("notification.reply requires --reply-mode thread or channel")
   }
+  const providerRunAttributionValue = values.get("--provider-run-attribution")
+  if (
+    providerRunAttributionValue !== undefined
+    && !["disabled", "append"].includes(providerRunAttributionValue)
+  ) {
+    return failure("--provider-run-attribution must be one of: disabled, append")
+  }
+  const providerRunAttribution = providerRunAttributionValue as "disabled" | "append" | undefined
   return {
     ok: true,
     publicationRef,
@@ -377,12 +409,13 @@ function parseBindingOptions(args: string[]):
       ...(queueRef ? { queueRef } : {}),
       ...(replyMode ? { replyMode } : {}),
       ...(actionIds ? { actionIds } : {}),
+      ...(providerRunAttribution ? { providerRunAttribution } : {}),
     },
   }
 }
 
 function bindingUsage(): string {
-  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>] [--reply-mode <disabled|thread|channel>] [--actions <id,id,...>]"
+  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>] [--reply-mode <disabled|thread|channel>] [--actions <id,id,...>] [--provider-run-attribution <disabled|append>]"
 }
 
 function formatCatalogPage(page: EventGeneratorCatalogPage): string {

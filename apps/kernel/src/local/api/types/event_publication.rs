@@ -341,7 +341,10 @@ pub struct CreateWorkflowEventBindingRequest {
     pub reply_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "crate::session::WorkflowEventReplyAttributionPolicy::is_disabled")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::session::WorkflowEventReplyAttributionPolicy::is_disabled"
+    )]
     pub provider_run_attribution: crate::session::WorkflowEventReplyAttributionPolicy,
 }
 

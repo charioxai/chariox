@@ -328,6 +328,7 @@ mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 use workflow_prompt_dispatches::*;
+pub(crate) mod workflow_event_reply_attribution;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
 mod workflow_publication_owned_state;
@@ -339,7 +340,6 @@ mod workflow_resume_owned_state;
 mod workflow_run_request_runtime_state;
 mod workflow_scheduling_owned_state;
 mod workflow_tool;
-mod workflow_event_reply_attribution;
 mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
 

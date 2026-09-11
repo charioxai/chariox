@@ -739,6 +739,7 @@ export type WorkflowPublicationRuntimeLogEntry = {
 }
 
 export type WorkflowEventBindingStatus = "active" | "paused" | "conflict" | "tombstoned"
+export type WorkflowEventReplyAttributionPolicy = "disabled" | "append"
 
 export type WorkflowEventBinding = {
   id: string
@@ -755,6 +756,9 @@ export type WorkflowEventBinding = {
   environment_id: string
   endpoint_id: string
   queue_ref?: string | null
+  reply_mode?: "disabled" | "thread" | "channel" | null
+  action_ids?: string[]
+  provider_run_attribution?: WorkflowEventReplyAttributionPolicy
   revision: number
   status: WorkflowEventBindingStatus
   created_at_ms: number

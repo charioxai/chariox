@@ -44,7 +44,10 @@ impl ProviderRunAttributionSnapshot {
                     provider: agent.primary_provider().to_string(),
                     model: agent.primary_model().unwrap_or_default().to_string(),
                     effort: agent.primary_effort().map(str::to_string),
-                    account_profile: agent.primary_account_profile().unwrap_or("default").to_string(),
+                    account_profile: agent
+                        .primary_account_profile()
+                        .unwrap_or("default")
+                        .to_string(),
                 },
                 substitutes: agent
                     .substitutes()

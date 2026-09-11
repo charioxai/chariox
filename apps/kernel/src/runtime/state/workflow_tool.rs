@@ -833,12 +833,11 @@ impl KernelRuntimeOwnedState {
                     ),
                 });
             }
-            let text =
-                crate::runtime::state::workflow_event_reply_attribution::format_event_reply(
-                    text,
-                    binding.provider_run_attribution,
-                    provider_run_attribution,
-                )?;
+            let text = crate::runtime::state::workflow_event_reply_attribution::format_event_reply(
+                text,
+                binding.provider_run_attribution,
+                provider_run_attribution,
+            )?;
             serde_json::json!({ "text": text, "mode": configured_mode })
         } else {
             args.input.clone()

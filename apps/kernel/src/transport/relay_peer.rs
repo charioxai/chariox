@@ -1055,6 +1055,58 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
+    fn forwarded_workflow_provider_run_attribution_shape_is_versioned() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
+        let request = RelayPeerRequest::ForwardWorkflowRuntimeTool {
+            context: RemoteWorkflowTurnContext {
+                home_kernel_id: "home".to_string(),
+                home_session_id: "session-1".to_string(),
+                home_agent_id: "agent-1".to_string(),
+                workflow_run_id: "workflow-run-1".to_string(),
+                workflow_node_run_id: "node-run-1".to_string(),
+                delivery_token: "delivery-1".to_string(),
+                event_reply_enabled: true,
+                event_context_enabled: false,
+                event_actions_enabled: true,
+            },
+            tool_name: "reply_to_event".to_string(),
+            arguments: serde_json::json!({"text": "done"}),
+            provider_run_attribution: Some(
+                crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot {
+                    provider_run_id: "provider-run-1".to_string(),
+                    provider: "openai".to_string(),
+                    model: "gpt-5.3-codex".to_string(),
+                    effort: Some("high".to_string()),
+                    account_profile: "default".to_string(),
+                    agent: crate::runtime::state::workflow_event_reply_attribution::AgentProviderProfileSnapshot {
+                        primary: crate::runtime::state::workflow_event_reply_attribution::ProviderProfileSnapshot {
+                            provider: "openai".to_string(),
+                            model: "gpt-5.3-codex".to_string(),
+                            effort: Some("high".to_string()),
+                            account_profile: "default".to_string(),
+                        },
+                        substitutes: Vec::new(),
+                    },
+                },
+            ),
+        };
+        let snapshot = serde_json::to_value(request).expect("request should serialize");
+        assert_eq!(
+            snapshot.pointer("/provider_run_attribution/provider_run_id"),
+            Some(&serde_json::json!("provider-run-1"))
+        );
+        assert!(snapshot
+            .pointer("/arguments/provider_run_attribution")
+            .is_none());
+        let serialized = serde_json::to_string(&snapshot).expect("request should encode");
+        let hash = Sha256::digest(serialized.as_bytes());
+        assert_eq!(
+            format!("{hash:x}"),
+            "e80cbd5b822c54524bbe462c8a79fadc739902f019ac74756d4aecf05f782532"
+        );
+    }
+
+    #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
         let completion = RelayProjectedCompletion {

@@ -24,13 +24,12 @@ impl KernelRuntimeState {
                 context.workflow_node_run_id,
                 Some(context.delivery_token),
             )?;
-            let (result, dispatches) =
-                owned.dispatch_workflow_runtime_tool_call(
-                    tool_name,
-                    arguments,
-                    context,
-                    provider_run_attribution,
-                )?;
+            let (result, dispatches) = owned.dispatch_workflow_runtime_tool_call(
+                tool_name,
+                arguments,
+                context,
+                provider_run_attribution,
+            )?;
             self.spawn_workflow_prompt_dispatches(dispatches);
             if forwarded_workflow_tool_result_should_complete_home_prompt(
                 &canonical_tool_name,

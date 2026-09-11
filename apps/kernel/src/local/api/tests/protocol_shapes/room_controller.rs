@@ -18,8 +18,8 @@ fn browser_import_peer_contract_is_private_redacted_bounded_and_versioned() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use zeroize::Zeroizing;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 324);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
     let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
     let payload_json = serde_json::json!([{"name":"session","value":generated_value}]).to_string();
     let command = RoomBrowserControllerCommand::ImportCookies {
@@ -94,8 +94,8 @@ fn browser_history_peer_contract_is_document_bound_and_versioned() {
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 324);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
     let command = RoomBrowserControllerCommand::History {
         execution_id: "00000000000000000000000000000001".into(),
         target_id: "target-a".into(),
@@ -136,8 +136,8 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
         BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 324);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
     };
@@ -169,7 +169,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -211,7 +211,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -303,8 +303,8 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 324);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
