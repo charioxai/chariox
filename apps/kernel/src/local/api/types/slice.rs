@@ -14,7 +14,7 @@ pub struct CreateSliceRequest {
     pub display_mode: crate::slice::SliceDisplayMode,
     #[serde(
         default,
-        skip_serializing_if = "crate::slice::SliceDisplayBackend::is_novnc"
+        skip_serializing_if = "crate::slice::SliceDisplayBackend::is_selkies"
     )]
     pub display_backend: crate::slice::SliceDisplayBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]

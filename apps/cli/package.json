@@ -33,6 +33,7 @@
     "runtime-resilience:reconnect-storm-drill": "node scripts/live-reconnect-storm-drill.mjs",
     "room:takeover-reconnect-fault-drill": "node scripts/live-room-takeover-reconnect-fault-drill.mjs",
     "slice:lifecycle-drill": "pnpm run build && node scripts/live-slice-lifecycle-drill.mjs",
+    "slice:display-default-drill": "pnpm --workspace-root run build:kernel-client && node scripts/selkies-product-default-drill.mjs",
     "slice:display-fault-drill": "node scripts/live-slice-display-fault-drill.mjs",
     "browser-controller:fault-drill": "node scripts/live-browser-controller-fault-drill.mjs",
     "relay:queue-saturation-fault-drill": "node scripts/live-queue-saturation-fault-drill.mjs",

@@ -327,6 +327,7 @@ test("executeShellCommand creates manually managed slices scoped to the current 
       backend: "local_docker",
       os: "linux",
       display_mode: "headed",
+      display_backend: "selkies",
       workspace_id: "/repo",
       worktree_id: "/repo/feature",
       workspace_mount: "/repo/feature",

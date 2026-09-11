@@ -18,12 +18,22 @@ test("slice creation forwards an explicit display backend on the shared client p
   assert.equal(request.CreateSlice.display_mode, "headed")
 })
 
-test("legacy slice creation does not add a backend field", () => {
-  assert.equal(Object.hasOwn(createSliceRequest({ name: "legacy" }).CreateSlice, "display_backend"), false)
+test("headed slice creation defaults to Selkies on the shared client path", () => {
+  assert.equal(
+    createSliceRequest({ name: "desktop", displayMode: "headed" }).CreateSlice.display_backend,
+    "selkies",
+  )
+})
+
+test("headed slice creation preserves explicit noVNC rollback", () => {
+  assert.equal(
+    createSliceRequest({ name: "rollback", displayMode: "headed", displayBackend: "novnc" }).CreateSlice.display_backend,
+    "novnc",
+  )
 })
 
 test("slice backup restore uses the shared kernel lifecycle contract", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 320)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 322)
   assert.deepEqual(
     restoreSliceBackupRequest("linux-dev", "gmail-ready-20260609"),
     {
@@ -36,7 +46,7 @@ test("slice backup restore uses the shared kernel lifecycle contract", () => {
 })
 
 test("Room display admission sends the attachment and viewer identity in protocol 293", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 320)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 322)
   assert.deepEqual(
     getSliceDisplayEndpointRequest("slice-1", {
       sessionId: "room-1",
@@ -71,7 +81,7 @@ test("Room display endpoint exposes the encrypted stream metadata", () => {
 })
 
 test("slice create serializes exact multi-repository development selection", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 320)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 322)
   assert.deepEqual(
     createSliceRequest({
       name: "project-slice",

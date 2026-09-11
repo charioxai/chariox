@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn slice_creation_preserves_explicit_display_backend_on_the_wire() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 321);
+fn slice_creation_uses_selkies_as_the_omitted_wire_default() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 322);
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "CreateSlice": {
             "name": "headed", "display_mode": "headed", "display_backend": "selkies"
@@ -10,25 +10,32 @@ fn slice_creation_preserves_explicit_display_backend_on_the_wire() {
     }))
     .expect("Selkies slice request should decode");
     let serialized = serde_json::to_value(request).expect("request should encode");
-    assert_eq!(
-        serialized.pointer("/CreateSlice/display_backend"),
-        Some(&serde_json::json!("selkies"))
-    );
+    assert_eq!(serialized.pointer("/CreateSlice/display_backend"), None);
 }
 
 #[test]
-fn legacy_slice_requests_keep_novnc_and_unknown_backends_fail_closed() {
+fn omitted_slice_backend_defaults_to_selkies_and_explicit_novnc_is_preserved() {
     let request: crate::local::CreateSliceRequest =
         serde_json::from_value(serde_json::json!({"name": "legacy", "display_mode": "headed"}))
             .expect("legacy request should decode");
     assert_eq!(
         request.display_backend,
-        crate::slice::SliceDisplayBackend::Novnc
+        crate::slice::SliceDisplayBackend::Selkies
     );
     assert!(serde_json::to_value(request)
         .unwrap()
         .get("display_backend")
         .is_none());
+    let rollback: crate::local::CreateSliceRequest = serde_json::from_value(
+        serde_json::json!({"name": "rollback", "display_mode": "headed", "display_backend": "novnc"}),
+    )
+    .expect("explicit noVNC rollback should decode");
+    assert_eq!(
+        serde_json::to_value(rollback)
+            .unwrap()
+            .get("display_backend"),
+        Some(&serde_json::json!("novnc"))
+    );
     assert!(serde_json::from_value::<crate::local::CreateSliceRequest>(
         serde_json::json!({"name": "invalid", "display_backend": "unknown"}),
     )
@@ -37,7 +44,7 @@ fn legacy_slice_requests_keep_novnc_and_unknown_backends_fail_closed() {
 
 #[test]
 fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 321);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 322);
     let response = LocalDaemonResponse::SliceDisplayEndpoint {
         endpoint: crate::slice::SliceDisplayEndpoint {
             slice_id: "slice-1".to_string(),
@@ -74,7 +81,7 @@ fn encrypted_display_fragment_contract_is_versioned() {
     use crate::transport::relay_crypto;
     use crate::transport::secure_display::{DisplayMessageKind, DisplayPeer, SecureDisplayChannel};
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 321);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 322);
     let kernel_key = relay_crypto::generate_private_key_base64();
     let viewer_key = relay_crypto::generate_private_key_base64();
     let viewer_public = relay_crypto::public_key_from_private_key_base64(&viewer_key).unwrap();
@@ -103,7 +110,7 @@ fn encrypted_display_fragment_contract_is_versioned() {
 
 #[test]
 fn room_selkies_viewer_admission_contract_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 321);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 322);
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "GetSliceDisplayEndpoint": {
             "slice_ref": "slice-1",
