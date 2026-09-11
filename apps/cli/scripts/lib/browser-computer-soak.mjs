@@ -348,6 +348,7 @@ function validVerifiedImage(image) {
     && /^sha256:[0-9a-f]{64}$/.test(image?.digest ?? "")
     && image.identity.endsWith(`@${image.digest}`)
     && /^sha256:[0-9a-f]{64}$/.test(image?.engineImageId ?? "")
+    && /^[0-9a-f]{40}$/.test(image?.sourceRevision ?? "")
     && new Set(["docker", "podman"]).has(image?.engine)
     && image?.signature?.verified === true && image.signature.verifier === "cosign"
     && /^[0-9a-f]{64}$/.test(image.signature.keySha256 ?? "")
@@ -361,5 +362,6 @@ function validRuntimeImageBinding(runtime, image, source) {
     && runtime.running === true
     && runtime.imageId === image?.engineImageId
     && runtime.identity === image?.identity
-    && runtime?.sourceRevision === source?.commit
+    && image?.sourceRevision === source?.commit
+    && runtime?.sourceRevision === image?.sourceRevision
 }

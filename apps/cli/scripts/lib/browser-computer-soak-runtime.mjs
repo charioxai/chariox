@@ -46,6 +46,20 @@ export function buildSanitizedChildEnvironment(base, additions = {}) {
   ])
 }
 
+export function buildDetachedRunnerEnvironment(base, options) {
+  return buildSanitizedChildEnvironment(base, {
+    ...engineConnectionEnvironment(base),
+    CHARIOX_SLICE_IMAGE: options.imageRef,
+    CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
+    CHARIOX_CONTAINER_ENGINE: options.containerEngine,
+  })
+}
+
+function engineConnectionEnvironment(base) {
+  return Object.fromEntries(["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"]
+    .filter((name) => typeof base?.[name] === "string").map((name) => [name, base[name]]))
+}
+
 export function verifiedRuntimeLayout() {
   return {
     root: signedRuntimeRoot,
@@ -95,10 +109,7 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
   if (!new Set(["docker", "podman"]).has(engine)) throw new Error("container engine must be docker or podman")
   let inspected
   try {
-    const engineEnvironment = buildSanitizedChildEnvironment(baseEnvironment, Object.fromEntries(
-      ["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"]
-        .filter((name) => typeof baseEnvironment[name] === "string").map((name) => [name, baseEnvironment[name]]),
-    ))
+    const engineEnvironment = buildSanitizedChildEnvironment(baseEnvironment, engineConnectionEnvironment(baseEnvironment))
     const { stdout } = await exec(engine, ["image", "inspect", "--format", "{{json .}}", imageRef], { timeout: 20_000, env: engineEnvironment })
     inspected = JSON.parse(String(stdout).trim())
   } catch (error) {
@@ -114,6 +125,8 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
     ? candidates.find((entry) => entry === `${repository}@${configuredDigest}`)
     : candidates.find((entry) => entry.slice(0, entry.lastIndexOf("@")) === repository)
   if (!identity) throw new Error("image engine RepoDigest does not match the configured repository")
+  const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
+  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "")) throw new Error("verified image is missing its source revision label")
   const digest = identity.slice(identity.lastIndexOf("@") + 1)
   const keyBytes = await readKey(signatureKey).catch(() => { throw new Error("image signature key unavailable") })
   if (!Buffer.isBuffer(keyBytes) || keyBytes.length === 0 || keyBytes.length > 64 * 1024) throw new Error("image signature key is empty or unreasonably large")
@@ -136,6 +149,7 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
     digest,
     engine,
     engineImageId: inspected.Id,
+    sourceRevision,
     signature: { verified: true, verifier: "cosign", keySha256: createHash("sha256").update(keyBytes).digest("hex"), bundleSha256: signatureBundleDigest },
     attestation: { verified: true, type: "slsaprovenance", bundleSha256: attestationBundleDigest },
   }
@@ -148,10 +162,10 @@ export async function inspectDigestBoundRuntime({ containerId, image, source }, 
   if (!/^[0-9a-f]{12,64}$/.test(containerId ?? "")) {
     throw new Error("runtime container identity is required")
   }
-  const environment = buildSanitizedChildEnvironment(baseEnvironment, Object.fromEntries(
-    ["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"]
-      .filter((name) => typeof baseEnvironment[name] === "string").map((name) => [name, baseEnvironment[name]]),
-  ))
+  if (image?.sourceRevision !== source?.commit) {
+    throw new Error("verified image source revision does not match the clean source commit")
+  }
+  const environment = buildSanitizedChildEnvironment(baseEnvironment, engineConnectionEnvironment(baseEnvironment))
   let inspected
   try {
     const { stdout } = await exec(image.engine, ["container", "inspect", "--format", "{{json .}}", containerId], {
@@ -170,7 +184,7 @@ export async function inspectDigestBoundRuntime({ containerId, image, source }, 
     throw new Error("runtime image does not match the verified image digest and engine image ID")
   }
   const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
-  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "") || sourceRevision !== source?.commit) {
+  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "") || sourceRevision !== image.sourceRevision) {
     throw new Error("runtime source revision does not match the clean source commit")
   }
   return { containerId: inspected.Id, imageId: inspected.Image, identity: inspected.Config.Image, sourceRevision, running: true }
@@ -314,11 +328,7 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
         cwd: repoRoot,
         logPath: paths.log,
         gatePath: paths.launchGate,
-        env: buildSanitizedChildEnvironment(process.env, {
-          CHARIOX_SLICE_IMAGE: options.imageRef,
-          CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
-          CHARIOX_CONTAINER_ENGINE: options.containerEngine,
-        }),
+        env: buildDetachedRunnerEnvironment(process.env, options),
       }, {
         writeStartupEvidence: async (startedChild) => {
           await writeFile(paths.pid, `${startedChild.pid}\n`, { mode: 0o600 })
@@ -968,17 +978,23 @@ async function mergeSampledIdentities(existing, processes) {
   return identities
 }
 
-async function processIdentity(pid) {
+export async function processIdentity(pid, {
+  readStat = (candidate) => readFile(candidate, "utf8"),
+  readExecutable = (candidate) => readlink(candidate),
+} = {}) {
   try {
-    const statText = await readFile(`/proc/${pid}/stat`, "utf8")
+    const statText = await readStat(`/proc/${pid}/stat`)
     const close = statText.lastIndexOf(")")
     const fields = statText.slice(close + 2).split(" ")
     const startedAtTicks = fields[19]
     const processGroupId = Number(fields[2])
-    const executable = await readlink(`/proc/${pid}/exe`)
+    const executable = await readExecutable(`/proc/${pid}/exe`)
     if (!/^\d+$/.test(startedAtTicks ?? "") || !Number.isSafeInteger(processGroupId) || typeof executable !== "string") return null
     return { pid, startedAtTicks, executable, processGroupId }
-  } catch { return null }
+  } catch (error) {
+    if (error?.code === "ENOENT") return null
+    throw error
+  }
 }
 
 export function processIdentityMatches(expected, observed) {
@@ -1182,13 +1198,16 @@ async function captureSpawnedIdentity(name, child) {
     child.once("spawn", resolve)
     child.once("error", reject)
   })
+  let lastError = null
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const identity = await processIdentity(child.pid)
-    if (identity?.processGroupId === child.pid) return identity
+    try {
+      const identity = await processIdentity(child.pid)
+      if (identity?.processGroupId === child.pid) return identity
+    } catch (error) { lastError = error }
     await sleep(10)
   }
   try { child.kill("SIGKILL") } catch {}
-  throw new Error(`${name} detached process identity could not be captured`)
+  throw new Error(`${name} detached process identity could not be captured${lastError ? `: ${bounded(lastError?.message ?? lastError)}` : ""}`)
 }
 
 export function createRedactingTransform({ secretValues = retainedSecretValues } = {}) {

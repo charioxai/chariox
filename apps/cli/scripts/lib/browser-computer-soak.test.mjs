@@ -21,6 +21,7 @@ import {
   assertFinalDetachPrerequisites,
   attributableNetworkDelta,
   baselineResourceSnapshot,
+  buildDetachedRunnerEnvironment,
   buildSanitizedChildEnvironment,
   captureSourceIdentity,
   createRuntimeState,
@@ -35,6 +36,7 @@ import {
   redactEvidence,
   resolveVerifiedImage,
   processIdentityMatches,
+  processIdentity,
   terminateOwnedProcessGroup,
   terminateCapturedProcessGroup,
   runBrowserComputerSoak,
@@ -297,6 +299,7 @@ test("completion requires authoritative clean source, image, backend, protocol, 
     (value) => { value.provenance.source.commit = "not-a-commit" },
     (value) => { value.provenance.image.identity = "" },
     (value) => { value.provenance.image.digest = "sha256:" + "f".repeat(64) },
+    (value) => { value.provenance.image.sourceRevision = "f".repeat(40) },
     (value) => { value.provenance.image.signature.verified = false },
     (value) => { value.provenance.image.attestation.verified = false },
     (value) => { value.provenance.runtimeImage.imageId = "sha256:" + "9".repeat(64) },
@@ -382,6 +385,7 @@ test("preflight and smoke receipts must be fresh and match clean source, image, 
 
 test("image provenance comes from matching engine digest plus verified signature and attestation", async () => {
   const digest = "sha256:" + "c".repeat(64)
+  const sourceRevision = "a".repeat(40)
   const calls = []
   const image = await resolveVerifiedImage({
     imageRef: "registry.example/chariox/slice:final",
@@ -392,6 +396,7 @@ test("image provenance comes from matching engine digest plus verified signature
     if (command === "docker") return { stdout: JSON.stringify({
       Id: "sha256:" + "d".repeat(64),
       RepoDigests: [`registry.example/chariox/slice@${digest}`],
+      Config: { Labels: { "io.chariox.runtime-source-revision": sourceRevision } },
     }) }
     if (args[0] === "verify-attestation") return { stdout: JSON.stringify({
       payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: "c".repeat(64) } }] })).toString("base64"),
@@ -402,6 +407,7 @@ test("image provenance comes from matching engine digest plus verified signature
   assert.equal(image.identity, `registry.example/chariox/slice@${digest}`)
   assert.equal(image.signature.verified, true)
   assert.equal(image.attestation.verified, true)
+  assert.equal(image.sourceRevision, sourceRevision)
   assert.deepEqual(calls.map(([command]) => command), ["docker", "cosign", "cosign"])
   assert.equal(JSON.stringify(image).includes("/public/chariox.pub"), false)
 })
@@ -414,13 +420,24 @@ test("fake or missing engine digest, signature, and attestation fail closed", as
   await assert.rejects(resolveVerifiedImage({ ...base, imageRef: `registry.example/chariox/slice@${"sha256:" + "f".repeat(64)}` }, {
     exec: async () => ({ stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }),
   }), /does not match/)
+  await assert.rejects(resolveVerifiedImage(base, {
+    exec: async () => ({ stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }),
+  }), /source revision label/i)
   await assert.rejects(resolveVerifiedImage(base, { readKey: async () => Buffer.from("public-key"), exec: async (command, args) => {
-    if (command === "docker") return { stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }
+    if (command === "docker") return { stdout: JSON.stringify({
+      Id: digest,
+      RepoDigests: [`registry.example/chariox/slice@${digest}`],
+      Config: { Labels: { "io.chariox.runtime-source-revision": "a".repeat(40) } },
+    }) }
     if (args[0] === "verify") return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": "sha256:" + "e".repeat(64) } } }]) }
     return { stdout: "[]" }
   } }), /signature.*digest|attestation/i)
   await assert.rejects(resolveVerifiedImage(base, { readKey: async () => Buffer.from("public-key"), exec: async (command, args) => {
-    if (command === "docker") return { stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }
+    if (command === "docker") return { stdout: JSON.stringify({
+      Id: digest,
+      RepoDigests: [`registry.example/chariox/slice@${digest}`],
+      Config: { Labels: { "io.chariox.runtime-source-revision": "a".repeat(40) } },
+    }) }
     if (args[0] === "verify") return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": digest } } }]) }
     return { stdout: JSON.stringify({ payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: "e".repeat(64) } }] })).toString("base64") }) }
   } }), /attestation.*digest/i)
@@ -446,6 +463,9 @@ test("the exercised container must be the exact verified image", async () => {
   await assert.rejects(inspectDigestBoundRuntime({ containerId, image, source }, {
     exec: async () => ({ stdout: JSON.stringify({ Id: containerId, Image: image.engineImageId, Config: { Image: image.identity, Labels: { "io.chariox.runtime-source-revision": "f".repeat(40) } }, State: { Running: true } }) }),
   }), /runtime source revision.*clean source/i)
+  await assert.rejects(inspectDigestBoundRuntime({ containerId, image: { ...image, sourceRevision: "f".repeat(40) }, source }, {
+    exec: inspect,
+  }), /verified image source revision.*clean source/i)
   assert.doesNotThrow(() => assertCurrentContainerIdentity("abcdef1234567890", "abcdef123456"))
   assert.throws(() => assertCurrentContainerIdentity("abcdef1234567890", "999999999999"), /not the container executing/)
 })
@@ -477,6 +497,21 @@ test("child environment is allowlisted and every evidence surface redacts secret
     GITHUB_TOKEN: `token-${secret}`, CHARIOX_SLICE_IMAGE_ID: `fake-${secret}`,
   }, { DISPLAY: ":77" })
   assert.deepEqual(environment, { PATH: "/usr/bin", LANG: "C.UTF-8", DISPLAY: ":77" })
+  const detached = buildDetachedRunnerEnvironment({
+    PATH: "/usr/bin",
+    DOCKER_HOST: "unix:///run/user/1000/docker.sock",
+    CONTAINER_HOST: "unix:///run/user/1000/podman.sock",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+    GITHUB_TOKEN: "must-not-leak",
+  }, {
+    imageRef: "registry.example/chariox/slice:final",
+    imageSignatureKey: "/public/key",
+    containerEngine: "podman",
+  })
+  assert.equal(detached.DOCKER_HOST, "unix:///run/user/1000/docker.sock")
+  assert.equal(detached.CONTAINER_HOST, "unix:///run/user/1000/podman.sock")
+  assert.equal(detached.XDG_RUNTIME_DIR, "/run/user/1000")
+  assert.equal(detached.GITHUB_TOKEN, undefined)
   const retained = redactEvidence({
     stdout: `token=${secret}`,
     stderr: `Authorization: Bearer ${secret}`,
@@ -567,6 +602,15 @@ test("cleanup identities reject PID reuse without treating the replacement as ow
   assert.equal(processIdentityMatches(expected, null), false)
 })
 
+test("uncertain process identity reads cannot certify process exit", async () => {
+  await assert.rejects(processIdentity(42, {
+    readStat: async () => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }) },
+  }), /permission denied/)
+  assert.equal(await processIdentity(42, {
+    readStat: async () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) },
+  }), null)
+})
+
 test("pre-signal PID reuse prevents every process-group signal and cannot claim safety", async () => {
   const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/chromium", processGroupId: 42 }
   const signals = []
@@ -614,7 +658,11 @@ test("all helper subprocesses receive only the shared allowlisted environment", 
     exec: async (command, args, options) => {
       calls.push({ command, env: options.env })
       const digest = "sha256:" + "c".repeat(64)
-      if (command === "docker") return { stdout: JSON.stringify({ Id: "sha256:" + "d".repeat(64), RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }
+      if (command === "docker") return { stdout: JSON.stringify({
+        Id: "sha256:" + "d".repeat(64),
+        RepoDigests: [`registry.example/chariox/slice@${digest}`],
+        Config: { Labels: { "io.chariox.runtime-source-revision": "a".repeat(40) } },
+      }) }
       if (args[0] === "verify-attestation") return { stdout: JSON.stringify({ payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: "c".repeat(64) } }] })).toString("base64") }) }
       return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": digest } } }]) }
     },
@@ -766,6 +814,7 @@ function verifiedImage(hex) {
     digest,
     engine: "docker",
     engineImageId: "sha256:" + "d".repeat(64),
+    sourceRevision: "a".repeat(40),
     signature: { verified: true, verifier: "cosign", keySha256: "e".repeat(64), bundleSha256: "f".repeat(64) },
     attestation: { verified: true, type: "slsaprovenance", bundleSha256: "a".repeat(64) },
   }
