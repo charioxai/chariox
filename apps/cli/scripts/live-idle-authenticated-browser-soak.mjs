@@ -33,11 +33,12 @@ function usage() {
   ].join("\n"))
 }
 
+let options
 try {
-  const options = parseIdleAuthenticatedBrowserSoakArgs(process.argv.slice(2), { repoRoot, homeDir: os.homedir() })
+  options = parseIdleAuthenticatedBrowserSoakArgs(process.argv.slice(2), { repoRoot, homeDir: os.homedir() })
   if (options.help) usage()
   else await runIdleAuthenticatedBrowserSoak({ options, repoRoot, scriptPath })
 } catch (error) {
-  console.error(`[idle-authenticated-browser-soak] ${String(error?.message ?? error).slice(0, 2_000)}`)
+  if (!options?.internalRun) console.error(`[idle-authenticated-browser-soak] ${String(error?.message ?? error).slice(0, 2_000)}`)
   process.exitCode = 1
 }
