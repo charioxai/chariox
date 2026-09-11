@@ -24,8 +24,8 @@ receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/ho
 transaction_root=$chariox_root/.managed-kernel-upgrade
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
-health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-30000}
-presence_root=$install_root/var/lib/chariox/home/.chariox/kernels/active
+health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000}
+presence_root=$install_root/var/lib/chariox/home/kernels/active
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-managed-upgrade.XXXXXX")
 chmod 0700 "$staging_root"
 pending_release=

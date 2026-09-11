@@ -173,7 +173,7 @@ async function makeHarness(context, { targetProtocol = 323 } = {}) {
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
-presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/.chariox/kernels/active/kernel-1.json"
+presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
   rm -f -- "$presence"
 fi
@@ -639,6 +639,7 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.doesNotMatch(contents, /\b(?:curl|wget|ssh|scp)\b/)
   assert.doesNotMatch(contents, /installation[_-]origin|CHARIOX_INSTALLATION/)
   assert.doesNotMatch(contents, /\.arroba/)
+  assert.match(contents, /CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000/)
   assert.match(serviceContents, /ExecStartPre=-\+\/usr\/bin\/systemctl start chariox-slice-broker\.service/)
   assert.doesNotMatch(serviceContents, /systemctl restart/)
 
