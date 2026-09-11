@@ -66,10 +66,7 @@ impl BrowserImportDestination {
                 .browser_import_admission
                 .finish_recovery(&self.id)
         } else {
-            self.runtime
-                .owned
-                .browser_import_admission
-                .finish(&self.id)
+            self.runtime.owned.browser_import_admission.finish(&self.id)
         }
         .map_err(|_| denied())?;
         store
@@ -432,14 +429,19 @@ impl KernelRuntimeState {
                         .pending_browser_import_for_room(&request.session_id)?;
                     let needs_recovery = match pending {
                         None => false,
-                        Some(ref pending) if pending.request_id == id.as_str()
-                            && pending.user_id == user_id
-                            && pending.room_id == request.session_id => true,
+                        Some(ref pending)
+                            if pending.request_id == id.as_str()
+                                && pending.user_id == user_id
+                                && pending.room_id == request.session_id =>
+                        {
+                            true
+                        }
                         Some(_) => return Err(denied()),
                     };
                     drop(guard);
                     if needs_recovery {
-                        self.recover_pending_browser_import(&request.session_id).await?;
+                        self.recover_pending_browser_import(&request.session_id)
+                            .await?;
                     }
                     if self
                         .owned

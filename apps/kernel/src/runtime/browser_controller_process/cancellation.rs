@@ -176,10 +176,7 @@ impl BrowserActionExecutions {
             return Err("browser execution capacity is exhausted".into());
         }
         let signal = if consume_pending_import_cancellation {
-            state
-                .planned_imports
-                .remove(&key)
-                .unwrap_or_default()
+            state.planned_imports.remove(&key).unwrap_or_default()
         } else {
             Arc::new(CancellationSignal::default())
         };
@@ -310,10 +307,7 @@ impl BrowserControllerProcessStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let key = (session_id.to_string(), request_id.to_string());
             if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
-                return matches!(
-                    &completed.outcome,
-                    Ok(Response::ActionCancelled { .. })
-                );
+                return matches!(&completed.outcome, Ok(Response::ActionCancelled { .. }));
             }
             if let Some(record) = state.active.get(&key) {
                 (Arc::clone(&record.signal), false)
@@ -516,10 +510,12 @@ impl BrowserControllerProcessStore {
         let Some(ownership) = &self.ownership else {
             return Ok(unavailable);
         };
-        let active = match self
-            .executions
-            .register(session_id, execution_id, fingerprint, consume_pending_import_cancellation)?
-        {
+        let active = match self.executions.register(
+            session_id,
+            execution_id,
+            fingerprint,
+            consume_pending_import_cancellation,
+        )? {
             ExecutionAdmission::Replay(outcome) => return outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
@@ -620,7 +616,12 @@ mod tests {
         let executions = BrowserActionExecutions::default();
         let fingerprint = [7; 32];
         let ExecutionAdmission::Start(active) = executions
-            .register("room", "00000000000000000000000000000001", fingerprint, false)
+            .register(
+                "room",
+                "00000000000000000000000000000001",
+                fingerprint,
+                false,
+            )
             .unwrap()
         else {
             panic!("first execution must start");
@@ -632,15 +633,11 @@ mod tests {
                 .unwrap(),
             ExecutionAdmission::Replay(outcome) if outcome == completed()
         ));
-        let error = match executions.register(
-            "room",
-            "00000000000000000000000000000001",
-            [8; 32],
-            false,
-        ) {
-            Ok(_) => panic!("changed request must not reuse an execution identity"),
-            Err(error) => error,
-        };
+        let error =
+            match executions.register("room", "00000000000000000000000000000001", [8; 32], false) {
+                Ok(_) => panic!("changed request must not reuse an execution identity"),
+                Err(error) => error,
+            };
         assert!(error.contains("different request"));
         assert!(matches!(
             executions
@@ -654,8 +651,9 @@ mod tests {
     fn concurrent_identical_execution_waits_for_one_terminal_outcome() {
         let executions = BrowserActionExecutions::default();
         let execution_id = "00000000000000000000000000000002";
-        let ExecutionAdmission::Start(active) =
-            executions.register("room", execution_id, [9; 32], false).unwrap()
+        let ExecutionAdmission::Start(active) = executions
+            .register("room", execution_id, [9; 32], false)
+            .unwrap()
         else {
             panic!("first execution must start");
         };
