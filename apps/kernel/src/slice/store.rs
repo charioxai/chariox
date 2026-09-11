@@ -897,6 +897,53 @@ impl SliceStore {
         Ok(record.clone())
     }
 
+    pub(crate) fn reconcile_authenticated_worker_presence(
+        &self,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+        providers: &[String],
+        now_ms: u64,
+    ) -> Result<Option<SliceRecord>, DaemonError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(slice_id) = state
+            .records
+            .values()
+            .find(|record| {
+                record.backend == SliceBackendKind::LocalDocker
+                    && record.status == SliceStatus::Unhealthy
+                    && record.last_operation.as_deref() == Some("restart_reconcile")
+                    && record.last_operation_status == Some(SliceOperationStatus::Reconciled)
+                    && record.worker_kernel_id.as_deref() == Some(worker_kernel_id)
+                    && record.worker_machine_id.as_deref() == Some(worker_machine_id)
+            })
+            .map(|record| record.id.clone())
+        else {
+            return Ok(None);
+        };
+        if pending_backup_restore_for_slice(&state, &slice_id).is_some() {
+            return Ok(None);
+        }
+        let record =
+            state
+                .records
+                .get_mut(&slice_id)
+                .ok_or_else(|| DaemonError::InternalInvariant {
+                    operation: "slice.worker_presence.reconcile",
+                    message: format!(
+                        "matched slice `{slice_id}` disappeared during reconciliation"
+                    ),
+                })?;
+        record.status = SliceStatus::Running;
+        record.providers = providers.to_vec();
+        record.last_error = None;
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        Ok(Some(record.clone()))
+    }
+
     pub fn claim_starting_worker_identity(
         &self,
         slice_ref: &str,
