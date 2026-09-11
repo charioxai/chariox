@@ -61,3 +61,43 @@ test('permission-added observation cleans a grant when its page closes before ac
   assert.deepEqual(removed,[{permissions:['cookies']},{origins:['*://example.com/*']},
     {origins:['*://login.example.com/*']}]);
 });
+
+test('release followed by late permission-added observation cleans each acquired grant at most once', async () => {
+  const removed = [];
+  const coordinator = new PermissionGrantCoordinator(async value => {removed.push(value); return true;});
+  coordinator.reserve('closing',permission,{cookies:false,origins:{'*://example.com/*':false,
+    '*://login.example.com/*':false}});
+  await coordinator.release('closing');
+  assert.deepEqual(removed,[]);
+  await coordinator.observeAdded(permission);
+  assert.deepEqual(removed,[{permissions:['cookies']},{origins:['*://example.com/*']},
+    {origins:['*://login.example.com/*']}]);
+  await coordinator.observeAdded(permission);
+  assert.equal(removed.length,3);
+});
+
+test('disconnect release before late permission-added preserves an overlapping active lease', async () => {
+  const removed = [];
+  const coordinator = new PermissionGrantCoordinator(async value => {removed.push(value); return true;});
+  const none = {cookies:false,origins:{'*://example.com/*':false,'*://login.example.com/*':false}};
+  const granted = {cookies:true,origins:{'*://example.com/*':true,'*://login.example.com/*':true}};
+  coordinator.reserve('disconnecting',permission,none);
+  await Promise.all([coordinator.release('disconnecting'),coordinator.release('disconnecting')]);
+  coordinator.reserve('active',permission,granted);
+  coordinator.activate('active');
+  await coordinator.observeAdded(permission);
+  assert.deepEqual(removed,[]);
+  await coordinator.release('active');
+  assert.deepEqual(removed,[{permissions:['cookies']},{origins:['*://example.com/*']},
+    {origins:['*://login.example.com/*']}]);
+});
+
+test('late permission-added never turns a released preexisting grant into transient ownership', async () => {
+  const removed = [];
+  const coordinator = new PermissionGrantCoordinator(async value => {removed.push(value); return true;});
+  coordinator.reserve('preexisting',permission,{cookies:true,origins:{'*://example.com/*':true,
+    '*://login.example.com/*':true}});
+  await coordinator.release('preexisting');
+  await coordinator.observeAdded(permission);
+  assert.deepEqual(removed,[]);
+});
