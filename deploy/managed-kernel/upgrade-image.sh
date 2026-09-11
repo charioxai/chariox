@@ -88,6 +88,14 @@ require_private_regular_file() {
   fi
 }
 
+require_root_owned_private_regular_file() {
+  require_private_regular_file "$1" "$2"
+  if [ "$(stat -c %u "$1")" != 0 ]; then
+    echo "$2 owner is unsafe" >&2
+    exit 1
+  fi
+}
+
 require_root_owned_ancestor_chain() {
   authority_path=$1
   authority_label=$2
@@ -147,11 +155,25 @@ require_safe_ancestor_chain() {
       exit 1
       ;;
   esac
+  authority_owner=$(stat -c %u "$authority_path") || {
+    echo "$authority_label owner could not be inspected" >&2
+    exit 1
+  }
   authority_ancestor=${authority_path%/*}
   [ -n "$authority_ancestor" ] || authority_ancestor=/
   while :; do
     if [ -L "$authority_ancestor" ] || [ ! -d "$authority_ancestor" ]; then
       echo "$authority_label ancestor is unsafe: $authority_ancestor" >&2
+      exit 1
+    fi
+    ancestor_owner=$(stat -c %u "$authority_ancestor") || {
+      echo "$authority_label ancestor owner could not be inspected" >&2
+      exit 1
+    }
+    if [ "$authority_ancestor" != / ] \
+      && [ "$ancestor_owner" != 0 ] \
+      && [ "$ancestor_owner" != "$authority_owner" ]; then
+      echo "$authority_label ancestor owner is unsafe: $authority_ancestor" >&2
       exit 1
     fi
     writable=$(find "$authority_ancestor" -maxdepth 0 -perm /022 -print -quit) || {
@@ -269,6 +291,8 @@ rollback_transaction() {
   systemctl start "$service_name" || return 1
   previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
   check_health "$previous_protocol" "$previous_digest" "$health_not_before_ms" || return 1
+  node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
+    "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
   rm -rf -- "$transaction_root" || return 1
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root" || return 1
   transaction_active=0
@@ -290,7 +314,8 @@ recover_transaction() {
     validate_digest "$target_digest" || return 1
     [ "$target_current" = "releases/${target_digest#sha256:}" ] || return 1
     [ "$(readlink "$current_link")" = "$target_current" ] || return 1
-    node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt "$receipt_path" "$target_digest"
+    node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
+      "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest"
     rm -rf -- "$transaction_root"
     node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root"
     return 0
@@ -329,7 +354,7 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
   exit 1
 fi
-require_private_regular_file "$trusted_public_key" "trusted release public key"
+require_root_owned_private_regular_file "$trusted_public_key" "trusted release public key"
 require_root_owned_ancestor_chain "$trusted_public_key" "trusted release public key"
 mkdir "$staging_root/image"
 (umask 000; cp -RP "$image_root/." "$staging_root/image/")
@@ -457,8 +482,8 @@ if ! systemctl daemon-reload \
   fi
   exit 1
 fi
-if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
-  "$receipt_path" "$expected_new_digest" \
+if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
+  "$receipt_path" "$transaction_root/target-receipt.json" "$expected_new_digest" \
   || ! write_phase committed; then
   if rollback_transaction; then
     echo "managed kernel final receipt validation failed; restored previous managed kernel release" >&2

@@ -208,6 +208,14 @@ if [ "$1" = "start" ]; then
       chmod 0640 "$receipt.wrong-release"
       mv "$receipt.wrong-release" "$receipt"
     fi
+    if [ -f "$HARNESS_STATE/wrong-environment-once" ]; then
+      rm -f -- "$HARNESS_STATE/wrong-environment-once"
+      receipt="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/managed/bootstrap-receipt.json"
+      sed 's/"environmentId": "environment-1"/"environmentId": "environment-wrong"/' \
+        "$receipt" > "$receipt.wrong-environment"
+      chmod 0640 "$receipt.wrong-environment"
+      mv "$receipt.wrong-environment" "$receipt"
+    fi
   fi
 fi
 if [ "$1" = "is-active" ] && [ -f "$HARNESS_STATE/fail-health-once" ]; then
@@ -219,17 +227,13 @@ if [ "$1" = "is-active" ] && [ -f "$HARNESS_STATE/fail-health-always" ]; then
 fi
 exit 0
 `, 0o755)
-await put(join(bin, "node"), `#!/bin/sh
+  await put(join(bin, "node"), `#!/bin/sh
 set -eu
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
-  && [ "\${2:-}" = "validate-receipt" ] \
+  && [ "\${2:-}" = "validate-receipt-match" ] \
   && [ -f "$HARNESS_STATE/fail-final-receipt-validation" ]; then
-  count_file="$HARNESS_STATE/receipt-validation-count"
-  count=0
-  if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$count_file"
-  if [ "$count" -eq 2 ]; then exit 1; fi
+  rm -f -- "$HARNESS_STATE/fail-final-receipt-validation"
+  exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
@@ -239,6 +243,20 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   exit 1
 fi
 exec "${process.execPath}" "$@"
+`, 0o755)
+  await put(join(bin, "stat"), `#!/bin/sh
+set -eu
+if [ "\${1:-}" = "-c" ] && [ "\${2:-}" = "%u" ]; then
+  if [ -f "$HARNESS_STATE/non-root-key-owner" ] && [ "\${3:-}" = "$MANAGED_TRUSTED_KEY" ]; then
+    printf '1\n'
+    exit 0
+  fi
+  if [ -f "$HARNESS_STATE/foreign-receipt-ancestor" ] && [ "\${3:-}" = "$MANAGED_RECEIPT_DIRECTORY" ]; then
+    printf '1\n'
+    exit 0
+  fi
+fi
+exec /usr/bin/stat "$@"
 `, 0o755)
   const server = createServer()
   await new Promise((resolvePromise, reject) => {
@@ -251,6 +269,8 @@ exec "${process.execPath}" "$@"
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     HARNESS_STATE: state,
+    MANAGED_TRUSTED_KEY: trustedKey,
+    MANAGED_RECEIPT_DIRECTORY: dirname(receiptPath),
     CHARIOX_MANAGED_UPGRADE_ROOT: installRoot,
     CHARIOX_MANAGED_UPGRADE_LOCK: join(state, "upgrade.lock"),
     CHARIOX_MANAGED_UPGRADE_HEALTH_HOST: "127.0.0.1",
@@ -328,6 +348,19 @@ test("managed kernel health is bound to the expected release digest", async (con
   assert.equal(result.status, 1)
   assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
   assert.doesNotMatch(result.stderr, /final receipt validation failed/)
+})
+
+test("managed kernel readiness preserves the registered environment identity", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "wrong-environment-once"), "reject\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /final receipt validation failed; restored previous managed kernel release/)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+  assert.deepEqual(JSON.parse(await readFile(harness.receiptPath, "utf8")), harness.receipt)
 })
 
 test("managed kernel upgrade rejects writable release authority and receipt state before stopping service", async (context) => {
@@ -534,6 +567,22 @@ test("managed kernel upgrade rejects writable or linked authority ancestors befo
   assert.equal(result.status, 1)
   assert.match(result.stderr, /trusted release public key ancestor permissions are unsafe/)
   assert.equal(await lstat(join(writableKeyAncestor.state, "systemctl.log")).then(() => true, () => false), false)
+
+  const foreignReceiptAncestor = await makeHarness(context)
+  await put(join(foreignReceiptAncestor.state, "foreign-receipt-ancestor"), "simulate\n")
+  result = foreignReceiptAncestor.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /managed bootstrap receipt ancestor owner is unsafe/)
+  assert.equal(await lstat(join(foreignReceiptAncestor.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+test("managed kernel upgrade rejects a non-root-owned trusted release key", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "non-root-key-owner"), "simulate\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /trusted release public key owner is unsafe/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
 test("managed kernel upgrade requires the exact confirmed registered-kernel receipt", async (context) => {

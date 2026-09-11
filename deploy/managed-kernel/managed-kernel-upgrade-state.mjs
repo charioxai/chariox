@@ -3,6 +3,7 @@
 import { constants } from "node:fs"
 import { lstat, open, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
+import { isDeepStrictEqual } from "node:util"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
 const REQUIRED_RECEIPT_KEYS = [
@@ -186,6 +187,15 @@ async function run(args) {
   if (operation === "validate-receipt" && values.length === 2) {
     if (!validDigest(values[1])) fail("expected managed release digest is invalid")
     await readReceipt(resolve(values[0]), values[1])
+    return
+  }
+  if (operation === "validate-receipt-match" && values.length === 3) {
+    if (!validDigest(values[2])) fail("expected managed release digest is invalid")
+    const actual = await readReceipt(resolve(values[0]), values[2])
+    const expected = await readReceipt(resolve(values[1]), values[2])
+    if (!isDeepStrictEqual(actual, expected)) {
+      fail("managed bootstrap receipt identity changed during upgrade")
+    }
     return
   }
   if (operation === "atomic-file" && values.length === 2) {
