@@ -43,28 +43,43 @@ fn bootstrap_restores_created_session_and_agents_from_durable_state() {
 }
 
 #[test]
-fn lease_worker_bootstrap_rejects_restored_public_session_state() {
-    let config = DaemonConfig::for_tests();
-    {
-        let mut app = DaemonApp::bootstrap(config.clone()).expect("general kernel should boot");
-        crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
-            .expect("public session should persist");
-    }
-    let mut worker = config;
-    worker.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
-    worker.remote_lease_capacity = Some(1);
-    let error = match DaemonApp::bootstrap(worker) {
-        Ok(_) => panic!("lease worker must reject persisted public session authority"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        DaemonError::KernelRuntimeRoleDenied {
-            operation: "startup.public_session",
-            ..
+fn lease_worker_bootstrap_rejects_every_restored_durable_session() {
+    for hidden in [false, true] {
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(
+            std::env::temp_dir()
+                .join(format!(
+                    "chariox-lease-worker-restored-session-{}-{}-{hidden}",
+                    std::process::id(),
+                    rand::random::<u64>()
+                ))
+                .join("state.db")
+                .display()
+                .to_string(),
+        );
+        {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("general kernel should boot");
+            crate::app::KernelSessionService::new(&mut app)
+                .create_session(
+                    CreateSessionRequest::new("workspace", "worktree").with_hidden(hidden),
+                )
+                .expect("durable session should persist");
         }
-    ));
+        let mut worker = config;
+        worker.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        worker.remote_lease_capacity = Some(1);
+        let error = match DaemonApp::bootstrap(worker) {
+            Ok(_) => panic!("lease worker must reject every persisted session"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            DaemonError::KernelRuntimeRoleDenied {
+                operation: "startup.restored_session",
+                ..
+            }
+        ));
+    }
 }
 
 #[test]

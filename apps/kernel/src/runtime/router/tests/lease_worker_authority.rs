@@ -41,6 +41,33 @@ fn denied_requests() -> Vec<LocalDaemonRequest> {
                 focus: None,
             },
         ),
+        LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
+            session_id: "session-1".to_string(),
+            client_id: "client-1".to_string(),
+            capability_level: crate::attachment::ClientCapabilityLevel::MessageTransport,
+        }),
+        LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            session_id: "session-1".to_string(),
+            alias: None,
+            provider: None,
+            account_profile: None,
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }),
+        LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
+            include_archived: true,
+        }),
+        LocalDaemonRequest::GetProviderCatalog(crate::local::GetProviderCatalogRequest),
+        LocalDaemonRequest::GetWaitingRoomInventory(
+            crate::local::GetWaitingRoomInventoryRequest,
+        ),
     ]
 }
 
@@ -77,5 +104,16 @@ async fn general_kernel_preserves_public_session_creation() {
     assert!(matches!(
         router.dispatch(command, request).await,
         Ok(LocalDaemonResponse::SessionCreated { .. })
+    ));
+}
+
+#[tokio::test]
+async fn lease_worker_allows_only_local_health() {
+    let (router, _) = lease_worker_router();
+    let request = LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest);
+    let command = KernelCommand::from_local_request("lease-worker-health", None, None, &request);
+    assert!(matches!(
+        router.dispatch(command, request).await,
+        Ok(LocalDaemonResponse::DaemonHealth { .. })
     ));
 }

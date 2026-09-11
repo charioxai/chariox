@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::LeaseCallerBinding;
+use crate::app::{LeaseCallerBinding, LeasedAgentCleanupPhase};
 
 #[test]
 fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
@@ -143,6 +143,84 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
             .authorize_leased_agent_caller(&leased_agent.id, &replacement_key),
         Err(DaemonError::LeaseCallerUnauthorized { .. })
     ));
+}
+
+#[test]
+fn leased_agent_cleanup_is_retryable_and_retains_authority_and_capacity() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let caller = LeaseCallerBinding {
+        home_kernel_id: "home-kernel".to_string(),
+        home_machine_id: "home-machine".to_string(),
+        owner_user_id: "user-home".to_string(),
+        realm_id: "realm-home".to_string(),
+        public_key_thumbprint: "key-home".to_string(),
+    };
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_bound_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+            caller.clone(),
+        )
+        .expect("bound execution lease should create atomically");
+    let worktree = std::env::temp_dir().join(format!(
+        "chariox-leased-agent-draining-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent_for_caller(
+            &lease.id,
+            &caller,
+            "opencode",
+            "default",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("leased agent should create");
+
+    for phase in [
+        LeasedAgentCleanupPhase::Provider,
+        LeasedAgentCleanupPhase::Attachment,
+        LeasedAgentCleanupPhase::Agent,
+        LeasedAgentCleanupPhase::BackingSessionEnd,
+        LeasedAgentCleanupPhase::BackingSessionDelete,
+    ] {
+        RemoteLeaseRuntime::new(&mut app)
+            .inject_next_leased_agent_cleanup_failure(&leased_agent.id, phase);
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .destroy_leased_agent_for_caller(&leased_agent.id, &caller)
+            .expect_err("injected cleanup failure must remain retryable");
+        assert!(matches!(error, DaemonError::AgentWorkerCleanup { .. }));
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
+        RemoteLeaseRuntime::new(&mut app)
+            .authorize_leased_agent_caller(&leased_agent.id, &caller)
+            .expect("draining agent must retain authenticated caller binding");
+        assert!(!app.relay_registration().accepting_remote_leases);
+    }
+
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent_for_caller(&leased_agent.id, &caller)
+        .expect("cleanup retry should finish");
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_execution_lease_for_caller(&lease.id, &caller)
+        .expect("lease cleanup should finish");
+    assert!(app.relay_registration().accepting_remote_leases);
+    std::fs::remove_dir_all(worktree).expect("leased worktree should clean up");
 }
 
 #[test]

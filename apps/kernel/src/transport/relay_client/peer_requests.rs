@@ -1723,6 +1723,42 @@ mod tests {
         ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
+
+    #[test]
+    fn lease_worker_peer_allowlist_is_closed_and_peer_suffix_is_canonical() {
+        assert!(lease_worker_peer_request_allowed(&RelayPeerRequest::Ping {
+            value: "health".to_string(),
+        }));
+        assert!(lease_worker_peer_request_allowed(
+            &RelayPeerRequest::CreateExecutionLease {
+                home_kernel_id: "home-kernel".to_string(),
+                home_session_id: "home-session".to_string(),
+                home_agent_id: "home-agent".to_string(),
+                home_agent_metaagent: false,
+                owner_user_id: "user-1".to_string(),
+            }
+        ));
+        assert!(!lease_worker_peer_request_allowed(
+            &RelayPeerRequest::OpenRoomDisplay {
+                session_id: "session-1".to_string(),
+                slice_id: "slice-1".to_string(),
+                viewer_public_key: "viewer-key".to_string(),
+            }
+        ));
+        assert_eq!(
+            canonical_peer_daemon_id("home-kernel"),
+            Some("home-kernel")
+        );
+        assert_eq!(
+            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-17"),
+            Some("home-kernel")
+        );
+        assert_eq!(
+            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-17:forged"),
+            None
+        );
+        assert_eq!(canonical_peer_daemon_id(":peer-tmp:daemon-peer-tmp-17"), None);
+    }
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
         export_transferred_vault_snapshot, lock_chariox_encrypted_vault,
@@ -1864,6 +1900,24 @@ mod tests {
                 "unauthorized"
             );
         }
+        let confused_home = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "forged-home:peer-tmp:daemon-peer-tmp-7",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            request("forged-home", "user-1"),
+        )
+        .await;
+        assert_eq!(
+            confused_home
+                .error
+                .expect("transport name must match authenticated kernel subject")
+                .code,
+            "unauthorized"
+        );
         {
             let mut app = app.lock().await;
             assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
