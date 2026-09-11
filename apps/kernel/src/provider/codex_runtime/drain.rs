@@ -130,14 +130,13 @@ pub fn drain_codex_events(
 }
 
 pub(super) fn codex_turn_should_backfill(
-    endpoint_mode: AgentEndpointMode,
+    _endpoint_mode: AgentEndpointMode,
     has_active_turn: bool,
     turn_tracker: &super::turn::CodexTurnTracker,
     drained_to_quiet: bool,
 ) -> bool {
     has_active_turn
-        && (endpoint_mode == AgentEndpointMode::External
-            || turn_tracker.has_pending_terminal()
+        && (turn_tracker.has_pending_terminal()
             || turn_tracker.has_legacy_completion_hint()
             || (drained_to_quiet
                 && (turn_tracker
