@@ -975,16 +975,40 @@ impl DaemonApp {
     }
 
     fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {
-        let slice = self.slices.resolve_by_worker_kernel_ref(kernel_ref)?;
+        let slice = self.resolve_slice_by_connected_worker_ref(kernel_ref)?;
         self.config.slice_relay_override(&slice)
     }
 
     fn hosted_shared_slice_uses_connected_relay(&self, kernel_ref: &str) -> bool {
-        self.slices
-            .resolve_by_worker_kernel_ref(kernel_ref)
+        self.resolve_slice_by_connected_worker_ref(kernel_ref)
             .and_then(|slice| slice.relay_endpoint)
             .is_some_and(|endpoint| {
                 !endpoint.private && self.config.relay_url_uses_cloud_profile(&endpoint.url)
+            })
+    }
+
+    fn resolve_slice_by_connected_worker_ref(
+        &self,
+        worker_ref: &str,
+    ) -> Option<crate::slice::SliceRecord> {
+        self.slices
+            .resolve_by_worker_kernel_ref(worker_ref)
+            .or_else(|| {
+                let (_, projected_kernels) =
+                    self.remote_relay_inventory_projection_store().snapshot();
+                let worker = projected_kernels
+                    .iter()
+                    .find(|kernel| kernel_presence_matches_ref(kernel, worker_ref))?;
+                let slice = [
+                    worker.kernel_alias.as_deref(),
+                    worker.relay_alias.as_deref(),
+                    worker.machine_alias.as_deref(),
+                    Some(worker.machine_id.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                .find_map(|candidate| self.slices.resolve_by_worker_kernel_ref(candidate));
+                slice
             })
     }
 
@@ -993,8 +1017,7 @@ impl DaemonApp {
         kernel_ref: &str,
     ) -> crate::account_profile::ProviderAccountMaterializationTargetKind {
         if self
-            .slices
-            .resolve_by_worker_kernel_ref(kernel_ref)
+            .resolve_slice_by_connected_worker_ref(kernel_ref)
             .is_some()
         {
             crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
@@ -1061,8 +1084,7 @@ impl DaemonApp {
         kernel_ref: &str,
         requested_worktree_id: Option<String>,
     ) -> Option<String> {
-        self.slices
-            .resolve_by_worker_kernel_ref(kernel_ref)
+        self.resolve_slice_by_connected_worker_ref(kernel_ref)
             .map(|slice| {
                 slice
                     .development_publication
@@ -1883,14 +1905,19 @@ mod tests {
         discovery_config.relay_token = Some("scoped-discovery-token".to_string());
 
         let selected = app
-            .select_remote_kernel_by_ref_with_config(
-                &slice.worker_kernel_ref,
-                "codex",
-                &discovery_config,
-            )
+            .select_remote_kernel_by_ref_with_config(&worker.kernel_id, "codex", &discovery_config)
             .expect("connected hosted inventory should resolve the slice worker");
 
         assert_eq!(selected, worker);
+        assert!(app.hosted_shared_slice_uses_connected_relay(&worker.kernel_id));
+        assert_eq!(
+            app.remote_account_materialization_target_kind(&worker.kernel_id),
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        );
+        assert_eq!(
+            app.worker_worktree_id_for_kernel_ref(&worker.kernel_id, None),
+            Some("/workspace".to_string())
+        );
     }
 
     #[test]
