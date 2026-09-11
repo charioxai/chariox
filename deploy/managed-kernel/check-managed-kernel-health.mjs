@@ -52,17 +52,43 @@ function validIdentifier(value) {
   return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value)
 }
 
-async function matchingPresence(receiptPath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs) {
+function validDisposableIdentifier(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
+}
+
+async function matchingPresence(receiptPath, releaseOverridePath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs) {
   const receipt = await readBoundedJson(receiptPath, MAX_RECEIPT_BYTES)
-  if (
-    receipt?.schemaVersion !== 1 ||
-    receipt.status !== "confirmed" ||
-    !validIdentifier(receipt.kernelId) ||
-    !validIdentifier(receipt.machineId) ||
-    receipt.runtimeReleaseDigest !== releaseDigest
-  ) return false
+  let kernelId
+  let machineId
+  if (receipt?.kind === "disposable_worker") {
+    const releaseOverride = await readBoundedJson(releaseOverridePath, MAX_RECEIPT_BYTES)
+    if (
+      receipt.schemaVersion !== 1 ||
+      receipt.status !== "exchanged" ||
+      !validDisposableIdentifier(receipt.binding?.workerKernelId) ||
+      !validDisposableIdentifier(receipt.binding?.workerMachineId) ||
+      (releaseOverride
+        ? releaseOverride.schemaVersion !== 1
+          || releaseOverride.kind !== "disposable_worker_release"
+          || releaseOverride.bindingDigest !== receipt.bindingDigest
+          || releaseOverride.runtimeReleaseDigest !== releaseDigest
+        : receipt.binding.runtimeReleaseDigest !== releaseDigest)
+    ) return false
+    kernelId = receipt.binding.workerKernelId
+    machineId = receipt.binding.workerMachineId
+  } else {
+    if (
+      receipt?.schemaVersion !== 1 ||
+      receipt.status !== "confirmed" ||
+      !validIdentifier(receipt.kernelId) ||
+      !validIdentifier(receipt.machineId) ||
+      receipt.runtimeReleaseDigest !== releaseDigest
+    ) return false
+    kernelId = receipt.kernelId
+    machineId = receipt.machineId
+  }
   const presence = await readBoundedJson(
-    join(presenceRoot, `${receipt.kernelId}.json`),
+    join(presenceRoot, `${kernelId}.json`),
     MAX_PRESENCE_BYTES,
   )
   const now = Date.now()
@@ -71,8 +97,8 @@ async function matchingPresence(receiptPath, presenceRoot, host, port, protocol,
     : presence?.host === host
   if (
     presence?.schema_version !== 1 ||
-    presence.kernel_id !== receipt.kernelId ||
-    presence.machine_id !== receipt.machineId ||
+    presence.kernel_id !== kernelId ||
+    presence.machine_id !== machineId ||
     !matchingHost ||
     presence.port !== port ||
     presence.local_daemon_protocol_version !== protocol ||
@@ -100,6 +126,7 @@ async function checkManagedKernel(
   portText,
   timeoutText,
   receiptPath,
+  releaseOverridePath,
   presenceRoot,
   protocolText,
   releaseDigest,
@@ -121,15 +148,17 @@ async function checkManagedKernel(
   if (!Number.isSafeInteger(notBeforeMs) || notBeforeMs < 1) fail("managed kernel health start time is invalid")
   const deadline = Date.now() + timeoutMs
   do {
-    if (await matchingPresence(receiptPath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs)) return
+    if (await matchingPresence(
+      receiptPath, releaseOverridePath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs,
+    )) return
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   } while (Date.now() < deadline)
   fail("managed kernel did not publish a fresh matching healthy presence")
 }
 
 try {
-  if (process.argv.length !== 10) {
-    fail("usage: check-managed-kernel-health <host> <port> <timeout-ms> <receipt> <presence-root> <protocol> <release-digest> <not-before-ms>")
+  if (process.argv.length !== 11) {
+    fail("usage: check-managed-kernel-health <host> <port> <timeout-ms> <receipt> <release-override> <presence-root> <protocol> <release-digest> <not-before-ms>")
   }
   await checkManagedKernel(...process.argv.slice(2))
 } catch (error) {

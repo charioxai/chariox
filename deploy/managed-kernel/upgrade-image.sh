@@ -21,6 +21,7 @@ chariox_root=$install_root/usr/lib/chariox
 releases_root=$chariox_root/releases
 current_link=$chariox_root/current
 receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/home/managed/bootstrap-receipt.json}
+release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
 transaction_root=$chariox_root/.managed-kernel-upgrade
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
@@ -217,6 +218,15 @@ atomic_receipt() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-file "$1" "$receipt_path"
 }
 
+atomic_release_override() {
+  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-sidecar \
+    "$1" "$release_override_path" "$receipt_path"
+}
+
+remove_release_override() {
+  node "$script_root/managed-kernel-upgrade-state.mjs" remove-state-file "$release_override_path"
+}
+
 write_phase() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
 }
@@ -248,7 +258,8 @@ check_health() {
   systemctl is-active --quiet "$service_name" || return 1
   node "$script_root/check-managed-kernel-health.mjs" \
     "$health_host" "$health_port" "$health_timeout_ms" \
-    "$receipt_path" "$presence_root" "$expected_protocol" "$expected_digest" "$not_before_ms"
+    "$receipt_path" "$release_override_path" "$presence_root" \
+    "$expected_protocol" "$expected_digest" "$not_before_ms"
 }
 
 validate_digest() {
@@ -279,12 +290,19 @@ rollback_transaction() {
     return 1
   }
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
-    "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
+    "$transaction_root/previous-receipt.json" "$previous_digest" \
+    "$transaction_root/previous-release-override.json" || return 1
   if ! systemctl stop "$service_name"; then
     echo "managed kernel rollback could not stop the kernel service" >&2
     return 1
   fi
   atomic_receipt "$transaction_root/previous-receipt.json" || return 1
+  previous_override_present=$(read_single_line "$transaction_root/previous-release-override-present") || return 1
+  case "$previous_override_present" in
+    yes) atomic_release_override "$transaction_root/previous-release-override.json" || return 1 ;;
+    no) remove_release_override || return 1 ;;
+    *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
+  esac
   atomic_symlink "$previous_target" "$current_link" || return 1
   systemctl daemon-reload || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
@@ -292,7 +310,8 @@ rollback_transaction() {
   previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
   check_health "$previous_protocol" "$previous_digest" "$health_not_before_ms" || return 1
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
-    "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
+    "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
+    "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
   rm -rf -- "$transaction_root" || return 1
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root" || return 1
   transaction_active=0
@@ -315,7 +334,8 @@ recover_transaction() {
     [ "$target_current" = "releases/${target_digest#sha256:}" ] || return 1
     [ "$(readlink "$current_link")" = "$target_current" ] || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
-      "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest"
+      "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest" \
+      "$release_override_path" "$transaction_root/target-release-override.json"
     rm -rf -- "$transaction_root"
     node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root"
     return 0
@@ -385,7 +405,8 @@ if [ "$current_target" != "$expected_current_target" ]; then
   exit 1
 fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
-node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt "$receipt_path" "$expected_current_digest"
+node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
+  "$receipt_path" "$expected_current_digest" "$release_override_path"
 require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 node "$script_root/verify-image-release.mjs" \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
@@ -393,10 +414,8 @@ node "$script_root/verify-image-release.mjs" "$image_root" "$expected_new_digest
 
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
-if [ "$target_protocol" -lt "$current_protocol" ]; then
-  echo "target local daemon protocol $target_protocol is older than installed protocol $current_protocol" >&2
-  exit 1
-fi
+node "$script_root/managed-kernel-upgrade-state.mjs" validate-protocol-transition \
+  "$current_link" "$current_protocol" "$image_root" "$target_protocol"
 
 release_name=${expected_new_digest#sha256:}
 published_release=$releases_root/$release_name
@@ -438,8 +457,18 @@ fi
 install -d -o root -g root -m 0700 "$pending_transaction"
 cp -P "$receipt_path" "$pending_transaction/previous-receipt.json"
 chmod 0600 "$pending_transaction/previous-receipt.json"
+if [ -e "$release_override_path" ] || [ -L "$release_override_path" ]; then
+  require_private_regular_file "$release_override_path" "managed release override"
+  require_safe_ancestor_chain "$release_override_path" "managed release override"
+  cp -P "$release_override_path" "$pending_transaction/previous-release-override.json"
+  printf '%s\n' yes > "$pending_transaction/previous-release-override-present"
+else
+  printf '%s\n' no > "$pending_transaction/previous-release-override-present"
+fi
 node "$script_root/managed-kernel-upgrade-state.mjs" prepare-receipt \
-  "$receipt_path" "$expected_current_digest" "$expected_new_digest" "$pending_transaction/target-receipt.json"
+  "$receipt_path" "$expected_current_digest" "$expected_new_digest" \
+  "$pending_transaction/target-receipt.json" "$release_override_path" \
+  "$pending_transaction/target-release-override.json"
 printf '%s\n' "$current_target" > "$pending_transaction/previous-current"
 printf '%s\n' "$expected_current_digest" > "$pending_transaction/previous-digest"
 printf '%s\n' "releases/$release_name" > "$pending_transaction/target-current"
@@ -461,8 +490,17 @@ if ! systemctl stop "$service_name"; then
   exit 1
 fi
 write_phase stopped
-if ! atomic_receipt "$transaction_root/target-receipt.json" \
-  || ! atomic_symlink "releases/$release_name" "$current_link"; then
+if ! atomic_receipt "$transaction_root/target-receipt.json"; then
+  activation_failed=1
+elif [ -f "$transaction_root/target-release-override.json" ]; then
+  atomic_release_override "$transaction_root/target-release-override.json" || activation_failed=1
+else
+  remove_release_override || activation_failed=1
+fi
+if [ "${activation_failed:-0}" -eq 0 ]; then
+  atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
+fi
+if [ "${activation_failed:-0}" -ne 0 ]; then
   if rollback_transaction; then
     echo "managed kernel activation failed; restored previous managed kernel release" >&2
   else
@@ -484,6 +522,7 @@ if ! systemctl daemon-reload \
 fi
 if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
   "$receipt_path" "$transaction_root/target-receipt.json" "$expected_new_digest" \
+  "$release_override_path" "$transaction_root/target-release-override.json" \
   || ! write_phase committed; then
   if rollback_transaction; then
     echo "managed kernel final receipt validation failed; restored previous managed kernel release" >&2

@@ -142,13 +142,31 @@ fn prepare_managed_kernel(
     } else {
         None
     };
+    let worker_release_override = match receipt.as_ref() {
+        Some(BootstrapReceiptDocument::DisposableWorker(value)) => {
+            state::DisposableWorkerReleaseOverride::read_for_receipt(
+                &config.receipt_path,
+                &value.binding_digest,
+            )?
+        }
+        Some(BootstrapReceiptDocument::ManagedEnvironment(_)) | None => {
+            let path = state::disposable_worker_release_override_path(&config.receipt_path)?;
+            if path.exists() {
+                return Err(bootstrap_error(
+                    "disposable worker release override has no matching worker receipt",
+                ));
+            }
+            None
+        }
+    };
     let receipt_digest = receipt.as_ref().map(|value| match value {
         BootstrapReceiptDocument::ManagedEnvironment(value) => {
             value.runtime_release_digest.as_str()
         }
-        BootstrapReceiptDocument::DisposableWorker(value) => {
-            value.binding.runtime_release_digest.as_str()
-        }
+        BootstrapReceiptDocument::DisposableWorker(value) => worker_release_override
+            .as_ref()
+            .map(|release| release.runtime_release_digest.as_str())
+            .unwrap_or(value.binding.runtime_release_digest.as_str()),
     });
     let expected_digest = receipt_digest
         .or_else(|| {

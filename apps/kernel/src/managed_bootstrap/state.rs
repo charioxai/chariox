@@ -118,6 +118,15 @@ pub(super) struct DisposableWorkerBootstrapReceipt {
     pub(super) cloud_relay: Option<ManagedCloudRelayProfile>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DisposableWorkerReleaseOverride {
+    pub(super) schema_version: u32,
+    pub(super) kind: String,
+    pub(super) binding_digest: String,
+    pub(super) runtime_release_digest: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub(super) enum BootstrapReceiptDocument {
@@ -374,6 +383,36 @@ impl DisposableWorkerBootstrapReceipt {
         }
         write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
     }
+}
+
+impl DisposableWorkerReleaseOverride {
+    pub(super) fn read_for_receipt(
+        receipt_path: &Path,
+        binding_digest: &str,
+    ) -> Result<Option<Self>, DaemonError> {
+        let path = disposable_worker_release_override_path(receipt_path)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let value: Self = read_bounded_json(&path, "disposable worker release override")?;
+        if value.schema_version != 1
+            || value.kind != "disposable_worker_release"
+            || value.binding_digest != binding_digest
+            || !valid_digest(&value.runtime_release_digest)
+        {
+            return Err(state_error("disposable worker release override is invalid"));
+        }
+        Ok(Some(value))
+    }
+}
+
+pub(super) fn disposable_worker_release_override_path(
+    receipt_path: &Path,
+) -> Result<PathBuf, DaemonError> {
+    receipt_path
+        .parent()
+        .map(|parent| parent.join("release-override.json"))
+        .ok_or_else(|| state_error("managed bootstrap receipt has no state directory"))
 }
 
 pub(super) fn remove_envelope(path: &Path) -> Result<(), DaemonError> {

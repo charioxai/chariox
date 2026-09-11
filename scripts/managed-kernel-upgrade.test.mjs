@@ -402,11 +402,30 @@ test("managed kernel upgrade preserves an exact disposable worker receipt and pe
   )
 })
 
+test("ordinary managed upgrade rejects a worker release override before service mutation", async (context) => {
+  const harness = await makeHarness(context)
+  await put(
+    join(dirname(harness.receiptPath), "release-override.json"),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      kind: "disposable_worker_release",
+      bindingDigest: `sha256:${"a".repeat(64)}`,
+      runtimeReleaseDigest: harness.current.digest,
+    })}\n`,
+    0o640,
+  )
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /ordinary managed bootstrap receipt cannot use/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
 test("disposable worker upgrade rejects altered Cloud authority before service mutation", async (context) => {
   for (const mutate of [
     (receipt) => { receipt.binding.managerOperationFence = 8 },
     (receipt) => { receipt.enrollmentReceipt.runtimeReleaseDigest = `sha256:${"f".repeat(64)}` },
     (receipt) => { receipt.cloudRelay.machineId = "machine-other" },
+    (receipt) => { receipt.unexpected = true },
   ]) {
     const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
     const receipt = JSON.parse(await readFile(harness.receiptPath, "utf8"))
@@ -434,6 +453,34 @@ test("disposable worker rollback restores its prior signed-release override", as
   assert.equal(result.status, 1)
   assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
   assert.equal(await readFile(overridePath, "utf8"), before)
+})
+
+test("disposable worker rollback removes a newly staged release override", async (context) => {
+  const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+  const receiptBefore = await readFile(harness.receiptPath, "utf8")
+  const overridePath = join(dirname(harness.receiptPath), "release-override.json")
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
+  assert.equal(await lstat(overridePath).then(() => true, () => false), false)
+  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBefore)
+})
+
+test("disposable worker upgrade recovers an interruption without rewriting Cloud authority", async (context) => {
+  const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+  const receiptBefore = await readFile(harness.receiptPath, "utf8")
+  await put(join(harness.state, "crash-before-symlink"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const retried = harness.run()
+  assert.equal(retried.status, 0, retried.stderr)
+  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBefore)
+  assert.equal(
+    JSON.parse(await readFile(join(dirname(harness.receiptPath), "release-override.json"), "utf8"))
+      .runtimeReleaseDigest,
+    harness.target.digest,
+  )
 })
 
 test("managed kernel health rejects an unrelated listener without a fresh matching kernel presence", async (context) => {
@@ -743,7 +790,7 @@ test("managed kernel upgrade rejects an unsupported local daemon protocol transi
   const harness = await makeHarness(context, { targetProtocol: 322 })
   const result = harness.run()
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /local daemon protocol transition 323 to 322 is not explicitly supported/)
+  assert.match(result.stderr, /protocol transition policy is missing or invalid/)
   assert.equal(
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,

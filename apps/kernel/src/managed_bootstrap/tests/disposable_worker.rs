@@ -496,6 +496,61 @@ fn disposable_worker_recovers_missing_profile_and_rejects_any_stale_profile() {
 }
 
 #[test]
+fn disposable_worker_uses_only_a_binding_scoped_signed_release_override() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-release-override");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let binding = worker_binding(&fixture);
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud::new(FirstExchange::Accept);
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
+
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.config.receipt_path).unwrap()).unwrap();
+    let bootstrap_digest = format!("sha256:{}", "9".repeat(64));
+    receipt["binding"]["runtimeReleaseDigest"] = serde_json::json!(bootstrap_digest);
+    receipt["enrollmentReceipt"]["runtimeReleaseDigest"] =
+        receipt["binding"]["runtimeReleaseDigest"].clone();
+    let rebound: DisposableWorkerBinding =
+        serde_json::from_value(receipt["binding"].clone()).unwrap();
+    let binding_digest = disposable_worker_binding_digest(&rebound).unwrap();
+    receipt["bindingDigest"] = serde_json::json!(binding_digest);
+    fs::write(
+        &fixture.config.receipt_path,
+        serde_json::to_vec_pretty(&receipt).unwrap(),
+    )
+    .unwrap();
+    let override_path = fixture
+        .config
+        .receipt_path
+        .parent()
+        .unwrap()
+        .join("release-override.json");
+    fs::write(
+        &override_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "disposable_worker_release",
+            "bindingDigest": receipt["bindingDigest"].clone(),
+            "runtimeReleaseDigest": binding.runtime_release_digest.clone(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
+
+    let mut stale_override: serde_json::Value =
+        serde_json::from_slice(&fs::read(&override_path).unwrap()).unwrap();
+    stale_override["bindingDigest"] = serde_json::json!(format!("sha256:{}", "f".repeat(64)));
+    fs::write(&override_path, serde_json::to_vec(&stale_override).unwrap()).unwrap();
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+
+    restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
 fn disposable_worker_rejects_a_stale_enrollment_receipt() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("worker-stale-receipt");
