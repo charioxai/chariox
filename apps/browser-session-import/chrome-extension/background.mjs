@@ -1,4 +1,5 @@
 import {PermissionGrantCoordinator} from './permission-coordinator.mjs';
+import {installBrowserImportExternalPortBroker} from './external-port-broker.mjs';
 
 const permissionCoordinator = new PermissionGrantCoordinator(details => chrome.permissions.remove(details));
 chrome.permissions.onAdded.addListener(details => permissionCoordinator.observeAdded(details));
@@ -33,3 +34,7 @@ chrome.runtime.onConnect.addListener(port => {
   })());
   port.onDisconnect.addListener(() => void release());
 });
+
+// Additive to the permission lease coordinator so the durable metadata-only
+// lifecycle can be integrated without replacing either authority.
+installBrowserImportExternalPortBroker(chrome);

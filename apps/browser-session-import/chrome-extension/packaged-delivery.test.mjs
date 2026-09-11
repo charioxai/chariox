@@ -69,6 +69,8 @@ test('actual packaged confirmation click reaches encrypted relay delivery', asyn
     return elements.get(id);
   };
   const permissionMessages = [];
+  const bridgeMessages = [];
+  const bridgeListeners = new Set();
   let permissionsGranted = false;
   const portMessages = new Set();
   const portDisconnects = new Set();
@@ -84,41 +86,57 @@ test('actual packaged confirmation click reaches encrypted relay delivery', asyn
         contains:async () => permissionsGranted},
       cookies:{getAllCookieStores:async () => [{id:'0',tabIds:[7]}],
         getAll:async () => [structuredClone(sourceCookie)]},
-      runtime:{connect:() => ({onMessage:{addListener:value => portMessages.add(value)},
-        onDisconnect:{addListener:value => portDisconnects.add(value)},
-        postMessage:value => { permissionMessages.push(value.kind);
-          queueMicrotask(() => { for (const listener of portMessages) listener({id:value.id,ok:true}); }); },
-        disconnect:() => { for (const listener of portDisconnects) listener(); }})},
+      runtime:{connect:options => options?.name === 'browser-import-web-session-v1'
+        ? {onMessage:{addListener:value => bridgeListeners.add(value)},onDisconnect:{addListener:() => {}},
+          postMessage:value => bridgeMessages.push(value),disconnect:() => {}}
+        : {onMessage:{addListener:value => portMessages.add(value)},
+          onDisconnect:{addListener:value => portDisconnects.add(value)},
+          postMessage:value => { permissionMessages.push(value.kind);
+            queueMicrotask(() => { for (const listener of portMessages) listener({id:value.id,ok:true}); }); },
+          disconnect:() => { for (const listener of portDisconnects) listener(); }}},
     }});
   t.after(globals.restore);
   await load(packaged,'apps/browser-session-import/chrome-extension/connector.mjs');
-  await waitFor(() => element('bootstrap').hidden === false);
-  const bootstrapRequest = JSON.parse(element('bootstrap-request').value);
-  element('bootstrap-response').value = JSON.stringify({version:1,bootstrap_id:'b'.repeat(32),
-    connector_sender_public_key:bootstrapRequest.connector_sender_public_key,
-    expires_at_ms:Date.now() + 100_000,relay_url:'wss://relay.fixture/ws',daemon_id:'kernel',
+  await waitFor(() => bridgeMessages.some(value => value.type === 'browser_import.connector_ready.v1'));
+  const ready = bridgeMessages.find(value => value.type === 'browser_import.connector_ready.v1');
+  const web = await createRelayKeypair();
+  const expiresAtMs = Date.now() + 100_000;
+  const binding = {request_id:requestId,operation_nonce:'b'.repeat(32),
+    connector_session_id:ready.connector_session_id,target_binding:'target-binding',session_id:'room',
+    daemon_id:'kernel',kernel_public_key:kernel.publicKeyBase64,expires_at_ms:expiresAtMs};
+  const bootstrap = {version:1,bootstrap_id:requestId,
+    connector_sender_public_key:ready.connector_sender_public_key,
+    expires_at_ms:expiresAtMs,relay_url:'wss://relay.fixture/ws',daemon_id:'kernel',
     kernel_public_key:kernel.publicKeyBase64,protocol_version:321,
     delivery_capability:{name:'browser_import_final_delivery',version:1},
-    source:{current_profile:true,hostname:'example.test',store_id:'0'},selection:browserSelection});
-  element('pin').click();
-  await waitFor(() => element('enroll').hidden === false);
-  const challenge = JSON.parse(element('pairing-request').value);
-  element('response').value = JSON.stringify({version:1,bootstrap_id:challenge.bootstrap_id,
-    enrollment_nonce:challenge.enrollment_nonce,
-    connector_sender_public_key:challenge.connector_sender_public_key,
-    expires_at_ms:Date.now() + 60_000,relay_url:'wss://relay.fixture/ws',relay_auth_token:'fixture-token',
+    source:{current_profile:true,hostname:'example.test',store_id:'0'},selection:browserSelection};
+  const encryptedBootstrap = await encryptRelayPayload(ready.connector_sender_public_key,
+    JSON.stringify({binding,bootstrap}),web);
+  for (const listener of bridgeListeners) listener({type:'browser_import.bootstrap_envelope.v1',
+    ...binding,envelope:encryptedBootstrap.payload});
+  await waitFor(() => bridgeMessages.some(value => value.type === 'browser_import.challenge.v1'));
+  const challenge = bridgeMessages.find(value => value.type === 'browser_import.challenge.v1').challenge;
+  const pairing = {version:1,bootstrap_id:challenge.bootstrap_id,
+    enrollment_nonce:challenge.enrollment_nonce,connector_sender_public_key:challenge.connector_sender_public_key,
+    expires_at_ms:expiresAtMs,relay_url:'wss://relay.fixture/ws',relay_auth_token:'fixture-token',
     daemon_id:'kernel',kernel_public_key:kernel.publicKeyBase64,protocol_version:321,
     delivery_capability:{name:'browser_import_final_delivery',version:1},
-    source:{current_profile:true,store_id:'0'},selection:browserSelection});
-  element('pair').click();
+    source:{current_profile:true,store_id:'0'},selection:browserSelection};
+  const encryptedPairing = await encryptRelayPayload(ready.connector_sender_public_key,
+    JSON.stringify({binding,pairing}),web);
+  for (const listener of bridgeListeners) listener({type:'browser_import.pairing_envelope.v1',
+    ...binding,envelope:encryptedPairing.payload});
   await waitFor(() => element('confirm').hidden === false);
   element('start').click();
   await waitFor(() => ['Import completed.','No cookies were delivered.','Import could not continue. No cookies were delivered.',
     'This connector needs the production browser-import runtime delivery command.'].includes(
-    element('message').textContent));
+    element('message').textContent)).catch(() => assert.fail(JSON.stringify({message:element('message').textContent,
+      permissionMessages,bridge:bridgeMessages.map(value => ({type:value.type,code:value.code})),wire:wire.length,
+      metadata:metadata.map(value => Object.keys(value)[0]),privateDelivery:!!privateDelivery})));
   assert.equal(element('message').textContent,'Import completed.',JSON.stringify({
     requests:metadata.map(value => Object.keys(value)[0]),permissionMessages,privateDelivery:!!privateDelivery}));
   assert.equal(wire.some(value => value.includes('fixture-secret')),false);
+  assert.equal(JSON.stringify(bridgeMessages).includes('fixture-token'),false);
   assert.equal(JSON.stringify(metadata).includes('fixture-secret'),false);
   assert.equal(JSON.parse(Buffer.from(privateDelivery.payload_base64,'base64'))[0].value,'fixture-secret');
   assert.equal(element('result').children[0].textContent,'example.test: imported');
@@ -137,7 +155,7 @@ test('packaged confirmation path delivers only an encrypted batch and releases i
     load(packaged,'apps/browser-session-import/chrome-extension/delivery-adapter.mjs'),
     import(process.env.WS_MODULE),
   ]);
-  const ws = wsModule.default;
+  const ws = wsModule;
   const kernel = await createRelayKeypair();
   const sender = await createRelayKeypair();
   const server = new ws.WebSocketServer({host:'127.0.0.1',port:0,maxPayload:1048576});

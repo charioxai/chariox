@@ -15,6 +15,7 @@ profile or the repository):
 ```sh
 connector_output="$(mktemp -d)"
 TYPESCRIPT_MODULE=/absolute/path/to/typescript/lib/typescript.js \
+CHARIOX_BROWSER_IMPORT_EXTENSION_PUBLIC_KEY="$reviewed_public_key_base64" \
   node apps/browser-session-import/chrome-extension/package-extension.mjs "$connector_output"
 ```
 
@@ -32,24 +33,26 @@ extension page. Incognito and non-HTTP(S) source tabs are rejected. The page
 reports only the current profile, source hostname and connector public-key
 metadata. It neither probes nor lists cookie names or values.
 
-Pairing is attended, independently anchored and one-use:
+The hosted product pairing is attended, independently anchored and one-use:
 
-1. The extension creates a non-extractable P-256 sender key in memory and emits
-   a metadata-only bootstrap request. The user copies it into Chariox's already
-   authenticated Browser Import panel and selects one attached session/kernel
-   and destination there.
-2. Chariox returns a short-lived authenticated bootstrap containing a random
+1. The extension creates a non-extractable P-256 sender key in memory and registers
+   only current-profile hostname/store metadata with its MV3 service worker. The
+   selected hosted View connects to the signed stable extension ID from exactly
+   `https://chariox.com` or `https://staging.chariox.com` and selects that connector
+   session. There is no page message or paste protocol.
+2. The selected authenticated `BrowserKernelClient` obtains a short-lived bootstrap containing a random
    `bootstrap_id`, the selected relay URL, daemon, kernel public key, immutable
    destination selection, compatible protocol/capability version and echoed connector
-   sender/source metadata. The extension validates and freezes this bootstrap
-   before creating the pairing challenge. It is the independent trust anchor;
+   sender/source metadata. Web sends `{binding,bootstrap}` only inside ECDH/AES-GCM
+   ciphertext for the connector sender key. The extension validates and freezes
+   it before creating the pairing challenge. It is the independent trust anchor;
    the later pairing response cannot select or replace those fields.
-3. The extension creates a separate 128-bit enrollment nonce. The user returns
-   that challenge to the same authenticated Chariox panel, which supplies a
-   single-use relay token in a pairing response that echoes the `bootstrap_id`,
+3. The extension creates a separate 128-bit enrollment nonce. The same selected
+   authenticated client supplies a single-use relay token in a pairing response that echoes the `bootstrap_id`,
    nonce and every pinned field. The extension rejects any mismatch, including
-   a different well-formed P-256 kernel key, relay, daemon or destination. Both
-   pasted inputs are cleared from the DOM immediately.
+   a different well-formed P-256 kernel key, relay, daemon or destination. Web
+   reuses its first ephemeral sender key and sends `{binding,pairing}` only as a
+   second authenticated encrypted envelope; the raw token never enters extension DOM.
 4. A direct connector-to-relay socket must match the independently pinned daemon
    and kernel key; a handshake cannot replace the bootstrap key. The same sender
    key is retained for every consent and source-read request.
@@ -71,11 +74,21 @@ lease. A grant is removed only when connector-owned and no other active connecto
 page needs it; permissions that predated the operation are never removed.
 
 The connector declares no storage permission and uses no extension storage,
-content script, externally connectable endpoint, web-accessible resource or page
-message bridge. Cookie values exist only in the short-lived source batch passed
+content script, web-accessible resource or page-message bridge. Its narrow
+`externally_connectable` external port admits only the two exact hosted origins;
+the service worker additionally validates origin, sender, normal-profile tab,
+stable extension identity, connector session, request and operation nonce before
+forwarding bounded frames. Cookie values exist only in the short-lived source batch passed
 to the private delivery adapter. They never enter extension storage, DOM text,
 logs, browser history, analytics, prompts, screenshots, pairing data, progress,
 results, consent requests or other public protocol requests.
+
+When `codex/browser-import-cancellation-mv3-lifecycle` is integrated, preserve
+its `storage.session` permission-lease records, alarms and owner-document checks
+alongside this external-port broker. Those records are bounded metadata only;
+cookie and relay-credential values remain forbidden. Preserve its explicit
+`browser_import_cancellation_unconfirmed` outcome and route that outcome to Web
+as recovery-required rather than reporting cancellation success.
 
 ### Final-delivery adapter contract
 
@@ -91,21 +104,23 @@ never accepts cookie values.
 
 ### Runtime and Web integration
 
-The packaged connector now implements the runtime half. Remaining Web work is:
+Build/sign this package first and copy `browser-import-extension-id.txt` into the
+hosted Web build as `CHARIOX_BROWSER_IMPORT_EXTENSION_ID`. The selected View's
+direct adapter must call `browserImportFinalDeliveryMetadata()` on that View's
+own authenticated `BrowserKernelClient`; it must not use a process-global client
+or Cloud HTTP handler. Availability remains false until that method returns the
+exact protocol-321 `browser_import_final_delivery` capability-v1 metadata and the
+signed extension ID is present.
 
-1. In chariox-cloud branch `codex/browser-import-product-ui`, replace
-   `configuredBrowserImportProductAdapter = null` only with an adapter using the
-   Web client's existing direct kernel/relay transport. `detect()` must expose
-   metadata only. `start(selection)` creates one request ID, first returns the
-   authenticated immutable bootstrap for the selected kernel, and only then
-   returns the nonce-bound pairing response for that same bootstrap. It returns
-   one idempotently cancellable handle. Do not send runtime payloads through a
-   Cloud HTTP handler.
-2. Forward progress with that exact request ID and selected-domain count. Accept
-   completion only from the authoritative kernel result; the extension and Web
-   UI must never infer success from permission grant, source read or socket send.
-3. Run the connector regressions here, the compatible runtime command tests and
-   the Web adapter/coordinator/entry tests together before enabling the capability.
+The adapter opens `chariox-browser-import-v1`, binds all frames to the connector
+session, target binding, Room/session, daemon, kernel key, request, operation
+nonce and expiry, and sends the bootstrap and token-bearing pairing only as the
+encrypted envelopes described above. It accepts completion only after `ready`
+and from the exact ordered authoritative `{domain,status}` result (`imported`,
+`sign_in_required`, or `unsupported`) for every frozen confirmed domain. It
+cancels once on abort, unmount, disconnect or expiry and rejects stale results.
+Run the OSS packaged bridge tests with the Cloud adapter/coordinator/entry tests
+before enabling the capability.
 
 ## Standard managed-browser boundary
 
@@ -659,9 +674,9 @@ connection and accepts only the exact authoritative per-domain result. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
 
-Remaining product work is enabling the guarded hosted Web bootstrap and
-progress/results adapter only for that exact capability. Add managed
-process/browser-crash acceptance drills before claiming broad service portability.
+Remaining release work is integrating the guarded kernel capability advertisement,
+injecting the ID from the signed package into the hosted build, and running the
+managed process/browser-crash acceptance drills before claiming broad service portability.
 
 Run `browser-import-production-path-drill.test.mjs` for the focused protocol-321
 drill. It uses a runtime-generated value and disposable private home, exercises

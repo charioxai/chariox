@@ -7,6 +7,9 @@
   "permissions": ["activeTab"],
   "optional_permissions": ["cookies"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "externally_connectable": {
+    "matches": ["https://chariox.com/*", "https://staging.chariox.com/*"]
+  },
   "background": {
     "service_worker": "apps/browser-session-import/chrome-extension/background.mjs",
     "type": "module"
