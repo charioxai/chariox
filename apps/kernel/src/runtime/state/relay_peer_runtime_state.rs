@@ -578,6 +578,20 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn relay_leased_agent_provider_termination(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let provider_run_id = provider_run_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app)
+                .leased_agent_provider_termination(&leased_agent_id, &provider_run_id)
+        })
+        .await
+    }
+
     pub(crate) async fn try_pump_relay_leased_runtime_projections(
         &self,
     ) -> Result<Option<Vec<(String, RelayPeerEvent)>>, DaemonError> {

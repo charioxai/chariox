@@ -851,6 +851,19 @@ pub(super) async fn handle_daemon_peer_request(
                         } else {
                             None
                         };
+                    let provider_termination =
+                        if let Some(provider_run_id) = provider_run_id.as_deref() {
+                            router
+                                .relay_leased_agent_provider_termination(
+                                    &leased_agent_id,
+                                    provider_run_id,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
                     let (git_observations, workspace_live_sync_change) =
                         if let Some(provider_run_id) = provider_run_id.as_deref() {
                             router
@@ -863,6 +876,7 @@ pub(super) async fn handle_daemon_peer_request(
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
+                        provider_termination,
                         git_observations,
                         workspace_live_sync_change,
                         completion,

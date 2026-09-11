@@ -30,6 +30,7 @@ pub(super) struct KernelPromptOwnerCompletion {
     pub(super) remote_provider_run_id: Option<String>,
     pub(super) next_queued_prompt: Option<PromptQueueItem>,
     pub(super) settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
+    pub(super) provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
 impl<'a> KernelAgentService<'a> {
@@ -152,6 +153,7 @@ impl<'a> KernelAgentService<'a> {
             remote_provider_run_id: None,
             next_queued_prompt,
             settlement_status: crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            provider_termination: None,
         })
     }
 

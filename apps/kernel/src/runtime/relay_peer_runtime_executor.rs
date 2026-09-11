@@ -365,6 +365,16 @@ pub(crate) async fn relay_leased_agent_provider_run_id(
         .await
 }
 
+pub(crate) async fn relay_leased_agent_provider_termination(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+    runtime_state
+        .relay_leased_agent_provider_termination(leased_agent_id, provider_run_id)
+        .await
+}
+
 pub(crate) fn relay_provider_run_terminal_diagnostic(
     provider_run_projection: &ProviderRunProjectionStore,
     provider_run_id: &str,

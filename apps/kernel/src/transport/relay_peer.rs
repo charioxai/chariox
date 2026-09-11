@@ -74,7 +74,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 46 requires cancellable browser lifecycle operations and receipt recovery.
 /// Version 47 carries the workspace kind in managed-context import receipts.
 /// Version 48 carries private browser-cookie import commands and bounded results.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 49;
+/// Version 50 carries bounded provider-run termination metadata across leased execution.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 50;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 
@@ -894,6 +895,8 @@ pub enum RelayPeerResponse {
         provider_run_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_diagnostic: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         git_observations: Vec<RemoteGitObservation>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -998,6 +1001,8 @@ pub struct RelayProjectedCompletion {
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1026,6 +1031,41 @@ pub enum RelayPeerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn leased_completion_provider_termination_shape_is_versioned() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+        let completion = RelayProjectedCompletion {
+            message_id: "assistant-msg-1".to_string(),
+            completed_at_ms: 1_234,
+            home_prompt_id: Some("home-prompt-1".to_string()),
+            provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
+                137, 1_234,
+            )),
+        };
+        let snapshot = serde_json::to_value(completion).expect("completion should serialize");
+        assert_eq!(
+            snapshot.pointer("/provider_termination/category"),
+            Some(&serde_json::json!("process_exit")),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/reason"),
+            Some(&serde_json::json!(
+                "provider process exited with status 137"
+            )),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/timestamp_ms"),
+            Some(&serde_json::json!(1_234)),
+        );
+        let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
+        let hash = Sha256::digest(serialized.as_bytes());
+        assert_eq!(
+            format!("{hash:x}"),
+            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+        );
+    }
 
     #[test]
     fn managed_slice_relay_token_keeps_wire_shape_and_redacts_debug_output() {

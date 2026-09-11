@@ -11,7 +11,7 @@ use crate::local::{
     SendProviderLoginInputRequest, StartProviderLoginRequest,
 };
 use crate::provider::ProviderLoginStart;
-use crate::pty::{PtyProcessState, PtySpawnRequest};
+use crate::pty::PtySpawnRequest;
 use crate::runtime::state::KernelRuntimeState;
 
 const PROVIDER_LOGIN_MONITOR_INTERVAL: std::time::Duration =
@@ -398,9 +398,7 @@ pub(crate) async fn execute_get_provider_login_status_request(
         chunks.into_iter().map(|chunk| chunk.bytes),
         crate::session::unix_epoch_ms(),
     )?;
-    if process_state == PtyProcessState::Exited
-        && status.state == ProviderLoginProcessState::Running
-    {
+    if process_state.is_exited() && status.state == ProviderLoginProcessState::Running {
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();
         let provider = record.provider.clone();

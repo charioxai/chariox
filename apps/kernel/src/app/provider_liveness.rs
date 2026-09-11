@@ -57,15 +57,31 @@ pub(crate) struct ProviderRunExitSessionSummary {
 
 struct ProviderRunLivenessProcesses;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderProcessExit {
+    pub(crate) exit_code: Option<u32>,
+}
+
 impl ProviderRunLivenessProcesses {
     fn poll_process_running(
         app: &mut DaemonApp,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
+        Ok(Self::poll_process_exit(app, provider_run_id)?.is_none())
+    }
+
+    fn poll_process_exit(
+        app: &mut DaemonApp,
+        provider_run_id: &str,
+    ) -> Result<Option<ProviderProcessExit>, DaemonError> {
         match app.pty.poll_process_state(provider_run_id) {
-            Ok(PtyProcessState::Running) => Ok(true),
-            Ok(PtyProcessState::Exited) => Ok(false),
-            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(false),
+            Ok(PtyProcessState::Running) => Ok(None),
+            Ok(PtyProcessState::Exited { exit_code }) => Ok(Some(ProviderProcessExit {
+                exit_code: Some(exit_code),
+            })),
+            Err(DaemonError::PtyProcessNotFound { .. }) => {
+                Ok(Some(ProviderProcessExit { exit_code: None }))
+            }
             Err(error) => Err(error),
         }
     }
@@ -118,11 +134,11 @@ impl ProviderRunLivenessState {
     }
 }
 
-pub(super) fn poll_provider_run_process_running(
+pub(super) fn poll_provider_run_process_exit(
     app: &mut DaemonApp,
     provider_run_id: &str,
-) -> Result<bool, DaemonError> {
-    ProviderRunLivenessProcesses::poll_process_running(app, provider_run_id)
+) -> Result<Option<ProviderProcessExit>, DaemonError> {
+    ProviderRunLivenessProcesses::poll_process_exit(app, provider_run_id)
 }
 
 pub(super) fn clear_active_provider_run_session_pointer(

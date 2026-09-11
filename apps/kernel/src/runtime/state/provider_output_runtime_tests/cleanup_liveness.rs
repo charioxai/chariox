@@ -47,7 +47,12 @@ async fn unexpected_owned_provider_exit_marks_active_agent_error() {
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let outcome = runtime
-        .settle_unexpected_provider_run_exit(session.id(), run.id(), agent.id())
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(17, 42),
+        )
         .await
         .expect("unexpected provider exit should settle");
 
@@ -65,6 +70,137 @@ async fn unexpected_owned_provider_exit_marks_active_agent_error() {
             .expect("agent should remain available")
             .state(),
         crate::agent::AgentState::Error,
+    );
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("failed turn should remain projected");
+    assert_eq!(
+        completed.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+    );
+    assert_eq!(
+        completed.provider_termination,
+        Some(crate::provider::ProviderRunTermination::process_exit(
+            17, 42
+        )),
+    );
+}
+
+#[tokio::test]
+async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replacement_run() {
+    let mut app =
+        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-unexpected-exit-queue",
+            "worktree-unexpected-exit-queue",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-unexpected-exit-queue",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "first prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    match app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "queued prompt\n",
+            Vec::new(),
+        )
+        .expect("second prompt should queue")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    };
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let outcome = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(1, 43),
+        )
+        .await
+        .expect("unexpected provider exit should settle and replace");
+
+    assert!(outcome.had_active_prompt);
+    assert!(outcome.started_next_prompt);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("queued prompt should be active on the replacement run");
+    assert_eq!(active_prompt.prompt(), "queued prompt\n");
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("replacement agent should remain available")
+            .state(),
+        crate::agent::AgentState::Working,
+    );
+    let active_prompt_id = active_prompt.id().to_string();
+    assert!(session_state
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(std::collections::VecDeque::is_empty));
+
+    let repeated = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(1, 43),
+        )
+        .await
+        .expect("repeated exit reconciliation should be idempotent");
+    assert!(!repeated.had_active_prompt);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should still exist");
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(agent.id())
+            .map(crate::session::PromptQueueItem::id),
+        Some(active_prompt_id.as_str()),
+        "the queued prompt must be promoted exactly once",
     );
 }
 
