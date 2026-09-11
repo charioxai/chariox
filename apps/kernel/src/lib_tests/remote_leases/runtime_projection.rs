@@ -101,6 +101,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
                 message_id: "old-completion".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some("previous-home-prompt".into()),
+                provider_termination: None,
             }],
         )
         .unwrap();
@@ -284,6 +285,7 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
                 message_id: "failed-turn-1".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some(prompt.id().into()),
+                provider_termination: None,
             }],
         )
         .unwrap();

@@ -261,11 +261,15 @@ work, interrupt it, or use it as an implementation sub-agent. Review must remain
 independent and arrive through the established reviewer and PR-comment path.
 
 The independent reviewer services and state under `~/.chariox-reviewer` are
-shared infrastructure owned outside this implementation program. The
-implementation agent is not responsible for operating, diagnosing, repairing,
-restarting, stopping, pruning, or modifying that infrastructure. Do not touch it
-unless the user explicitly changes this instruction and assigns reviewer repair
-as a separate task.
+shared infrastructure. For this program the implementation owner is explicitly
+responsible for reviewer health: monitor event delivery, provider substitution,
+workflow completion, and exact-head PR comments without weakening reviewer
+independence. Diagnose and repair reviewer defects narrowly, preserve its state,
+and do not restart, stop, prune, or replace healthy reviewer infrastructure.
+Every posted review must identify the provider, model, account role, and effort
+that actually executed that turn; a fallback review must not reuse the primary
+provider's identity block. Treat missing, stale-head, duplicate, falsely
+attributed, or incomplete review comments as an unresolved gate.
 
 If the reviewer is delayed, unavailable, or temporarily stops posting comments,
 record the exact commit SHA awaiting review and continue useful independent work
@@ -1145,6 +1149,7 @@ CHA-16 is complete only when:
 - provider termination and queued-prompt advancement use one kernel-owned lifecycle across local, registered managed, relay-attached, and leased agents; progress-without-final, provider closure, reconnect/reload, stale event ordering, preserved conversation context, exactly-once backlog promotion, and the next accepted prompt leave card, tooltip, timer, transcript, and durable history consistent
 - focused-agent navigation, history refresh, relay reconnect, and inventory refresh preserve the rendered Web terminal grid, expose bounded target-pane loading and failure states, and never flash an unlabelled whole-workspace placeholder
 - `WORKING` status, elapsed timer, provider/tool trace, and queued-prompt admission share one freshness contract; retained external/provider history cannot manufacture live work, external-working state and the session revision are read and cached atomically, a stale provider/tool heartbeat cannot leave a silent multi-hour turn or hide the active operation, and reconciliation is identical before and after Web reconnect/reload
+- a mixed same-kernel drill keeps a healthy agent live while two deliberately stale provider records reproduce the observed multi-hour silent-turn case; only the stale agents settle, their timers stop, their pending inter-agent messages enter through the kernel prompt path, and the healthy agent remains unaffected
 - state, installed programs, browser authentication, and provider threads
   survive save/restart and full recreation
 - vault-backed public-service work passes leak scans

@@ -168,6 +168,12 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
     };
     let submit = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
+        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+            provider: "codex".to_string(),
+            account_profile: "work".to_string(),
+            model: Some("gpt-5.5".to_string()),
+            effort: None,
+        },
         prompt: "edit a file".to_string(),
         hidden_system_context: "scheduled hidden context".to_string(),
         attachments: Vec::new(),

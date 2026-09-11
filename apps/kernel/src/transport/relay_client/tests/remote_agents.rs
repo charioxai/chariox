@@ -866,6 +866,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async() 
             message_id: "promoted-worker-completion".into(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some(promoted.id().to_string()),
+            provider_termination: None,
         }],
     };
     let encrypted = relay_crypto::encrypt_payload_for_peer(
@@ -874,9 +875,15 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async() 
         &serde_json::to_vec(&event).unwrap(),
     )
     .unwrap();
-    handle_daemon_peer_event(&router, encrypted)
-        .await
-        .expect("acknowledged managed worker output must project to the home");
+    handle_daemon_peer_event(
+        &router,
+        &state_home,
+        &config_worker.daemon_id,
+        None,
+        encrypted,
+    )
+    .await
+    .expect("acknowledged managed worker output must project to the home");
     let mut home = app_home.lock().await;
     let output = home
         .terminal_mut()
