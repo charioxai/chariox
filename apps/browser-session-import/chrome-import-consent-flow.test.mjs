@@ -63,6 +63,46 @@ test('preparation reads no cookies, then gesture permissions precede kernel appr
   assert.deepEqual(await flow.cancel(),{kernelCancellationConfirmed:true});
 });
 
+test('permission lifecycle reserves before confirmation, activates after grant and releases explicitly', async () => {
+  const f = fixture();
+  const lifecycle = [];
+  f.options.permissionLifecycle = {
+    reserve:async permission => lifecycle.push(['reserve',permission]),
+    activate:async () => lifecycle.push(['activate']),
+    release:async () => lifecycle.push(['release']),
+  };
+  const flow = await prepareChromeCookieImport(f.options);
+  assert.deepEqual(lifecycle,[['reserve',{permissions:['cookies'],origins:['*://example.test/*']}]]);
+  const reading = flow.confirmAndRead();
+  assert.equal(f.count('permission'),1);
+  await reading;
+  assert.deepEqual(lifecycle.map(([kind]) => kind),['reserve','activate']);
+  assert.equal(flow.permissionsReleased,false);
+  await flow.releasePermissions();
+  await flow.releasePermissions();
+  assert.deepEqual(lifecycle.map(([kind]) => kind),['reserve','activate','release']);
+  assert.equal(flow.permissionsReleased,true);
+});
+
+test('permission lifecycle releases on denial, cancellation and idle timeout', async () => {
+  for (const mode of ['denial','cancellation','timeout']) {
+    const f = fixture();
+    const lifecycle = [];
+    f.options.permissionLifecycle = {reserve:async () => lifecycle.push('reserve'),
+      activate:async () => lifecycle.push('activate'),release:async () => lifecycle.push('release')};
+    if (mode === 'denial') f.options.chrome.permissions.request = async () => false;
+    if (mode === 'timeout') f.options.timeoutMs = 20;
+    const flow = await prepareChromeCookieImport(f.options);
+    if (mode === 'denial') await assert.rejects(flow.confirmAndRead(),{code:'cookie_source_denied'});
+    if (mode === 'cancellation') await flow.cancel();
+    if (mode === 'timeout') {
+      await new Promise(resolve => setTimeout(resolve,40));
+      assert.equal(flow.state,'cancelled');
+    }
+    assert.deepEqual(lifecycle.filter(value => value === 'release'),['release']);
+  }
+});
+
 test('caller mutations cannot change displayed selection, granted hosts or source store', async () => {
   const f = fixture();
   const flow = await prepareChromeCookieImport(f.options);

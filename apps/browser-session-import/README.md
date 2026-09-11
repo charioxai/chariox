@@ -32,28 +32,43 @@ extension page. Incognito and non-HTTP(S) source tabs are rejected. The page
 reports only the current profile, source hostname and connector public-key
 metadata. It neither probes nor lists cookie names or values.
 
-Pairing is attended and one-use:
+Pairing is attended, independently anchored and one-use:
 
-1. The extension creates a non-extractable P-256 sender key and 128-bit
-   enrollment nonce in memory. The user copies the metadata-only pairing request
-   into Chariox's authenticated Browser Import panel.
-2. The user selects one attached session/kernel and destination in Chariox. The
-   runtime response must echo the exact nonce and sender public key, expire no
-   later than two minutes, name protocol 320 and capability
-   `browser_import_final_delivery` version 1, pin the daemon and kernel public
-   key, and include a single-use relay token plus the immutable selection.
-3. The user pastes that response into the extension. The response is cleared
-   from the DOM immediately. A direct connector-to-relay socket must match the
-   selected daemon and pinned kernel key; a handshake cannot replace the enrolled
-   key. The same sender key is retained for every consent and source-read request.
-4. The extension shows the exact destination and domains. Only the final
+1. The extension creates a non-extractable P-256 sender key in memory and emits
+   a metadata-only bootstrap request. The user copies it into Chariox's already
+   authenticated Browser Import panel and selects one attached session/kernel
+   and destination there.
+2. Chariox returns a short-lived authenticated bootstrap containing a random
+   `bootstrap_id`, the selected relay URL, daemon, kernel public key, immutable
+   destination selection, protocol 320/capability version and echoed connector
+   sender/source metadata. The extension validates and freezes this bootstrap
+   before creating the pairing challenge. It is the independent trust anchor;
+   the later pairing response cannot select or replace those fields.
+3. The extension creates a separate 128-bit enrollment nonce. The user returns
+   that challenge to the same authenticated Chariox panel, which supplies a
+   single-use relay token in a pairing response that echoes the `bootstrap_id`,
+   nonce and every pinned field. The extension rejects any mismatch, including
+   a different well-formed P-256 kernel key, relay, daemon or destination. Both
+   pasted inputs are cleared from the DOM immediately.
+4. A direct connector-to-relay socket must match the independently pinned daemon
+   and kernel key; a handshake cannot replace the bootstrap key. The same sender
+   key is retained for every consent and source-read request.
+5. The extension shows the exact destination and domains. Only the final
    **Allow hosts and import** click calls `confirmAndRead()`. Its first synchronous
    action is `chrome.permissions.request` for `cookies` plus only
    `*://<confirmed-host>/*` origins. No consent round trip or cookie read precedes
    that gesture.
-5. Closing/cancelling aborts owned waits, sends the bounded existing kernel
+6. Closing/cancelling aborts owned waits, sends the bounded existing kernel
    cancellation, closes the relay, ignores late replies and reports a fixed
    result code. The extension does not retry one-use operations.
+
+Before the confirmation gesture, the connector snapshots `cookies` and each
+exact host permission independently and reserves those needs with the shared MV3
+service worker. Chrome's permission-added event plus post-grant activation marks
+only grants absent from that snapshot as connector-owned. Completion, denial,
+cancellation, timeout, page disconnect and delivery failure all release the
+lease. A grant is removed only when connector-owned and no other active connector
+page needs it; permissions that predated the operation are never removed.
 
 The connector declares no storage permission and uses no extension storage,
 content script, externally connectable endpoint, web-accessible resource or page
@@ -140,13 +155,20 @@ After `codex/browser-import-production-runtime` lands:
 2. Implement `deliverBrowserImport()` only against that private runtime command.
    Encrypt inside the adapter with the retained connector key; send directly over
    the existing relay connection; clear local batch references in `finally`; map
-   kernel cancellation/progress/result to fixed metadata-only objects.
+   kernel cancellation/progress/result to fixed metadata-only objects. Completion
+   must have exactly `{requestId,status:"completed",domains:[{domain,status}]}`;
+   each domain entry has exactly those two keys and status `imported`,
+   `sign_in_required` or `unsupported`. Reject missing, duplicate, unselected,
+   extra or unknown entries; the unique set must exactly equal the frozen
+   confirmed-domain set. Never derive per-domain status from aggregate counts.
 3. In chariox-cloud branch `codex/browser-import-product-ui`, replace
    `configuredBrowserImportProductAdapter = null` only with an adapter using the
    Web client's existing direct kernel/relay transport. `detect()` must expose
-   metadata only. `start(selection)` creates one request ID, renders the pairing
-   response for the connector request, and returns one idempotently cancellable
-   handle. Do not send runtime payloads through a Cloud HTTP handler.
+   metadata only. `start(selection)` creates one request ID, first returns the
+   authenticated immutable bootstrap for the selected kernel, and only then
+   returns the nonce-bound pairing response for that same bootstrap. It returns
+   one idempotently cancellable handle. Do not send runtime payloads through a
+   Cloud HTTP handler.
 4. Forward progress with that exact request ID and selected-domain count. Accept
    completion only from the authoritative kernel result; the extension and Web
    UI must never infer success from permission grant, source read or socket send.
@@ -370,9 +392,11 @@ TYPESCRIPT_MODULE=/absolute/path/to/typescript/lib/typescript.js \
 ```
 
 The connector tests cover manifest permissions, direct user-gesture ordering,
-exact-host narrowing, current-profile metadata discovery, enrollment sender/key/
-nonce binding, replay and wrong-kernel rejection, fixed-error redaction, the
-disabled delivery seam and package layout. Consent/source/relay suites cover
+exact-host narrowing, preexisting and concurrently shared grant cleanup,
+current-profile metadata discovery, independently bootstrapped enrollment
+sender/key/nonce binding, valid-key substitution, replay and wrong-kernel
+rejection, authoritative per-domain result reconstruction, fixed-error redaction,
+the disabled delivery seam and package layout. Consent/source/relay suites cover
 mid-operation cancellation, nonce replay and late-result suppression.
 
 For the browser test, set `PLAYWRIGHT_MODULE` to an existing Playwright ESM module

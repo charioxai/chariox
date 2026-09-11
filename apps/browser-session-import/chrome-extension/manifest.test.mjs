@@ -17,7 +17,8 @@ test('MV3 manifest is installable and keeps cookie and host access optional', ()
 });
 
 test('connector has no persistence, public page bridge, logging or mock-success path', async () => {
-  const files = ['background.mjs','connector.mjs','connector-core.mjs','delivery-adapter.mjs'];
+  const files = ['background.mjs','connector.mjs','connector-core.mjs','delivery-adapter.mjs',
+    'permission-coordinator.mjs'];
   const source = (await Promise.all(files.map(file => readFile(new URL(file,root),'utf8')))).join('\n');
   for (const forbidden of ['chrome.storage','localStorage','sessionStorage','window.postMessage',
     'onMessageExternal','console.','history.','analytics','captureVisibleTab','executeScript']) {
@@ -31,4 +32,6 @@ test('connector has no persistence, public page bridge, logging or mock-success 
     connector.indexOf('async function finishImport'));
   assert.ok(click.indexOf('flow.confirmAndRead()') < click.indexOf('finishImport(reading)'));
   assert.equal(click.includes('await '),false);
+  assert.match(connector,/finally \{\s*await flow\?\.releasePermissions\(\)/);
+  assert.match(connector,/pagehide.*flow\?\.cancel\(\)/);
 });
