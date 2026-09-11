@@ -49,6 +49,8 @@
     "browser-computer:persistence-drill": "node scripts/live-docker-slice-browser-state-drill.mjs",
     "browser-computer:soak": "node scripts/live-browser-computer-soak.mjs",
     "test:browser-computer-soak": "node --test scripts/lib/browser-computer-soak.test.mjs",
+    "browser-computer:idle-authenticated-soak": "node scripts/live-idle-authenticated-browser-soak.mjs",
+    "test:browser-computer-idle-authenticated-soak": "node --test scripts/lib/idle-authenticated-browser-soak.test.mjs",
     "test:browser-computer-fixture": "node --test scripts/lib/browser-computer-fixture.test.mjs scripts/lib/browser-computer-fixture-attachments.test.mjs",
     "test:browser-computer-fixture-browser": "node --test scripts/lib/browser-computer-fixture-attachments.browser-test.mjs",
     "computer-secret-input:drill": "node scripts/computer-secret-input-protocol-drill.mjs",
