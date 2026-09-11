@@ -106,6 +106,28 @@ fn write_worker_envelope(fixture: &Fixture, binding: &DisposableWorkerBinding) {
 }
 
 #[test]
+fn disposable_worker_binding_digest_matches_the_cloud_canonical_order() {
+    let binding = DisposableWorkerBinding {
+        allocation_id: "allocation-1".into(),
+        expected_home_kernel_id: "home-kernel-1".into(),
+        user_id: "owner-1".into(),
+        realm_id: "realm-1".into(),
+        worker_machine_id: "machine-1".into(),
+        worker_kernel_id: "kernel-1".into(),
+        image_digest: format!("sha256:{}", "c".repeat(64)),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        manager_operation_id: "operation-1".into(),
+        manager_operation_fence: 7,
+        manager_request_digest: format!("sha256:{}", "d".repeat(64)),
+        sender_key_thumbprint: format!("sha256:{}", "e".repeat(64)),
+    };
+    assert_eq!(
+        disposable_worker_binding_digest(&binding).unwrap(),
+        "sha256:25cc3ec339e7eff69f7537d244fa097d3ebf172b5d2ea1e3bc1407a2deec13ea"
+    );
+}
+
+#[test]
 fn disposable_worker_envelope_is_strict_and_distinct() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("worker-envelope");
