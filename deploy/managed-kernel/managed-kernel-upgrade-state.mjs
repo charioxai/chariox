@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { lstat, open, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { lstat, open, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
@@ -29,17 +30,28 @@ function validIdentifier(value) {
 }
 
 async function readReceipt(path, expectedDigest) {
-  const metadata = await lstat(path, { bigint: true }).catch((error) =>
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error) =>
     fail(`managed bootstrap receipt cannot be read: ${error.message}`),
   )
-  if (!metadata.isFile() || metadata.size > BigInt(MAX_RECEIPT_BYTES)) {
-    fail("managed bootstrap receipt must be a bounded regular file")
-  }
   let receipt
   try {
-    receipt = JSON.parse(await readFile(path, "utf8"))
+    const metadata = await handle.stat({ bigint: true })
+    if (!metadata.isFile() || metadata.size > BigInt(MAX_RECEIPT_BYTES)) {
+      fail("managed bootstrap receipt must be a bounded regular file")
+    }
+    const bytes = Buffer.alloc(MAX_RECEIPT_BYTES + 1)
+    let offset = 0
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    if (offset > MAX_RECEIPT_BYTES) fail("managed bootstrap receipt must be a bounded regular file")
+    receipt = JSON.parse(bytes.subarray(0, offset).toString("utf8"))
   } catch {
     fail("managed bootstrap receipt is invalid JSON")
+  } finally {
+    await handle.close()
   }
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
     fail("managed bootstrap receipt is invalid")
@@ -72,6 +84,23 @@ async function readReceipt(path, expectedDigest) {
 
 async function fsyncDirectory(path) {
   const handle = await open(path, "r")
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function syncTree(path) {
+  const metadata = await lstat(path)
+  if (metadata.isSymbolicLink()) fail("managed kernel durable state contains a symbolic link")
+  if (metadata.isDirectory()) {
+    for (const entry of await readdir(path)) await syncTree(`${path}/${entry}`)
+    await fsyncDirectory(path)
+    return
+  }
+  if (!metadata.isFile()) fail("managed kernel durable state contains an unsupported file type")
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     await handle.sync()
   } finally {
@@ -169,6 +198,14 @@ async function run(args) {
   }
   if (operation === "atomic-symlink" && values.length === 2) {
     await atomicSymlink(values[0], resolve(values[1]))
+    return
+  }
+  if (operation === "sync-tree" && values.length === 1) {
+    await syncTree(resolve(values[0]))
+    return
+  }
+  if (operation === "sync-directory" && values.length === 1) {
+    await fsyncDirectory(resolve(values[0]))
     return
   }
   fail("unsupported managed kernel upgrade state operation")

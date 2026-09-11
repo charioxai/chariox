@@ -52,13 +52,14 @@ function validIdentifier(value) {
   return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value)
 }
 
-async function matchingPresence(receiptPath, presenceRoot, host, port, protocol, notBeforeMs) {
+async function matchingPresence(receiptPath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs) {
   const receipt = await readBoundedJson(receiptPath, MAX_RECEIPT_BYTES)
   if (
     receipt?.schemaVersion !== 1 ||
     receipt.status !== "confirmed" ||
     !validIdentifier(receipt.kernelId) ||
-    !validIdentifier(receipt.machineId)
+    !validIdentifier(receipt.machineId) ||
+    receipt.runtimeReleaseDigest !== releaseDigest
   ) return false
   const presence = await readBoundedJson(
     join(presenceRoot, `${receipt.kernelId}.json`),
@@ -94,7 +95,16 @@ async function matchingPresence(receiptPath, presenceRoot, host, port, protocol,
   return connectOnce(host, port, 500)
 }
 
-async function checkManagedKernel(host, portText, timeoutText, receiptPath, presenceRoot, protocolText, notBeforeText) {
+async function checkManagedKernel(
+  host,
+  portText,
+  timeoutText,
+  receiptPath,
+  presenceRoot,
+  protocolText,
+  releaseDigest,
+  notBeforeText,
+) {
   if (!new Set(["127.0.0.1", "localhost", "::1"]).has(host)) {
     fail("managed kernel health host must be loopback")
   }
@@ -107,18 +117,19 @@ async function checkManagedKernel(host, portText, timeoutText, receiptPath, pres
     fail("managed kernel health timeout is invalid")
   }
   if (!Number.isSafeInteger(protocol) || protocol < 1) fail("managed kernel health protocol is invalid")
+  if (!/^sha256:[a-f0-9]{64}$/.test(releaseDigest)) fail("managed kernel health release digest is invalid")
   if (!Number.isSafeInteger(notBeforeMs) || notBeforeMs < 1) fail("managed kernel health start time is invalid")
   const deadline = Date.now() + timeoutMs
   do {
-    if (await matchingPresence(receiptPath, presenceRoot, host, port, protocol, notBeforeMs)) return
+    if (await matchingPresence(receiptPath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs)) return
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   } while (Date.now() < deadline)
   fail("managed kernel did not publish a fresh matching healthy presence")
 }
 
 try {
-  if (process.argv.length !== 9) {
-    fail("usage: check-managed-kernel-health <host> <port> <timeout-ms> <receipt> <presence-root> <protocol> <not-before-ms>")
+  if (process.argv.length !== 10) {
+    fail("usage: check-managed-kernel-health <host> <port> <timeout-ms> <receipt> <presence-root> <protocol> <release-digest> <not-before-ms>")
   }
   await checkManagedKernel(...process.argv.slice(2))
 } catch (error) {

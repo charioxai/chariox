@@ -88,6 +88,92 @@ require_private_regular_file() {
   fi
 }
 
+require_root_owned_ancestor_chain() {
+  authority_path=$1
+  authority_label=$2
+  case "$authority_path" in
+    /*/../*|/*/./*|*/..|*/.)
+      echo "$authority_label ancestor is unsafe" >&2
+      exit 1
+      ;;
+    /*) ;;
+    *)
+      echo "$authority_label path must be absolute" >&2
+      exit 1
+      ;;
+  esac
+  authority_ancestor=${authority_path%/*}
+  [ -n "$authority_ancestor" ] || authority_ancestor=/
+  while :; do
+    if [ -L "$authority_ancestor" ] || [ ! -d "$authority_ancestor" ]; then
+      echo "$authority_label ancestor is unsafe: $authority_ancestor" >&2
+      exit 1
+    fi
+    if [ "$authority_ancestor" != / ] && [ "$(stat -c %u "$authority_ancestor")" != 0 ]; then
+      echo "$authority_label ancestor owner is unsafe: $authority_ancestor" >&2
+      exit 1
+    fi
+    writable=$(find "$authority_ancestor" -maxdepth 0 -perm /022 -print -quit) || {
+      echo "$authority_label ancestor permissions could not be inspected" >&2
+      exit 1
+    }
+    if [ -n "$writable" ]; then
+      sticky=$(find "$authority_ancestor" -maxdepth 0 -perm -1000 -print -quit) || {
+        echo "$authority_label ancestor permissions could not be inspected" >&2
+        exit 1
+      }
+      if [ -z "$sticky" ]; then
+        echo "$authority_label ancestor permissions are unsafe: $authority_ancestor" >&2
+        exit 1
+      fi
+    fi
+    [ "$authority_ancestor" = / ] && break
+    authority_ancestor=${authority_ancestor%/*}
+    [ -n "$authority_ancestor" ] || authority_ancestor=/
+  done
+}
+
+require_safe_ancestor_chain() {
+  authority_path=$1
+  authority_label=$2
+  case "$authority_path" in
+    /*/../*|/*/./*|*/..|*/.)
+      echo "$authority_label ancestor is unsafe" >&2
+      exit 1
+      ;;
+    /*) ;;
+    *)
+      echo "$authority_label path must be absolute" >&2
+      exit 1
+      ;;
+  esac
+  authority_ancestor=${authority_path%/*}
+  [ -n "$authority_ancestor" ] || authority_ancestor=/
+  while :; do
+    if [ -L "$authority_ancestor" ] || [ ! -d "$authority_ancestor" ]; then
+      echo "$authority_label ancestor is unsafe: $authority_ancestor" >&2
+      exit 1
+    fi
+    writable=$(find "$authority_ancestor" -maxdepth 0 -perm /022 -print -quit) || {
+      echo "$authority_label ancestor permissions could not be inspected" >&2
+      exit 1
+    }
+    if [ -n "$writable" ]; then
+      sticky=$(find "$authority_ancestor" -maxdepth 0 -perm -1000 -print -quit) || {
+        echo "$authority_label ancestor permissions could not be inspected" >&2
+        exit 1
+      }
+      if [ -z "$sticky" ]; then
+        echo "$authority_label ancestor permissions are unsafe: $authority_ancestor" >&2
+        exit 1
+      fi
+    fi
+    [ "$authority_ancestor" = / ] && break
+    authority_ancestor=${authority_ancestor%/*}
+    [ -n "$authority_ancestor" ] || authority_ancestor=/
+  done
+}
+
 read_single_line() {
   if [ -L "$1" ] || [ ! -f "$1" ]; then
     echo "managed kernel upgrade transaction is invalid" >&2
@@ -130,7 +216,8 @@ protocol_version() {
 
 check_health() {
   expected_protocol=$1
-  not_before_ms=$2
+  expected_digest=$2
+  not_before_ms=$3
   active_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
   if [ "$active_protocol" != "$expected_protocol" ]; then
     echo "active managed kernel protocol does not match the staged release" >&2
@@ -139,7 +226,7 @@ check_health() {
   systemctl is-active --quiet "$service_name" || return 1
   node "$script_root/check-managed-kernel-health.mjs" \
     "$health_host" "$health_port" "$health_timeout_ms" \
-    "$receipt_path" "$presence_root" "$expected_protocol" "$not_before_ms"
+    "$receipt_path" "$presence_root" "$expected_protocol" "$expected_digest" "$not_before_ms"
 }
 
 validate_digest() {
@@ -181,8 +268,9 @@ rollback_transaction() {
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
   previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
-  check_health "$previous_protocol" "$health_not_before_ms" || return 1
+  check_health "$previous_protocol" "$previous_digest" "$health_not_before_ms" || return 1
   rm -rf -- "$transaction_root" || return 1
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root" || return 1
   transaction_active=0
   rolling_back=0
 }
@@ -204,6 +292,7 @@ recover_transaction() {
     [ "$(readlink "$current_link")" = "$target_current" ] || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt "$receipt_path" "$target_digest"
     rm -rf -- "$transaction_root"
+    node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root"
     return 0
   fi
   case "$phase" in prepared|stopped|activated) rollback_transaction ;;
@@ -241,6 +330,7 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   exit 1
 fi
 require_private_regular_file "$trusted_public_key" "trusted release public key"
+require_root_owned_ancestor_chain "$trusted_public_key" "trusted release public key"
 mkdir "$staging_root/image"
 (umask 000; cp -RP "$image_root/." "$staging_root/image/")
 cp "$trusted_public_key" "$staging_root/trusted-public-key"
@@ -249,8 +339,10 @@ trusted_public_key=$staging_root/trusted-public-key
 require_regular_file "$trusted_public_key"
 
 require_root_owned_directory "$chariox_root"
+require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade authority"
 require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
+require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 
 upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
 exec 9>"$upgrade_lock"
@@ -304,7 +396,9 @@ else
   done
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
   node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_new_digest" "$trusted_public_key"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
   pending_release=
 fi
 
@@ -327,7 +421,9 @@ printf '%s\n' "releases/$release_name" > "$pending_transaction/target-current"
 printf '%s\n' "$expected_new_digest" > "$pending_transaction/target-digest"
 printf '%s\n' prepared > "$pending_transaction/phase"
 chmod 0600 "$pending_transaction"/*
+node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_transaction"
 mv "$pending_transaction" "$transaction_root"
+node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root"
 pending_transaction=
 transaction_active=1
 
@@ -353,7 +449,7 @@ write_phase activated
 if ! systemctl daemon-reload \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
-  || ! check_health "$target_protocol" "$health_not_before_ms"; then
+  || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
   if rollback_transaction; then
     echo "managed kernel health check failed; restored previous managed kernel release" >&2
   else
@@ -372,5 +468,6 @@ if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
   exit 1
 fi
 rm -rf -- "$transaction_root"
+node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$chariox_root"
 transaction_active=0
 printf 'managed kernel upgraded to %s\n' "$expected_new_digest"
