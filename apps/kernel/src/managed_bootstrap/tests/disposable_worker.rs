@@ -34,14 +34,13 @@ impl BootstrapCloudClient for WorkerCloud {
         }
         Ok(DisposableWorkerExchangeOutcome::Accepted(
             DisposableWorkerExchangeResponse {
+                grant_id: "grant-1".into(),
                 allocation_id: request.allocation_id.clone(),
                 worker_machine_id: request.worker_machine_id.clone(),
                 worker_kernel_id: request.worker_kernel_id.clone(),
                 image_digest: request.image_digest.clone(),
                 runtime_release_digest: request.runtime_release_digest.clone(),
-                manager_operation_id: request.manager_operation_id.clone(),
-                manager_operation_fence: request.manager_operation_fence,
-                manager_request_digest: request.manager_request_digest.clone(),
+                exchanged_at: "2026-08-20T14:00:00Z".into(),
                 cloud_relay: ManagedCloudRelayProfile {
                     api_url: "https://cloud.example.test".into(),
                     email: "worker@example.test".into(),
