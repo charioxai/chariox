@@ -226,6 +226,9 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
 
         let session_outcome =
             ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
+        if !session_outcome.had_active_prompt {
+            return Ok(true);
+        }
         ProviderRunLivenessNotices::record_provider_exit(
             self.app,
             &outcome.session_id,
@@ -234,14 +237,10 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                 "Provider run `{}` for `{}` ended unexpectedly. {}",
                 outcome.provider_run_id,
                 outcome.ended_run.provider(),
-                if session_outcome.had_active_prompt {
-                    if session_outcome.started_next_prompt {
-                        "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
-                    } else {
-                        "The active prompt was closed without starting the queued backlog."
-                    }
+                if session_outcome.started_next_prompt {
+                    "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
-                    "No active prompt was running."
+                    "The active prompt was closed without starting the queued backlog."
                 }
             ),
         );
