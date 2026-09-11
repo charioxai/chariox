@@ -1611,6 +1611,29 @@ fn long_healthy_active_turn_has_bounded_authoritative_reconciliation() {
 }
 
 #[test]
+fn long_healthy_external_turn_has_bounded_authoritative_reconciliation() {
+    use std::time::{Duration, Instant};
+
+    let tracker = CodexTurnTracker::default();
+    let mut full_thread_requests = 0;
+    let mut last_backfill_at = None;
+    for _ in 0..10_000 {
+        let recovery_requested = codex_turn_should_backfill(
+            crate::provider::AgentEndpointMode::External,
+            true,
+            &tracker,
+            true,
+        );
+        if codex_authoritative_backfill_due(true, recovery_requested, last_backfill_at) {
+            full_thread_requests += 1;
+            last_backfill_at = Instant::now().checked_sub(Duration::from_millis(500));
+        }
+    }
+
+    assert_eq!(full_thread_requests, 1);
+}
+
+#[test]
 fn completion_evidence_rearms_authoritative_backfill_after_a_bounded_gate() {
     use std::time::{Duration, Instant};
 
