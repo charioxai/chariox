@@ -1969,6 +1969,40 @@ mod tests {
                 .code,
             "unauthorized"
         );
+        let mut mismatched_realm = identity.clone();
+        mismatched_realm.realm_id = "realm-attacker".to_string();
+        let denied = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            mismatched_realm,
+            &source_private_key,
+            &target_public_key,
+            request("source-kernel-1", "user-1"),
+        )
+        .await;
+        assert_eq!(
+            denied.error.expect("cross-realm identity must fail").code,
+            "unauthorized"
+        );
+        let mut mismatched_user = identity.clone();
+        mismatched_user.user_id = Some("user-attacker".to_string());
+        let denied = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            mismatched_user,
+            &source_private_key,
+            &target_public_key,
+            request("source-kernel-1", "user-1"),
+        )
+        .await;
+        assert_eq!(
+            denied.error.expect("cross-user identity must fail").code,
+            "unauthorized"
+        );
         let confused_home = send_lease_worker_request(
             &router,
             &state,

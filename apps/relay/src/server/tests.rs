@@ -106,16 +106,49 @@ fn scoped_claim(
 }
 
 fn hosted_kernel_jwt(claims: &RelayTokenClaims, issuer_secret: &str) -> String {
-    let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let header =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let actions = claims
+        .allowed_actions
+        .iter()
+        .map(|action| match action {
+            RelayAction::DaemonRegister => "daemon.register",
+            RelayAction::DaemonHeartbeat => "daemon.heartbeat",
+            RelayAction::ClientMetadataRead => "client.metadata.read",
+            RelayAction::ClientConnect => "client.connect",
+            RelayAction::PacketRoute => "packet.route",
+            RelayAction::PeerRequest => "peer.request",
+            RelayAction::PeerEvent => "peer.event",
+        })
+        .collect::<Vec<_>>();
+    let hosted_claims = serde_json::json!({
+        "iss": claims.issuer,
+        "sub": claims.subject,
+        "subject_kind": claims.subject_kind,
+        "realm_id": claims.realm_id,
+        "allowed_actions": actions,
+        "allowed_targets": claims.allowed_targets,
+        "iat": claims.issued_at_ms / 1_000,
+        "exp": claims.expires_at_ms / 1_000,
+        "jti": claims.token_id,
+        "account_id": claims.account_id,
+        "organization_id": claims.organization_id,
+        "user_id": claims.user_id,
+        "device_id": claims.device_id,
+        "machine_id": claims.machine_id,
+        "client_id": claims.client_id,
+        "session_id": claims.session_id,
+        "public_key_thumbprint": claims.public_key_thumbprint,
+        "entitlements_version": claims.entitlements_version,
+    });
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(claims).expect("hosted claims should serialize"));
+        .encode(serde_json::to_vec(&hosted_claims).expect("hosted claims should serialize"));
     let signing_input = format!("{header}.{payload}");
     let mut mac = Hmac::<Sha256>::new_from_slice(issuer_secret.as_bytes())
         .expect("HMAC accepts an arbitrary issuer secret");
     mac.update(signing_input.as_bytes());
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(mac.finalize().into_bytes());
+    let signature =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
     format!("{signing_input}.{signature}")
 }
 

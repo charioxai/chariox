@@ -27,33 +27,36 @@ async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promot
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
     let (mut home, _) = connect_async_with_retry(&url).await.expect("home connects");
-    let (mut worker, _) = connect_async_with_retry(&url).await.expect("worker connects");
+    let (mut worker, _) = connect_async_with_retry(&url)
+        .await
+        .expect("worker connects");
     let (mut alias_home, _) = connect_async_with_retry(&url)
         .await
         .expect("alias home connects");
 
-    let claims = |token_id: &str, subject: &str, user_id: &str, thumbprint: &str| {
-        RelayTokenClaims {
-            issuer: "hosted-cloud".to_string(),
-            subject: subject.to_string(),
-            subject_kind: RelaySubjectKind::Kernel,
-            realm_id: "realm-home".to_string(),
-            allowed_actions: vec![RelayAction::DaemonRegister, RelayAction::PeerRequest],
-            allowed_targets: None,
-            issued_at_ms: 1,
-            expires_at_ms: 20_000,
-            token_id: token_id.to_string(),
-            account_id: Some("account-home".to_string()),
-            organization_id: None,
-            user_id: Some(user_id.to_string()),
-            device_id: None,
-            machine_id: Some("machine-home".to_string()),
-            client_id: None,
-            session_id: None,
-            public_key_thumbprint: Some(thumbprint.to_string()),
-            entitlements_version: None,
-        }
-    };
+    let claims =
+        |token_id: &str, subject: &str, user_id: &str, machine_id: &str, thumbprint: &str| {
+            RelayTokenClaims {
+                issuer: "hosted-cloud".to_string(),
+                subject: subject.to_string(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: "realm-home".to_string(),
+                allowed_actions: vec![RelayAction::DaemonRegister, RelayAction::PeerRequest],
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: 20_000,
+                token_id: token_id.to_string(),
+                account_id: Some("account-home".to_string()),
+                organization_id: None,
+                user_id: Some(user_id.to_string()),
+                device_id: None,
+                machine_id: Some(machine_id.to_string()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(thumbprint.to_string()),
+                entitlements_version: None,
+            }
+        };
     let thumbprint = |public_key: &str| {
         use sha2::Digest;
         Sha256::digest(public_key.as_bytes())
@@ -72,6 +75,7 @@ async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promot
                 "home-token",
                 "home-kernel",
                 "user-home",
+                "machine-home",
                 &thumbprint("home-public-key"),
             ),
         ),
@@ -85,6 +89,7 @@ async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promot
                 "worker-token",
                 "worker-kernel",
                 "user-home",
+                "machine-worker",
                 &thumbprint("worker-public-key"),
             ),
         ),
@@ -98,6 +103,7 @@ async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promot
                 "alias-token",
                 "home-alias",
                 "user-home",
+                "machine-forged",
                 &thumbprint("alias-public-key"),
             ),
         ),
@@ -168,13 +174,14 @@ async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promot
             panic!("unexpected incoming peer request")
         };
         if request_id == "hosted-home" {
+            let home_thumbprint = thumbprint("home-public-key");
             assert_eq!(identity.subject_kind, RelaySubjectKind::Machine);
             assert_eq!(identity.subject, "machine-home");
             assert_eq!(identity.realm_id, "realm-home");
             assert_eq!(identity.user_id.as_deref(), Some("user-home"));
             assert_eq!(
                 identity.public_key_thumbprint.as_deref(),
-                Some(thumbprint("home-public-key").as_str())
+                Some(home_thumbprint.as_str())
             );
         } else {
             assert_eq!(identity.subject_kind, RelaySubjectKind::Kernel);
