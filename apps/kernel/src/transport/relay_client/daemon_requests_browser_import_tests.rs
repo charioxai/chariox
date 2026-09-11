@@ -3,6 +3,7 @@ use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::config::DaemonConfig;
 use crate::session::{CreateSessionRequest, DEFAULT_LOCAL_USER_ID};
 use crate::DaemonApp;
+use base64::Engine as _;
 use chariox_relay::auth::RelaySubjectKind;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -354,5 +355,66 @@ fn browser_import_relay_does_not_require_bound_keys_for_ordinary_client_reads() 
             )
             .await
             .unwrap();
+    });
+}
+
+#[test]
+fn browser_import_encrypted_delivery_revalidates_sender_and_quarantines_before_controller_route() {
+    run(async || {
+        let client = ImportClient::new();
+        let id = client.start_read().await;
+        client
+            .send(
+                "authorize",
+                json!({"AuthorizeBrowserImportSource": {"request_id": id, "selection": client.selection}}),
+            )
+            .await
+            .unwrap();
+        let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
+        let payload = json!([{"name":"session","value":generated_value}]).to_string();
+        let plaintext = serde_json::to_vec(&json!({"browser_import_delivery":{
+            "request_id":id,"selection":client.selection,
+            "payload_base64":base64::engine::general_purpose::STANDARD.encode(payload.as_bytes())
+        }}))
+        .unwrap();
+        let peer =
+            relay_crypto::public_key_from_private_key_base64(&client.router.relay_private_key())
+                .unwrap();
+
+        let mut service = client.identity.clone();
+        service.subject_kind = RelaySubjectKind::Service;
+        let denied = handle_daemon_request(
+            &client.router,
+            &client.sequence,
+            Some(service),
+            relay_crypto::encrypt_payload_for_peer(&client.private_key, &peer, &plaintext).unwrap(),
+            &client.cache,
+        )
+        .await;
+        assert_eq!(denied.error.unwrap().code, "unauthorized");
+        assert!(client
+            .router
+            .runtime_state()
+            .ensure_browser_import_execution_allowed(
+                client.selection["session_id"].as_str().unwrap()
+            )
+            .is_ok());
+
+        let routed = handle_daemon_request(
+            &client.router,
+            &client.sequence,
+            Some(client.identity.clone()),
+            relay_crypto::encrypt_payload_for_peer(&client.private_key, &peer, &plaintext).unwrap(),
+            &client.cache,
+        )
+        .await;
+        assert_eq!(routed.error.unwrap().code, "browser_import_failed");
+        assert!(client
+            .router
+            .runtime_state()
+            .ensure_browser_import_execution_allowed(
+                client.selection["session_id"].as_str().unwrap()
+            )
+            .is_err());
     });
 }

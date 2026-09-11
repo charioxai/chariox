@@ -172,6 +172,15 @@ pub(crate) enum BrowserLifecycleOperation {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoomBrowserImportBinding {
+    pub(crate) request_id: String,
+    pub(crate) user_id: String,
+    pub(crate) room_id: String,
+    pub(crate) environment_id: String,
+}
+
 /// Physical controller operations only. The home retains Room/tab authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -298,6 +307,17 @@ pub(crate) enum RoomBrowserControllerCommand {
         actor_id: String,
         runtime_generation: u64,
     },
+    ImportCookies {
+        binding: RoomBrowserImportBinding,
+        browser_generation: u64,
+        target_id: String,
+        document_id: String,
+        source_store_id: String,
+        domains: Vec<String>,
+        partition_sites: Vec<String>,
+        overwrite: bool,
+        payload: crate::runtime::browser_import_payload::BrowserImportPayload,
+    },
     Release,
 }
 
@@ -322,6 +342,10 @@ pub(crate) enum RoomBrowserControllerResult {
     ComputerClipboard {
         content: RoomComputerClipboardText,
     },
+    CookiesImported {
+        cookie_count: u16,
+    },
+    CookieImportRolledBack,
     Snapshot {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,

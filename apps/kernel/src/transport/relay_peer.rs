@@ -73,7 +73,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 45 requires cancellable browser configuration and execution receipt recovery.
 /// Version 46 requires cancellable browser lifecycle operations and receipt recovery.
 /// Version 47 carries the workspace kind in managed-context import receipts.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 47;
+/// Version 48 carries private browser-cookie import commands and bounded results.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 48;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 

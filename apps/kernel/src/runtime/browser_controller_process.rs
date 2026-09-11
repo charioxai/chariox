@@ -61,6 +61,12 @@ pub(crate) struct BrowserControllerProcessHealth {
     pub(crate) diagnostic_code: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BrowserCookieImportOutcome {
+    Applied(u16),
+    RolledBack,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerProcessSnapshot {
     pub(crate) state: BrowserControllerProcessState,
@@ -209,6 +215,20 @@ pub(crate) trait BrowserControllerProcessBackend {
         _limit: u16,
     ) -> Result<BrowserControllerEventBatch, String> {
         Err("browser controller backend does not support event polling".to_string())
+    }
+    fn import_browser_cookies(
+        &mut self,
+        _binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        _browser_generation: u64,
+        _target_id: &str,
+        _document_id: &str,
+        _source_store_id: &str,
+        _domains: &[String],
+        _partition_sites: &[String],
+        _overwrite: bool,
+        _payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
+    ) -> Result<BrowserCookieImportOutcome, String> {
+        Err("browser controller backend does not support cookie import".to_string())
     }
 }
 
@@ -835,6 +855,49 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         result.validate(browser_generation, cursor, limit)?;
         Ok(result)
     }
+
+    fn import_browser_cookies(
+        &mut self,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        browser_generation: u64,
+        target_id: &str,
+        document_id: &str,
+        source_store_id: &str,
+        domains: &[String],
+        partition_sites: &[String],
+        overwrite: bool,
+        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
+    ) -> Result<BrowserCookieImportOutcome, String> {
+        let response = self.request(
+            "browser.cookies.import",
+            serde_json::json!({
+                "binding": binding,
+                "browser_generation": browser_generation,
+                "target_id": target_id,
+                "document_id": document_id,
+                "source_store_id": source_store_id,
+                "domains": domains,
+                "partition_sites": partition_sites,
+                "overwrite": overwrite,
+                "payload_json": payload.as_str(),
+            }),
+        )?;
+        let result = response.into_result::<BrowserCookieImportResult>("browser.cookies.import")?;
+        if result.cookie_count > 512 {
+            return Err("browser cookie import returned an invalid count".to_string());
+        }
+        match result.status.as_str() {
+            "applied" => Ok(BrowserCookieImportOutcome::Applied(result.cookie_count)),
+            "rolled_back" if result.cookie_count == 0 => Ok(BrowserCookieImportOutcome::RolledBack),
+            _ => Err("browser cookie import returned an invalid outcome".to_string()),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserCookieImportResult {
+    status: String,
+    cookie_count: u16,
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -1153,6 +1216,33 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .poll_browser_events(browser_generation, cursor, limit)
     }
 
+    pub(crate) fn import_browser_cookies(
+        &mut self,
+        session_id: &str,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        browser_generation: u64,
+        target_id: &str,
+        document_id: &str,
+        source_store_id: &str,
+        domains: &[String],
+        partition_sites: &[String],
+        overwrite: bool,
+        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
+    ) -> Result<BrowserCookieImportOutcome, String> {
+        self.require_lease(session_id)?;
+        self.supervisor.import_browser_cookies(
+            binding,
+            browser_generation,
+            target_id,
+            document_id,
+            source_store_id,
+            domains,
+            partition_sites,
+            overwrite,
+            payload,
+        )
+    }
+
     fn require_lease(&self, session_id: &str) -> Result<(), String> {
         if !self.leased || self.owner_session_id.as_deref() != Some(session_id) {
             return Err(format!(
@@ -1371,6 +1461,41 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership
             .poll_browser_events(session_id, browser_generation, cursor, limit)
+            .map(Some)
+    }
+
+    pub(crate) fn import_browser_cookies(
+        &self,
+        session_id: &str,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        browser_generation: u64,
+        target_id: &str,
+        document_id: &str,
+        source_store_id: &str,
+        domains: &[String],
+        partition_sites: &[String],
+        overwrite: bool,
+        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
+    ) -> Result<Option<BrowserCookieImportOutcome>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .import_browser_cookies(
+                session_id,
+                binding,
+                browser_generation,
+                target_id,
+                document_id,
+                source_store_id,
+                domains,
+                partition_sites,
+                overwrite,
+                payload,
+            )
             .map(Some)
     }
 
@@ -1601,6 +1726,32 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .poll_browser_events(browser_generation, cursor, limit)
+    }
+
+    fn import_browser_cookies(
+        &mut self,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        browser_generation: u64,
+        target_id: &str,
+        document_id: &str,
+        source_store_id: &str,
+        domains: &[String],
+        partition_sites: &[String],
+        overwrite: bool,
+        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
+    ) -> Result<BrowserCookieImportOutcome, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.import_browser_cookies(
+            binding,
+            browser_generation,
+            target_id,
+            document_id,
+            source_store_id,
+            domains,
+            partition_sites,
+            overwrite,
+            payload,
+        )
     }
 
     fn ensure_started_without_transparent_restart(&mut self) -> Result<(), String> {
