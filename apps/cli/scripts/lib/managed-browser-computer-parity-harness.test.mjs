@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { after, test } from "node:test"
@@ -409,6 +409,35 @@ test("independent scanning rejects a secret even when the adapter claims zero fi
   assert.equal(report.failure.code, "evidence_inventory_incomplete")
 })
 
+test("independent evidence enumeration bounds directory entries as well as files", async (context) => {
+  const root = await createEvidenceCase(context)
+  await Promise.all(Array.from({ length: 2_049 }, (_, index) => mkdir(path.join(root, `empty-${index}`))))
+  const report = await run({ evidenceRoot: root })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "evidence_inventory_incomplete")
+})
+
+test("independent evidence enumeration rejects a root replaced by a symlink", async (context) => {
+  const parent = await mkdtemp(path.join(proofRoot, "evidence-root-swap-"))
+  context.after(() => rm(parent, { recursive: true, force: true }))
+  const root = path.join(parent, "evidence")
+  const displaced = path.join(parent, "displaced")
+  const substituted = path.join(parent, "substituted")
+  await Promise.all([mkdir(root), mkdir(substituted)])
+  await Promise.all([root, substituted].flatMap((directory) => Object.entries(EVIDENCE_CONTENTS)
+    .map(([name, contents]) => writeFile(path.join(directory, name), contents, { mode: 0o600 }))))
+  const injected = transport({ mutate: {
+    "evidence.inspect": async (value) => {
+      await rename(root, displaced)
+      await symlink(substituted, root)
+      return value
+    },
+  } })
+  const report = await run({ evidenceRoot: root, transport: injected })
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "evidence_inventory_incomplete")
+})
+
 test("exact product versions and before/during/after resource phases are mandatory", async () => {
   const wrongVersion = transport({ mutate: { preflight: (value) => ({ ...value, versions: { ...value.versions, browser: "unknown" } }) } })
   assert.equal((await run({ transport: wrongVersion })).failure.code, "exact_product_versions_required")
@@ -632,6 +661,21 @@ test("operator interruption aborts the active step but still completes cleanup",
   assert.equal(report.failure.code, "managed_parity_interrupted")
   assert.equal(injected.calls.filter(({ step }) => step === "cleanup.perform").length, 1)
   assert.equal(report.cleanup.clean, true)
+})
+
+test("an already-aborted operator signal reaches the transport step", async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const injected = transport()
+  const originalRun = injected.run
+  let stepSignalAborted = false
+  injected.run = async (step, input, options) => {
+    if (step === "preflight") stepSignalAborted = options.signal.aborted
+    return originalRun(step, input, options)
+  }
+  const report = await run({ transport: injected, signal: controller.signal })
+  assert.equal(report.failure.code, "managed_parity_interrupted")
+  assert.equal(stepSignalAborted, true)
 })
 
 test("secret-looking transport output is never retained in evidence", async () => {

@@ -24,6 +24,7 @@ const CLEANUP_FIELDS = Object.freeze([
 const DEFAULT_STEP_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_QUIESCE_TIMEOUT_MS = 30_000
 const MAX_EVIDENCE_FILES = 2048
+const MAX_EVIDENCE_ENTRIES = 2048
 const MAX_EVIDENCE_FILE_BYTES = 16 * 1024 * 1024
 const MAX_TOTAL_EVIDENCE_BYTES = 64 * 1024 * 1024
 
@@ -56,6 +57,7 @@ export async function runManagedBrowserComputerParityHarness({
   const adapterAuthorized = failure === null
   let preflight = null
   let evidenceManifest = null
+  let evidenceRootIdentity = null
   let rollback = { status: "not_run" }
   let cleanup = { clean: false, inventory: null, adapterSettled: false }
 
@@ -88,7 +90,7 @@ export async function runManagedBrowserComputerParityHarness({
 
   try {
     if (failure) throw failure
-    await validateEvidenceRoot(evidenceRoot)
+    evidenceRootIdentity = await validateEvidenceRoot(evidenceRoot)
     preflight = await run("preflight", { resourceCeilings: { ...config.resourceCeilings } }, { bound: false })
     validatePreflight(preflight, config)
     resources.before = preflight.resources
@@ -100,7 +102,7 @@ export async function runManagedBrowserComputerParityHarness({
     rollback = { status: "rollback_only", backend: "novnc" }
 
     evidenceManifest = await run("evidence.inspect", { scope: "all_run_evidence" })
-    validateEvidenceManifest(evidenceManifest, await enumerateEvidenceFiles(evidenceRoot), physicalEvidenceClaims)
+    validateEvidenceManifest(evidenceManifest, await enumerateEvidenceFiles(evidenceRoot, evidenceRootIdentity), physicalEvidenceClaims)
     for (const source of PRODUCT_SOURCES) {
       if (!productSources.has(source)) fail("product_origin_evidence_required", "evidence.inspect")
     }
@@ -139,7 +141,7 @@ export async function runManagedBrowserComputerParityHarness({
         }
         const inventory = await runIndependentInspection(inspector, config, config.quiesceTimeoutMs ?? DEFAULT_QUIESCE_TIMEOUT_MS)
         validateCleanupInventory(inventory, config.resourceCeilings)
-        if (evidenceManifest) validateEvidenceManifest(evidenceManifest, await enumerateEvidenceFiles(evidenceRoot), physicalEvidenceClaims)
+        if (evidenceManifest) validateEvidenceManifest(evidenceManifest, await enumerateEvidenceFiles(evidenceRoot, evidenceRootIdentity), physicalEvidenceClaims)
         resources.after = inventory.resources
         cleanup = { clean: true, inventory, adapterSettled: true }
       } catch (error) {
@@ -356,18 +358,42 @@ function validateProductEvidence(value, step, operationIds, sources, physicalEvi
 async function validateEvidenceRoot(root) {
   if (!path.isAbsolute(root ?? "")) throw new Error("managed parity evidence root must be absolute")
   const resolved = path.resolve(root)
-  if (await realpath(resolved) !== resolved || !(await lstat(resolved)).isDirectory()) {
+  const info = await lstat(resolved)
+  if (await realpath(resolved) !== resolved || !info.isDirectory()) {
     throw new Error("managed parity evidence root must be a real directory without symbolic links")
+  }
+  return { dev: info.dev, ino: info.ino }
+}
+
+async function evidenceDirectoryIdentity(directory, root, expectedIdentity) {
+  try {
+    const resolved = path.resolve(directory)
+    const canonical = await realpath(resolved)
+    const relative = path.relative(path.resolve(root), canonical)
+    const info = await lstat(resolved)
+    if (canonical !== resolved || !info.isDirectory()
+      || (relative !== "" && (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)))
+      || (expectedIdentity && (info.dev !== expectedIdentity.dev || info.ino !== expectedIdentity.ino))) {
+      fail("evidence_inventory_incomplete", "evidence.inspect")
+    }
+    return { dev: info.dev, ino: info.ino }
+  } catch (error) {
+    if (error instanceof HarnessFailure) throw error
+    fail("evidence_inventory_incomplete", "evidence.inspect")
   }
 }
 
-async function enumerateEvidenceFiles(root) {
+async function enumerateEvidenceFiles(root, rootIdentity) {
   const files = []
+  let entriesVisited = 0
   let totalBytes = 0
   const visit = async (directory, relativeDirectory = "", depth = 0) => {
     if (depth > 32) fail("evidence_inventory_incomplete", "evidence.inspect")
+    const before = await evidenceDirectoryIdentity(directory, root, relativeDirectory === "" ? rootIdentity : null)
     const entries = await readdir(directory, { withFileTypes: true })
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      entriesVisited += 1
+      if (entriesVisited > MAX_EVIDENCE_ENTRIES) fail("evidence_inventory_incomplete", "evidence.inspect")
       const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name
       if (!safeRelativePath(relativePath) || entry.isSymbolicLink()) fail("evidence_inventory_incomplete", "evidence.inspect")
       const absolutePath = path.join(directory, entry.name)
@@ -400,6 +426,8 @@ async function enumerateEvidenceFiles(root) {
         await handle.close()
       }
     }
+    const after = await evidenceDirectoryIdentity(directory, root, relativeDirectory === "" ? rootIdentity : null)
+    if (before.dev !== after.dev || before.ino !== after.ino) fail("evidence_inventory_incomplete", "evidence.inspect")
   }
   await visit(root)
   return files
@@ -446,7 +474,10 @@ async function runBoundedTransportStep(transport, step, request, timeoutMs, quie
   activeTasks.add(task)
   task.then(() => activeTasks.delete(task), () => activeTasks.delete(task))
   try {
-    if (externalSignal?.aborted) throw new HarnessFailure("managed_parity_interrupted", step)
+    if (externalSignal?.aborted) {
+      controller.abort()
+      throw new HarnessFailure("managed_parity_interrupted", step)
+    }
     const interrupted = new Promise((_, reject) => {
       if (!externalSignal) return
       const interrupt = () => { controller.abort(); reject(new HarnessFailure("managed_parity_interrupted", step)) }
