@@ -63,6 +63,34 @@ pub use user_config_schema::UserConfigSchemaEntry;
 pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
 pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KernelRuntimeRole {
+    #[default]
+    General,
+    RemoteLeaseWorker,
+}
+
+fn parse_kernel_runtime_role(value: Option<&str>) -> Result<KernelRuntimeRole, &'static str> {
+    match value {
+        None => Ok(KernelRuntimeRole::General),
+        Some("general") => Ok(KernelRuntimeRole::General),
+        Some("remote_lease_worker") => Ok(KernelRuntimeRole::RemoteLeaseWorker),
+        Some(_) => Err("must be `general` or `remote_lease_worker`"),
+    }
+}
+
+fn parse_remote_lease_capacity(value: Option<&str>) -> Result<Option<usize>, &'static str> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .map(Some)
+        .ok_or("must be a positive integer")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorManagementTargetCredential {
     pub url: String,
@@ -114,9 +142,12 @@ pub struct DaemonConfig {
     pub relay_heartbeat_ms: u64,
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
+    pub kernel_runtime_role: KernelRuntimeRole,
     /// Maximum concurrent remote execution leases accepted by this kernel.
     /// `None` preserves the ordinary remote-worker behavior of no fixed limit.
     pub remote_lease_capacity: Option<usize>,
+    kernel_runtime_role_parse_error: Option<&'static str>,
+    remote_lease_capacity_parse_error: Option<&'static str>,
     pub room_environment_worker_binding: Option<RoomEnvironmentWorkerBinding>,
     pub event_delivery_url: Option<String>,
     pub event_delivery_token: Option<String>,
@@ -221,7 +252,10 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: true,
+            kernel_runtime_role: KernelRuntimeRole::General,
             remote_lease_capacity: None,
+            kernel_runtime_role_parse_error: None,
+            remote_lease_capacity_parse_error: None,
             room_environment_worker_binding: None,
             event_delivery_url: None,
             event_delivery_token: None,
