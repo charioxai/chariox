@@ -95,7 +95,6 @@ fn write_worker_envelope(fixture: &Fixture, binding: &DisposableWorkerBinding) {
         &fixture.config.envelope_path,
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 1,
-            "kind": "disposable_worker",
             "cloudApiUrl": "https://cloud.example.test",
             "token": format!("dwboot_{}", "a".repeat(43)),
             "expiresAt": (fixture.now + chrono::Duration::minutes(5)).to_rfc3339(),
@@ -185,4 +184,10 @@ fn existing_supervisor_inherits_disposable_worker_environment() {
     ] {
         assert!(!source.contains(&format!("env_remove(\"{name}\")")));
     }
+    let cloud = include_str!("../cloud.rs");
+    assert!(cloud.contains("/v1/disposable-workers/bootstrap/exchange"));
+    assert_eq!(
+        cloud.matches("/v1/managed-kernels/bootstrap/exchange").count(),
+        1
+    );
 }
