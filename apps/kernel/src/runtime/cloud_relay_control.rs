@@ -162,6 +162,9 @@ pub(crate) fn cloud_kernel_presence_body(
             "accepting_remote_leases": registration
                 .map(|registration| registration.accepting_remote_leases)
                 .unwrap_or(config.accept_remote_leases),
+            "leased_agent_count": registration
+                .map(|registration| registration.leased_agent_count)
+                .unwrap_or_default(),
         }),
     );
     Some(serde_json::Value::Object(body))
@@ -409,12 +412,7 @@ mod tests {
         assert_eq!(metadata["accepting_remote_leases"], false);
         assert_eq!(metadata["leased_agent_count"], 1);
         assert!(metadata["leased_agent_count"].is_u64());
-        for forbidden in [
-            "session_id",
-            "agent_id",
-            "prompt_id",
-            "provider_run_id",
-        ] {
+        for forbidden in ["session_id", "agent_id", "prompt_id", "provider_run_id"] {
             assert!(!metadata.contains_key(forbidden));
         }
     }
