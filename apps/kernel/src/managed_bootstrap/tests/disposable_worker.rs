@@ -154,13 +154,21 @@ fn worker_binding(fixture: &Fixture) -> DisposableWorkerBinding {
         fixture.config.kernel_port,
     )
     .unwrap();
+    worker_binding_for_identity(fixture, identity.machine_id, identity.kernel_id)
+}
+
+fn worker_binding_for_identity(
+    fixture: &Fixture,
+    worker_machine_id: impl Into<String>,
+    worker_kernel_id: impl Into<String>,
+) -> DisposableWorkerBinding {
     DisposableWorkerBinding {
         allocation_id: "allocation-1".into(),
         expected_home_kernel_id: "home-kernel-1".into(),
         user_id: "owner-1".into(),
         realm_id: "realm-1".into(),
-        worker_machine_id: identity.machine_id,
-        worker_kernel_id: identity.kernel_id,
+        worker_machine_id: worker_machine_id.into(),
+        worker_kernel_id: worker_kernel_id.into(),
         image_digest: format!("sha256:{}", "c".repeat(64)),
         runtime_release_digest: fixture.release_digest.clone(),
         manager_operation_id: "operation-1".into(),
@@ -168,6 +176,70 @@ fn worker_binding(fixture: &Fixture) -> DisposableWorkerBinding {
         manager_request_digest: format!("sha256:{}", "d".repeat(64)),
         sender_key_thumbprint: format!("sha256:{}", "e".repeat(64)),
     }
+}
+
+#[test]
+fn pristine_disposable_worker_initializes_the_envelope_bound_identity_and_local_key() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-pristine-identity");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let binding = worker_binding_for_identity(
+        &fixture,
+        "cloud-worker-machine-1",
+        "cloud-worker-kernel-1",
+    );
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud::new(FirstExchange::Accept);
+
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+        .expect("a pristine disposable worker should initialize its bound identity");
+    let identity = load_or_create_managed_runtime_identity(
+        &fixture.config.kernel_host,
+        fixture.config.kernel_port,
+    )
+    .unwrap();
+    assert_eq!(identity.machine_id, binding.worker_machine_id);
+    assert_eq!(identity.kernel_id, binding.worker_kernel_id);
+    assert!(!identity.relay_public_key.trim().is_empty());
+    assert!(!serde_json::to_string(&binding)
+        .unwrap()
+        .contains(&identity.relay_public_key));
+
+    restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
+fn disposable_worker_rejects_a_preexisting_mismatched_identity() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-mismatched-identity");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let existing = load_or_create_managed_runtime_identity(
+        &fixture.config.kernel_host,
+        fixture.config.kernel_port,
+    )
+    .unwrap();
+    let binding = worker_binding_for_identity(
+        &fixture,
+        "cloud-worker-machine-2",
+        "cloud-worker-kernel-2",
+    );
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud::new(FirstExchange::Accept);
+
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert!(cloud.exchange_calls.lock().unwrap().is_empty());
+    let preserved = load_or_create_managed_runtime_identity(
+        &fixture.config.kernel_host,
+        fixture.config.kernel_port,
+    )
+    .unwrap();
+    assert_eq!(preserved, existing);
+
+    restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
 }
 
 fn write_worker_envelope(fixture: &Fixture, binding: &DisposableWorkerBinding) {
@@ -472,6 +544,28 @@ fn disposable_worker_recreated_envelope_is_removed_only_for_the_exact_receipt_bi
     fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
+    fixture.cleanup();
+}
+
+#[test]
+fn completed_worker_receipt_wins_release_selection_over_a_stale_envelope() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("worker-stale-release-envelope");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let binding = worker_binding(&fixture);
+    write_worker_envelope(&fixture, &binding);
+    let cloud = WorkerCloud::new(FirstExchange::Accept);
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
+
+    let mut stale_binding = binding;
+    stale_binding.runtime_release_digest = format!("sha256:{}", "9".repeat(64));
+    write_worker_envelope(&fixture, &stale_binding);
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert!(!fixture.config.envelope_path.exists());
+    assert_eq!(cloud.exchange_calls.lock().unwrap().len(), 1);
+
+    restore_env("CHARIOX_HOME", previous_home);
     fixture.cleanup();
 }
 
