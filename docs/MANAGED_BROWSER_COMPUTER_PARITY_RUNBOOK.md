@@ -16,8 +16,10 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 1. A fresh OpenShip machine with no prior drill Room, slice, browser profile,
    or active kernel target.
 2. The exact managed image `sha256:` digest, exact base64 Ed25519 signature,
-   pinned signer public-key fingerprint, and a successful release verifier
-   result. Never copy a signing private key to the target or config.
+   pinned signer public-key fingerprint, and the reviewed SHA-256 of the real
+   `chariox-managed-image-release-verifier`. Its successful product result must
+   bind both the verified release digest and the running image digest to the
+   configured digest. Never copy a signing private key to the target or config.
 3. Exact clean OSS and Cloud 40-character SHAs. The image must identify the OSS
    SHA and the attended Web deployment must identify the Cloud SHA.
 4. Kernel protocol 322 or newer, exact relay protocol and released relay
@@ -29,11 +31,15 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
 7. Product-managed Git authentication and an attended, synthetic-test vault
    entry. The adapter receives only fixture name `synthetic-vault-marker-v1`,
    never its value.
-8. A reviewed adapter module exporting
-   `createManagedBrowserComputerParityTransport`. Construction must be
-   side-effect free. Its steps must use the released BrowserKernelClient, local
-   IPC, and remote relay paths—not Cloud runtime APIs or another authority—and
-   return authoritative kernel, machine, Room, environment, and backend IDs.
+8. A reviewed adapter module with an immutable identity and SHA-256 pinned in
+   the private config. It exports that identity as
+   `MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY` and exports
+   `createManagedBrowserComputerParityTransport`. The factory returns distinct
+   `{ transport, inspector }` objects; the inspector independently inventories
+   cleanup and must not delegate to the product transport. Construction must be
+   side-effect free. Product steps must use the released BrowserKernelClient,
+   local IPC, and remote relay paths—not Cloud runtime APIs or another
+   authority—and return product-origin evidence and operation IDs.
    The factory receives only the external evidence directory. Preflight must
    independently inspect the installed image/source/protocol/target rather than
    echo expected config values; expected identity is supplied only to bound
@@ -52,7 +58,22 @@ contains no credential or secret value:
   "image": {
     "digest": "sha256:<64 lowercase hex>",
     "signature": "<exact base64 Ed25519 release signature>",
-    "signerFingerprint": "sha256:<64 lowercase hex>"
+    "signerFingerprint": "sha256:<64 lowercase hex>",
+    "releaseVerifierSha256": "sha256:<64 lowercase hex>"
+  },
+  "adapter": {
+    "identity": "<reviewed product adapter identity>",
+    "sha256": "sha256:<64 lowercase hex>"
+  },
+  "versions": {
+    "kernel": "<exact version>",
+    "relay": "<exact version>",
+    "machine": "<exact version>",
+    "provider": "<exact harness version>",
+    "git": "<exact version>",
+    "vault": "<exact version>",
+    "browser": "<exact version>",
+    "computer": "<exact version>"
   },
   "expected": {
     "kernelId": "<immutable kernel id>",
@@ -69,7 +90,8 @@ contains no credential or secret value:
     "maximumPostRunRssDeltaBytes": 52428800,
     "maximumPostRunDiskDeltaBytes": 10485760
   },
-  "stepTimeoutMs": 600000
+  "stepTimeoutMs": 600000,
+  "quiesceTimeoutMs": 30000
 }
 ```
 
@@ -91,8 +113,12 @@ fixtures. The adapter uses only existing authenticated product stores.
 
 ## Orchestrated product sequence
 
-After verifying signed image/source/protocol/relay/target metadata, heartbeat,
-capabilities, and resource headroom, the orchestrator:
+The executable hashes the regular adapter module before construction and binds
+the exported identity to the reviewed config pin. Adapter self-attestation or
+an injected/generic transport cannot produce acceptance. After verifying the
+real release-verifier result, running digest, source/protocol/relay/target
+metadata, exact component versions, heartbeat, capabilities, and `before`
+resource headroom, the orchestrator:
 
 1. Creates the headed environment through the kernel-owned default. The result
    must be `selkies` with exactly one Room, browser, and profile.
@@ -107,9 +133,18 @@ capabilities, and resource headroom, the orchestrator:
    zero matches in arguments, logs, evidence, prompts, and fixtures.
 8. Confirms Git auth availability without reading its material.
 9. Injects a bounded relay disconnect, reconnects without stale identity, and
-   requires zero duplicate actions or browsers.
+   requires causal disconnect/reconnect/post-reconnect operation IDs, a
+   physical effect, and zero duplicate actions or browsers.
 10. Destroys Selkies, creates the explicit noVNC rollback, attaches all three
     clients to the same bound identity, records it as rollback-only, and destroys it.
+11. Requires `during` resources, then enumerates every adapter evidence file
+    with its digest, size, and a completed zero-finding forbidden-value scan.
+
+Browser/Computer input and takeover results must causally link distinct input,
+frame mutation, human takeover, cancellation, and attribution operations.
+Across the run, product-originated evidence must cover kernel, relay, machine,
+provider, Git, vault, Browser, and Computer authorities. Boolean success fields
+without this evidence are insufficient.
 
 Old/unknown protocol, unsigned image, stale heartbeat, target rebind, missing
 capability, duplicate authority, partial result, timeout, or a noVNC acceptance
@@ -117,15 +152,20 @@ claim fails the run.
 
 ## Cleanup and evidence
 
-Cleanup runs exactly once after success, failure, or timeout. Remove only
+On cancellation or timeout the adapter operation must settle after abort before
+cleanup begins; an adapter that does not quiesce fails closed. Cleanup runs
+exactly once after adapter settlement. Remove only
 drill-owned OpenShip/Cloud records, Room/environment/slice state, containers,
 volumes, networks, processes, listeners, profiles, tunnels, temporary files,
 and synthetic grants. Never prune shared resources.
 
-The independent cleanup inspection must report zero managed machines, Rooms,
-environments, processes, listeners, containers, profiles, active relay targets
-and heartbeats, temporary files, and evidence leaks. RSS/disk deltas must fit
-their ceilings. Cleanup command success without a clean inventory fails.
+The independent cleanup inspection must explicitly enumerate and report zero
+managed machines, Rooms, environments, processes, listeners, containers,
+images, volumes, networks, profiles, sessions, agents, workflows, grants,
+tunnels, deployments, DNS records, Cloud records, active relay targets,
+temporary files, and evidence leaks. Its `after` resource sample and RSS/disk
+deltas must fit their ceilings. Missing inventory fields or cleanup command
+success without a clean inventory fails.
 
 Retain only `managed-browser-computer-parity.json` and checksummed
 `chariox-drill-artifacts.json` outside repositories. Review the recorded image

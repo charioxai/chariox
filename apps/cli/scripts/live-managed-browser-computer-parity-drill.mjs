@@ -2,10 +2,10 @@
 
 import { mkdir, rm } from "node:fs/promises"
 import path from "node:path"
-import { pathToFileURL } from "node:url"
 
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
+  loadReviewedManagedParityAdapterModule,
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
 } from "./lib/managed-browser-computer-parity-cli.mjs"
@@ -21,7 +21,10 @@ process.once("SIGTERM", interrupt)
 try {
   const options = parseManagedBrowserComputerParityArgs(process.argv.slice(2), { repoRoot })
   const config = await readPrivateManagedParityConfig(options.configPath)
-  const imported = await import(pathToFileURL(options.transportModulePath).href)
+  const { imported, verification: adapterVerification } = await loadReviewedManagedParityAdapterModule(
+    options.transportModulePath,
+    config.adapter,
+  )
   if (typeof imported.createManagedBrowserComputerParityTransport !== "function") {
     throw new Error("transport module must export createManagedBrowserComputerParityTransport")
   }
@@ -31,10 +34,19 @@ try {
   }
   incompleteRunDir = runDir
   await mkdir(runDir, { recursive: true, mode: 0o700 })
-  const transport = await imported.createManagedBrowserComputerParityTransport({
+  const product = await imported.createManagedBrowserComputerParityTransport({
     evidenceRoot: runDir,
   })
-  const report = await runManagedBrowserComputerParityHarness({ config, transport, signal: interruption.signal })
+  if (!product || product.transport === product.inspector) {
+    throw new Error("reviewed adapter must return distinct transport and independent inspector objects")
+  }
+  const report = await runManagedBrowserComputerParityHarness({
+    config,
+    transport: product.transport,
+    inspector: product.inspector,
+    adapterVerification,
+    signal: interruption.signal,
+  })
   const resultPath = path.join(runDir, "managed-browser-computer-parity.json")
   const artifactIndexPath = path.join(runDir, "chariox-drill-artifacts.json")
   await writeDrillJsonArtifactOutput({

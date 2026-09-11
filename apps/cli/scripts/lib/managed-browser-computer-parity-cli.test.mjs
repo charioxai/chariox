@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -7,6 +8,8 @@ import { test } from "node:test"
 import {
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
+  loadReviewedManagedParityAdapterModule,
+  verifyManagedParityAdapterModule,
 } from "./managed-browser-computer-parity-cli.mjs"
 
 test("managed parity CLI accepts only metadata paths and external evidence", () => {
@@ -45,4 +48,36 @@ test("managed parity CLI reads only private regular config files", async (contex
   const alias = path.join(root, "config-alias.json")
   await symlink(configPath, alias)
   await assert.rejects(() => readPrivateManagedParityConfig(alias), /regular file/)
+})
+
+test("managed parity CLI independently pins reviewed adapter identity and file hash", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-adapter-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const modulePath = path.join(root, "adapter.mjs")
+  const source = 'export const MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY = "reviewed-adapter-v1"\n'
+  await writeFile(modulePath, source, { mode: 0o600 })
+  const expected = {
+    identity: "reviewed-adapter-v1",
+    sha256: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+  }
+  assert.deepEqual(await verifyManagedParityAdapterModule(modulePath, {
+    MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY: expected.identity,
+  }, expected), { ...expected, verifiedBy: "chariox-harness-loader" })
+  await assert.rejects(
+    () => verifyManagedParityAdapterModule(modulePath, { MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY: expected.identity }, { ...expected, sha256: `sha256:${"0".repeat(64)}` }),
+    /hash does not match/,
+  )
+  await assert.rejects(
+    () => verifyManagedParityAdapterModule(modulePath, { MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY: "self-asserted" }, expected),
+    /identity does not match/,
+  )
+  let loaded = false
+  await assert.rejects(
+    () => loadReviewedManagedParityAdapterModule(modulePath, { ...expected, sha256: `sha256:${"0".repeat(64)}` }, async () => {
+      loaded = true
+      return {}
+    }),
+    /hash does not match/,
+  )
+  assert.equal(loaded, false)
 })

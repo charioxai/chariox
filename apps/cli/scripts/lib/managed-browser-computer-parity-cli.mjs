@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto"
 import { lstat, readFile } from "node:fs/promises"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 
 export function parseManagedBrowserComputerParityArgs(argv, { repoRoot }) {
   const values = new Map()
@@ -32,6 +34,30 @@ export async function readPrivateManagedParityConfig(configPath) {
     throw new Error("managed parity config must not be accessible by group or other")
   }
   return JSON.parse(await readFile(configPath, "utf8"))
+}
+
+export async function verifyManagedParityAdapterModule(modulePath, imported, expected) {
+  const info = await lstat(modulePath)
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error("managed parity adapter module must be a regular file")
+  }
+  const bytes = await readFile(modulePath)
+  const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+  if (sha256 !== expected?.sha256) throw new Error("managed parity adapter module hash does not match reviewed pin")
+  const identity = imported?.MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY
+  if (identity !== expected?.identity) throw new Error("managed parity adapter module identity does not match reviewed pin")
+  return { identity, sha256, verifiedBy: "chariox-harness-loader" }
+}
+
+export async function loadReviewedManagedParityAdapterModule(modulePath, expected, load = (path) => import(pathToFileURL(path).href)) {
+  const info = await lstat(modulePath)
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("managed parity adapter module must be a regular file")
+  const bytes = await readFile(modulePath)
+  const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+  if (sha256 !== expected?.sha256) throw new Error("managed parity adapter module hash does not match reviewed pin")
+  const imported = await load(modulePath)
+  const verification = await verifyManagedParityAdapterModule(modulePath, imported, expected)
+  return { imported, verification }
 }
 
 function assertOutsideRepository(candidate, repoRoot) {
