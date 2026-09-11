@@ -31,6 +31,7 @@ import {
   inspectDigestBoundRuntime,
   launchDetachedRunner,
   networkNamespaceAttribution,
+  processIsRunning,
   runHostHelper,
   redactEvidence,
   resolveVerifiedImage,
@@ -139,6 +140,13 @@ test("a ready stream must deliver its first frame before the health deadline", (
     }, 31_001),
     /did not deliver its first video frame/,
   )
+})
+
+test("cleanup treats a process that vanishes after signal-zero as stopped", () => {
+  const probe = () => {}
+  const readStat = () => { throw Object.assign(new Error("vanished"), { code: "ENOENT" }) }
+
+  assert.equal(processIsRunning(13499, { probe, readStat }), false)
 })
 
 test("the preflight baseline measures the evidence filesystem", async () => {
