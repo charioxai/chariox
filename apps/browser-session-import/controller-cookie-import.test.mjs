@@ -89,7 +89,9 @@ test('controller bridge acknowledges journal before cookie write and clears it o
       await journal.discard(completedReceipt);
     };
     assert.deepEqual(await applyControllerCookieImport(selection,authority),
-      {cookieCount:1,domains:['example.test']});
+      {cookieCount:1,domains:['example.test'],results:[
+        {domain:'example.test',status:'imported',cookie_count:1},
+      ]});
     assert.equal(journalPresentAtCompletion,true);
     assert.equal(typeof receipt,'string');
     assert.equal(await journal.read(),null);
@@ -106,4 +108,21 @@ test('controller bridge stops before mutation if journal preparation fails',asyn
     return true;
   });
   assert.equal(calls.includes('Storage.setCookies'),false);
+});
+
+test('acknowledged request cancellation after journal preparation prevents mutation and resolves rollback',async () => {
+  await withJournal(async durable => {
+    const cancellation=new AbortController();
+    const journal={read:() => durable.read(),discard:receipt => durable.discard(receipt),
+      prepare:async bytes => { const receipt=await durable.prepare(bytes); cancellation.abort(); return receipt; }};
+    const {selection,authority,calls}=fixture(journal);
+    authority.signal=cancellation.signal;
+    await assert.rejects(applyControllerCookieImport(selection,authority),error => {
+      assert.equal(error.code,'cookie_import_cancelled');
+      assert.equal(error.recoveryRequired,false);
+      return true;
+    });
+    assert.equal(calls.includes('Storage.setCookies'),false);
+    assert.equal(await durable.read(),null);
+  });
 });

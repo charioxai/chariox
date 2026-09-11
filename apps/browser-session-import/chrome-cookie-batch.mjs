@@ -7,6 +7,7 @@ export function prepareChromeCookieBatch(source, scope) {
   const now = scope.nowSeconds ?? Date.now() / 1000;
   if (!Number.isFinite(now) || now < 0) fail('invalid_cookie_import');
   const approved = new Set(scope.approvedDomains.map(hostname));
+  if (approved.size !== scope.approvedDomains.length) fail('invalid_cookie_import');
   const partitionSites = scope.approvedPartitionSites ?? [];
   if (!Array.isArray(partitionSites) || partitionSites.length > 32) fail('invalid_cookie_import');
   const approvedPartitions = new Set(partitionSites.map(partitionSite));
@@ -49,8 +50,18 @@ export function prepareChromeCookieBatch(source, scope) {
       hasCrossSiteAncestor: cookie.partitionKey.hasCrossSiteAncestor,
     } } : {}),
   }));
+  const counts = new Map([...approved].map(domain => [domain,0]));
+  for (const cookie of source) {
+    const domain = hostname(cookie.domain.replace(/^\./, ''));
+    counts.set(domain,counts.get(domain) + 1);
+  }
   return { cookies, summary: { cookieCount: cookies.length,
-    domains: [...new Set(source.map(c => hostname(c.domain.replace(/^\./, ''))))].sort() } };
+    domains: [...new Set(source.map(c => hostname(c.domain.replace(/^\./, ''))))].sort(),
+    results: scope.approvedDomains.map(domain => {
+      const normalized = hostname(domain);
+      const cookieCount = counts.get(normalized);
+      return {domain,status:cookieCount > 0 ? 'imported' : 'no_cookies',cookie_count:cookieCount};
+    }) } };
 }
 
 function partitionSite(value) {

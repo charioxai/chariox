@@ -5,6 +5,21 @@ use crate::runtime::browser_controller_process::{
 };
 use crate::session::CanonicalViewport;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BrowserImportDomainStatus {
+    Imported,
+    NoCookies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrowserImportDomainResult {
+    pub(crate) domain: String,
+    pub(crate) status: BrowserImportDomainStatus,
+    pub(crate) cookie_count: u16,
+}
+
 pub(crate) const ROOM_COMPUTER_SCROLL_MAX_STEPS: u16 = 120;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES: usize = 64 * 1024;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES: usize = 128;
@@ -318,6 +333,13 @@ pub(crate) enum RoomBrowserControllerCommand {
         overwrite: bool,
         payload: crate::runtime::browser_import_payload::BrowserImportPayload,
     },
+    CancelCookieImport {
+        request_id: String,
+    },
+    RecoverCookieImport {
+        binding: RoomBrowserImportBinding,
+        target_id: String,
+    },
     Release,
 }
 
@@ -343,8 +365,9 @@ pub(crate) enum RoomBrowserControllerResult {
         content: RoomComputerClipboardText,
     },
     CookiesImported {
-        cookie_count: u16,
+        results: Vec<BrowserImportDomainResult>,
     },
+    CookieImportRecovered,
     CookieImportRolledBack,
     Snapshot {
         snapshot: Option<

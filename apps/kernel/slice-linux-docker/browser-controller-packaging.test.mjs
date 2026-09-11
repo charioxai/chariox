@@ -49,9 +49,10 @@ test("slice packaging installs the Computer text finder", async () => {
 })
 
 test("slice packaging installs the private browser import destination runtime", async () => {
-  const [dockerfile, provisioner] = await Promise.all([
+  const [dockerfile, provisioner,controller] = await Promise.all([
     readFile(dockerfilePath, "utf8"),
     readFile(provisionerPath, "utf8"),
+    readFile(controllerEntry,"utf8"),
   ])
   for (const name of ["chrome-cookie-batch.mjs", "controller-cookie-import.mjs",
     "cookie-import-completion.mjs", "cookie-import-journal.mjs",
@@ -59,6 +60,8 @@ test("slice packaging installs the private browser import destination runtime", 
     assert.match(dockerfile,new RegExp(`apps/browser-session-import/${escapeRegExp(name)}\\s+`))
     assert.match(provisioner,new RegExp(escapeRegExp(name)))
   }
+  assert.match(controller,/request\.method === "browser\.cookies\.recover"/)
+  assert.match(controller,/recoverProductionBrowserImport/)
 })
 
 async function reachableControllerModules(entry) {

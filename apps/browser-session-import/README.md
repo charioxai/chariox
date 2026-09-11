@@ -290,7 +290,7 @@ fail closed. This decoder does not open a socket, pair a client or grant access.
 
 `connectBrowserImportRelay` provides the connector socket transport. Consent and
 source requests remain strict metadata-only `LocalDaemonRequest` values. Protocol
-320 additionally provides `deliver`, whose distinct `browser_import_delivery`
+321 additionally provides `deliver`, whose distinct `browser_import_delivery`
 plaintext exists only inside relay encryption and is never accepted as a public
 local-daemon request. It uses the existing `client_connect`,
 `client_request` and `client_response` frames and shared encryption. Its caller
@@ -521,13 +521,17 @@ reserved until completion. A fresh kernel rejects old request IDs.
 
 This ledger is not an authentication mechanism by itself. Its callers supply
 identities from the authenticated relay and scope from trusted kernel state,
-never from a cookie payload or a sender's approval boolean. Protocol 320 uses the
+never from a cookie payload or a sender's approval boolean. Protocol 321 uses the
 same live client/key/attachment binding for delivery, claims the destination
 under exclusive Environment ownership, and creates durable quarantine before
 routing the private controller command. The controller fence and encrypted
 journal provide writer exclusion, verification, rollback, and fail-closed cleanup.
+Kernel-owned controller startup/reconnect resumes matching cleanup or performs
+rollback before releasing quarantine. Active cancellation is routed by request
+ID to the worker and acknowledged only after the controller stops advancing the
+transaction. Results contain exact metadata-only coverage of the selected domains.
 
-The bridge is called only by the private protocol-320 delivery path after the home
+The bridge is called only by the private protocol-321 delivery path after the home
 kernel consumes sender-bound consent and creates durable quarantine. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
@@ -537,7 +541,7 @@ and source-profile/site selection UI, explicit permission management, plus Web U
 progress/result presentation. Add managed process/browser-crash acceptance drills
 before claiming broad service portability.
 
-Run `browser-import-production-path-drill.test.mjs` for the focused protocol-320
+Run `browser-import-production-path-drill.test.mjs` for the focused protocol-321
 drill. It uses a runtime-generated value and disposable private home, exercises
 the production controller fence, encrypted recovery journal, browser readback,
 durable non-secret outcome and cleanup, then removes the complete fixture.

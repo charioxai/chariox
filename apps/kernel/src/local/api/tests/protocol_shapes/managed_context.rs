@@ -6,7 +6,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
         DevelopmentRepositoryRole, DevelopmentWorkspaceKind,
     };
     use crate::transport::relay_peer::RelayManagedContextImportedRepository;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 320);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 321);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         47
@@ -52,7 +52,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
 
 #[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 320);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 321);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",

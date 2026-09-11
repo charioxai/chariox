@@ -81,7 +81,7 @@ test('cookie delivery uses a distinct encrypted-only envelope and returns a boun
     assert.equal(decoded.request,undefined);
     assert.equal(JSON.parse(Buffer.from(decoded.browser_import_delivery.payload_base64,'base64'))[0].value,
       generatedValue);
-    const response = {BrowserImportDelivered:{cookie_count:1}};
+    const response = {BrowserImportDelivered:{results:[{domain:'example.test',status:'imported',cookie_count:1}]}};
     const encrypted = await encryptRelayPayload(sender.publicKeyBase64,
       JSON.stringify({request_nonce:frame.encrypted_request.nonce,response}),kernel);
     socket.send(JSON.stringify({kind:'client_response',request_id:frame.request_id,
@@ -95,7 +95,7 @@ test('cookie delivery uses a distinct encrypted-only envelope and returns a boun
     const result = await client.deliver({requestId:'a'.repeat(32),selection,
       cookies:[{name:'session',value:generatedValue,domain:'example.test',path:'/',secure:true,
         httpOnly:true,hostOnly:true,session:true,sameSite:'lax',storeId:'normal'}]});
-    assert.deepEqual(result,{BrowserImportDelivered:{cookie_count:1}});
+    assert.deepEqual(result,response);
     assert.equal(wire.some(frame => frame.includes(generatedValue)),false);
   } finally {
     client?.close();

@@ -61,9 +61,9 @@ pub(crate) struct BrowserControllerProcessHealth {
     pub(crate) diagnostic_code: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BrowserCookieImportOutcome {
-    Applied(u16),
+    Applied(Vec<crate::transport::room_browser_controller::BrowserImportDomainResult>),
     RolledBack,
 }
 
@@ -230,6 +230,13 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserCookieImportOutcome, String> {
         Err("browser controller backend does not support cookie import".to_string())
     }
+    fn recover_browser_cookie_import(
+        &mut self,
+        _binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        _target_id: &str,
+    ) -> Result<(), String> {
+        Err("browser controller backend does not support cookie recovery".to_string())
+    }
 }
 
 pub(crate) struct BrowserControllerProcessStdioBackend {
@@ -343,6 +350,15 @@ impl BrowserControllerProcessStdioBackend {
         } else {
             self.timeout
         };
+        self.request_serializable(method, &params, timeout)
+    }
+
+    fn request_serializable<P: Serialize>(
+        &mut self,
+        method: &str,
+        params: &P,
+        timeout: Duration,
+    ) -> Result<BrowserControllerRpcResponse, String> {
         let cancellation = matches!(
             method,
             "browser.action"
@@ -371,7 +387,11 @@ impl BrowserControllerProcessStdioBackend {
             .ok_or_else(|| "browser controller is not running".to_string())?;
         serde_json::to_writer(
             &mut process.stdin,
-            &serde_json::json!({ "id": request_id, "method": method, "params": params }),
+            &BrowserControllerRpcRequest {
+                id: request_id,
+                method,
+                params,
+            },
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
         process
@@ -440,6 +460,9 @@ impl BrowserControllerProcessStdioBackend {
                 }
             };
             if response.id == Some(request_id) {
+                if let Some(signal) = cancellation.as_ref().filter(|signal| signal.requested()) {
+                    signal.confirm_stop();
+                }
                 if !response.ok
                     && response
                         .error
@@ -488,6 +511,13 @@ impl BrowserControllerProcessStdioBackend {
         }
         Ok(None)
     }
+}
+
+#[derive(Serialize)]
+struct BrowserControllerRpcRequest<'a, P> {
+    id: u64,
+    method: &'a str,
+    params: &'a P,
 }
 
 impl BrowserControllerRpcResponse {
@@ -868,36 +898,97 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         overwrite: bool,
         payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
     ) -> Result<BrowserCookieImportOutcome, String> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            binding: &'a crate::transport::room_browser_controller::RoomBrowserImportBinding,
+            browser_generation: u64,
+            target_id: &'a str,
+            document_id: &'a str,
+            source_store_id: &'a str,
+            domains: &'a [String],
+            partition_sites: &'a [String],
+            overwrite: bool,
+            payload_json: &'a str,
+        }
+        let params = Params {
+            binding,
+            browser_generation,
+            target_id,
+            document_id,
+            source_store_id,
+            domains,
+            partition_sites,
+            overwrite,
+            payload_json: payload.as_str(),
+        };
+        let response =
+            self.request_serializable("browser.cookies.import", &params, self.timeout)?;
+        let result = response.into_result::<BrowserCookieImportResult>("browser.cookies.import")?;
+        match result.status.as_str() {
+            "applied" if validate_domain_results(&result.results, domains) => {
+                Ok(BrowserCookieImportOutcome::Applied(result.results))
+            }
+            "rolled_back" if result.results.is_empty() => {
+                Ok(BrowserCookieImportOutcome::RolledBack)
+            }
+            _ => Err("browser cookie import returned an invalid outcome".to_string()),
+        }
+    }
+
+    fn recover_browser_cookie_import(
+        &mut self,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        target_id: &str,
+    ) -> Result<(), String> {
         let response = self.request(
-            "browser.cookies.import",
+            "browser.cookies.recover",
             serde_json::json!({
-                "binding": binding,
-                "browser_generation": browser_generation,
-                "target_id": target_id,
-                "document_id": document_id,
-                "source_store_id": source_store_id,
-                "domains": domains,
-                "partition_sites": partition_sites,
-                "overwrite": overwrite,
-                "payload_json": payload.as_str(),
+                "binding": binding, "target_id": target_id,
             }),
         )?;
-        let result = response.into_result::<BrowserCookieImportResult>("browser.cookies.import")?;
-        if result.cookie_count > 512 {
-            return Err("browser cookie import returned an invalid count".to_string());
-        }
-        match result.status.as_str() {
-            "applied" => Ok(BrowserCookieImportOutcome::Applied(result.cookie_count)),
-            "rolled_back" if result.cookie_count == 0 => Ok(BrowserCookieImportOutcome::RolledBack),
-            _ => Err("browser cookie import returned an invalid outcome".to_string()),
+        let result =
+            response.into_result::<BrowserCookieRecoveryResult>("browser.cookies.recover")?;
+        if result.status == "verified" {
+            Ok(())
+        } else {
+            Err("browser cookie recovery returned an invalid outcome".into())
         }
     }
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BrowserCookieImportResult {
     status: String,
-    cookie_count: u16,
+    results: Vec<crate::transport::room_browser_controller::BrowserImportDomainResult>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserCookieRecoveryResult {
+    status: String,
+}
+
+fn validate_domain_results(
+    results: &[crate::transport::room_browser_controller::BrowserImportDomainResult],
+    domains: &[String],
+) -> bool {
+    results.len() == domains.len()
+        && results.iter().zip(domains).all(|(result, domain)| {
+            result.domain == *domain && result.cookie_count <= 512 && match result.status {
+                crate::transport::room_browser_controller::BrowserImportDomainStatus::Imported => {
+                    result.cookie_count > 0
+                }
+                crate::transport::room_browser_controller::BrowserImportDomainStatus::NoCookies => {
+                    result.cookie_count == 0
+                }
+            }
+        })
+        && results
+            .iter()
+            .map(|result| usize::from(result.cookie_count))
+            .sum::<usize>()
+            <= 512
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -1243,6 +1334,17 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         )
     }
 
+    pub(crate) fn recover_browser_cookie_import(
+        &mut self,
+        session_id: &str,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        target_id: &str,
+    ) -> Result<(), String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .recover_browser_cookie_import(binding, target_id)
+    }
+
     fn require_lease(&self, session_id: &str) -> Result<(), String> {
         if !self.leased || self.owner_session_id.as_deref() != Some(session_id) {
             return Err(format!(
@@ -1499,6 +1601,23 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn recover_browser_cookie_import(
+        &self,
+        session_id: &str,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        target_id: &str,
+    ) -> Result<Option<()>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .recover_browser_cookie_import(session_id, binding, target_id)
+            .map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -1752,6 +1871,16 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             overwrite,
             payload,
         )
+    }
+
+    fn recover_browser_cookie_import(
+        &mut self,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        target_id: &str,
+    ) -> Result<(), String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend
+            .recover_browser_cookie_import(binding, target_id)
     }
 
     fn ensure_started_without_transparent_restart(&mut self) -> Result<(), String> {

@@ -5,6 +5,7 @@ use super::{DurableKernelStateStore, DurableWriteOperation};
 use crate::error::DaemonError;
 
 pub(crate) struct PendingBrowserImport {
+    pub environment_id: String,
     pub request_id: String,
     pub user_id: String,
     pub room_id: String,
@@ -60,6 +61,39 @@ impl DurableKernelStateStore {
             })
     }
 
+    pub(crate) fn pending_browser_import_for_room(
+        &self,
+        room_id: &str,
+    ) -> Result<Option<PendingBrowserImport>, DaemonError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "browser_import.read",
+                message: "state lock unavailable".into(),
+            })?;
+        connection
+            .query_row(
+                "SELECT environment_id, request_id, user_id, room_id, recovery_required
+             FROM durable_browser_import WHERE room_id = ?1",
+                params![room_id],
+                |row| {
+                    Ok(PendingBrowserImport {
+                        environment_id: row.get(0)?,
+                        request_id: row.get(1)?,
+                        user_id: row.get(2)?,
+                        room_id: row.get(3)?,
+                        recovery_required: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "browser_import.read",
+                message: "state read failed".into(),
+            })
+    }
+
     /// A recovered row still blocks admission until journal cleanup is complete.
     pub(crate) fn browser_import_pending(&self, environment_id: &str) -> Result<bool, DaemonError> {
         self.pending_browser_import(environment_id)
@@ -79,15 +113,16 @@ impl DurableKernelStateStore {
             })?;
         connection
             .query_row(
-                "SELECT request_id, user_id, room_id, recovery_required
+                "SELECT environment_id, request_id, user_id, room_id, recovery_required
                  FROM durable_browser_import WHERE environment_id = ?1",
                 params![environment_id],
                 |row| {
                     Ok(PendingBrowserImport {
-                        request_id: row.get(0)?,
-                        user_id: row.get(1)?,
-                        room_id: row.get(2)?,
-                        recovery_required: row.get(3)?,
+                        environment_id: row.get(0)?,
+                        request_id: row.get(1)?,
+                        user_id: row.get(2)?,
+                        room_id: row.get(3)?,
+                        recovery_required: row.get(4)?,
                     })
                 },
             )

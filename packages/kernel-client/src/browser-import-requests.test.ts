@@ -20,7 +20,7 @@ test("import consent serializes only explicit metadata and requires protocol 317
     CancelBrowserImport: { session_id: "room-1", attachment_id: "attachment-1", request_id: "request-1" },
   })
   assert.equal(browserImportSourceMinimumProtocolVersion, 317)
-  assert.equal(browserImportDeliveryMinimumProtocolVersion, 320)
+  assert.equal(browserImportDeliveryMinimumProtocolVersion, 321)
   assert.deepEqual(claimBrowserImportSourceRequest("request-1", source), {
     ClaimBrowserImportSource: { request_id: "request-1", selection: expected },
   })

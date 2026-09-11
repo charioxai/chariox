@@ -244,6 +244,32 @@ impl BrowserActionExecutions {
 }
 
 impl BrowserControllerProcessStore {
+    pub(crate) fn cancel_browser_import_and_wait(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> bool {
+        let record = {
+            let state = self
+                .executions
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state
+                .active
+                .get(&(session_id.to_string(), request_id.to_string()))
+                .cloned()
+        };
+        let Some(record) = record else {
+            return false;
+        };
+        record.signal.requested.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !record.signal.stopped.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        record.signal.stopped.load(Ordering::Acquire)
+    }
     #[cfg(test)]
     pub(crate) fn test_forget_completed_browser_actions(&self) {
         self.executions.forget_completed();
@@ -328,6 +354,65 @@ impl BrowserControllerProcessStore {
                     .upload_browser_files(session_id, target_id, document_id, node_ref, files)
                     .map(|result| Response::Upload {
                         result: Some(result),
+                    })
+            },
+        )
+    }
+
+    pub(crate) fn perform_cancellable_browser_import(
+        &self,
+        session_id: &str,
+        binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
+        browser_generation: u64,
+        target_id: &str,
+        document_id: &str,
+        source_store_id: &str,
+        domains: &[String],
+        partition_sites: &[String],
+        overwrite: bool,
+        payload: &crate::runtime::browser_import_payload::BrowserImportPayload,
+    ) -> ExecutionOutcome {
+        if self.ownership.is_none() {
+            return Err("browser controller is unavailable".into());
+        }
+        let fingerprint: [u8; 32] = Sha256::digest(
+            serde_json::to_vec(&(
+                binding,
+                browser_generation,
+                target_id,
+                document_id,
+                source_store_id,
+                domains,
+                partition_sites,
+                overwrite,
+            ))
+            .map_err(|_| "failed to fingerprint browser import".to_string())?,
+        )
+        .into();
+        self.perform_cancellable_operation(
+            session_id,
+            &binding.request_id,
+            fingerprint,
+            Response::CookieImportRolledBack,
+            |ownership| {
+                ownership
+                    .import_browser_cookies(
+                        session_id,
+                        binding,
+                        browser_generation,
+                        target_id,
+                        document_id,
+                        source_store_id,
+                        domains,
+                        partition_sites,
+                        overwrite,
+                        payload,
+                    )
+                    .map(|outcome| match outcome {
+                        BrowserCookieImportOutcome::Applied(results) => {
+                            Response::CookiesImported { results }
+                        }
+                        BrowserCookieImportOutcome::RolledBack => Response::CookieImportRolledBack,
                     })
             },
         )

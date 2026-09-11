@@ -16,7 +16,8 @@ export async function applyControllerCookieImport({controller,browserGeneration,
       || typeof targetId !== 'string' || !targetId || typeof documentId !== 'string' || !documentId) {
     fail('cookie_import_target_stale');
   }
-  const selectedSource = structuredClone(source);
+  // The private caller transfers ownership; avoid retaining a second cookie-value copy.
+  const selectedSource = source;
   const selectedScope = structuredClone(scope);
   prepareChromeCookieBatch(selectedSource,selectedScope);
   const binding = Object.freeze({browserGeneration,targetId,documentId,overwrite:overwrite === true,
