@@ -73,7 +73,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 322);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 323);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -152,7 +152,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 322);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 323);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -281,6 +281,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
             home_prompt_id: Some("home-prompt-1".to_string()),
+            provider_termination: None,
         }],
     };
     let mut snapshot =
@@ -431,7 +432,7 @@ fn relay_peer_queued_prompt_steer_shape_is_versioned() {
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 322);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 323);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),

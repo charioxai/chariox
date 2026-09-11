@@ -52,15 +52,15 @@ impl KernelRuntimeState {
             return Ok(exit.already_ended);
         }
 
-        let process_running = self
+        let process_exit = self
             .with_app_side_effect(|app| {
-                crate::app::ProviderLaunchProcessRuntime::new(app).poll_running(provider_run_id)
+                crate::app::ProviderLaunchProcessRuntime::new(app).poll_exit(provider_run_id)
             })
             .await?;
         let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
             session_id,
             provider_run_id,
-            Some(process_running),
+            Some(process_exit.is_none()),
         )?
         else {
             return Ok(false);
@@ -89,8 +89,22 @@ impl KernelRuntimeState {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "provider run has no agent".to_string(),
                 })?;
+        let occurred_at_ms = crate::session::unix_epoch_ms();
+        let termination = process_exit
+            .and_then(|exit| exit.exit_code)
+            .map(|exit_code| {
+                crate::provider::ProviderRunTermination::process_exit(exit_code, occurred_at_ms)
+            })
+            .unwrap_or_else(|| {
+                crate::provider::ProviderRunTermination::unknown_process_exit(occurred_at_ms)
+            });
         let session_outcome = self
-            .settle_unexpected_provider_run_exit(session_id, provider_run_id, agent_id)
+            .settle_unexpected_provider_run_exit(
+                session_id,
+                provider_run_id,
+                agent_id,
+                termination.clone(),
+            )
             .await?;
         if !session_outcome.had_active_prompt {
             return Ok(true);
@@ -103,9 +117,10 @@ impl KernelRuntimeState {
             Some(provider_run_id),
             recipients,
             format!(
-                "Provider run `{}` for `{}` ended unexpectedly. {}",
+                "Provider run `{}` for `{}` ended unexpectedly: {}. {}",
                 provider_run_id,
                 exit.ended_run.provider(),
+                termination.reason,
                 if session_outcome.started_next_prompt {
                     "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
@@ -121,17 +136,51 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
         agent_id: &str,
+        termination: crate::provider::ProviderRunTermination,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
-        let session_outcome = self
-            .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
-            .await?;
-        if self
+        let provider_run = self
             .owned
-            .agent_store
-            .mark_unexpected_provider_exit_error(agent_id, session_outcome.had_active_prompt)?
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if !self
+            .owned
+            .provider_run_has_active_prompt(session_id, &provider_run)?
         {
-            let _ = self.owned.session_snapshot(session_id)?;
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
         }
-        Ok(session_outcome)
+        let had_active_prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
+            .is_some();
+        if !had_active_prompt {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        }
+        let message = format!(
+            "Provider run `{provider_run_id}` ended unexpectedly: {}.",
+            termination.reason
+        );
+        self.fail_owned_provider_prompt_with_termination(
+            session_id,
+            provider_run_id,
+            &message,
+            true,
+            Some(termination.clone()),
+        )
+        .await?;
+        let started_next_prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.owned.session_store.get_session(session_id)?, agent_id)
+            .is_some();
+        Ok(crate::app::ProviderRunExitSessionSummary {
+            had_active_prompt: true,
+            started_next_prompt,
+        })
     }
 }

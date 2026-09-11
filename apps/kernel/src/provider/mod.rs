@@ -28,6 +28,7 @@ mod registry;
 mod run_actor;
 mod runtime_run;
 mod service;
+mod termination;
 mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
@@ -118,6 +119,7 @@ pub(crate) use runtime_run::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
+pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,

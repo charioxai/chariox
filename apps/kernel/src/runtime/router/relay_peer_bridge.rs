@@ -490,6 +490,19 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn relay_leased_agent_provider_termination(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+        relay_peer_runtime::relay_leased_agent_provider_termination(
+            &self.runtime_state,
+            leased_agent_id,
+            provider_run_id,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_provider_run_terminal_diagnostic(
         &self,
         provider_run_id: &str,

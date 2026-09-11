@@ -68,10 +68,18 @@ export type AgentRuntimeCompletedTurnActionProjection = {
   readonly externalProviderSessionId?: string
   readonly externalProviderTurnId?: string
   readonly completedAtMs: number
+  readonly settlementStatus: "completed" | "cancelled" | "failed" | null
+  readonly providerTermination: AgentRuntimeProviderTerminationProjection | null
   readonly durationMs: number | null
   readonly changedPaths: readonly string[]
   readonly undoAvailable: boolean
   readonly undoUnavailableReason: string | null
+}
+
+export type AgentRuntimeProviderTerminationProjection = {
+  readonly category: "process_exit" | "runtime_failure" | "transport_failure" | "unknown"
+  readonly reason: string
+  readonly timestampMs: number
 }
 
 type AgentRuntimeExternalIdentityProjection = Pick<
@@ -317,11 +325,45 @@ export function readAgentRuntimeCompletedTurn(
     ...projectAgentRuntimeCompletedTurnSourceAttachment(turn),
     ...projectAgentRuntimeCompletedTurnOwnership(turn),
     completedAtMs,
+    settlementStatus: readCompletedTurnSettlementStatus(turn),
+    providerTermination: readProviderRunTermination(turn),
     durationMs: readNumberField(turn, "duration_ms"),
     changedPaths: readStringArrayField(turn, "changed_paths"),
     undoAvailable: readBooleanField(turn, "undo_available") === true,
     undoUnavailableReason: readStringField(turn, "undo_unavailable_reason"),
   }
+}
+
+function readCompletedTurnSettlementStatus(
+  turn: Record<string, unknown>,
+): AgentRuntimeCompletedTurnActionProjection["settlementStatus"] {
+  const status = readStringField(turn, "settlement_status")
+  return status === "completed" || status === "cancelled" || status === "failed" ? status : null
+}
+
+function readProviderRunTermination(
+  turn: Record<string, unknown>,
+): AgentRuntimeProviderTerminationProjection | null {
+  const termination = readRecordField(turn, "provider_termination")
+  if (!termination) {
+    return null
+  }
+  const category = readStringField(termination, "category")
+  const reason = readNonBlankStringField(termination, "reason")
+  const timestampMs = readNonNegativeIntegerField(termination, "timestamp_ms")
+  if (
+    (category !== "process_exit"
+      && category !== "runtime_failure"
+      && category !== "transport_failure"
+      && category !== "unknown")
+    || !reason
+    || reason.length > 256
+    || /[\u0000-\u001f\u007f]/u.test(reason)
+    || timestampMs === null
+  ) {
+    return null
+  }
+  return { category, reason, timestampMs }
 }
 
 function projectAgentRuntimeCompletedTurnSourceAttachment(
