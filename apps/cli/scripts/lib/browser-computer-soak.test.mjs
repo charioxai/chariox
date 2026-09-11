@@ -155,6 +155,7 @@ test("cleanup process checks preserve zombies and fail closed on uncertain statu
 
   assert.equal(processIsRunning(13499, { probe, readStat: () => stat("Z") }), false)
   assert.equal(processIsRunning(13499, { probe, readStat: () => stat("X") }), false)
+  assert.equal(processIsRunning(13499, { probe, readStat: () => stat("x") }), false)
   assert.equal(processIsRunning(13499, { probe, readStat: () => stat("S") }), true)
   for (const code of ["EACCES", "EIO"]) {
     const readStat = () => { throw Object.assign(new Error(code), { code }) }
@@ -635,6 +636,46 @@ test("pre-signal PID reuse prevents every process-group signal and cannot claim 
   })
   assert.deepEqual(capturedSignals, [])
   assert.equal(captured.pidReuseSafe, false)
+})
+
+test("cleanup only accepts definitive process disappearance when identity is unavailable", async () => {
+  const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/chromium", processGroupId: 42 }
+  const child = { pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected }
+  const uncertainOwned = await terminateOwnedProcessGroup("chromium", child, {
+    identity: async () => null,
+    isRunning: () => true,
+    signal: () => assert.fail("uncertain identity must not be signaled"),
+    waitForLog: async () => {},
+  })
+  assert.equal(uncertainOwned.ok, false)
+  assert.equal(uncertainOwned.pidReuseSafe, false)
+
+  const vanishedOwned = await terminateOwnedProcessGroup("chromium", child, {
+    identity: async () => null,
+    isRunning: () => false,
+    signal: () => assert.fail("vanished process must not be signaled"),
+    waitForLog: async () => {},
+  })
+  assert.equal(vanishedOwned.ok, true)
+  assert.equal(vanishedOwned.alreadyExited, true)
+  assert.equal(vanishedOwned.pidReuseSafe, true)
+
+  const uncertainCaptured = await terminateCapturedProcessGroup("viewer", expected, {
+    identity: async () => null,
+    isRunning: () => true,
+    signal: () => assert.fail("uncertain identity must not be signaled"),
+  })
+  assert.equal(uncertainCaptured.ok, false)
+  assert.equal(uncertainCaptured.pidReuseSafe, false)
+
+  const vanishedCaptured = await terminateCapturedProcessGroup("viewer", expected, {
+    identity: async () => null,
+    isRunning: () => false,
+    signal: () => assert.fail("vanished process must not be signaled"),
+  })
+  assert.equal(vanishedCaptured.ok, true)
+  assert.equal(vanishedCaptured.alreadyExited, true)
+  assert.equal(vanishedCaptured.pidReuseSafe, true)
 })
 
 test("all helper subprocesses receive only the shared allowlisted environment", async () => {

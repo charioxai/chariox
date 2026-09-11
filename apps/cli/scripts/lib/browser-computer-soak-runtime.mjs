@@ -1227,6 +1227,7 @@ export function createRedactingTransform({ secretValues = retainedSecretValues }
 
 export async function terminateOwnedProcessGroup(name, child, {
   identity = processIdentity,
+  isRunning = processIsRunning,
   signal = process.kill,
   wait = waitForExit,
   waitForLog = waitForRetainedLog,
@@ -1238,6 +1239,11 @@ export async function terminateOwnedProcessGroup(name, child, {
   }
   const expected = child.ownedIdentity
   const beforeTerm = await identity(child.pid)
+  if (beforeTerm == null) {
+    if (isRunning(child.pid)) return { name, ok: false, pidReuseSafe: false, error: "owned process identity unavailable before SIGTERM" }
+    await waitForLog(child)
+    return { name, ok: !child.retainedLogError, alreadyExited: true, pidReuseSafe: Boolean(expected), error: child.retainedLogError }
+  }
   if (!processIdentityMatches(expected, beforeTerm) || beforeTerm.processGroupId !== expected.pid) {
     return { name, ok: false, pidReuseSafe: false, error: "owned process identity changed before SIGTERM" }
   }
@@ -1248,6 +1254,11 @@ export async function terminateOwnedProcessGroup(name, child, {
   if (!await wait(child, 5_000, false)) {
     forced = true
     const beforeKill = await identity(child.pid)
+    if (beforeKill == null) {
+      if (isRunning(child.pid)) return { name, ok: false, forced, pidReuseSafe: false, error: "owned process identity unavailable before SIGKILL" }
+      await waitForLog(child)
+      return { name, ok: !child.retainedLogError, forced, pidReuseSafe: true, error: child.retainedLogError }
+    }
     if (!processIdentityMatches(expected, beforeKill) || beforeKill.processGroupId !== expected.pid) {
       return { name, ok: false, forced, pidReuseSafe: false, error: "owned process identity changed before SIGKILL" }
     }
@@ -1264,11 +1275,14 @@ const terminateGroup = terminateOwnedProcessGroup
 
 export async function terminateCapturedProcessGroup(name, expected, {
   identity = processIdentity,
+  isRunning = processIsRunning,
   signal = process.kill,
 } = {}) {
   if (!expected) return { name, ok: false, pidReuseSafe: false, error: "owned process identity was not captured" }
   const observed = await identity(expected.pid)
-  if (observed == null) return { name, ok: true, alreadyExited: true, pidReuseSafe: true }
+  if (observed == null) return isRunning(expected.pid)
+    ? { name, ok: false, pidReuseSafe: false, error: "owned process identity unavailable before SIGTERM" }
+    : { name, ok: true, alreadyExited: true, pidReuseSafe: true }
   if (!processIdentityMatches(expected, observed) || observed.processGroupId !== expected.pid) {
     return { name, ok: false, pidReuseSafe: false, error: "owned process identity changed before SIGTERM" }
   }
@@ -1276,10 +1290,16 @@ export async function terminateCapturedProcessGroup(name, expected, {
     if (error?.code !== "ESRCH") return { name, ok: false, pidReuseSafe: true, error: bounded(error?.message ?? error) }
   }
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (!processIdentityMatches(expected, await identity(expected.pid))) return { name, ok: true, forced: false, pidReuseSafe: true }
+    const afterTerm = await identity(expected.pid)
+    if (afterTerm == null ? !isRunning(expected.pid) : !processIdentityMatches(expected, afterTerm)) {
+      return { name, ok: true, forced: false, pidReuseSafe: true }
+    }
     await sleep(50)
   }
   const beforeKill = await identity(expected.pid)
+  if (beforeKill == null) return isRunning(expected.pid)
+    ? { name, ok: false, forced: true, pidReuseSafe: false, error: "owned process identity unavailable before SIGKILL" }
+    : { name, ok: true, forced: false, pidReuseSafe: true }
   if (!processIdentityMatches(expected, beforeKill) || beforeKill.processGroupId !== expected.pid) {
     return { name, ok: false, forced: true, pidReuseSafe: false, error: "owned process identity changed before SIGKILL" }
   }
@@ -1287,7 +1307,10 @@ export async function terminateCapturedProcessGroup(name, expected, {
     if (error?.code !== "ESRCH") return { name, ok: false, forced: true, pidReuseSafe: true, error: bounded(error?.message ?? error) }
   }
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (!processIdentityMatches(expected, await identity(expected.pid))) return { name, ok: true, forced: true, pidReuseSafe: true }
+    const afterKill = await identity(expected.pid)
+    if (afterKill == null ? !isRunning(expected.pid) : !processIdentityMatches(expected, afterKill)) {
+      return { name, ok: true, forced: true, pidReuseSafe: true }
+    }
     await sleep(50)
   }
   return { name, ok: false, forced: true, pidReuseSafe: true, error: "owned process remained after SIGKILL" }
@@ -1825,13 +1848,12 @@ export function processIsRunning(pid, {
     const statLine = readStat(`/proc/${pid}/stat`)
     const commandEnd = statLine.lastIndexOf(")")
     const state = commandEnd === -1 ? "" : statLine.slice(commandEnd + 1).trimStart().charAt(0)
-    return state !== "Z" && state !== "X"
+    return state !== "Z" && state !== "X" && state !== "x"
   } catch (error) {
     return error?.code !== "ENOENT"
   }
 }
 
-function running(pid) { return processIsRunning(pid) }
 async function exists(candidate) { try { await stat(candidate); return true } catch { return false } }
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 const bounded = (value, limit = 2_000) => redactText(value).slice(-limit)
