@@ -1,5 +1,9 @@
 export const browserImportConsentMinimumProtocolVersion = 317
 export const browserImportSourceMinimumProtocolVersion = 317
+export const browserImportDeliveryMinimumProtocolVersion = 321
+
+export type BrowserImportDomainResult = {domain:string; status:"imported"|"no_cookies"; cookie_count:number}
+export type BrowserImportDeliveryResponse = {BrowserImportDelivered:{results:BrowserImportDomainResult[]}}
 
 export type BrowserImportSelection = {
   session_id: string

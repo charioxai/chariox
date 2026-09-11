@@ -104,7 +104,7 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
   // Call directly in the extension's confirmation click handler. No await,
   // permission preflight or kernel round trip may precede permissions.request:
   // Chrome enforces that optional permission requests originate in a gesture.
-  async function confirmAndRead() {
+  async function confirmAndRead(retainLifetime = false) {
     if (state !== 'prepared') throw error('cookie_source_denied');
     state = 'requesting_permission';
     try {
@@ -125,7 +125,7 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
         timeoutMs:Math.min(30000,deadline - performance.now())});
       live();
       state = 'source_read';
-      detach();
+      if (!retainLifetime) detach();
       // Leave the one-use kernel source claim for the destination executor.
       // No cookie payload is retained in this flow's state or request metadata.
       return result;
@@ -134,10 +134,44 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
       throw safeError(failure);
     }
   }
+
+  // Trusted connector completion path. Calling this directly from the click
+  // reaches permissions.request synchronously through confirmAndRead.
+  async function confirmAndDeliver(deliver) {
+    if (typeof deliver !== 'function') {
+      await cancel();
+      throw error('browser_import_delivery_unavailable');
+    }
+    const reading = confirmAndRead(true);
+    let result;
+    try {
+      result = await reading;
+      live();
+      state = 'delivering';
+      const response = await deliver({requestId,selection:selected,cookies:result.cookies},
+        {signal:active.signal,timeoutMs:Math.min(30000,Math.max(1,deadline - performance.now()))});
+      live();
+      state = 'delivered';
+      ended = true;
+      detach();
+      cleanup = Promise.resolve({kernelCancellationConfirmed:false});
+      return response;
+    } catch (failure) {
+      await cancel();
+      if (failure?.code?.startsWith('cookie_source_')
+          || failure?.code === 'browser_import_delivery_unavailable') throw failure;
+      throw error('browser_import_delivery_unavailable');
+    } finally {
+      if (Array.isArray(result?.cookies)) {
+        for (const cookie of result.cookies) if (cookie && typeof cookie === 'object') cookie.value = '';
+      }
+      await releasePermissions();
+    }
+  }
   return Object.freeze({selection:selected,sourceTabId,
     get requestId() { return requestId; },
     get state() { return state; },get permissionsReleased() { return permissionsReleased; },
-    confirmAndRead,cancel,releasePermissions});
+    confirmAndRead,confirmAndDeliver,cancel,releasePermissions});
 }
 
 function matches(response,id,status) {

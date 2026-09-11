@@ -24,7 +24,7 @@ function bootstrap(overrides = {}) {
     relay_url:'wss://relay.chariox.example/ws',
     daemon_id:'kernel-1',
     kernel_public_key:kernelPublicKey,
-    protocol_version:320,
+    protocol_version:321,
     delivery_capability:{name:'browser_import_final_delivery',version:1},
     source:{current_profile:true,hostname:'example.com',store_id:'0'},
     selection:{session_id:'room-1',attachment_id:'attachment-1',environment_id:'environment-1',
@@ -44,7 +44,7 @@ function pairing(challenge,anchor,overrides = {}) {
     relay_auth_token:'fixture-token',
     daemon_id:'kernel-1',
     kernel_public_key:kernelPublicKey,
-    protocol_version:320,
+    protocol_version:321,
     delivery_capability:{name:'browser_import_final_delivery',version:1},
     source:{current_profile:true,store_id:'0'},
     selection:{session_id:'room-1',attachment_id:'attachment-1',environment_id:'environment-1',
@@ -86,7 +86,7 @@ test('pairing rejects wrong sender, changed source store, expiry and unsafe rela
     {expires_at_ms:now - 1},
     {relay_url:'ws://relay.example.test'},
     {relay_url:'wss://relay.example.test/?token=secret'},
-    {protocol_version:319},
+    {protocol_version:320},
     {delivery_capability:null},
     {source:{current_profile:true,store_id:'1'}},
   ]) {
@@ -102,7 +102,8 @@ test('authenticated bootstrap itself is sender, source and expiry bound', () => 
   assert.equal(acceptAuthenticatedBootstrap(bootstrap(),{senderPublicKey,discovered,now}).kernelPublicKey,
     kernelPublicKey);
   for (const value of [bootstrap({connector_sender_public_key:otherKernelPublicKey}),
-    bootstrap({expires_at_ms:now - 1}),bootstrap({source:{current_profile:true,hostname:'other.example',store_id:'0'}})]) {
+    bootstrap({expires_at_ms:now - 1}),bootstrap({protocol_version:320}),
+    bootstrap({source:{current_profile:true,hostname:'other.example',store_id:'0'}})]) {
     assert.throws(() => acceptAuthenticatedBootstrap(value,{senderPublicKey,discovered,now}),
       {code:'connector_pairing_denied'});
   }

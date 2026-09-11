@@ -2,10 +2,9 @@
 
 These components include an installable, attended Chrome MV3 source connector.
 The connector reuses the consent flow, current-profile source reader and direct
-encrypted relay transport in this directory. Final destination delivery remains
-disabled until `codex/browser-import-production-runtime` supplies the private
-protocol-320 delivery command described below; the connector fails closed and
-does not simulate success in its absence.
+encrypted relay transport in this directory. Final destination delivery uses the
+runtime's private `browser_import_final_delivery` v1 capability and fails closed
+when that capability or its exact authoritative result is unavailable.
 
 ## Chrome MV3 connector
 
@@ -40,7 +39,7 @@ Pairing is attended, independently anchored and one-use:
    and destination there.
 2. Chariox returns a short-lived authenticated bootstrap containing a random
    `bootstrap_id`, the selected relay URL, daemon, kernel public key, immutable
-   destination selection, protocol 320/capability version and echoed connector
+   destination selection, compatible protocol/capability version and echoed connector
    sender/source metadata. The extension validates and freezes this bootstrap
    before creating the pairing challenge. It is the independent trust anchor;
    the later pairing response cannot select or replace those fields.
@@ -54,7 +53,7 @@ Pairing is attended, independently anchored and one-use:
    and kernel key; a handshake cannot replace the bootstrap key. The same sender
    key is retained for every consent and source-read request.
 5. The extension shows the exact destination and domains. Only the final
-   **Allow hosts and import** click calls `confirmAndRead()`. Its first synchronous
+   **Allow hosts and import** click calls `confirmAndDeliver()`. Its first synchronous
    action is `chrome.permissions.request` for `cookies` plus only
    `*://<confirmed-host>/*` origins. No consent round trip or cookie read precedes
    that gesture.
@@ -79,89 +78,21 @@ results, consent requests or other public protocol requests.
 
 ### Final-delivery adapter contract
 
-`chrome-extension/delivery-adapter.mjs` is the only integration seam for the
-pending production runtime. Today `deliverBrowserImport()` always throws the
-fixed `browser_import_delivery_unavailable` code. Do not route the batch through
-`connectBrowserImportRelay().request`: that method deliberately accepts only the
-five metadata-only consent/source requests.
-
-The production adapter must use the already paired sender key and pinned kernel
-key to encrypt this exact plaintext (no `summary` or extra fields):
-
-```json
-{
-  "version": 1,
-  "request_id": "<32 lowercase hex>",
-  "selection": {
-    "session_id": "<session>",
-    "attachment_id": "<attachment>",
-    "environment_id": "<environment>",
-    "runtime_generation": 0,
-    "tab_id": "<destination tab>",
-    "document_revision": 0,
-    "source_store_id": "0",
-    "domains": ["example.com"],
-    "partition_sites": [],
-    "overwrite": false
-  },
-  "source_cookie_batch": {
-    "cookies": ["<validated Chrome cookies API records>"]
-  }
-}
-```
-
-The resulting private runtime command envelope is exactly:
-
-```json
-{
-  "command": "DeliverBrowserImport",
-  "request_id": "<same 32 lowercase hex>",
-  "session_id": "<same session>",
-  "attachment_id": "<same attachment>",
-  "environment_id": "<same environment>",
-  "runtime_generation": 0,
-  "tab_id": "<same destination tab>",
-  "document_revision": 0,
-  "source_store_id": "0",
-  "domains": ["example.com"],
-  "partition_sites": [],
-  "overwrite": false,
-  "encrypted_cookie_batch": {
-    "sender_public_key": "<paired connector public key>",
-    "nonce": "<fresh 12-byte base64 AES-GCM nonce>",
-    "ciphertext": "<base64 ciphertext>"
-  }
-}
-```
-
-The pending kernel command must be private to authenticated connector relay
-admission, not added to the general browser/local daemon request union. It must
-pin the enrolled sender key, decrypt with the selected kernel key, bind the inner
-request ID and selection byte-for-byte to the outer metadata and existing source
-claim, reject every reused nonce/request, acquire the destination's exclusive
-writer and durable recovery journal, apply through the existing controller
-transaction, and return only request-bound progress/result metadata. A wrong
-kernel, sender, nonce, generation, document, source store, domain, partition or
-overwrite value fails before application.
+`chrome-extension/delivery-adapter.mjs` accepts only the paired relay's `deliver`
+method. The relay owns the private encrypted envelope defined by
+`browser_import_final_delivery` v1; the UI adapter deliberately does not duplicate
+that schema. It binds delivery to the prepared request ID and exact frozen
+selection, accepts only one ordered authoritative result per confirmed domain,
+and maps `no_cookies` to the public `sign_in_required` status. Aggregate, missing,
+extra, reordered or malformed results fail with the fixed
+`browser_import_delivery_unavailable` code. The metadata-only `request` method
+never accepts cookie values.
 
 ### Runtime and Web integration
 
-After `codex/browser-import-production-runtime` lands:
+The packaged connector now implements the runtime half. Remaining Web work is:
 
-1. Export protocol 320 and capability `{name:"browser_import_final_delivery",
-   version:1}` only when private delivery admission, durable recovery and the
-   controller transaction are all available. Keep consent/source operations on
-   their existing shared request builders.
-2. Implement `deliverBrowserImport()` only against that private runtime command.
-   Encrypt inside the adapter with the retained connector key; send directly over
-   the existing relay connection; clear local batch references in `finally`; map
-   kernel cancellation/progress/result to fixed metadata-only objects. Completion
-   must have exactly `{requestId,status:"completed",domains:[{domain,status}]}`;
-   each domain entry has exactly those two keys and status `imported`,
-   `sign_in_required` or `unsupported`. Reject missing, duplicate, unselected,
-   extra or unknown entries; the unique set must exactly equal the frozen
-   confirmed-domain set. Never derive per-domain status from aggregate counts.
-3. In chariox-cloud branch `codex/browser-import-product-ui`, replace
+1. In chariox-cloud branch `codex/browser-import-product-ui`, replace
    `configuredBrowserImportProductAdapter = null` only with an adapter using the
    Web client's existing direct kernel/relay transport. `detect()` must expose
    metadata only. `start(selection)` creates one request ID, first returns the
@@ -169,10 +100,10 @@ After `codex/browser-import-production-runtime` lands:
    returns the nonce-bound pairing response for that same bootstrap. It returns
    one idempotently cancellable handle. Do not send runtime payloads through a
    Cloud HTTP handler.
-4. Forward progress with that exact request ID and selected-domain count. Accept
+2. Forward progress with that exact request ID and selected-domain count. Accept
    completion only from the authoritative kernel result; the extension and Web
    UI must never infer success from permission grant, source read or socket send.
-5. Run the connector regressions here, the protocol-320 runtime command tests and
+3. Run the connector regressions here, the compatible runtime command tests and
    the Web adapter/coordinator/entry tests together before enabling the capability.
 
 ## Standard managed-browser boundary
@@ -260,8 +191,9 @@ acknowledgement, consent transport or exclusive browser-writer ownership.
 `prepareChromeCookieImport` composes the internal reader with kernel consent and
 Chrome permission requests. Preparation snapshots and freezes the selected
 metadata and asks the kernel to prepare consent, without reading cookies.
-The extension UI must call `confirmAndRead()` directly in its confirmation click
-handler. It calls Chrome's permission API before yielding the user gesture,
+The packaged extension UI calls `confirmAndDeliver()` directly in its confirmation
+click handler; lower-level trusted callers may use `confirmAndRead()`. Both call
+Chrome's permission API before yielding the user gesture,
 requests only the selected hosts and cookie permission, then approves and claims
 the matching kernel request before reading. Confirmation is single-use.
 
@@ -271,14 +203,17 @@ most one bounded best-effort kernel cancellation. `cancel()` reports whether tha
 cancellation was acknowledged. It does not close the shared relay or retract a
 Chrome API operation already sent. Late results cannot authorize more reads.
 The returned cookie batch contains secrets and belongs only to the trusted caller;
-the flow retains no batch in its state. Successful reads leave the source claim
-for the destination operation. The caller must cancel if it abandons delivery.
+the flow retains no batch in its state. `confirmAndDeliver()` keeps the request
+alive only through private relay delivery, scrubs the batch and releases its
+permission lease on every outcome. Successful lower-level reads leave the source
+claim for the destination operation; their caller must cancel abandoned delivery.
 
 The packaged extension manifest declares the optional permissions its UI
-requests. Chrome permissions can outlive one import. This flow does not remove
-them on cancellation because another import or a previous user grant may own
-them. The attended connector displays pairing and source/destination selection;
-it exposes no page-message endpoint and never imports a profile automatically.
+requests. Its background coordinator removes only operation-acquired grants once
+no active lease needs them, including grants reported by a late permission-added
+event. Preexisting grants are never removed. The attended connector displays
+pairing and source/destination selection; it exposes no page-message endpoint and
+never imports a profile automatically.
 
 ## Source reader
 
@@ -396,7 +331,7 @@ exact-host narrowing, preexisting and concurrently shared grant cleanup,
 current-profile metadata discovery, independently bootstrapped enrollment
 sender/key/nonce binding, valid-key substitution, replay and wrong-kernel
 rejection, authoritative per-domain result reconstruction, fixed-error redaction,
-the disabled delivery seam and package layout. Consent/source/relay suites cover
+encrypted packaged delivery and package layout. Consent/source/relay suites cover
 mid-operation cancellation, nonce replay and late-result suppression.
 
 For the browser test, set `PLAYWRIGHT_MODULE` to an existing Playwright ESM module
@@ -512,10 +447,10 @@ no destination writer. Destination execution has a separate private claim and
 cannot start from an unclaimed approval.
 
 The grant-aware reader wires these requests to the source authorization
-checkpoints. The MV3 connector supplies attended pairing and permission UX; live
-private delivery still needs the protocol-320 runtime integration. No public
-cookie-apply request exists; destination authorization and exclusion remain
-separate requirements.
+checkpoints. Protocol 321 and `browser_import_final_delivery` v1 wire the paired
+connector's encrypted delivery to the private destination claim. No public
+cookie-apply request exists. The remaining product dependency is the Web adapter
+that issues the authenticated bootstrap/pairing response and presents progress.
 
 `applyCookieImport` and `createCdpCookieStore` provide the internal destination
 operation. They are not routed from the Browser Controller, a web endpoint or a
@@ -691,28 +626,21 @@ The ledger holds at most 128 bounded metadata records and never stores cookies.
 Unclaimed expired entries are reclaimed; active or cancelled writers remain
 reserved until completion. A fresh kernel rejects old request IDs.
 
-This ledger is not an authentication mechanism or a complete consent flow. Its
-internal callers must supply identities from authenticated transports and scope
-from trusted kernel state, never from a cookie payload or a sender's approval
-boolean. Protocol 313 provides the human prepare/approve/cancel handlers described
-above. The extension pairs its sender to the selected kernel, but cookie
-application is still not authorized by these methods alone. A connector-bound
-private final-delivery path still needs implementation and validation. The ledger
-alone does not quarantine a controller after process death, stop page/network
-writers, validate DNS cookie semantics, or provide durable recovery. Those
-remain requirements of the Environment executor.
+This ledger is not an authentication mechanism by itself. Its callers supply
+identities from the authenticated relay and scope from trusted kernel state,
+never from a cookie payload or a sender's approval boolean. Protocol 321 uses the
+same live client/key/attachment binding for delivery, claims the destination
+under exclusive Environment ownership and creates durable quarantine before the
+private controller command. Active cancellation is routed by request ID, and the
+authoritative result contains exact metadata-only selected-domain coverage.
 
-The bridge is not yet called by a kernel request. It does not consume kernel
-consent and no controller apply command is exposed. Run its
+The bridge is called only by the private protocol-321 delivery path. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
 
-Implement the private protocol-320 destination command and bind this MV3
-connector's final-delivery adapter to transactional application with rollback.
-Then enable the guarded Web progress/results adapter only for that exact runtime
-capability.
-The remaining destination work includes kernel integration and
-process/browser-crash drills.
+Enable the guarded Web progress/results adapter only for that exact runtime
+capability. Remaining acceptance work includes managed process/browser-crash
+drills.
 Complete the security and service validation matrix in
 `docs/BROWSER_SESSION_IMPORT_RESEARCH.md` before importing real sign-ins.
 
