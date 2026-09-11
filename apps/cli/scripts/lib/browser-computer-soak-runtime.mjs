@@ -1071,7 +1071,11 @@ async function terminateGroup(name, child) {
 
 async function waitForRetainedLog(child) {
   if (!child?.retainedLogFinished) return
-  await Promise.race([child.retainedLogFinished, sleep(2_000)])
+  const closed = await Promise.race([
+    child.retainedLogFinished.then(() => true),
+    sleep(2_000).then(() => false),
+  ])
+  if (!closed) child.retainedLogError ??= "retained log did not close within 2000ms"
 }
 
 async function resourceSnapshot(label, rootPids, diskPath) {
