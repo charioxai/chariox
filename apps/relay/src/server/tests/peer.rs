@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promotion() {
+async fn hosted_kernel_production_temporary_peer_uses_registered_machine_binding() {
     let issuer_secret = "hosted-issuer-secret";
     let mut issuers = BTreeMap::new();
     issuers.insert("hosted-cloud".to_string(), issuer_secret.to_string());
@@ -67,7 +67,7 @@ async fn hosted_kernel_peer_uses_registered_machine_binding_without_alias_promot
     let registrations = [
         (
             &mut home,
-            "home-kernel:peer-tmp:daemon-peer-tmp-1",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
             None,
             "machine-home",
             "home-public-key",
