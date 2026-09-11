@@ -202,22 +202,38 @@ pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
 pnpm --filter @chariox/cli run browser-computer:soak -- --detach
 ```
 
+Run all three commands from the same clean checkout and final runtime image,
+with the same limit flags and evidence root. Set `CHARIOX_SLICE_IMAGE_ID` to
+the immutable final-image digest when the image runtime exposes one. Preflight
+and smoke receipts expire after one hour; detach refuses missing, stale, dirty,
+or mismatched source/tree, runtime-image, viewer-backend, or limit evidence.
+
 The real mode defaults to 28,800 seconds. `--duration-seconds` configures a
 bounded duration up to 24 hours; `--activity-interval-seconds` and
 `--sample-interval-seconds` control browser activity and resource sampling.
 The runner owns an isolated X display, Chromium profile and debugging port,
-one long-lived Browser Controller, and one read-only Selkies stream consumer.
+one long-lived Browser Controller, and one read-only display-stream consumer.
 Every activity cycle changes the deterministic fixture through a stable
-controller reference, verifies the physical browser effect, requests a video
-keyframe, captures the screen, and records CPU, RAM, and disk state.
+controller reference, verifies the physical browser effect, performs physical
+Computer pointer input, requests a video keyframe, and captures the screen.
+Monotonic cadence and final controller/stream freshness are mandatory. Samples
+bound owned CPU, RSS, process and open-file counts, owned disk inventory, and
+accounted fixture/display-stream traffic; host disk/network counters remain as
+context rather than being misattributed to the runner.
 
 Evidence defaults to
 `~/.chariox/dev/browser-computer-use-soak/<run-id>/`. It contains the exact
 source identity and command, preflight baseline, runner and child logs,
-`runner.pid`, atomic `status.json`, JSONL resource samples, `result.json`, a
+`runner.pid`, atomic `status.json`, monotonic JSONL activity and resource
+samples, `result.json`, a
 failure marker when applicable, and an explicit cleanup ledger. SIGINT,
 SIGTERM, assertion failures, and timeouts all use the same PID-scoped cleanup.
-The runner never adopts or prunes an existing display, browser, or streamer.
+The cleanup ledger uses PID start identity, verifies every owned listener and X
+display, and performs a bounded post-cleanup leak scan. The runner records its
+viewer backend without changing any serialized product protocol. noVNC evidence
+is diagnostic only and cannot close the final gate; Selkies becomes final-gate
+eligible exactly when local daemon protocol 322 is integrated. The runner never
+adopts or prunes an existing display, browser, or streamer.
 
 ## Computer secret input protocol drill
 

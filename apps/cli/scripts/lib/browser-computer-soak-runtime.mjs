@@ -1,14 +1,23 @@
-import { appendFile, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { createWriteStream } from "node:fs"
+import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises"
+import { createWriteStream, readFileSync, readlinkSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFile, spawn } from "node:child_process"
 import http from "node:http"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { performance } from "node:perf_hooks"
 import { promisify } from "node:util"
 
-import { buildSoakPaths, detachedLaunchSummary, validateCompletedSoakResult } from "./browser-computer-soak.mjs"
+import {
+  SELKIES_REQUIRED_PROTOCOL_VERSION,
+  buildGateReceiptPaths,
+  buildSoakPaths,
+  detachedLaunchSummary,
+  gateFingerprint,
+  validateCompletedSoakResult,
+  validateGatePrerequisites,
+} from "./browser-computer-soak.mjs"
 
 const execFileAsync = promisify(execFile)
 const schema = "chariox.browser_computer_soak.v1"
@@ -39,12 +48,15 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
     allocation = await allocateRuntime(options)
     source = await sourceIdentity(repoRoot)
     baseline = await baselineResourceSnapshot(paths)
-    const preflight = await runPreflight({ options, allocation, paths, repoRoot, source, baseline })
+    const provenance = await captureProvenance({ options, repoRoot, source })
+    const preflight = await runPreflight({ options, allocation, paths, repoRoot, source, baseline, provenance })
     await writeJson(paths.preflight, preflight)
     if (options.mode === "preflight") {
+      await writeGateReceipt(options.evidenceRoot, "preflight", preflight, provenance)
       console.log(JSON.stringify({ status: "passed", runDir: paths.runDir, preflight: paths.preflight, allocation }))
       return
     }
+    await requireGateReceipts(options.evidenceRoot, provenance, { smoke: !options.smoke })
     if (options.mode === "detach") {
       const args = detachedArgs({ options, paths, allocation })
       const descriptor = await open(paths.log, "a", 0o600)
@@ -67,7 +79,10 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
       console.log(JSON.stringify(detachedLaunchSummary(paths, child.pid)))
       return
     }
-    await executeSoak({ options, allocation, paths, repoRoot, source, baseline })
+    const result = await executeSoak({ options, allocation, paths, repoRoot, source, baseline, provenance })
+    if (options.smoke && result.status === "passed") {
+      await writeGateReceipt(options.evidenceRoot, "smoke", result, provenance)
+    }
   } catch (error) {
     if (!await exists(paths.result)) {
       await persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt })
@@ -76,7 +91,7 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
   }
 }
 
-async function executeSoak({ options, allocation, paths, repoRoot, source, baseline }) {
+async function executeSoak({ options, allocation, paths, repoRoot, source, baseline, provenance }) {
   const startedAt = new Date().toISOString()
   const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
   const stateRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-browser-computer-soak-"))
@@ -98,12 +113,31 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
   let sampleCount = 0
   let peakOwnedRssBytes = 0
   let peakOwnedCpuPercent = 0
+  let peakOwnedProcessCount = 0
+  let peakOwnedOpenFiles = 0
+  let networkBytes = 0
+  let diskGrowthBytes = 0
   let screenshotDigests = new Set()
   let iterations = 0
   let chromiumMutations = 0
+  let structuredBrowserActions = 0
+  let computerScreenshots = 0
+  let computerInputs = 0
   let firstHealth = null
+  let finalHealth = null
   let failure = null
   let status = "running"
+  let monotonicStartedAt = null
+  let wallStartedAt = null
+  let lastCadenceAt = null
+  let observedMaxCadenceGapMs = 0
+  let lastActivityAt = null
+  let ownedIdentities = []
+  let initialStreamMetrics = null
+  let finalHealthCheckedAt = null
+  let finalStreamMetrics = null
+  let activeMonotonicElapsedMs = 0
+  let activeWallElapsedMs = 0
 
   const signalHandler = (signal) => { interrupted ??= signal }
   process.once("SIGINT", signalHandler)
@@ -116,7 +150,7 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     XDG_RUNTIME_DIR: runtimeRoot,
     CHARIOX_SLICE_DISPLAY: display,
     CHARIOX_SLICE_NOVNC_PORT: String(allocation.viewerPort),
-    CHARIOX_SLICE_VIEWER_BACKEND: "selkies",
+    CHARIOX_SLICE_VIEWER_BACKEND: options.viewerBackend,
     CHARIOX_BROWSER_DEBUGGER_ENDPOINT: `http://127.0.0.1:${allocation.debugPort}`,
     CHARIOX_SLICE_ROOT: sourceRoot,
     OMP_NUM_THREADS: "1",
@@ -133,12 +167,21 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     smoke: options.smoke,
     command,
     source,
+    provenance,
     allocation,
     paths,
     firstHealth: null,
-    activity: { iterations: 0, controllerRequests: 0, chromiumMutations: 0, screenshotDigests: 0 },
-    stream: { binaryFrames: 0, binaryBytes: 0, changingFrameDigests: 0, textMarkers: [] },
+    finalHealth: null,
+    controller: null,
+    viewer: { backend: options.viewerBackend },
+    activity: {
+      iterations: 0, controllerRequests: 0, chromiumMutations: 0, structuredBrowserActions: 0,
+      computerScreenshots: 0, computerInputs: 0, screenshotDigests: 0, lastAt: null,
+    },
+    stream: { ready: false, binaryFrames: 0, binaryBytes: 0, changingFrameDigests: 0, textMarkers: [] },
     resources: { sampleCount: 0, peakOwnedRssBytes: 0, peakOwnedCpuPercent: 0, baseline },
+    timing: null,
+    gate: finalGateEligibility(options.viewerBackend, provenance.localDaemonProtocolVersion),
     cleanup: null,
   }
 
@@ -185,15 +228,29 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     stream.startRenewal()
     stream.requestKeyframe()
     await stream.waitForFrames(2, 10_000)
+    initialStreamMetrics = stream.metrics()
+    monotonicStartedAt = performance.now()
+    wallStartedAt = Date.now()
+    lastCadenceAt = monotonicStartedAt
+
+    ownedIdentities = await captureOwnedIdentities([
+      ["runner", process.pid], ...[...owned].map(([name, child]) => [name, child.pid]),
+      ["browser-controller", controller.child.pid], ["display-stream", stream.child.pid], ["viewer", selkiesPid],
+    ])
+    result.controller = ownedIdentities.find((entry) => entry.name === "browser-controller")
 
     await recordSample("initial", [process.pid, ...pids(owned), selkiesPid])
-    const deadline = Date.now() + options.durationSeconds * 1_000
-    let nextActivity = Date.now()
-    let nextSample = Date.now() + options.sampleIntervalSeconds * 1_000
-    while (Date.now() < deadline) {
+    const deadline = monotonicStartedAt + options.durationSeconds * 1_000
+    let nextActivity = performance.now()
+    let nextSample = performance.now() + options.sampleIntervalSeconds * 1_000
+    while (performance.now() < deadline) {
       if (interrupted) throw new Error(`soak interrupted by ${interrupted}`)
       assertProcessHealth(owned, controller, stream)
-      const now = Date.now()
+      assertOwnedPidHealth(ownedIdentities.find((entry) => entry.name === "viewer"), "display viewer")
+      const now = performance.now()
+      observedMaxCadenceGapMs = Math.max(observedMaxCadenceGapMs, now - lastCadenceAt)
+      if (now - lastCadenceAt > options.limits.maxCadenceGapMs) throw new Error("soak cadence exceeded its monotonic gap limit")
+      lastCadenceAt = now
       if (now >= nextActivity) {
         const marker = `SOAK-${String(iterations + 1).padStart(8, "0")}`
         const health = await controller.request("health")
@@ -214,15 +271,36 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           node_ref: field.node_ref,
           action: { kind: "fill", text: marker },
         })
+        structuredBrowserActions += 1
         const observedMarker = await fetch(`${fixture.url}health`, { signal: AbortSignal.timeout(2_000) })
           .then((response) => response.text())
         if (observedMarker !== marker) throw new Error("Chromium mutation did not reach the active fixture")
         chromiumMutations += 1
         stream.requestKeyframe()
+        await execFileAsync("xdotool", ["mousemove", String(20 + iterations % 200), String(20 + iterations % 120)], {
+          cwd: repoRoot, env: environment, timeout: 10_000,
+        })
+        computerInputs += 1
         const screenshotPath = path.join(paths.runDir, "latest-screen.png")
         await execFileAsync("scrot", [screenshotPath], { cwd: repoRoot, env: environment, timeout: 10_000 })
-        screenshotDigests.add(createHash("sha256").update(await readFile(screenshotPath)).digest("hex"))
+        const screenshotDigest = createHash("sha256").update(await readFile(screenshotPath)).digest("hex")
+        screenshotDigests.add(screenshotDigest)
+        computerScreenshots += 1
         iterations += 1
+        lastActivityAt = new Date().toISOString()
+        await appendFile(paths.activity, `${JSON.stringify({
+          at: lastActivityAt,
+          monotonicElapsedMs: performance.now() - monotonicStartedAt,
+          iteration: iterations,
+          controllerRequests: controller.requestCount,
+          chromiumMutations,
+          structuredBrowserActions,
+          computerScreenshots,
+          computerInputs,
+          screenshotDigest,
+          stream: stream.metrics(),
+        })}\n`, { mode: 0o600 })
+        await chmod(paths.activity, 0o600)
         await writeJson(paths.status, {
           schema,
           status: "healthy",
@@ -230,9 +308,9 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
           startedAt,
           updatedAt: new Date().toISOString(),
           firstHealth,
-          activity: { iterations, controllerRequests: controller.requestCount, chromiumMutations },
+          activity: { iterations, controllerRequests: controller.requestCount, chromiumMutations, structuredBrowserActions, computerScreenshots, computerInputs, lastAt: lastActivityAt },
           stream: stream.metrics(),
-          resources: { sampleCount, peakOwnedRssBytes, peakOwnedCpuPercent },
+          resources: { sampleCount, peakOwnedRssBytes, peakOwnedCpuPercent, peakOwnedProcessCount, peakOwnedOpenFiles, diskGrowthBytes, networkBytes },
           runDir: paths.runDir,
         })
         nextActivity += options.activityIntervalSeconds * 1_000
@@ -241,29 +319,79 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
         await recordSample("during", [process.pid, ...pids(owned), selkiesPid])
         nextSample += options.sampleIntervalSeconds * 1_000
       }
-      await sleep(Math.min(250, Math.max(1, Math.min(nextActivity, nextSample, deadline) - Date.now())))
+      await sleep(Math.min(250, Math.max(1, Math.min(nextActivity, nextSample, deadline) - performance.now())))
     }
-    await stream.waitForFrames(2, 10_000)
+    assertProcessHealth(owned, controller, stream)
+    assertOwnedPidHealth(ownedIdentities.find((entry) => entry.name === "viewer"), "display viewer")
+    finalHealth = await controller.request("health")
+    finalHealthCheckedAt = new Date().toISOString()
+    const framesBeforeFinalCheck = stream.metrics().binaryFrames
+    stream.requestKeyframe()
+    await stream.waitForFrames(framesBeforeFinalCheck + 1, 10_000)
+    assertProcessHealth(owned, controller, stream)
+    await recordSample("final", [process.pid, ...pids(owned), selkiesPid])
+    const finalCadenceAt = performance.now()
+    observedMaxCadenceGapMs = Math.max(observedMaxCadenceGapMs, finalCadenceAt - lastCadenceAt)
+    if (finalCadenceAt - lastCadenceAt > options.limits.maxCadenceGapMs) throw new Error("final checks exceeded the monotonic cadence limit")
+    activeMonotonicElapsedMs = finalCadenceAt - monotonicStartedAt
+    activeWallElapsedMs = Date.now() - wallStartedAt
+    finalStreamMetrics = stream.metrics()
     status = "passed"
   } catch (error) {
     status = interrupted ? "interrupted" : "failed"
     failure = bounded(error?.stack ?? error)
   } finally {
+    const functionalCompletedAt = new Date().toISOString()
     stream?.stopRenewal()
-    const cleanup = await cleanupRuntime({ controller, stream, owned, selkiesPid, environment, sourceRoot, fixture, stateRoot, allocation })
+    stream?.stopObserving()
+    let cleanup
+    try {
+      cleanup = await cleanupRuntime({ controller, stream, owned, ownedIdentities, selkiesPid, environment, sourceRoot, fixture, stateRoot, allocation })
+    } catch (error) {
+      status = "failed"
+      failure = bounded(`cleanup failed: ${error?.stack ?? error}`)
+      cleanup = failedCleanupEvidence(error)
+    }
     await writeJson(paths.cleanup, cleanup)
-    const streamMetrics = stream?.metrics() ?? result.stream
+    const streamMetrics = finalStreamMetrics ?? stream?.metrics() ?? result.stream
     result.status = status
-    result.completedAt = new Date().toISOString()
+    result.completedAt = functionalCompletedAt
+    result.finalizedAt = new Date().toISOString()
     result.firstHealth = firstHealth
+    result.finalHealth = finalHealth ? { ...finalHealth, checkedAt: finalHealthCheckedAt } : null
     result.activity = {
       iterations,
       controllerRequests: controller?.requestCount ?? 0,
       chromiumMutations,
+      structuredBrowserActions,
+      computerScreenshots,
+      computerInputs,
       screenshotDigests: screenshotDigests.size,
+      lastAt: lastActivityAt,
     }
-    result.stream = streamMetrics
-    result.resources = { sampleCount, peakOwnedRssBytes, peakOwnedCpuPercent, baseline }
+    result.stream = {
+      ...streamMetrics,
+      ready: stream?.ready === true,
+      initialBinaryFrames: initialStreamMetrics?.binaryFrames ?? 0,
+      finalBinaryFrames: streamMetrics.binaryFrames,
+      initialActivityCounter: initialStreamMetrics?.activityCounter ?? 0,
+      finalActivityCounter: streamMetrics.activityCounter ?? 0,
+      initialChangingFrameDigests: initialStreamMetrics?.changingFrameDigests ?? 0,
+      finalChangingFrameDigests: streamMetrics.changingFrameDigests ?? 0,
+    }
+    result.timing = {
+      expectedDurationMs: options.durationSeconds * 1_000,
+      monotonicElapsedMs: activeMonotonicElapsedMs,
+      wallElapsedMs: activeWallElapsedMs,
+      maxCadenceGapMs: options.limits.maxCadenceGapMs,
+      observedMaxCadenceGapMs,
+      wallMonotonicSkewMs: activeWallElapsedMs - activeMonotonicElapsedMs,
+    }
+    result.resources = {
+      sampleCount, peakOwnedRssBytes, peakOwnedCpuPercent, peakOwnedProcessCount, peakOwnedOpenFiles,
+      diskGrowthBytes, networkBytes, limits: options.limits, baseline,
+      withinBounds: resourceBoundsPass({ peakOwnedRssBytes, peakOwnedCpuPercent, peakOwnedProcessCount, peakOwnedOpenFiles, diskGrowthBytes, networkBytes }, options.limits),
+    }
     result.cleanup = cleanup
     if (failure) result.failure = failure
     if (status === "passed") {
@@ -294,22 +422,38 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     process.removeListener("SIGTERM", signalHandler)
     console.log(JSON.stringify({ status: result.status, pid: process.pid, runDir: paths.runDir, result: paths.result }))
     if (result.status !== "passed") process.exitCode = 1
+    return result
   }
 
   async function recordSample(label, roots) {
     const sample = await resourceSnapshot(label, roots.filter(Number.isSafeInteger), paths.runDir)
+    sample.monotonicElapsedMs = monotonicStartedAt == null ? null : performance.now() - monotonicStartedAt
+    ownedIdentities = await mergeSampledIdentities(ownedIdentities, sample.owned.processes)
+    sample.owned.diskBytes = await ownedDiskBytes([paths.runDir, stateRoot])
+    sample.owned.networkBytes = (fixture?.metrics().bytes ?? 0) + (stream?.metrics().binaryBytes ?? 0)
     sampleCount += 1
     peakOwnedRssBytes = Math.max(peakOwnedRssBytes, sample.owned.rssBytes)
     peakOwnedCpuPercent = Math.max(peakOwnedCpuPercent, sample.owned.cpuPercent)
+    peakOwnedProcessCount = Math.max(peakOwnedProcessCount, sample.owned.processCount)
+    peakOwnedOpenFiles = Math.max(peakOwnedOpenFiles, sample.owned.openFiles)
+    diskGrowthBytes = Math.max(diskGrowthBytes, sample.owned.diskBytes)
+    networkBytes = Math.max(networkBytes, sample.owned.networkBytes)
+    if (!resourceBoundsPass({ peakOwnedRssBytes, peakOwnedCpuPercent, peakOwnedProcessCount, peakOwnedOpenFiles, diskGrowthBytes, networkBytes }, options.limits)) {
+      throw new Error("soak resource evidence exceeded configured bounds")
+    }
     await appendFile(paths.samples, `${JSON.stringify(sample)}\n`, { mode: 0o600 })
     await chmod(paths.samples, 0o600)
   }
 }
 
-async function runPreflight({ options, allocation, paths, repoRoot, source, baseline }) {
+async function runPreflight({ options, allocation, paths, repoRoot, source, baseline, provenance }) {
   assertSandboxCapableChromiumIdentity()
+  if (source.dirty) throw new Error("preflight requires the exact clean source tree")
+  if (options.viewerBackend !== "selkies") {
+    throw new Error("noVNC may provide diagnostic evidence but cannot run the active final-gate stream contract")
+  }
   const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
-  const commands = ["Xvfb", "openbox", "tint2", "chromium", "scrot", "xdpyinfo"]
+  const commands = ["Xvfb", "openbox", "tint2", "chromium", "scrot", "xdpyinfo", "xdotool", "ps"]
   const commandPaths = {}
   for (const command of commands) commandPaths[command] = (await execFileAsync("which", [command], { timeout: 5_000 })).stdout.trim()
   const files = [
@@ -335,6 +479,8 @@ async function runPreflight({ options, allocation, paths, repoRoot, source, base
     durationSeconds: options.durationSeconds,
     smoke: options.smoke,
     source,
+    provenance,
+    fingerprint: gateFingerprint(provenance),
     allocation,
     commandPaths,
     sourceFiles: files,
@@ -371,7 +517,7 @@ async function assertRuntimeStillAvailable({ debugPort, viewerPort, displayNumbe
   }
 }
 
-async function cleanupRuntime({ controller, stream, owned, selkiesPid, environment, sourceRoot, fixture, stateRoot, allocation }) {
+async function cleanupRuntime({ controller, stream, owned, ownedIdentities, selkiesPid, environment, sourceRoot, fixture, stateRoot, allocation }) {
   const actions = []
   try { await controller?.shutdown(); actions.push({ name: "controller-shutdown", ok: true }) } catch (error) {
     actions.push({ name: "controller-shutdown", ok: false, error: bounded(error?.message ?? error) })
@@ -397,22 +543,131 @@ async function cleanupRuntime({ controller, stream, owned, selkiesPid, environme
     actions.push({ name: "state-remove", ok: false, error: bounded(error?.message ?? error) })
   }
   await sleep(250)
-  const remainingPids = [
-    ...pids(owned), controller?.child?.pid, stream?.child?.pid, selkiesPid,
-  ].filter((pid) => Number.isSafeInteger(pid) && running(pid))
-  const portsReleased = await Promise.all([portAvailable(allocation.debugPort), portAvailable(allocation.viewerPort)])
+  const identityChecks = await Promise.all(ownedIdentities.filter((entry) => entry.name !== "runner").map(async (expected) => {
+    const observed = await processIdentity(expected.pid)
+    return { expected, observed, matches: processIdentityMatches(expected, observed) }
+  }))
+  const remainingPids = identityChecks.filter((entry) => entry.matches).map((entry) => entry.expected.pid)
+  const reusedPids = identityChecks.filter((entry) => entry.observed && !entry.matches).map((entry) => entry.expected.pid)
+  const ownedPorts = [allocation.debugPort, allocation.viewerPort, fixture?.port].filter(Number.isSafeInteger)
+  const portsReleased = await Promise.all(ownedPorts.map(portAvailable))
+  const remainingListeners = ownedPorts
+    .filter((_port, index) => !portsReleased[index]).map((port) => `127.0.0.1:${port}`)
   const displayReleased = !await exists(`/tmp/.X11-unix/X${allocation.displayNumber}`) && !await exists(`/tmp/.X${allocation.displayNumber}-lock`)
   const stateRemoved = !await exists(stateRoot)
+  const leakScan = await scanRuntimeLeaks({ stateRoot, allocation })
   return {
     schema: "chariox.browser_computer_soak_cleanup.v1",
     at: new Date().toISOString(),
     actions,
     remainingPids,
+    reusedPids,
+    pidReuseSafe: true,
+    remainingListeners,
+    leakScan,
     portsReleased: portsReleased.every(Boolean),
     displayReleased,
     stateRemoved,
-    clean: remainingPids.length === 0 && portsReleased.every(Boolean) && displayReleased && stateRemoved && actions.every((entry) => entry.ok),
+    clean: remainingPids.length === 0 && remainingListeners.length === 0 && leakScan.clean
+      && displayReleased && stateRemoved && actions.every((entry) => entry.ok),
   }
+}
+
+function failedCleanupEvidence(error) {
+  return {
+    schema: "chariox.browser_computer_soak_cleanup.v1",
+    at: new Date().toISOString(),
+    actions: [{ name: "cleanup-ledger", ok: false, error: bounded(error?.message ?? error) }],
+    remainingPids: [],
+    reusedPids: [],
+    pidReuseSafe: false,
+    remainingListeners: [],
+    leakScan: { clean: false, matches: ["cleanup scan did not complete"] },
+    portsReleased: false,
+    displayReleased: false,
+    stateRemoved: false,
+    clean: false,
+  }
+}
+
+async function captureOwnedIdentities(entries) {
+  const identities = []
+  for (const [name, pid] of entries) {
+    if (!Number.isSafeInteger(pid)) throw new Error(`owned ${name} process did not expose a PID`)
+    const identity = await processIdentity(pid)
+    if (!identity) throw new Error(`owned ${name} process ${pid} disappeared before identity capture`)
+    identities.push({ name, ...identity })
+  }
+  return identities
+}
+
+async function mergeSampledIdentities(existing, processes) {
+  const identities = [...existing]
+  for (const entry of processes) {
+    const identity = await processIdentity(entry.pid)
+    if (identity && !identities.some((candidate) => processIdentityMatches(candidate, identity))) {
+      identities.push({ name: `descendant:${entry.command}`, ...identity })
+    }
+  }
+  return identities
+}
+
+async function processIdentity(pid) {
+  try {
+    const statText = await readFile(`/proc/${pid}/stat`, "utf8")
+    const close = statText.lastIndexOf(")")
+    const fields = statText.slice(close + 2).split(" ")
+    const startedAtTicks = fields[19]
+    const executable = await readlink(`/proc/${pid}/exe`).catch(() => null)
+    return { pid, startedAtTicks, executable }
+  } catch { return null }
+}
+
+export function processIdentityMatches(expected, observed) {
+  return Boolean(expected && observed && expected.pid === observed.pid
+    && expected.startedAtTicks === observed.startedAtTicks && expected.executable === observed.executable)
+}
+
+function assertOwnedPidHealth(expected, label) {
+  if (!processIdentityMatches(expected, processIdentitySync(expected?.pid))) {
+    throw new Error(`${label} exited or changed identity during soak`)
+  }
+}
+
+function processIdentitySync(pid) {
+  if (!Number.isSafeInteger(pid)) return null
+  try {
+    const statText = readFileSync(`/proc/${pid}/stat`, "utf8")
+    const close = statText.lastIndexOf(")")
+    const fields = statText.slice(close + 2).split(" ")
+    return { pid, startedAtTicks: fields[19], executable: readlinkSync(`/proc/${pid}/exe`) }
+  } catch { return null }
+}
+
+export function createLifecycleGuard() {
+  let generation = 0
+  let active = true
+  return {
+    begin() { if (!active) throw new Error("lifecycle is aborted"); generation += 1; return generation },
+    accept(candidate) { return active && candidate === generation },
+    abort() { if (!active) return false; active = false; generation += 1; return true },
+  }
+}
+
+async function scanRuntimeLeaks({ stateRoot, allocation }) {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], { timeout: 10_000 })
+  const markers = [stateRoot, `Xvfb :${allocation.displayNumber}`, `--display :${allocation.displayNumber}`]
+  const matches = findRuntimeLeakMatches(stdout, { markers, currentPid: process.pid })
+  return { clean: matches.length === 0, matches }
+}
+
+export function findRuntimeLeakMatches(processListing, { markers, currentPid, maximumMatches = 100 }) {
+  return processListing.split("\n").map((line) => line.trim()).filter(Boolean).flatMap((line) => {
+    const parsed = line.match(/^(\d+)\s+(\S+)\s+(.*)$/)
+    const pid = Number(parsed?.[1])
+    if (!parsed || pid === currentPid || !markers.some((marker) => parsed[3].includes(marker))) return []
+    return [{ pid, command: parsed[2] }]
+  }).slice(0, maximumMatches)
 }
 
 class ControllerClient {
@@ -467,10 +722,15 @@ class StreamClient {
     this.binaryBytes = 0
     this.digests = new Set()
     this.textMarkers = new Set()
+    this.activityCounter = 0
     this.lastBinaryFrameAt = null
     this.waiters = new Set()
     this.renewal = null
+    this.lifecycle = createLifecycleGuard()
+    const generation = this.lifecycle.begin()
     readJsonLines(child.stdout, (value) => {
+      if (!this.lifecycle.accept(generation)) return
+      this.activityCounter += 1
       if (value.kind === "ready") {
         this.ready = true
         this.readyAt ??= Date.now()
@@ -502,6 +762,7 @@ class StreamClient {
   }
 
   stopRenewal() { if (this.renewal) clearInterval(this.renewal) }
+  stopObserving() { this.lifecycle.abort() }
   requestKeyframe() { if (!childExited(this.child)) this.child.stdin.write('{"kind":"control","text":"REQUEST_KEYFRAME"}\n') }
   metrics() {
     return {
@@ -509,6 +770,7 @@ class StreamClient {
       binaryBytes: this.binaryBytes,
       changingFrameDigests: this.digests.size,
       textMarkers: [...this.textMarkers].sort(),
+      activityCounter: this.activityCounter,
       lastBinaryFrameAt: this.lastBinaryFrameAt ? new Date(this.lastBinaryFrameAt).toISOString() : null,
     }
   }
@@ -547,7 +809,7 @@ async function terminateGroup(name, child) {
     try { process.kill(-child.pid, "SIGKILL") } catch {}
     await waitForExit(child, 2_000, false)
   }
-  return { name, ok: !running(child.pid), forced }
+  return { name, ok: childExited(child), forced }
 }
 
 async function resourceSnapshot(label, rootPids, diskPath) {
@@ -558,6 +820,11 @@ async function resourceSnapshot(label, rootPids, diskPath) {
   const ownedIds = descendantIds(rows, rootPids)
   const ownedRows = rows.filter((row) => ownedIds.has(row.pid))
   const disk = await import("node:fs/promises").then(({ statfs }) => statfs(diskPath))
+  const openFiles = (await Promise.all([...ownedIds].map(async (pid) => {
+    try { return (await readdir(`/proc/${pid}/fd`)).length } catch { return 0 }
+  }))).reduce((sum, count) => sum + count, 0)
+  const network = await networkSnapshot()
+  const memory = await linuxMemorySnapshot()
   return {
     label,
     at: new Date().toISOString(),
@@ -566,20 +833,72 @@ async function resourceSnapshot(label, rootPids, diskPath) {
       freeMemoryBytes: os.freemem(),
       loadAverage: os.loadavg(),
       cpuCount: os.cpus().length,
+      swapTotalBytes: memory.swapTotalBytes,
+      swapFreeBytes: memory.swapFreeBytes,
     },
     disk: {
       path: diskPath,
       availableBytes: Number(disk.bavail) * Number(disk.bsize),
       totalBytes: Number(disk.blocks) * Number(disk.bsize),
     },
+    network,
     owned: {
       rootPids,
       processCount: ownedRows.length,
       rssBytes: ownedRows.reduce((sum, row) => sum + row.rssKb * 1024, 0),
       cpuPercent: ownedRows.reduce((sum, row) => sum + row.cpuPercent, 0),
+      openFiles,
       processes: ownedRows,
     },
   }
+}
+
+async function networkSnapshot() {
+  const text = await readFile("/proc/net/dev", "utf8")
+  let receivedBytes = 0
+  let transmittedBytes = 0
+  for (const line of text.split("\n").slice(2)) {
+    const match = line.match(/^\s*([^:]+):\s*(\d+)(?:\s+\d+){7}\s+(\d+)/)
+    if (!match) continue
+    receivedBytes += Number(match[2])
+    transmittedBytes += Number(match[3])
+  }
+  return { receivedBytes, transmittedBytes, totalBytes: receivedBytes + transmittedBytes }
+}
+
+async function ownedDiskBytes(roots, maximumEntries = 100_000) {
+  let bytes = 0
+  let entries = 0
+  const pending = [...roots]
+  while (pending.length > 0) {
+    const candidate = pending.pop()
+    let metadata
+    try { metadata = await lstat(candidate) } catch { continue }
+    entries += 1
+    if (entries > maximumEntries) throw new Error(`owned disk inventory exceeded ${maximumEntries} entries`)
+    if (metadata.isSymbolicLink()) continue
+    bytes += metadata.size
+    if (!metadata.isDirectory()) continue
+    for (const name of await readdir(candidate)) pending.push(path.join(candidate, name))
+  }
+  return bytes
+}
+
+async function linuxMemorySnapshot() {
+  try {
+    const text = await readFile("/proc/meminfo", "utf8")
+    const kib = (name) => Number(text.match(new RegExp(`^${name}:\\s+(\\d+) kB$`, "m"))?.[1] ?? 0)
+    return { swapTotalBytes: kib("SwapTotal") * 1024, swapFreeBytes: kib("SwapFree") * 1024 }
+  } catch { return { swapTotalBytes: 0, swapFreeBytes: 0 } }
+}
+
+function resourceBoundsPass(metrics, limits) {
+  return metrics.peakOwnedRssBytes <= limits.maxRssBytes
+    && metrics.peakOwnedCpuPercent <= limits.maxCpuPercent
+    && metrics.peakOwnedProcessCount <= limits.maxProcesses
+    && metrics.diskGrowthBytes <= limits.maxDiskGrowthBytes
+    && metrics.peakOwnedOpenFiles <= limits.maxOpenFiles
+    && metrics.networkBytes <= limits.maxNetworkBytes
 }
 
 function descendantIds(rows, roots) {
@@ -593,12 +912,89 @@ function descendantIds(rows, roots) {
 }
 
 async function sourceIdentity(repoRoot) {
-  const [{ stdout: commit }, { stdout: branch }, { stdout: status }] = await Promise.all([
+  const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }] = await Promise.all([
     execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000 }),
+    execFileAsync("git", ["rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000 }),
     execFileAsync("git", ["branch", "--show-current"], { cwd: repoRoot, timeout: 10_000 }),
     execFileAsync("git", ["status", "--short"], { cwd: repoRoot, timeout: 10_000 }),
   ])
-  return { commit: commit.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
+  return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
+}
+
+async function captureProvenance({ options, repoRoot, source }) {
+  const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
+  const inputs = [
+    path.join(sourceRoot, "Dockerfile"),
+    path.join(sourceRoot, "browser-controller.mjs"),
+    path.join(sourceRoot, "browser-controller-cdp.mjs"),
+    path.join(sourceRoot, "slice-screen.sh"),
+    path.join(sourceRoot, "slice-selkies.py"),
+    path.join(sourceRoot, "slice-selkies-stream.py"),
+  ]
+  const hashes = {}
+  for (const candidate of inputs) hashes[path.relative(repoRoot, candidate)] = createHash("sha256").update(await readFile(candidate)).digest("hex")
+  const runtimeFiles = ["/opt/chariox-selkies/bin/python", "/opt/chariox-selkies/bin/selkies"]
+  const runtime = {}
+  for (const candidate of runtimeFiles) {
+    const metadata = await stat(candidate)
+    runtime[candidate] = { size: metadata.size, modifiedMs: Math.trunc(metadata.mtimeMs), mode: metadata.mode & 0o777 }
+  }
+  const imageMaterial = { declaredIdentity: process.env.CHARIOX_SLICE_IMAGE_ID ?? null, hashes, runtime }
+  const protocolSource = await readFile(path.join(repoRoot, "apps", "kernel", "src", "local", "api", "types.rs"), "utf8")
+  const protocol = Number(protocolSource.match(/LOCAL_DAEMON_PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)/)?.[1])
+  if (!Number.isSafeInteger(protocol)) throw new Error("could not identify the local daemon protocol version")
+  return {
+    schema: "chariox.browser_computer_soak_provenance.v1",
+    capturedAt: new Date().toISOString(),
+    source,
+    image: {
+      identity: imageMaterial.declaredIdentity ?? `runtime-sha256:${createHash("sha256").update(JSON.stringify(imageMaterial)).digest("hex")}`,
+      ...imageMaterial,
+    },
+    limits: options.limits,
+    viewer: { backend: options.viewerBackend },
+    localDaemonProtocolVersion: protocol,
+  }
+}
+
+async function requireGateReceipts(evidenceRoot, provenance, { smoke }) {
+  const paths = buildGateReceiptPaths(evidenceRoot)
+  const preflight = await readJson(paths.preflight, "preflight receipt")
+  const smokeReceipt = smoke ? await readJson(paths.smoke, "smoke receipt") : {
+    schema: "chariox.browser_computer_soak_gate_receipt.v1",
+    phase: "smoke",
+    status: "passed",
+    completedAt: new Date().toISOString(),
+    fingerprint: gateFingerprint(provenance),
+    cleanup: { clean: true },
+  }
+  validateGatePrerequisites({ preflight, smoke: smokeReceipt, provenance })
+}
+
+async function writeGateReceipt(evidenceRoot, phase, report, provenance) {
+  const paths = buildGateReceiptPaths(evidenceRoot)
+  await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
+  await writeJson(paths[phase], {
+    schema: "chariox.browser_computer_soak_gate_receipt.v1",
+    phase,
+    status: "passed",
+    completedAt: report.completedAt ?? report.at,
+    fingerprint: gateFingerprint(provenance),
+    runDir: report.paths?.runDir ?? null,
+    cleanup: phase === "smoke" ? report.cleanup : undefined,
+  })
+}
+
+async function readJson(candidate, label) {
+  try { return JSON.parse(await readFile(candidate, "utf8")) } catch (error) {
+    throw new Error(`${label} is missing or invalid: ${bounded(error?.message ?? error)}`)
+  }
+}
+
+export function finalGateEligibility(backend, protocol) {
+  if (backend === "novnc") return { eligible: false, reason: "novnc_not_final_gate" }
+  if (protocol < SELKIES_REQUIRED_PROTOCOL_VERSION) return { eligible: false, reason: `protocol_${SELKIES_REQUIRED_PROTOCOL_VERSION}_not_integrated` }
+  return { eligible: true, reason: null }
 }
 
 function detachedArgs({ options, paths, allocation }) {
@@ -614,6 +1010,14 @@ function detachedArgs({ options, paths, allocation }) {
     "--display-number", String(allocation.displayNumber),
     "--debug-port", String(allocation.debugPort),
     "--viewer-port", String(allocation.viewerPort),
+    "--viewer-backend", options.viewerBackend,
+    "--max-cadence-gap-seconds", String(options.limits.maxCadenceGapMs / 1_000),
+    "--max-rss-mib", String(options.limits.maxRssBytes / 1024 / 1024),
+    "--max-cpu-percent", String(options.limits.maxCpuPercent),
+    "--max-processes", String(options.limits.maxProcesses),
+    "--max-disk-growth-mib", String(options.limits.maxDiskGrowthBytes / 1024 / 1024),
+    "--max-open-files", String(options.limits.maxOpenFiles),
+    "--max-network-mib", String(options.limits.maxNetworkBytes / 1024 / 1024),
   ]
 }
 
@@ -628,14 +1032,25 @@ function commandEvidence({ options, paths, allocation }) {
     `--display-number ${allocation.displayNumber}`,
     `--debug-port ${allocation.debugPort}`,
     `--viewer-port ${allocation.viewerPort}`,
+    `--viewer-backend ${options.viewerBackend}`,
+    `--max-cadence-gap-seconds ${options.limits.maxCadenceGapMs / 1_000}`,
+    `--max-rss-mib ${options.limits.maxRssBytes / 1024 / 1024}`,
+    `--max-cpu-percent ${options.limits.maxCpuPercent}`,
+    `--max-processes ${options.limits.maxProcesses}`,
+    `--max-disk-growth-mib ${options.limits.maxDiskGrowthBytes / 1024 / 1024}`,
+    `--max-open-files ${options.limits.maxOpenFiles}`,
+    `--max-network-mib ${options.limits.maxNetworkBytes / 1024 / 1024}`,
   ].join(" ")
 }
 
 async function startFixtureServer() {
   let marker = "SOAK-00000000"
+  let bytes = 0
   const server = http.createServer((request, response) => {
+    bytes += Buffer.byteLength(`${request.method ?? ""} ${request.url ?? ""}`)
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" })
+      bytes += Buffer.byteLength(marker)
       return response.end(marker)
     }
     if (request.url?.startsWith("/mark?")) {
@@ -644,11 +1059,19 @@ async function startFixtureServer() {
       return response.end()
     }
     response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" })
-    response.end(`<!doctype html><title>Chariox active soak</title><style>body{font:24px sans-serif;background:#14213d;color:#fff}main{padding:60px}input{font-size:28px;width:520px}.pulse{width:120px;height:120px;background:#fca311;animation:pulse 1s infinite alternate}@keyframes pulse{to{transform:translateX(320px);background:#2ec4b6}}</style><main><label>Soak marker <input id="marker" value="${marker}"></label><p id="echo">${marker}</p><div class="pulse"></div></main><script>const field=document.querySelector('#marker');field.addEventListener('input',()=>{document.querySelector('#echo').textContent=field.value;document.title=field.value;fetch('/mark?value='+encodeURIComponent(field.value)).catch(()=>{})})</script>`)
+    const body = `<!doctype html><title>Chariox active soak</title><style>body{font:24px sans-serif;background:#14213d;color:#fff}main{padding:60px}input{font-size:28px;width:520px}.pulse{width:120px;height:120px;background:#fca311;animation:pulse 1s infinite alternate}@keyframes pulse{to{transform:translateX(320px);background:#2ec4b6}}</style><main><label>Soak marker <input id="marker" value="${marker}"></label><p id="echo">${marker}</p><div class="pulse"></div></main><script>const field=document.querySelector('#marker');field.addEventListener('input',()=>{document.querySelector('#echo').textContent=field.value;document.title=field.value;fetch('/mark?value='+encodeURIComponent(field.value)).catch(()=>{})})</script>`
+    bytes += Buffer.byteLength(body)
+    response.end(body)
   })
   await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve))
-  const url = `http://127.0.0.1:${server.address().port}/`
-  return { url, close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) }
+  const port = server.address().port
+  const url = `http://127.0.0.1:${port}/`
+  return {
+    url,
+    port,
+    metrics: () => ({ bytes }),
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  }
 }
 
 async function waitForDisplay(display, env) {
