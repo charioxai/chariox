@@ -597,6 +597,7 @@ mod tests {
                 "slice:wrong-slice",
                 &["codex".to_string()],
                 46,
+                |_| Ok(()),
             )
             .expect("mismatched worker reconciliation should succeed")
             .is_none());
@@ -607,6 +608,7 @@ mod tests {
                 &format!("slice:{}", transient.id),
                 &["codex".to_string(), "opencode".to_string()],
                 46,
+                |_| Ok(()),
             )
             .expect("authenticated worker reconciliation should succeed")
             .expect("transient restart health should repair");
@@ -647,6 +649,7 @@ mod tests {
                 &format!("slice:{}", unhealthy.id),
                 &["codex".to_string()],
                 49,
+                |_| Ok(()),
             )
             .expect("genuine unhealthy reconciliation should succeed")
             .is_none());
@@ -667,6 +670,7 @@ mod tests {
                 &format!("slice:{}", transient.id),
                 &["codex".to_string()],
                 51,
+                |_| Ok(()),
             )
             .expect("stopped reconciliation should succeed")
             .is_none());
