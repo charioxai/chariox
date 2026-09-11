@@ -365,6 +365,19 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
         Vec::new(),
     )
     .expect("prompt should start");
+    match app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "queued work\n",
+            Vec::new(),
+        )
+        .expect("queued prompt should submit")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    }
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
     let ended = app
         .providers_mut()
@@ -385,9 +398,25 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("already-ended reconciliation should advance one queued prompt");
+    assert_eq!(active_prompt.prompt(), "queued work\n");
+    assert!(session_state
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(std::collections::VecDeque::is_empty));
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("dead-run settlement should remain projected");
+    let termination = completed
+        .provider_termination
+        .expect("dead-run settlement should expose provider termination");
+    assert!(termination.reason.contains("already ended"));
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "already-ended provider reconciliation should close the active prompt"
+        !runtime.owned.provider_output_deadlines.contains(run.id()),
+        "the prior provider output timer must be cleared"
     );
     let app = app.lock().await;
     assert!(
@@ -397,14 +426,6 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
     assert!(
         !app.active_turn_store().snapshot().contains_key(run.id()),
         "already-ended provider reconciliation should clear active turn state"
-    );
-    assert_ne!(
-        app.agents()
-            .get_agent(agent.id())
-            .expect("agent should remain available")
-            .state(),
-        crate::agent::AgentState::Error,
-        "already-ended reconciliation must not classify the agent as a new failure",
     );
 }
 

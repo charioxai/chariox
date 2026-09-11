@@ -43,7 +43,7 @@ pub(super) fn append_observed_external_history(
                 external.provider_session_id.clone(),
             )
         });
-    let target = AttachedExternalObserverTarget {
+    let mut target = AttachedExternalObserverTarget {
         owner_user_id: external.owner_user_id.clone(),
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
@@ -55,7 +55,9 @@ pub(super) fn append_observed_external_history(
         observed_cursor: import.observed_cursor.clone(),
         cursor_source: AttachedExternalObserverCursorSource::Imported(import),
         needs_responsive_refresh: true,
+        observation_generation: 0,
     };
+    reserve_external_observation_generations(app, std::slice::from_mut(&mut target));
     let _ = append_observed_external_turns_for_attached_target(
         app,
         AttachedExternalObserverRead { target, turns },
@@ -64,8 +66,14 @@ pub(super) fn append_observed_external_history(
 
 pub(super) fn append_observed_external_turns_for_attached_target(
     app: &mut DaemonApp,
-    read: AttachedExternalObserverRead,
+    mut read: AttachedExternalObserverRead,
 ) -> Result<AttachedExternalObserverAppendOutcome, DaemonError> {
+    if read.target.observation_generation == 0 {
+        reserve_external_observation_generations(
+            app,
+            std::slice::from_mut(&mut read.target),
+        );
+    }
     let mut outcome = AttachedExternalObserverAppendOutcome {
         session_id: read.target.session_id.clone(),
         agent_id: read.target.agent_id.clone(),
@@ -75,10 +83,11 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     if read.turns.is_empty() {
         let activity_changed = app
             .session_state_projection_store()
-            .sync_external_observed_active_prompt(
+            .sync_external_observed_active_prompt_generation(
                 &read.target.session_id,
                 &read.target.agent_id,
                 &read.target.external_session_id,
+                read.target.observation_generation,
                 None,
             );
         if activity_changed {
@@ -198,14 +207,21 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     if changed > 0 || cursor_changed {
         persist_attached_external_observer_cursor(app, &read.target, last_cursor.clone())?;
     }
-    let external_active_prompt =
-        projected_external_active_prompt(&read.target, &candidate_turns, &last_cursor);
+    let external_active_prompt = if observation_contains_new_active_turn(
+        &read.target,
+        &candidate_turns,
+    ) {
+        projected_external_active_prompt(&read.target, &candidate_turns, &last_cursor)
+    } else {
+        None
+    };
     let activity_changed = app
         .session_state_projection_store()
-        .sync_external_observed_active_prompt(
+        .sync_external_observed_active_prompt_generation(
             &read.target.session_id,
             &read.target.agent_id,
             &read.target.external_session_id,
+            read.target.observation_generation,
             external_active_prompt,
         );
     if changed > 0 || cursor_changed || activity_changed {
@@ -216,6 +232,26 @@ pub(super) fn append_observed_external_turns_for_attached_target(
         emit_observed_external_history_signal(app, &read.target, provider_run_id.as_deref(), entry);
     }
     Ok(outcome)
+}
+
+fn observation_contains_new_active_turn(
+    target: &AttachedExternalObserverTarget,
+    turns: &[ObservedExternalProviderTurn],
+) -> bool {
+    let Some(last_observed_turn_id) = target.observed_cursor.last_observed_turn_id.as_deref() else {
+        return false;
+    };
+    let Some(last_observed_index) = turns.iter().rposition(|turn| {
+        turn.provider_turn_id_or_fallback() == last_observed_turn_id
+    }) else {
+        return false;
+    };
+    turns[last_observed_index.saturating_add(1)..]
+        .iter()
+        .any(|turn| {
+            !ExternalProviderObservationPolicy::for_provider(&target.provider)
+                .turn_is_passive_telemetry(turn)
+        })
 }
 
 fn projected_external_active_prompt(
