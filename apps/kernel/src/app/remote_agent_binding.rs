@@ -905,9 +905,7 @@ impl DaemonApp {
     ) -> Result<RelayKernelPresence, DaemonError> {
         let machine_ref = crate::config::DaemonConfig::resolve_registered_machine_ref(machine_ref)
             .unwrap_or_else(|| machine_ref.to_string());
-        if relay_config.relay_url == self.config.relay_url
-            && relay_config.relay_token == self.config.relay_token
-        {
+        if self.can_use_connected_relay_inventory(&machine_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
             if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
                 return Ok(kernel);
@@ -933,9 +931,7 @@ impl DaemonApp {
         relay_config: &DaemonConfig,
     ) -> Result<RelayKernelPresence, DaemonError> {
         let kernel_ref = kernel_ref.trim();
-        if relay_config.relay_url == self.config.relay_url
-            && relay_config.relay_token == self.config.relay_token
-        {
+        if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
             if let Some(kernel) = projected_kernels
                 .into_iter()
@@ -966,6 +962,16 @@ impl DaemonApp {
             operation: "select remote kernel",
             message: format!("kernel `{kernel_ref}` did not appear"),
         }))
+    }
+
+    fn can_use_connected_relay_inventory(
+        &self,
+        kernel_or_machine_ref: &str,
+        relay_config: &DaemonConfig,
+    ) -> bool {
+        relay_config.relay_url == self.config.relay_url
+            && (relay_config.relay_token == self.config.relay_token
+                || self.hosted_shared_slice_uses_connected_relay(kernel_or_machine_ref))
     }
 
     fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {
@@ -1814,6 +1820,77 @@ mod tests {
             app.remote_account_materialization_target_kind(&slice.worker_kernel_ref),
             crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
         );
+    }
+
+    #[test]
+    fn hosted_shared_slice_uses_connected_inventory_with_a_scoped_discovery_token() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".to_string());
+        config.relay_token = Some("home-runtime-token".to_string());
+        config.relay_request_timeout_ms = 1;
+        config.cloud_relay = Some(cloud_relay_profile("ws://127.0.0.1:1"));
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "hosted-linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: crate::slice::SliceDisplayBackend::default(),
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    development: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        app.slices()
+            .set_relay_endpoint(
+                &slice.id,
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: "ws://127.0.0.1:1".to_string(),
+                    private: false,
+                }),
+                43,
+            )
+            .expect("slice relay endpoint should update");
+        let worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "kernel-worker".to_string(),
+            machine_id: "slice:slice-1".to_string(),
+            machine_alias: None,
+            relay_alias: Some(slice.worker_kernel_ref.clone()),
+            kernel_alias: Some(slice.worker_kernel_ref.clone()),
+            available_providers: vec!["codex".to_string()],
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "worker-public-key".to_string(),
+        };
+        app.remote_relay_inventory_projection_store()
+            .update(Vec::new(), vec![worker.clone()]);
+        let mut discovery_config = app.config().clone();
+        discovery_config.relay_token = Some("scoped-discovery-token".to_string());
+
+        let selected = app
+            .select_remote_kernel_by_ref_with_config(
+                &slice.worker_kernel_ref,
+                "codex",
+                &discovery_config,
+            )
+            .expect("connected hosted inventory should resolve the slice worker");
+
+        assert_eq!(selected, worker);
     }
 
     #[test]
