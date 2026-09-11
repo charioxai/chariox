@@ -303,6 +303,33 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   kill -KILL "$PPID"
   exit 1
 fi
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
+  && [ "\${2:-}" = "atomic-text" ] \
+  && [ -f "$HARNESS_STATE/crash-after-phase-\${3:-}" ]; then
+  "${process.execPath}" "$@"
+  rm -f "$HARNESS_STATE/crash-after-phase-\${3:-}"
+  kill -KILL "$PPID"
+  exit 1
+fi
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
+  && [ "\${2:-}" = "publish-transaction" ] \
+  && [ -f "$HARNESS_STATE/crash-after-phase-prepared" ]; then
+  "${process.execPath}" "$@"
+  rm -f "$HARNESS_STATE/crash-after-phase-prepared"
+  kill -KILL "$PPID"
+  exit 1
+fi
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
+  && [ "\${2:-}" = "tombstone-transaction" ]; then
+  terminal_phase=$(sed -n '1p' "\${4:-}/phase")
+  marker="$HARNESS_STATE/crash-after-\${terminal_phase}-tombstone"
+  if [ -f "$marker" ]; then
+    "${process.execPath}" "$@"
+    rm -f "$marker"
+    kill -KILL "$PPID"
+    exit 1
+  fi
+fi
 exec "${process.execPath}" "$@"
 `, 0o755)
   await put(join(bin, "stat"), `#!/bin/sh
@@ -786,6 +813,40 @@ test("managed kernel upgrade accepts only a signed explicitly supported newer pr
   )
 })
 
+test("managed kernel upgrade rejects a forward transition authorized on only one leg", async (context) => {
+  const harness = await makeHarness(context, {
+    currentProtocol: 322,
+    targetProtocol: 323,
+    targetTransitionPolicy: {
+      schemaVersion: 1,
+      protocol: 323,
+      upgradeFrom: [322, 323],
+      rollbackTo: [323],
+    },
+  })
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /not reciprocally authorized/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+test("managed kernel upgrade rejects a reverse transition authorized on only one leg", async (context) => {
+  const harness = await makeHarness(context, {
+    currentProtocol: 323,
+    targetProtocol: 322,
+    currentTransitionPolicy: {
+      schemaVersion: 1,
+      protocol: 323,
+      upgradeFrom: [323],
+      rollbackTo: [322, 323],
+    },
+  })
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /not reciprocally authorized/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
 test("managed kernel upgrade rejects an unsupported local daemon protocol transition", async (context) => {
   const harness = await makeHarness(context, { targetProtocol: 322 })
   const result = harness.run()
@@ -823,6 +884,71 @@ test("a signed transition policy permits post-success rollback to its declared p
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,
   )
+})
+
+test("managed kernel upgrade recovers interruption after every persisted nonterminal phase", async (context) => {
+  for (const phase of ["prepared", "stopped", "activated"]) {
+    const harness = await makeHarness(context)
+    await put(join(harness.state, `crash-after-phase-${phase}`), "crash\n")
+    const interrupted = harness.run()
+    assert.equal(interrupted.signal, "SIGKILL", phase)
+    const retried = harness.run()
+    assert.equal(retried.status, 0, `${phase}: ${retried.stderr}`)
+    assert.equal(
+      await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+      `releases/${harness.target.digest.slice("sha256:".length)}`,
+      phase,
+    )
+  }
+})
+
+test("managed kernel upgrade recovers interruption after the persisted committed phase", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "crash-after-phase-committed"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const recovered = harness.run({}, [
+    harness.current.rootfs,
+    harness.target.digest,
+    harness.current.digest,
+    harness.trustedKey,
+  ])
+  assert.equal(recovered.status, 0, recovered.stderr)
+  assert.equal(
+    await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade"))
+      .then(() => true, () => false),
+    false,
+  )
+})
+
+test("managed kernel upgrade discards a committed tombstone after cleanup interruption", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "crash-after-committed-tombstone"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const tombstone = join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade.terminal")
+  assert.equal((await stat(tombstone)).isDirectory(), true)
+  const recovered = harness.run({}, [
+    harness.current.rootfs,
+    harness.target.digest,
+    harness.current.digest,
+    harness.trustedKey,
+  ])
+  assert.equal(recovered.status, 0, recovered.stderr)
+  assert.equal(await lstat(tombstone).then(() => true, () => false), false)
+})
+
+test("managed kernel upgrade discards a rolled-back tombstone after cleanup interruption", async (context) => {
+  const harness = await makeHarness(context)
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  await put(join(harness.state, "crash-after-rolled_back-tombstone"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const tombstone = join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade.terminal")
+  assert.equal((await stat(tombstone)).isDirectory(), true)
+  const retried = harness.run()
+  assert.equal(retried.status, 0, retried.stderr)
+  assert.equal(await lstat(tombstone).then(() => true, () => false), false)
 })
 
 test("managed kernel upgrade remains a dedicated offline release operation", async () => {
