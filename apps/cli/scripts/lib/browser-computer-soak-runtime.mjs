@@ -1187,7 +1187,6 @@ async function captureSpawnedIdentity(name, child) {
     if (identity?.processGroupId === child.pid) return identity
     await sleep(10)
   }
-  try { child.kill("SIGKILL") } catch {}
   throw new Error(`${name} detached process identity could not be captured`)
 }
 
@@ -1846,8 +1845,12 @@ export function processIsRunning(pid, {
   if (platform !== "linux") return true
   try {
     const statLine = readStat(`/proc/${pid}/stat`)
+    const prefix = `${pid} (`
     const commandEnd = statLine.lastIndexOf(")")
-    const state = commandEnd === -1 ? "" : statLine.slice(commandEnd + 1).trimStart().charAt(0)
+    const state = statLine.startsWith(prefix) && commandEnd >= prefix.length
+      ? statLine.slice(commandEnd + 1).match(/^ ([A-Za-z])(?: |$)/)?.[1]
+      : undefined
+    if (!state) return true
     return state !== "Z" && state !== "X" && state !== "x"
   } catch (error) {
     return error?.code !== "ENOENT"

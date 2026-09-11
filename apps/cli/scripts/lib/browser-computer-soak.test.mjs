@@ -161,6 +161,9 @@ test("cleanup process checks preserve zombies and fail closed on uncertain statu
     const readStat = () => { throw Object.assign(new Error(code), { code }) }
     assert.equal(processIsRunning(13499, { probe, readStat }), true)
   }
+  for (const malformed of ["malformed) Z", "999 (soak worker) Z"]) {
+    assert.equal(processIsRunning(13499, { probe, readStat: () => malformed }), true)
+  }
   assert.equal(processIsRunning(13499, {
     probe: () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }) },
   }), true)
@@ -740,6 +743,27 @@ test("post-spawn evidence or log-close failure rolls back the exact detached chi
     assert.equal(failure.terminalCleanup.clean, true)
     assert.equal(failure.terminalCleanup.actions[0].name, "detached-runner-rollback")
   }
+})
+
+test("failed detached identity capture never signals an uncertain PID", async () => {
+  const signals = []
+  const child = {
+    pid: 2_147_483_647,
+    exitCode: null,
+    signalCode: null,
+    spawnfile: "/usr/bin/node",
+    kill: (signal) => signals.push(signal),
+  }
+  await assert.rejects(launchDetachedRunner({
+    command: "/usr/bin/node", args: ["runner"], cwd: "/repo", env: {}, logPath: "/evidence/log", gatePath: "/evidence/gate",
+  }, {
+    prepareLaunchGate: async () => {},
+    openLog: async () => ({ fd: 7, close: async () => {} }),
+    spawnChild: () => child,
+    terminate: async () => ({ name: "detached-runner-rollback", ok: false, pidReuseSafe: false }),
+    persistFailure: async () => {},
+  }), /identity could not be captured/)
+  assert.deepEqual(signals, [])
 })
 
 test("detached child remains gated until log close and starting evidence are durable", async () => {
