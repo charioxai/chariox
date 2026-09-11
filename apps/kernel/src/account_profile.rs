@@ -5533,6 +5533,10 @@ mod tests {
 
         let mut empty = valid.clone();
         empty.files[0].contents_base64 = base64::engine::general_purpose::STANDARD.encode(b"");
+        let mut whitespace_refresh_token = valid.clone();
+        whitespace_refresh_token.files[0].contents_base64 =
+            base64::engine::general_purpose::STANDARD
+                .encode(br#"{"claudeAiOauth":{"refreshToken":" \t\n"}}"#);
         let mut nonrefreshable = valid.clone();
         nonrefreshable.files[0].contents_base64 = base64::engine::general_purpose::STANDARD
             .encode(br#"{"claudeAiOauth":{"accessToken":"expired"}}"#);
@@ -5547,6 +5551,11 @@ mod tests {
         for (context_id, materialization, expected) in [
             ("context-claude-empty", empty, "no transferable credentials"),
             (
+                "context-claude-whitespace-refresh-token",
+                whitespace_refresh_token,
+                "no transferable credentials",
+            ),
+            (
                 "context-claude-nonrefreshable",
                 nonrefreshable,
                 "no transferable credentials",
@@ -5558,6 +5567,8 @@ mod tests {
             ),
         ] {
             let (target_root, target) = fixture();
+            let registry_path = target_root.join("accounts.json");
+            let registry_existed_before = registry_path.exists();
             let error = target
                 .materialize_managed_context_replica(
                     "owner-a",
@@ -5570,6 +5581,13 @@ mod tests {
             assert!(target
                 .get("owner-a", "claude", &profile.profile_id)
                 .is_err());
+            assert_eq!(registry_path.exists(), registry_existed_before);
+            assert!(!target_root
+                .join("provider-accounts")
+                .join("owner-a")
+                .join("claude")
+                .join(&profile.profile_id)
+                .exists());
             let _ = fs::remove_dir_all(target_root);
         }
         let _ = fs::remove_dir_all(source_root);
