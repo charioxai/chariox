@@ -24,6 +24,7 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
     "--image-ref",
     "--image-signature-key",
     "--container-engine",
+    "--runtime-container-id",
     "--max-cadence-gap-seconds",
     "--max-rss-mib",
     "--max-cpu-percent",
@@ -101,6 +102,7 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
     imageRef: values.get("--image-ref") ?? process.env.CHARIOX_SLICE_IMAGE ?? null,
     imageSignatureKey: values.get("--image-signature-key") ?? process.env.CHARIOX_SLICE_IMAGE_SIGNATURE_KEY ?? null,
     containerEngine,
+    runtimeContainerId: values.get("--runtime-container-id") ?? process.env.CHARIOX_SOAK_RUNTIME_CONTAINER_ID ?? null,
     limits: {
       maxCadenceGapMs: maxCadenceGapSeconds * 1_000,
       maxRssBytes: integer(values.get("--max-rss-mib") ?? "4096", "max-rss-mib", 128, 65_536) * 1024 * 1024,
@@ -166,6 +168,7 @@ export function validateCompletedSoakResult(value) {
     || !/^[0-9a-f]{40}$/.test(provenance.source?.commit ?? "")
     || !/^[0-9a-f]{40}$/.test(provenance.source?.tree ?? "")
     || !validVerifiedImage(provenance.image)
+    || !validRuntimeImageBinding(provenance.runtimeImage, provenance.image)
     || stableJson(provenance.limits) !== stableJson(value.resources?.limits)
     || provenance.viewer?.backend !== value.viewer?.backend
     || stableJson(provenance.source) !== stableJson(value.source)
@@ -269,6 +272,7 @@ export function gateFingerprint(provenance) {
   return createHash("sha256").update(stableJson({
     source: provenance?.source,
     image: provenance?.image,
+    runtimeImage: provenance?.runtimeImage,
     limits: provenance?.limits,
     viewer: provenance?.viewer,
     localDaemonProtocolVersion: provenance?.localDaemonProtocolVersion,
@@ -279,6 +283,9 @@ export function validateGatePrerequisites({ preflight, smoke, provenance, now = 
   if (provenance?.source?.dirty !== false) throw new Error("gate requires a clean source tree")
   if (!validVerifiedImage(provenance?.image)) {
     throw new Error("gate requires a verified immutable image signature and attestation")
+  }
+  if (!validRuntimeImageBinding(provenance?.runtimeImage, provenance?.image)) {
+    throw new Error("gate requires the exercised runtime container to match the verified image")
   }
   const expected = gateFingerprint(provenance)
   for (const [phase, receipt] of [["preflight", preflight], ["smoke", smoke]]) {
@@ -338,4 +345,11 @@ function validVerifiedImage(image) {
     && /^[0-9a-f]{64}$/.test(image.signature.bundleSha256 ?? "")
     && image?.attestation?.verified === true && image.attestation.type === "slsaprovenance"
     && /^[0-9a-f]{64}$/.test(image.attestation.bundleSha256 ?? "")
+}
+
+function validRuntimeImageBinding(runtime, image) {
+  return /^[0-9a-f]{64}$/.test(runtime?.containerId ?? "")
+    && runtime.running === true
+    && runtime.imageId === image?.engineImageId
+    && runtime.identity === image?.identity
 }

@@ -15,6 +15,7 @@ import {
   validateCompletedSoakResult,
 } from "./browser-computer-soak.mjs"
 import {
+  assertCurrentContainerIdentity,
   assertProcessHealth,
   assertSandboxCapableChromiumIdentity,
   assertFinalDetachPrerequisites,
@@ -26,9 +27,13 @@ import {
   createRedactingTransform,
   finalGateEligibility,
   findRuntimeLeakMatches,
+  inspectDigestBoundRuntime,
+  launchDetachedRunner,
+  networkNamespaceAttribution,
   redactEvidence,
   resolveVerifiedImage,
   processIdentityMatches,
+  terminateOwnedProcessGroup,
   runBrowserComputerSoak,
   verifyComputerInputEffect,
 } from "./browser-computer-soak-runtime.mjs"
@@ -289,6 +294,7 @@ test("completion requires authoritative clean source, image, backend, protocol, 
     (value) => { value.provenance.image.digest = "sha256:" + "f".repeat(64) },
     (value) => { value.provenance.image.signature.verified = false },
     (value) => { value.provenance.image.attestation.verified = false },
+    (value) => { value.provenance.runtimeImage.imageId = "sha256:" + "9".repeat(64) },
     (value) => { value.provenance.viewer.backend = "novnc" },
     (value) => { value.provenance.localDaemonProtocolVersion = 321 },
     (value) => { value.provenance.limits.maxProcesses += 1 },
@@ -344,6 +350,7 @@ test("preflight and smoke receipts must be fresh and match clean source, image, 
   const provenance = {
     source: { commit: "a".repeat(40), tree: "b".repeat(40), dirty: false },
     image: verifiedImage("c"),
+    runtimeImage: verifiedRuntime("c"),
     limits: { maxRssBytes: 1024, maxCpuPercent: 200 },
     viewer: { backend: "selkies" },
     localDaemonProtocolVersion: 322,
@@ -414,6 +421,25 @@ test("fake or missing engine digest, signature, and attestation fail closed", as
   await assert.rejects(resolveVerifiedImage({ ...base, signatureKey: null }, { exec: async () => ({ stdout: "{}" }) }), /signature key/i)
 })
 
+test("the exercised container must be the exact verified image", async () => {
+  const image = verifiedImage("c")
+  const containerId = "b".repeat(64)
+  const inspect = async () => ({ stdout: JSON.stringify({
+    Id: containerId,
+    Image: image.engineImageId,
+    Config: { Image: image.identity },
+    State: { Running: true },
+  }) })
+  assert.deepEqual(await inspectDigestBoundRuntime({ containerId, image }, { exec: inspect }), {
+    containerId, imageId: image.engineImageId, identity: image.identity, running: true,
+  })
+  await assert.rejects(inspectDigestBoundRuntime({ containerId, image }, {
+    exec: async () => ({ stdout: JSON.stringify({ Id: containerId, Image: "sha256:" + "9".repeat(64), Config: { Image: image.identity }, State: { Running: true } }) }),
+  }), /runtime image.*verified image/i)
+  assert.doesNotThrow(() => assertCurrentContainerIdentity("abcdef1234567890", "abcdef123456"))
+  assert.throws(() => assertCurrentContainerIdentity("abcdef1234567890", "999999999999"), /not the container executing/)
+})
+
 test("detach requires protocol 322, Selkies, and a full eight-hour duration", () => {
   const provenance = { localDaemonProtocolVersion: 322, viewer: { backend: "selkies" } }
   const options = { mode: "detach", durationSeconds: 28_800, viewerBackend: "selkies" }
@@ -479,6 +505,22 @@ test("network bound requires exclusive attributable namespace accounting", () =>
   assert.throws(() => attributableNetworkDelta({ totalBytes: 400, attribution: exclusive }, { totalBytes: 350 }, exclusive), /network counters regressed/)
 })
 
+test("network exclusivity fails closed when a namespace member disappears or is unreadable", async () => {
+  const readNamespace = async (candidate) => {
+    if (candidate.endsWith("/100/ns/net")) return "net:[42]"
+    if (candidate.endsWith("/102/ns/net")) throw Object.assign(new Error("gone"), { code: "ENOENT" })
+    return "net:[99]"
+  }
+  const attribution = await networkNamespaceAttribution(new Set([100]), 32, {
+    currentPid: 100,
+    listProc: async () => ["100", "101", "102"],
+    readNamespace,
+  })
+  assert.equal(attribution.exclusive, false)
+  assert.deepEqual(attribution.unreadablePids, [102])
+  assert.match(attribution.reason, /incomplete/i)
+})
+
 test("controller, browser, and stream death each fail immediately", () => {
   const running = { exitCode: null, signalCode: null }
   const dead = { exitCode: 9, signalCode: null }
@@ -489,11 +531,81 @@ test("controller, browser, and stream death each fail immediately", () => {
 })
 
 test("cleanup identities reject PID reuse without treating the replacement as owned", () => {
-  const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/chromium" }
+  const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/chromium", processGroupId: 42 }
   assert.equal(processIdentityMatches(expected, { ...expected }), true)
   assert.equal(processIdentityMatches(expected, { ...expected, startedAtTicks: "101" }), false)
   assert.equal(processIdentityMatches(expected, { ...expected, executable: "/usr/bin/unrelated" }), false)
   assert.equal(processIdentityMatches(expected, null), false)
+})
+
+test("pre-signal PID reuse prevents every process-group signal and cannot claim safety", async () => {
+  const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/chromium", processGroupId: 42 }
+  const signals = []
+  const result = await terminateOwnedProcessGroup("chromium", {
+    pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected,
+  }, {
+    identity: async () => ({ ...expected, startedAtTicks: "101" }),
+    signal: (...args) => signals.push(args),
+    wait: async () => false,
+    waitForLog: async () => {},
+  })
+  assert.deepEqual(signals, [])
+  assert.equal(result.ok, false)
+  assert.equal(result.pidReuseSafe, false)
+  assert.match(result.error, /identity changed/i)
+
+  const identities = [expected, { ...expected, startedAtTicks: "101" }]
+  const lateSignals = []
+  const late = await terminateOwnedProcessGroup("chromium", {
+    pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected,
+  }, {
+    identity: async () => identities.shift(),
+    signal: (...args) => lateSignals.push(args),
+    wait: async () => false,
+    waitForLog: async () => {},
+  })
+  assert.deepEqual(lateSignals, [[-42, "SIGTERM"]], "reused PID must never receive SIGKILL")
+  assert.equal(late.pidReuseSafe, false)
+})
+
+test("all helper subprocesses receive only the shared allowlisted environment", async () => {
+  const calls = []
+  const helperEnv = buildSanitizedChildEnvironment({ PATH: "/usr/bin", LANG: "C.UTF-8", AWS_SECRET_ACCESS_KEY: "leak" })
+  await resolveVerifiedImage({ imageRef: "registry.example/chariox/slice:final", signatureKey: "/key", engine: "docker" }, {
+    readKey: async () => Buffer.from("public-key"),
+    baseEnvironment: { PATH: "/usr/bin", LANG: "C.UTF-8", AWS_SECRET_ACCESS_KEY: "leak" },
+    exec: async (command, args, options) => {
+      calls.push({ command, env: options.env })
+      const digest = "sha256:" + "c".repeat(64)
+      if (command === "docker") return { stdout: JSON.stringify({ Id: "sha256:" + "d".repeat(64), RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }
+      if (args[0] === "verify-attestation") return { stdout: JSON.stringify({ payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: "c".repeat(64) } }] })).toString("base64") }) }
+      return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": digest } } }]) }
+    },
+  })
+  for (const call of calls) {
+    assert.equal(call.env.AWS_SECRET_ACCESS_KEY, undefined)
+    assert.equal(call.env.PATH, helperEnv.PATH)
+    assert.equal(call.env.LANG, helperEnv.LANG)
+  }
+})
+
+test("post-spawn evidence or log-close failure rolls back the exact detached child", async () => {
+  const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/node", processGroupId: 42 }
+  for (const failAt of ["log", "evidence"]) {
+    const child = { pid: 42, exitCode: null, signalCode: null, unref() {}, ownedIdentity: expected }
+    const terminated = []
+    const failure = await launchDetachedRunner({ command: "/usr/bin/node", args: ["runner"], cwd: "/repo", env: { PATH: "/usr/bin" }, logPath: "/evidence/log" }, {
+      openLog: async () => ({ fd: 7, close: async () => { if (failAt === "log") throw new Error("log close failed") } }),
+      spawnChild: () => child,
+      captureIdentity: () => expected,
+      writeStartupEvidence: async () => { if (failAt === "evidence") throw new Error("startup evidence failed") },
+      terminate: async (_name, owned) => { terminated.push(owned.ownedIdentity); return { name: "detached-runner-rollback", ok: true, pidReuseSafe: true } },
+    }).then(() => null, (error) => error)
+    assert.match(failure.message, failAt === "log" ? /log close failed/ : /startup evidence failed/)
+    assert.deepEqual(terminated, [expected])
+    assert.equal(failure.terminalCleanup.clean, true)
+    assert.equal(failure.terminalCleanup.actions[0].name, "detached-runner-rollback")
+  }
 })
 
 test("leak scanning is bounded, excludes the runner, and never retains full arguments", () => {
@@ -536,6 +648,7 @@ function completedResult() {
       capturedAt: "2026-09-10T23:59:59.000Z",
       source: { ...source },
       image: verifiedImage("c"),
+      runtimeImage: verifiedRuntime("c"),
       limits: { ...limits },
       viewer: { backend: "selkies" },
       localDaemonProtocolVersion: 322,
@@ -581,4 +694,9 @@ function verifiedImage(hex) {
     signature: { verified: true, verifier: "cosign", keySha256: "e".repeat(64), bundleSha256: "f".repeat(64) },
     attestation: { verified: true, type: "slsaprovenance", bundleSha256: "a".repeat(64) },
   }
+}
+
+function verifiedRuntime(hex) {
+  const image = verifiedImage(hex)
+  return { containerId: "b".repeat(64), imageId: image.engineImageId, identity: image.identity, running: true }
 }
