@@ -160,6 +160,7 @@ async fn assert_completed_publication_output_settlement(
                 .to_string(),
             serde_json::json!({ "workflow_output_json": "{\"status\":\"done\"}" }),
             context,
+            None,
         )
         .expect("final publication output should settle");
 

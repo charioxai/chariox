@@ -1362,6 +1362,7 @@ mod tests {
                 Some("default".to_string()),
                 Some("disabled".to_string()),
                 vec!["slack.message.permalink".to_string()],
+                Default::default(),
             )
             .expect("event binding should be created");
         let invocation = crate::session::WorkflowPublicationInvocationEnvelope {

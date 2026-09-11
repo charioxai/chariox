@@ -258,6 +258,11 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::UpdateWorkflowEventBinding(request) => {
+                let result = owned.workflow_update_event_binding(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
                 let result = owned.workflow_transfer_event_binding(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);

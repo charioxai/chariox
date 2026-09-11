@@ -17,6 +17,17 @@ impl KernelRuntimeState {
         let provider_run_allows_event_actions = provider_runs
             .iter()
             .any(|run| run.workflow_event_actions_enabled());
+        let provider_run_attribution = match provider_runs {
+            [run] => run.agent_instance_id().and_then(|agent_id| {
+                self.owned.agent_store.get_agent(agent_id).ok().map(|agent| {
+                    crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot::capture(
+                        run,
+                        &agent,
+                    )
+                })
+            }),
+            _ => None,
+        };
         // Tool discovery is advisory. A provider can retain a tool name from
         // an earlier snapshot, and an event binding can be edited while that
         // provider turn is still running. Enforce the capability snapshot at
@@ -166,6 +177,7 @@ impl KernelRuntimeState {
                     canonical_tool_name.to_string(),
                     arguments,
                     context,
+                    provider_run_attribution.clone(),
                 )?;
                 self.spawn_workflow_prompt_dispatches(dispatches);
                 Ok(result)
@@ -205,6 +217,7 @@ impl KernelRuntimeState {
                                     context: context.clone(),
                                     tool_name: canonical_tool_name.to_string(),
                                     arguments: arguments.clone(),
+                                    provider_run_attribution: provider_run_attribution.clone(),
                                 },
                             ),
                         )

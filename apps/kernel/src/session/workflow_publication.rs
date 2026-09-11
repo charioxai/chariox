@@ -59,10 +59,28 @@ pub struct WorkflowEventBinding {
     /// from provider context alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_ids: Vec<String>,
+    /// Kernel-owned policy for appending the executing provider run's identity
+    /// to replies. Disabled by default for existing bindings.
+    #[serde(default, skip_serializing_if = "WorkflowEventReplyAttributionPolicy::is_disabled")]
+    pub provider_run_attribution: WorkflowEventReplyAttributionPolicy,
     pub revision: u64,
     pub status: WorkflowEventBindingStatus,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowEventReplyAttributionPolicy {
+    #[default]
+    Disabled,
+    Append,
+}
+
+impl WorkflowEventReplyAttributionPolicy {
+    pub fn is_disabled(&self) -> bool {
+        *self == Self::Disabled
+    }
 }
 
 fn default_event_reply_mode() -> Option<String> {

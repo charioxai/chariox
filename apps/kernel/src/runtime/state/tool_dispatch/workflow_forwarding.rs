@@ -6,6 +6,9 @@ impl KernelRuntimeState {
         context: crate::execution_lease::RemoteWorkflowTurnContext,
         tool_name: String,
         arguments: serde_json::Value,
+        provider_run_attribution: Option<
+            crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot,
+        >,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         {
             let owned = &self.owned;
@@ -22,7 +25,12 @@ impl KernelRuntimeState {
                 Some(context.delivery_token),
             )?;
             let (result, dispatches) =
-                owned.dispatch_workflow_runtime_tool_call(tool_name, arguments, context)?;
+                owned.dispatch_workflow_runtime_tool_call(
+                    tool_name,
+                    arguments,
+                    context,
+                    provider_run_attribution,
+                )?;
             self.spawn_workflow_prompt_dispatches(dispatches);
             if forwarded_workflow_tool_result_should_complete_home_prompt(
                 &canonical_tool_name,

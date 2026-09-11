@@ -479,6 +479,7 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         queue_ref: Some("default".to_string()),
         reply_mode: None,
         action_ids: Vec::new(),
+        provider_run_attribution: Default::default(),
     };
     let binding = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
@@ -973,6 +974,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     queue_ref: Some("default".to_string()),
                     reply_mode: None,
                     action_ids: Vec::new(),
+                    provider_run_attribution: Default::default(),
                 },
             ))
             .expect("event binding should be created")
@@ -1100,6 +1102,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     queue_ref: Some("default".to_string()),
                     reply_mode: None,
                     action_ids: Vec::new(),
+                    provider_run_attribution: Default::default(),
                 },
             ))
             .expect_err("a revoked connection must reject a fresh attachment");
@@ -1237,6 +1240,7 @@ fn reduced_connection_scopes_block_binding_reactivation_and_transfer() {
                     queue_ref: Some("default".to_string()),
                     reply_mode: None,
                     action_ids: Vec::new(),
+                    provider_run_attribution: Default::default(),
                 },
             ))
             .expect("initial grants should allow binding creation")

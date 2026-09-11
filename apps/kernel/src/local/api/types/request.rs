@@ -329,6 +329,7 @@ pub enum LocalDaemonRequest {
     CreateWorkflowEventBinding(CreateWorkflowEventBindingRequest),
     ListWorkflowEventBindings(ListWorkflowEventBindingsRequest),
     SetWorkflowEventBindingStatus(SetWorkflowEventBindingStatusRequest),
+    UpdateWorkflowEventBinding(UpdateWorkflowEventBindingRequest),
     TransferWorkflowEventBinding(TransferWorkflowEventBindingRequest),
     TestWorkflowEventBinding(TestWorkflowEventBindingRequest),
     GetEventDeliveryStatus(GetEventDeliveryStatusRequest),

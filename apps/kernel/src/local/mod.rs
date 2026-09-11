@@ -176,6 +176,7 @@ pub use api::{
     TestWorkflowEventBindingRequest, TransferWorkflowEventBindingRequest, TurnUndoResult,
     UndoTurnRequest, UninstallMcpServerRequest, UninstallSkillRequest, UnsetUserConfigValueRequest,
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
+    UpdateWorkflowEventBindingRequest,
     UpdateMcpServerRequest, UpdateMetaagentTaskRequest, UpdateProjectWorkspacesRequest,
     UpdatePromptSettingRequest, UpdateProviderRunSelectionRequest, UpdateQueuedPromptRequest,
     UpdateQueuedWorkflowPromptRequest, UpdateRoomEnvironmentPointerRequest,

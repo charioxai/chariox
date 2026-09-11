@@ -75,7 +75,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 47 carries the workspace kind in managed-context import receipts.
 /// Version 48 carries private browser-cookie import commands and bounded results.
 /// Version 50 carries bounded provider-run termination metadata across leased execution.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 50;
+/// Version 51 carries kernel-authenticated provider-run attribution for forwarded workflow tools.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 51;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 
@@ -693,6 +694,10 @@ pub enum RelayPeerRequest {
         context: RemoteWorkflowTurnContext,
         tool_name: String,
         arguments: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_run_attribution: Option<
+            crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot,
+        >,
     },
     ForwardWorkspaceLiveSyncRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext,
@@ -1051,7 +1056,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,

@@ -582,6 +582,7 @@ fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instruct
             crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL.to_string(),
             serde_json::json!({}),
             context,
+            None,
         )
         .expect("read workflow context should succeed");
 

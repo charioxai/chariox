@@ -22,6 +22,7 @@ impl SessionService {
         queue_ref: Option<String>,
         reply_mode: Option<String>,
         action_ids: Vec<String>,
+        provider_run_attribution: crate::session::WorkflowEventReplyAttributionPolicy,
     ) -> Result<WorkflowEventBinding, DaemonError> {
         let publication = self.resolve_workflow_publication_ref(session_id, publication_ref)?;
         if publication.kind() != WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
@@ -111,6 +112,7 @@ impl SessionService {
                 {
                     if existing.reply_mode.as_deref() == Some(reply_mode.as_str())
                         && existing.action_ids == action_ids
+                        && existing.provider_run_attribution == provider_run_attribution
                     {
                         return Ok(existing.clone());
                     }
@@ -127,6 +129,7 @@ impl SessionService {
                         })?;
                     binding.reply_mode = Some(reply_mode.clone());
                     binding.action_ids = action_ids.clone();
+                    binding.provider_run_attribution = provider_run_attribution;
                     binding.revision = binding.revision.saturating_add(1);
                     binding.updated_at_ms = unix_epoch_ms();
                     return Ok(binding.clone());
@@ -152,6 +155,7 @@ impl SessionService {
             queue_ref,
             reply_mode: Some(reply_mode),
             action_ids,
+            provider_run_attribution,
             revision: 1,
             status: WorkflowEventBindingStatus::Active,
             created_at_ms: now,
@@ -164,6 +168,28 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.create_workflow_event_binding(binding))
+    }
+
+    pub fn update_workflow_event_binding(
+        &mut self,
+        session_id: &str,
+        binding_id: &str,
+        provider_run_attribution: crate::session::WorkflowEventReplyAttributionPolicy,
+    ) -> Result<WorkflowEventBinding, DaemonError> {
+        let binding = self
+            .store
+            .get_mut(session_id)
+            .and_then(|session| session.workflow_event_binding_mut(binding_id))
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "update workflow event binding",
+                message: format!("workflow event binding `{binding_id}` was not found"),
+            })?;
+        if binding.provider_run_attribution != provider_run_attribution {
+            binding.provider_run_attribution = provider_run_attribution;
+            binding.revision = binding.revision.saturating_add(1);
+            binding.updated_at_ms = unix_epoch_ms();
+        }
+        Ok(binding.clone())
     }
 
     pub fn list_workflow_event_bindings(

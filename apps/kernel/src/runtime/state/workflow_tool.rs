@@ -67,6 +67,9 @@ impl KernelRuntimeOwnedState {
         tool_name: String,
         arguments: serde_json::Value,
         context: crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+        provider_run_attribution: Option<
+            crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot,
+        >,
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
@@ -142,13 +145,21 @@ impl KernelRuntimeOwnedState {
                 self.workflow_agent_app_action_tool_result(&arguments, &context)
             }
             crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL => {
-                self.workflow_reply_to_event_tool_result(&arguments, &context)
+                self.workflow_reply_to_event_tool_result(
+                    &arguments,
+                    &context,
+                    provider_run_attribution.as_ref(),
+                )
             }
             crate::transport::runtime_tools::EVENT_CONTEXT_TOOL => {
                 self.workflow_event_context_tool_result(&arguments, &context)
             }
             crate::transport::runtime_tools::EVENT_ACTION_TOOL => {
-                self.workflow_event_action_tool_result(&arguments, &context)
+                self.workflow_event_action_tool_result(
+                    &arguments,
+                    &context,
+                    provider_run_attribution.as_ref(),
+                )
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_runtime_tool_call",
@@ -538,6 +549,9 @@ impl KernelRuntimeOwnedState {
         &self,
         arguments: &serde_json::Value,
         context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+        provider_run_attribution: Option<
+            &crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot,
+        >,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let args = serde_json::from_value::<crate::transport::runtime_tools::ReplyToEventArgs>(
             arguments.clone(),
@@ -617,6 +631,11 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
+        let text = crate::runtime::state::workflow_event_reply_attribution::format_event_reply(
+            text,
+            binding.provider_run_attribution,
+            provider_run_attribution,
+        )?;
         let reply_context = invocation
             .input
             .get("reply_context")
@@ -682,6 +701,9 @@ impl KernelRuntimeOwnedState {
         &self,
         arguments: &serde_json::Value,
         context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+        provider_run_attribution: Option<
+            &crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot,
+        >,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let args = serde_json::from_value::<crate::transport::runtime_tools::EventActionArgs>(
             arguments.clone(),
@@ -811,6 +833,12 @@ impl KernelRuntimeOwnedState {
                     ),
                 });
             }
+            let text =
+                crate::runtime::state::workflow_event_reply_attribution::format_event_reply(
+                    text,
+                    binding.provider_run_attribution,
+                    provider_run_attribution,
+                )?;
             serde_json::json!({ "text": text, "mode": configured_mode })
         } else {
             args.input.clone()

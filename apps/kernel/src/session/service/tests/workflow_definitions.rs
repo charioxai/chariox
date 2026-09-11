@@ -462,6 +462,7 @@ fn workflow_design_endpoint_max_instances_contract() {
             Some("default".to_string()),
             Some("disabled".to_string()),
             Vec::new(),
+            Default::default(),
         )
         .expect("event binding should be created");
 

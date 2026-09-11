@@ -47,8 +47,52 @@ impl KernelRuntimeOwnedState {
             request.queue_ref,
             request.reply_mode,
             request.action_ids,
+            request.provider_run_attribution,
         )?;
         Ok(LocalDaemonResponse::WorkflowEventBindingCreated {
+            binding,
+            session: self.workflow_session(&request.session_id)?,
+        })
+    }
+
+    pub(super) fn workflow_update_event_binding(
+        &self,
+        request: crate::local::UpdateWorkflowEventBindingRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let binding = self
+            .session_store
+            .read()
+            .get_session(&request.session_id)?
+            .workflow_event_bindings()
+            .iter()
+            .find(|binding| binding.id == request.binding_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "update workflow event binding",
+                message: format!(
+                    "workflow event binding `{}` was not found",
+                    request.binding_id
+                ),
+            })?;
+        let publication = self
+            .session_store
+            .read()
+            .resolve_workflow_publication_ref(&request.session_id, &binding.publication_id)?;
+        if publication.created_by_user_id() != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                publication.created_by_user_id(),
+                format!("workflow publication `{}`", publication.id()),
+                "update workflow event binding",
+            ));
+        }
+        let binding = self.session_store.write().update_workflow_event_binding(
+            &request.session_id,
+            &request.binding_id,
+            request.provider_run_attribution,
+        )?;
+        Ok(LocalDaemonResponse::WorkflowEventBindingUpdated {
             binding,
             session: self.workflow_session(&request.session_id)?,
         })

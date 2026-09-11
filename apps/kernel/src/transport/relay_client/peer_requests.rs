@@ -929,9 +929,15 @@ pub(super) async fn handle_daemon_peer_request(
             context,
             tool_name,
             arguments,
+            provider_run_attribution,
         } => {
             let handled = router
-                .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+                .dispatch_forwarded_workflow_runtime_tool_call(
+                    context,
+                    tool_name,
+                    arguments,
+                    provider_run_attribution,
+                )
                 .await;
             match handled {
                 Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },

@@ -73,4 +73,5 @@ pub use workspace::*;
 /// Version 321 adds admitted private browser-cookie delivery and durable recovery.
 /// Version 322 makes Selkies the omitted backend for new headed slices.
 /// Version 323 projects bounded provider-run termination metadata with failed turns.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 323;
+/// Version 324 adds binding-owned provider-run attribution for event replies.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 324;

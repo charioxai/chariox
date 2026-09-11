@@ -795,6 +795,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkflowEventBinding(_) => "workflow_event_binding.create",
         LocalDaemonRequest::ListWorkflowEventBindings(_) => "workflow_event_binding.list",
         LocalDaemonRequest::SetWorkflowEventBindingStatus(_) => "workflow_event_binding.status.set",
+        LocalDaemonRequest::UpdateWorkflowEventBinding(_) => "workflow_event_binding.update",
         LocalDaemonRequest::TransferWorkflowEventBinding(_) => "workflow_event_binding.transfer",
         LocalDaemonRequest::TestWorkflowEventBinding(_) => "workflow_event_binding.test",
         LocalDaemonRequest::GetEventDeliveryStatus(_) => "event_delivery.status",

@@ -52,9 +52,17 @@ impl CommandRouter {
         context: crate::execution_lease::RemoteWorkflowTurnContext,
         tool_name: String,
         arguments: serde_json::Value,
+        provider_run_attribution: Option<
+            crate::runtime::state::workflow_event_reply_attribution::ProviderRunAttributionSnapshot,
+        >,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.runtime_state
-            .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+            .dispatch_forwarded_workflow_runtime_tool_call(
+                context,
+                tool_name,
+                arguments,
+                provider_run_attribution,
+            )
             .await
     }
 

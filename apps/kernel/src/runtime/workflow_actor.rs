@@ -370,6 +370,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::CreateWorkflowEventBinding(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowEventBindings(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => request.session_id.clone(),
+        LocalDaemonRequest::UpdateWorkflowEventBinding(request) => request.session_id.clone(),
         LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
             request.source_session_id.clone()
         }
