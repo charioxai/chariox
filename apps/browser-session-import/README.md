@@ -15,6 +15,7 @@ profile or the repository):
 ```sh
 connector_output="$(mktemp -d)"
 TYPESCRIPT_MODULE=/absolute/path/to/typescript/lib/typescript.js \
+CHARIOX_BROWSER_IMPORT_EXTENSION_PUBLIC_KEY="$reviewed_public_key_base64" \
   node apps/browser-session-import/chrome-extension/package-extension.mjs "$connector_output"
 ```
 
@@ -24,7 +25,7 @@ extension. A release system may zip the directory contents without changing the
 tree; it must apply normal extension signing/publication controls separately.
 The source Chrome executable and profile are never modified by the packager.
 
-The manifest has only `activeTab` initially. `cookies` and broad HTTP/HTTPS host
+The manifest has `activeTab`, `storage`, and `alarms` initially. `cookies` and broad HTTP/HTTPS host
 patterns are declarations under `optional_permissions` and
 `optional_host_permissions`, not grants. When the user clicks the extension
 action, its service worker captures that one source tab and opens a durable
@@ -32,24 +33,26 @@ extension page. Incognito and non-HTTP(S) source tabs are rejected. The page
 reports only the current profile, source hostname and connector public-key
 metadata. It neither probes nor lists cookie names or values.
 
-Pairing is attended, independently anchored and one-use:
+The hosted product pairing is attended, independently anchored and one-use:
 
-1. The extension creates a non-extractable P-256 sender key in memory and emits
-   a metadata-only bootstrap request. The user copies it into Chariox's already
-   authenticated Browser Import panel and selects one attached session/kernel
-   and destination there.
-2. Chariox returns a short-lived authenticated bootstrap containing a random
+1. The extension creates a non-extractable P-256 sender key in memory and registers
+   only current-profile hostname/store metadata with its MV3 service worker. The
+   selected hosted View connects to the signed stable extension ID from exactly
+   `https://chariox.com` or `https://staging.chariox.com` and selects that connector
+   session. There is no page message or paste protocol.
+2. The selected authenticated `BrowserKernelClient` obtains a short-lived bootstrap containing a random
    `bootstrap_id`, the selected relay URL, daemon, kernel public key, immutable
    destination selection, compatible protocol/capability version and echoed connector
-   sender/source metadata. The extension validates and freezes this bootstrap
-   before creating the pairing challenge. It is the independent trust anchor;
+   sender/source metadata. Web sends `{binding,bootstrap}` only inside ECDH/AES-GCM
+   ciphertext for the connector sender key. The extension validates and freezes
+   it before creating the pairing challenge. It is the independent trust anchor;
    the later pairing response cannot select or replace those fields.
-3. The extension creates a separate 128-bit enrollment nonce. The user returns
-   that challenge to the same authenticated Chariox panel, which supplies a
-   single-use relay token in a pairing response that echoes the `bootstrap_id`,
+3. The extension creates a separate 128-bit enrollment nonce. The same selected
+   authenticated client supplies a single-use relay token in a pairing response that echoes the `bootstrap_id`,
    nonce and every pinned field. The extension rejects any mismatch, including
-   a different well-formed P-256 kernel key, relay, daemon or destination. Both
-   pasted inputs are cleared from the DOM immediately.
+   a different well-formed P-256 kernel key, relay, daemon or destination. Web
+   reuses its first ephemeral sender key and sends `{binding,pairing}` only as a
+   second authenticated encrypted envelope; the raw token never enters extension DOM.
 4. A direct connector-to-relay socket must match the independently pinned daemon
    and kernel key; a handshake cannot replace the bootstrap key. The same sender
    key is retained for every consent and source-read request.
@@ -59,23 +62,46 @@ Pairing is attended, independently anchored and one-use:
    `*://<confirmed-host>/*` origins. No consent round trip or cookie read precedes
    that gesture.
 6. Closing/cancelling aborts owned waits, sends the bounded existing kernel
-   cancellation, closes the relay, ignores late replies and reports a fixed
-   result code. The extension does not retry one-use operations.
+   cancellation, closes the relay and ignores late replies. The UI reports
+   cancellation only when the kernel confirms it; an unconfirmed request is
+   displayed as quarantined pending recovery. The extension does not retry
+   one-use operations.
 
 Before the confirmation gesture, the connector snapshots `cookies` and each
 exact host permission independently and reserves those needs with the shared MV3
 service worker. Chrome's permission-added event plus post-grant activation marks
-only grants absent from that snapshot as connector-owned. Completion, denial,
-cancellation, timeout, page disconnect and delivery failure all release the
+only grants absent from that snapshot as connector-owned. Definitive denial
+discards pending ownership. Only an interrupted permission prompt can create a
+possible-late-acquisition record, and that metadata expires after two minutes.
+Completion, denial,
+cancellation, timeout, explicit page release, tab close and delivery failure all release the
 lease. A grant is removed only when connector-owned and no other active connector
 page needs it; permissions that predated the operation are never removed.
 
-The connector declares no storage permission and uses no extension storage,
-content script, externally connectable endpoint, web-accessible resource or page
-message bridge. Cookie values exist only in the short-lived source batch passed
+The coordinator stores only its versioned operation ID, owner tab/document IDs, exact
+permission names/origins, preexisting/acquired/pending sets and active state in
+`chrome.storage.session`. This Chrome-120-supported worker-lifecycle seam lets a
+fresh service worker recover leases idempotently, coordinate concurrent pages,
+and retry late-grant cleanup from a 30-second alarm without busy polling. A port
+disconnect is not treated as page close because service-worker suspension also
+disconnects ports. Recovery uses `runtime.getContexts` to require the exact live
+connector URL and document ID, so navigation, reload, document replacement and
+tab removal tear down the old lease while a worker restart preserves it.
+The connector uses no local/sync extension storage, content script,
+web-accessible resource or page-message bridge. Its narrow
+`externally_connectable` external port admits only the two exact hosted origins;
+the service worker additionally validates origin, sender, normal-profile tab,
+stable extension identity, connector session, request and operation nonce before
+forwarding bounded frames. Cookie values exist only in the short-lived source batch passed
 to the private delivery adapter. They never enter extension storage, DOM text,
 logs, browser history, analytics, prompts, screenshots, pairing data, progress,
 results, consent requests or other public protocol requests.
+
+The `storage.session` permission-lease records, alarms and owner-document checks
+remain additive to the external-port broker. Those records are bounded metadata
+only; cookie and relay-credential values remain forbidden. The explicit
+`browser_import_cancellation_unconfirmed` outcome is routed to Web as
+recovery-required rather than reported as cancellation success.
 
 ### Final-delivery adapter contract
 
@@ -91,21 +117,23 @@ never accepts cookie values.
 
 ### Runtime and Web integration
 
-The packaged connector now implements the runtime half. Remaining Web work is:
+Build/sign this package first and copy `browser-import-extension-id.txt` into the
+hosted Web build as `CHARIOX_BROWSER_IMPORT_EXTENSION_ID`. The selected View's
+direct adapter must call `browserImportFinalDeliveryMetadata()` on that View's
+own authenticated `BrowserKernelClient`; it must not use a process-global client
+or Cloud HTTP handler. Availability remains false until that method returns the
+exact protocol-321 `browser_import_final_delivery` capability-v1 metadata and the
+signed extension ID is present.
 
-1. In chariox-cloud branch `codex/browser-import-product-ui`, replace
-   `configuredBrowserImportProductAdapter = null` only with an adapter using the
-   Web client's existing direct kernel/relay transport. `detect()` must expose
-   metadata only. `start(selection)` creates one request ID, first returns the
-   authenticated immutable bootstrap for the selected kernel, and only then
-   returns the nonce-bound pairing response for that same bootstrap. It returns
-   one idempotently cancellable handle. Do not send runtime payloads through a
-   Cloud HTTP handler.
-2. Forward progress with that exact request ID and selected-domain count. Accept
-   completion only from the authoritative kernel result; the extension and Web
-   UI must never infer success from permission grant, source read or socket send.
-3. Run the connector regressions here, the compatible runtime command tests and
-   the Web adapter/coordinator/entry tests together before enabling the capability.
+The adapter opens `chariox-browser-import-v1`, binds all frames to the connector
+session, target binding, Room/session, daemon, kernel key, request, operation
+nonce and expiry, and sends the bootstrap and token-bearing pairing only as the
+encrypted envelopes described above. It accepts completion only after `ready`
+and from the exact ordered authoritative `{domain,status}` result (`imported`,
+`sign_in_required`, or `unsupported`) for every frozen confirmed domain. It
+cancels once on abort, unmount, disconnect or expiry and rejects stale results.
+Run the OSS packaged bridge tests with the Cloud adapter/coordinator/entry tests
+before enabling the capability.
 
 ## Standard managed-browser boundary
 
@@ -462,9 +490,11 @@ cannot start from an unclaimed approval.
 
 The grant-aware reader wires these requests to the source authorization
 checkpoints. Protocol 321 and `browser_import_final_delivery` v1 wire the paired
-connector's encrypted delivery to the private destination claim. No public
-cookie-apply request exists. The remaining product dependency is the Web adapter
-that issues the authenticated bootstrap/pairing response and presents progress.
+connector's encrypted delivery to the private destination claim. The MV3
+connector supplies the attended pairing and permission UX. No public cookie-apply
+request exists. The remaining product dependency is the reviewed Web adapter
+that issues the authenticated bootstrap/pairing response and presents progress,
+followed by live signed validation.
 
 `applyCookieImport` and `createCdpCookieStore` provide the destination operation
 used by the private bound browser-controller process. It is not exposed through
@@ -636,6 +666,8 @@ and overwrite choice. Approval, claim and active authorization compare that
 immutable binding. Requests expire after two minutes. Concurrent claims have
 one winner; cancellation revokes authorization without freeing an active
 Environment slot until the trusted executor reports verification or recovery.
+Normal completion accepts only an applying admission; a cancelled admission can
+be retired only by the durable recovery-completion path.
 The ledger holds at most 128 bounded metadata records and never stores cookies.
 Unclaimed expired entries are reclaimed; active or cancelled writers remain
 reserved until completion. A fresh kernel rejects old request IDs.
@@ -648,9 +680,16 @@ under exclusive Environment ownership, and creates durable quarantine before
 routing the private controller command. The controller fence and encrypted
 journal provide writer exclusion, verification, rollback, and fail-closed cleanup.
 Kernel-owned controller startup/reconnect resumes matching cleanup or performs
-rollback before releasing quarantine. Active cancellation is routed by request
-ID to the worker and acknowledged only after the controller stops advancing the
-transaction. Results contain exact metadata-only coverage of the selected domains.
+rollback before releasing quarantine. Active cancellation is bound to the exact
+request/execution ID in both the Rust stdio path and Node controller registry.
+The kernel plans that identity before controller dispatch, making cancellation
+before execution registration a terminal pre-dispatch fence. If cancellation
+races the plan itself, admission revalidation rejects dispatch and the kernel
+drains the destination guard before completing durable recovery. It passes an
+`AbortSignal` through the production destination/transaction, and is
+acknowledged to the caller only after the controller stops and authoritative
+rollback/cleanup releases durable quarantine. Results contain exact metadata-only
+coverage of the selected domains.
 
 The bridge is called only by the private protocol-321 delivery path after the
 home kernel consumes sender-bound consent and creates durable quarantine. The
@@ -659,9 +698,9 @@ connection and accepts only the exact authoritative per-domain result. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
 
-Remaining product work is enabling the guarded hosted Web bootstrap and
-progress/results adapter only for that exact capability. Add managed
-process/browser-crash acceptance drills before claiming broad service portability.
+Remaining release work is integrating the guarded kernel capability advertisement,
+injecting the ID from the signed package into the hosted build, and running the
+managed process/browser-crash acceptance drills before claiming broad service portability.
 
 Run `browser-import-production-path-drill.test.mjs` for the focused protocol-321
 drill. It uses a runtime-generated value and disposable private home, exercises

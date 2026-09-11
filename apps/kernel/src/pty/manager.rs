@@ -121,7 +121,13 @@ struct PtyOutputSignalState {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PtyProcessState {
     Running,
-    Exited,
+    Exited { exit_code: u32 },
+}
+
+impl PtyProcessState {
+    pub fn is_exited(self) -> bool {
+        matches!(self, Self::Exited { .. })
+    }
 }
 
 struct PtyProcess {
@@ -129,7 +135,7 @@ struct PtyProcess {
     master: Box<dyn MasterPty + Send>,
     input_writer: PtyInputWriter,
     output_rx: Receiver<Vec<u8>>,
-    exited: bool,
+    exit_code: Option<u32>,
     reference_count: usize,
 }
 
@@ -351,7 +357,7 @@ impl PtyManager {
                 master: pair.master,
                 input_writer,
                 output_rx,
-                exited: false,
+                exit_code: None,
                 reference_count: 1,
             },
         );
@@ -514,7 +520,7 @@ impl PtyManager {
             });
         }
 
-        if !process.exited {
+        if process.exit_code.is_none() {
             let status = process
                 .child
                 .try_wait()
@@ -522,9 +528,9 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                     message: error.to_string(),
                 })?;
-            process.exited = status.is_some();
+            process.exit_code = status.map(|status| status.exit_code());
         }
-        if process.exited {
+        if process.exit_code.is_some() {
             if let Ok(bytes) = process
                 .output_rx
                 .recv_timeout(std::time::Duration::from_millis(50))
@@ -556,8 +562,8 @@ impl PtyManager {
             }
         })?;
 
-        if process.exited {
-            return Ok(PtyProcessState::Exited);
+        if let Some(exit_code) = process.exit_code {
+            return Ok(PtyProcessState::Exited { exit_code });
         }
 
         let status = process
@@ -568,9 +574,10 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
 
-        if status.is_some() {
-            process.exited = true;
-            Ok(PtyProcessState::Exited)
+        if let Some(status) = status {
+            let exit_code = status.exit_code();
+            process.exit_code = Some(exit_code);
+            Ok(PtyProcessState::Exited { exit_code })
         } else {
             Ok(PtyProcessState::Running)
         }

@@ -8,7 +8,7 @@ use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
 };
 
-use super::provider_liveness::poll_provider_run_process_running;
+use super::provider_liveness::{poll_provider_run_process_exit, ProviderProcessExit};
 
 pub(crate) struct ProviderLaunchProcessRuntime<'a> {
     app: &'a mut DaemonApp,
@@ -61,8 +61,11 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         remove_provider_pty_process(self.app, provider_run_id)
     }
 
-    pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        poll_provider_run_process_running(self.app, provider_run_id)
+    pub(crate) fn poll_exit(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Option<ProviderProcessExit>, DaemonError> {
+        poll_provider_run_process_exit(self.app, provider_run_id)
     }
 }
 

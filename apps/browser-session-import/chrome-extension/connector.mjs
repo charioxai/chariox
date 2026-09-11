@@ -2,19 +2,17 @@ import {createRelayKeypair,relayPublicKeyThumbprint}
   from '../../../packages/kernel-client/src/browser-relay-crypto.js';
 import {prepareChromeCookieImport} from '../chrome-import-consent-flow.mjs';
 import {connectBrowserImportRelay} from '../relay-connector.mjs';
-import {acceptAuthenticatedBootstrap,acceptPairingEnvelope,createPairingChallenge,metadataOnlyDiscovery,
+import {createPairingChallenge,metadataOnlyDiscovery,
   publicFailure,publicProgress,publicResult} from './connector-core.mjs';
 import {deliverBrowserImport} from './delivery-adapter.mjs';
 import {createChromePermissionLifecycle} from './permission-coordinator.mjs';
+import {acceptEncryptedBootstrap,acceptEncryptedPairing,publicBridgeFailure,
+  publicBridgeProgress,publicBridgeResult} from './web-bridge-protocol.mjs';
 
 const element = id => document.getElementById(id);
 const sourceText = element('source');
-const bootstrapSection = element('bootstrap');
-const enrollSection = element('enroll');
+const pairingSection = element('pairing');
 const confirmSection = element('confirm');
-const bootstrapRequestText = element('bootstrap-request');
-const pairingRequestText = element('pairing-request');
-const responseText = element('response');
 const statusText = element('message');
 const lifetime = new AbortController();
 let flow;
@@ -24,6 +22,8 @@ let busy = false;
 let sender;
 let discovered;
 let challenge;
+let webPort;
+let webSession;
 
 void initialize();
 
@@ -33,52 +33,12 @@ async function initialize() {
     const tab = await chrome.tabs.get(sourceTabId);
     discovered = metadataOnlyDiscovery({sourceTabId,url:tab.url,incognito:tab.incognito});
     sender = await createRelayKeypair();
-    const thumbprint = await relayPublicKeyThumbprint(sender.publicKeyBase64);
-    const bootstrapRequest = {version:1,connector_sender_public_key:sender.publicKeyBase64,
-      connector_sender_thumbprint:thumbprint,
-      source:{current_profile:true,hostname:discovered.hostname,store_id:'0'}};
-    bootstrapRequestText.value = JSON.stringify(bootstrapRequest,null,2);
     sourceText.textContent = `Current Chrome profile · ${discovered.hostname}`;
-    bootstrapSection.hidden = false;
-    element('copy-bootstrap').addEventListener('click',() => void navigator.clipboard.writeText(bootstrapRequestText.value));
-    element('pin').addEventListener('click',() => void pinDestination());
-    element('copy-pairing').addEventListener('click',() => void navigator.clipboard.writeText(pairingRequestText.value));
-    element('pair').addEventListener('click',() => void pairDestination());
+    connectWebBridge();
   } catch (error) { show(publicFailure(error)); }
 }
 
-async function pinDestination() {
-  if (busy || challenge) return;
-  busy = true;
-  const input = element('bootstrap-response');
-  try {
-    if (input.value.length > 65536) throw denied();
-    const anchor = acceptAuthenticatedBootstrap(JSON.parse(input.value),{senderPublicKey:sender.publicKeyBase64,
-      discovered});
-    challenge = createPairingChallenge({senderPublicKey:sender.publicKeyBase64,
-      nonceBytes:crypto.getRandomValues(new Uint8Array(16)),discovered,bootstrap:anchor});
-    pairingRequestText.value = JSON.stringify({version:1,bootstrap_id:challenge.bootstrap_id,
-      enrollment_nonce:challenge.enrollment_nonce,connector_sender_public_key:challenge.connector_sender_public_key,
-      source:challenge.source},null,2);
-    const kernelThumbprint = await relayPublicKeyThumbprint(anchor.kernelPublicKey);
-    element('destination').textContent = `Pinned session ${anchor.selection.session_id}, environment ${anchor.selection.environment_id}, kernel ${kernelThumbprint}`;
-    bootstrapSection.hidden = true;
-    enrollSection.hidden = false;
-  } catch (error) { show(publicFailure(error)); }
-  finally { input.value = ''; busy = false; }
-}
-
-async function pairDestination() {
-  if (busy || pairing) return;
-  busy = true;
-  try {
-    let envelope;
-    try {
-      if (responseText.value.length > 65536) throw denied();
-      envelope = JSON.parse(responseText.value);
-    }
-    finally { responseText.value = ''; }
-    pairing = acceptPairingEnvelope(envelope,challenge);
+async function establishPairing() {
     if (pairing.senderPublicKey !== sender.publicKeyBase64) throw denied();
     let relayToken = pairing.relayAuthToken;
     relay = await connectBrowserImportRelay({relayUrl:pairing.relayUrl,authToken:relayToken,
@@ -97,17 +57,21 @@ async function pairDestination() {
       item.textContent = domain;
       list.append(item);
     }
-    enrollSection.hidden = true;
+    pairingSection.hidden = true;
     confirmSection.hidden = false;
     statusText.textContent = 'Review the destination and exact hosts before continuing.';
-  } catch (error) {
-    await flow?.cancel();
-    flow = undefined;
-    pairing = undefined;
-    relay?.close();
-    relay = undefined;
-    show(publicFailure(error));
-  } finally { busy = false; }
+    if (webSession?.binding) sendWeb({type:'browser_import.ready.v1',...webBinding()});
+}
+
+async function pairingFailed(error) {
+  await flow?.cancel();
+  flow = undefined;
+  pairing = undefined;
+  relay?.close();
+  relay = undefined;
+  const failure=publicFailure(error);
+  show(failure);
+  sendWebFailure(failure.code);
 }
 
 // This handler must remain a direct click handler. confirmAndDeliver synchronously
@@ -116,7 +80,9 @@ async function pairDestination() {
 element('start').addEventListener('click',() => {
   if (busy || !flow) return;
   busy = true;
-  show(publicProgress('requesting_permission',0,pairing.selection.domains.length));
+  const progress=publicProgress('requesting_permission',0,pairing.selection.domains.length);
+  show(progress);
+  sendWebProgress(progress);
   const delivery = flow.confirmAndDeliver((value,options) =>
     deliverBrowserImport({deliver:relay.deliver,...value},options));
   void finishImport(delivery);
@@ -124,12 +90,18 @@ element('start').addEventListener('click',() => {
 
 async function finishImport(delivery) {
   try {
-    show(publicProgress('verifying_consent',0,pairing.selection.domains.length));
+    const progress=publicProgress('verifying_consent',0,pairing.selection.domains.length);
+    show(progress);
+    sendWebProgress(progress);
     const result = await delivery;
-    show(publicResult(result,{requestId:flow.requestId,confirmedDomains:flow.selection.domains}));
+    const published=publicResult(result,{requestId:flow.requestId,confirmedDomains:flow.selection.domains});
+    show(published);
+    sendWebResult(published,flow.selection.domains);
   } catch (error) {
     await flow?.cancel();
-    show(publicFailure(error));
+    const failure=publicFailure(error);
+    show(failure);
+    sendWebFailure(failure.code);
   } finally {
     await flow?.releasePermissions();
     busy = false;
@@ -137,17 +109,92 @@ async function finishImport(delivery) {
 }
 
 element('cancel').addEventListener('click',() => void cancelImport());
-addEventListener('pagehide',() => { lifetime.abort(); void flow?.cancel(); relay?.close(); },{once:true});
+addEventListener('pagehide',() => { lifetime.abort(); void flow?.cancel(); relay?.close(); webPort?.disconnect(); },{once:true});
 
 async function cancelImport() {
   if (busy && !flow) return;
   lifetime.abort();
-  await flow?.cancel();
+  const cancellation = await flow?.cancel();
   relay?.close();
-  show({type:'result',status:'failed',code:'cookie_source_cancelled'});
+  const code=cancellation?.kernelCancellationConfirmed === true
+    ? 'cookie_source_cancelled' : 'browser_import_cancellation_unconfirmed';
+  show({type:'result',status:'failed',code});
   element('start').disabled = true;
   element('cancel').disabled = true;
+  sendWebFailure(code);
 }
+
+function connectWebBridge() {
+  try {
+    const connectorSessionId=crypto.randomUUID().replaceAll('-','');
+    webPort=chrome.runtime.connect({name:'browser-import-web-session-v1'});
+    webPort.onMessage.addListener(value=>void receiveWeb(value));
+    webPort.onDisconnect.addListener(()=>void webBridgeDisconnected());
+    webPort.postMessage({type:'browser_import.connector_ready.v1',connector_session_id:connectorSessionId,
+      connector_sender_public_key:sender.publicKeyBase64,
+      source:{current_profile:true,hostname:discovered.hostname,store_id:'0'}});
+    webSession={connectorSessionId,binding:null,webSenderPublicKey:null};
+  } catch { webPort=undefined; webSession=undefined; }
+}
+
+async function webBridgeDisconnected() {
+  if (!webSession) return;
+  webSession=undefined;
+  lifetime.abort();
+  await flow?.cancel();
+  await flow?.releasePermissions();
+  relay?.close();
+  element('start').disabled=true;
+  show({type:'result',status:'failed',code:'connector_unavailable'});
+}
+
+async function receiveWeb(value) {
+  if (!webSession || busy) return;
+  if (value?.type === 'browser_import.cancel.v1') {
+    if (webSession.binding && value.request_id===webSession.binding.request_id
+        && value.operation_nonce===webSession.binding.operation_nonce
+        && value.connector_session_id===webSession.connectorSessionId) await cancelImport();
+    return;
+  }
+  busy=true;
+  try {
+    if (value?.type === 'browser_import.bootstrap_envelope.v1' && !webSession.binding) {
+      const accepted=await acceptEncryptedBootstrap(value,{connector:sender,discovered,
+        connectorSessionId:webSession.connectorSessionId});
+      webSession.binding=accepted.binding;
+      webSession.webSenderPublicKey=accepted.webSenderPublicKey;
+      challenge=createPairingChallenge({senderPublicKey:sender.publicKeyBase64,
+        nonceBytes:crypto.getRandomValues(new Uint8Array(16)),discovered,bootstrap:accepted.bootstrap});
+      const kernelThumbprint=await relayPublicKeyThumbprint(accepted.bootstrap.kernelPublicKey);
+      element('destination').textContent=`Pinned session ${accepted.bootstrap.selection.session_id}, environment ${accepted.bootstrap.selection.environment_id}, kernel ${kernelThumbprint}`;
+      pairingSection.hidden=false;
+      sendWeb({type:'browser_import.challenge.v1',...webBinding(),challenge:{version:1,
+        bootstrap_id:challenge.bootstrap_id,enrollment_nonce:challenge.enrollment_nonce,
+        connector_sender_public_key:challenge.connector_sender_public_key}});
+    } else if (value?.type === 'browser_import.pairing_envelope.v1' && webSession.binding && !pairing) {
+      pairing=await acceptEncryptedPairing(value,{connector:sender,challenge,binding:webSession.binding,
+        webSenderPublicKey:webSession.webSenderPublicKey});
+      await establishPairing();
+    } else throw denied();
+  } catch (error) { await pairingFailed(error); }
+  finally { busy=false; }
+}
+
+function webBinding() {
+  if (!webSession?.binding) throw denied();
+  return webSession.binding;
+}
+function webContext() {
+  const binding=webSession?.binding;
+  if (!binding) throw denied();
+  return {requestId:binding.request_id,operationNonce:binding.operation_nonce,
+    connectorSessionId:binding.connector_session_id,binding};
+}
+function sendWeb(value) { try { if (webPort && webSession?.binding) webPort.postMessage(value); } catch { /* disconnected */ } }
+function sendWebProgress(value) { if (webSession?.binding) sendWeb(publicBridgeProgress(value,webContext())); }
+function sendWebResult(value,confirmedDomains) { if (webSession?.binding) sendWeb(publicBridgeResult(value,
+  {...webContext(),confirmedDomains})); }
+function sendWebFailure(code) { if (webSession?.binding) sendWeb(publicBridgeFailure(code,webContext())); }
 
 function show(message) {
   if (message.type === 'progress') {
@@ -167,6 +214,7 @@ function show(message) {
 function failureLabel(code) {
   if (code === 'browser_import_delivery_unavailable') return 'This connector needs the production browser-import runtime delivery command.';
   if (code === 'cookie_source_cancelled') return 'Import cancelled.';
+  if (code === 'browser_import_cancellation_unconfirmed') return 'Cancellation could not be confirmed. The Environment remains quarantined pending recovery.';
   if (code === 'cookie_source_timeout') return 'Import expired. Start again.';
   if (code === 'connector_pairing_denied') return 'Pairing was rejected. Create a new pairing response in Chariox.';
   return 'Import could not continue. No cookies were delivered.';

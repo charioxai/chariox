@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use chariox_relay::protocol::ClientTarget;
-
 use super::*;
 
 impl KernelRuntimeState {
@@ -26,22 +24,22 @@ impl KernelRuntimeState {
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         let response_timeout =
             room_browser_runtime_tool_response_timeout(&relay_config, tool_name, &arguments);
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(context.home_kernel_id.clone()),
-                daemon_alias: None,
+        let home_kernel_id = context.home_kernel_id.clone();
+        let request = RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+            context,
+            call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
+                tool_name: tool_name.to_string(),
+                arguments,
             },
-            RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
-                context,
-                call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
-                    tool_name: tool_name.to_string(),
-                    arguments,
-                },
-            },
-            response_timeout,
-        )
-        .await?;
+        };
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                request,
+                response_timeout,
+            )
+            .await?;
         match response {
             RelayPeerResponse::RoomBrowserRuntimeToolHandled { result } => Ok(Some(result.0)),
             other => Err(DaemonError::LocalTransport {

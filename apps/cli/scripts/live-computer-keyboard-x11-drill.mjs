@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url"
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")
 const screen = path.join(repo, "apps/kernel/slice-linux-docker/docker/slice-screen.sh")
+const chromiumPreflight = path.join(repo, "apps/cli/scripts/lib/chromium-sandbox-preflight.mjs")
+const chromiumSeccomp = path.join(repo, "apps/kernel/slice-linux-docker/chromium-seccomp.json")
 const stamp = new Date().toISOString().replace(/[:.]/g, "-")
 const container = `chariox-keyboard-x11-${process.pid}`
 const root = "/tmp/chariox-keyboard-x11"
@@ -91,15 +93,18 @@ try {
   report.keyboardSha256 = createHash("sha256").update(await readFile(path.join(path.dirname(screen), "slice-keyboard.py"))).digest("hex")
   report.imageId = (await docker(["image", "inspect", "--format", "{{.Id}}", image])).trim()
   await resources("before")
-  await docker(["run", "-d", "--rm", "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--entrypoint", "/bin/sleep", image, "infinity"])
+  await docker(["run", "-d", "--rm", "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--security-opt", `seccomp=${chromiumSeccomp}`, "--entrypoint", "/bin/sleep", image, "infinity"])
   await docker(["exec", "-u", "root", container, "mkdir", "-p", root])
   await docker(["cp", screen, `${container}:${root}/slice-screen.sh`])
   await docker(["cp", path.join(path.dirname(screen), "slice-keyboard.py"), `${container}:${root}/slice-keyboard.py`])
+  await docker(["cp", chromiumPreflight, `${container}:${root}/chromium-sandbox-preflight.mjs`])
   await docker(["exec", "-u", "root", container, "chown", "-R", "slice:slice", root])
+  await exec(["chmod", "0700", root])
+  await exec(["node", `${root}/chromium-sandbox-preflight.mjs`, "chromium", profile, `${root}/runtime`])
   await exec(["node", "-e", "const fs=require('node:fs');let data='';process.stdin.on('data',c=>data+=c);process.stdin.on('end',()=>fs.writeFileSync(process.argv[1],data));", `${root}/fixture.html`], '<!doctype html><input id="input" type="password" autofocus><textarea id="multiline"></textarea><script>window.busy=false;setInterval(()=>{if(!busy)return;const end=performance.now()+120;while(performance.now()<end){}},160)</script>')
   await docker(["exec", "-d", "-u", "slice", container, "Xvfb", ":99", "-screen", "0", "1280x800x24", "-ac", "+extension", "XTEST"])
   await pause(500)
-  await docker(["exec", "-d", "-u", "slice", "-e", "DISPLAY=:99", container, "chromium", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", `--user-data-dir=${profile}`, "--remote-debugging-port=9222", `file://${root}/fixture.html`])
+  await docker(["exec", "-d", "-u", "slice", "-e", "DISPLAY=:99", "-e", `XDG_RUNTIME_DIR=${root}/runtime`, container, "chromium", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", `--user-data-dir=${profile}`, "--remote-debugging-port=9222", `file://${root}/fixture.html`])
   let ready = false
   for (let attempt = 0; attempt < 60 && !ready; attempt++) {
     if (interrupted) throw new Error("drill interrupted")

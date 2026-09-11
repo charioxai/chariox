@@ -5,7 +5,10 @@ import type {
   SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import { getRoomEnvironmentSliceRequest } from "@chariox/kernel-client/ipc-requests"
+import {
+  DEFAULT_HEADED_SLICE_DISPLAY_BACKEND,
+  getRoomEnvironmentSliceRequest,
+} from "@chariox/kernel-client/ipc-requests"
 import type { RoomEnvironmentSliceResponse } from "@chariox/kernel-client/kernel-types"
 import { scopedSliceViewerTarget } from "@chariox/kernel-client/slice-screen-viewer"
 import {
@@ -713,7 +716,11 @@ async function createSlice(
     name: parsed.name,
     ...(parsed.backend !== undefined ? { backend: parsed.backend } : {}),
     ...(parsed.displayMode !== undefined ? { displayMode: parsed.displayMode } : {}),
-    ...(parsed.displayBackend !== undefined ? { displayBackend: parsed.displayBackend } : {}),
+    ...(parsed.displayMode === "headed"
+      ? { displayBackend: parsed.displayBackend ?? DEFAULT_HEADED_SLICE_DISPLAY_BACKEND }
+      : parsed.displayBackend !== undefined
+        ? { displayBackend: parsed.displayBackend }
+        : {}),
     ...(parsed.workspaceId !== undefined ? { workspaceId: parsed.workspaceId } : {}),
     ...(parsed.worktreeId !== undefined ? { worktreeId: parsed.worktreeId } : {}),
     ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),

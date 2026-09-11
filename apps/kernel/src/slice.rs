@@ -338,8 +338,27 @@ mod tests {
                 .display_endpoint("dev")
                 .expect("display endpoint should resolve")
                 .capabilities,
-            vec!["view", "keyboard", "mouse"]
+            vec!["view", "websocket", "h264", "software_encoding"]
         );
+    }
+
+    #[test]
+    fn durable_novnc_endpoint_keeps_legacy_viewer_routing() {
+        let store = SliceStore::default();
+        let mut input = create_input("legacy-novnc");
+        input.display_backend = SliceDisplayBackend::Novnc;
+        let slice = store
+            .create("kernel-1", "machine-1", input)
+            .expect("legacy noVNC slice should create");
+
+        assert_eq!(
+            slice
+                .display_endpoint
+                .as_ref()
+                .map(|endpoint| &endpoint.kind),
+            Some(&SliceDisplayEndpointKind::Novnc)
+        );
+        assert_eq!(slice.display_backend(), SliceDisplayBackend::Novnc);
     }
 
     #[test]

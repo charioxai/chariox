@@ -4,9 +4,12 @@
   "description": "Attended, encrypted import from this Chrome profile to a selected Chariox browser session.",
   "version": "0.1.0",
   "minimum_chrome_version": "120",
-  "permissions": ["activeTab"],
+  "permissions": ["activeTab", "storage", "alarms"],
   "optional_permissions": ["cookies"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "externally_connectable": {
+    "matches": ["https://chariox.com/*", "https://staging.chariox.com/*"]
+  },
   "background": {
     "service_worker": "apps/browser-session-import/chrome-extension/background.mjs",
     "type": "module"

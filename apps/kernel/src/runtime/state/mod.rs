@@ -48,6 +48,7 @@ mod environment_execution_gate;
 mod event_delivery_runtime_state;
 mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
+mod leased_agent_operations;
 mod managed_activity_runtime_state;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
@@ -65,6 +66,7 @@ mod room_screenshot;
 pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
 }
@@ -242,6 +244,8 @@ mod capability_owned_state;
 mod detached_provider_run_owned_state;
 mod owned;
 mod pending_runtime_state;
+mod remote_agent_profile_runtime;
+mod remote_profile_account_runtime;
 use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
@@ -273,6 +277,7 @@ mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
+mod agent_substitute_transition_owned_state;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
@@ -283,6 +288,7 @@ mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
+mod remote_provider_failure_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
@@ -507,6 +513,7 @@ impl KernelRuntimeState {
         Self {
             app,
             provider_runtime_lanes,
+            leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
                 config_projection,

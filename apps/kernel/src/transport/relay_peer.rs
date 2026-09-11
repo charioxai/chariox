@@ -74,9 +74,30 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 46 requires cancellable browser lifecycle operations and receipt recovery.
 /// Version 47 carries the workspace kind in managed-context import receipts.
 /// Version 48 carries private browser-cookie import commands and bounded results.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 49;
+/// Version 50 carries bounded provider-run termination metadata across leased execution.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 50;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
+
+/// Home-selected execution identity for a leased prompt. Contains no credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayAgentExecutionProfile {
+    pub provider: String,
+    pub account_profile: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl From<&crate::agent::AgentInstance> for RelayAgentExecutionProfile {
+    fn from(agent: &crate::agent::AgentInstance) -> Self {
+        Self {
+            provider: agent.provider().to_string(),
+            account_profile: agent.provider_account_profile().to_string(),
+            model: agent.model().map(str::to_string),
+            effort: agent.effort().map(str::to_string),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -618,6 +639,7 @@ pub enum RelayPeerRequest {
     },
     SubmitLeasedPrompt {
         leased_agent_id: String,
+        expected_profile: RelayAgentExecutionProfile,
         prompt: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         hidden_system_context: String,
@@ -671,10 +693,6 @@ pub enum RelayPeerRequest {
         context: RemoteWorkflowTurnContext,
         tool_name: String,
         arguments: serde_json::Value,
-    },
-    ForwardWorkflowProviderFailure {
-        context: RemoteWorkflowTurnContext,
-        message: String,
     },
     ForwardWorkspaceLiveSyncRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext,
@@ -894,6 +912,8 @@ pub enum RelayPeerResponse {
         provider_run_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_diagnostic: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         git_observations: Vec<RemoteGitObservation>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -913,7 +933,6 @@ pub enum RelayPeerResponse {
     WorkflowRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
-    WorkflowProviderFailureHandled,
     WorkspaceLiveSyncRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
@@ -998,6 +1017,8 @@ pub struct RelayProjectedCompletion {
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1026,6 +1047,70 @@ pub enum RelayPeerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn leased_completion_provider_termination_shape_is_versioned() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+        let completion = RelayProjectedCompletion {
+            message_id: "assistant-msg-1".to_string(),
+            completed_at_ms: 1_234,
+            home_prompt_id: Some("home-prompt-1".to_string()),
+            provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
+                137, 1_234,
+            )),
+        };
+        let snapshot = serde_json::to_value(completion).expect("completion should serialize");
+        assert_eq!(
+            snapshot.pointer("/provider_termination/category"),
+            Some(&serde_json::json!("process_exit")),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/reason"),
+            Some(&serde_json::json!(
+                "provider process exited with status 137"
+            )),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/timestamp_ms"),
+            Some(&serde_json::json!(1_234)),
+        );
+        let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
+        let hash = Sha256::digest(serialized.as_bytes());
+        assert_eq!(
+            format!("{hash:x}"),
+            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+        );
+    }
+
+    #[test]
+    fn retired_workflow_failure_forwarding_is_not_an_accepted_peer_protocol_path() {
+        let request = serde_json::json!({
+            "kind": "forward_workflow_provider_failure",
+            "context": {
+                "home_kernel_id": "home",
+                "home_session_id": "room",
+                "home_agent_id": "agent",
+                "workflow_run_id": "run",
+                "workflow_node_run_id": "node",
+                "delivery_token": "test-turn",
+                "event_reply_enabled": false,
+                "event_context_enabled": false,
+                "event_actions_enabled": false
+            },
+            "message": "provider capacity exhausted"
+        });
+        assert!(
+            serde_json::from_value::<RelayPeerRequest>(request).is_err(),
+            "provider failures must use correlated runtime projection, not a second RPC"
+        );
+        assert!(
+            serde_json::from_value::<RelayPeerResponse>(serde_json::json!({
+                "kind": "workflow_provider_failure_handled"
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn managed_slice_relay_token_keeps_wire_shape_and_redacts_debug_output() {

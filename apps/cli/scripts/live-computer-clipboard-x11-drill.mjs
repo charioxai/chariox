@@ -27,6 +27,14 @@ const screenTool = path.join(
   "docker",
   "slice-screen.sh",
 )
+const chromiumPreflight = path.join(scriptDir, "lib", "chromium-sandbox-preflight.mjs")
+const chromiumSeccomp = path.join(
+  repoRoot,
+  "apps",
+  "kernel",
+  "slice-linux-docker",
+  "chromium-seccomp.json",
+)
 const image = process.env.CHARIOX_SLICE_IMAGE ?? "chariox-slice-linux:0.1.0"
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${process.pid}`
 const containerName = `chariox-computer-clipboard-x11-${process.pid}`
@@ -380,6 +388,8 @@ async function main() {
       "256",
       "--network",
       "none",
+      "--security-opt",
+      `seccomp=${chromiumSeccomp}`,
       "--entrypoint",
       "/bin/sleep",
       image,
@@ -439,6 +449,7 @@ async function main() {
     ])
     await docker(["cp", screenTool, `${containerName}:${containerRoot}/slice-screen.sh`])
     await docker(["cp", failureXclip, `${containerName}:${containerRoot}/fail-bin/xclip`])
+    await docker(["cp", chromiumPreflight, `${containerName}:${containerRoot}/chromium-sandbox-preflight.mjs`])
     await docker([
       "exec",
       "-u",
@@ -448,6 +459,17 @@ async function main() {
       "-R",
       "slice:slice",
       containerRoot,
+    ])
+    await docker([
+      "exec", "-u", "slice", containerName, "/bin/bash", "-lc",
+      `chmod 0700 ${containerRoot}`,
+    ])
+    await docker([
+      "exec", "-u", "slice", containerName, "node",
+      `${containerRoot}/chromium-sandbox-preflight.mjs`,
+      "chromium",
+      containerProfile,
+      `${containerRoot}/runtime`,
     ])
 
     await docker([
@@ -491,10 +513,12 @@ async function main() {
       "slice",
       "-e",
       "DISPLAY=:99",
+      "-e",
+      `XDG_RUNTIME_DIR=${containerRoot}/runtime`,
       containerName,
       "/bin/bash",
       "-lc",
-      `exec chromium --user-data-dir=${containerProfile} --no-sandbox --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 about:blank >${containerRoot}/chromium.log 2>&1`,
+      `exec chromium --user-data-dir=${containerProfile} --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 about:blank >${containerRoot}/chromium.log 2>&1`,
     ])
     await waitFor(async () => {
       const result = await run("docker", [

@@ -119,6 +119,8 @@ pub struct CompletedGitTurnActionProjection {
     #[serde(default)]
     pub settlement_status: CompletedTurnSettlementStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_termination: Option<crate::provider::ProviderRunTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(default)]
     pub changed_paths: Vec<String>,
@@ -180,6 +182,29 @@ impl CompletedGitTurnSnapshotStore {
         started_at_ms: Option<u64>,
         settlement_status: CompletedTurnSettlementStatus,
     ) {
+        self.record_prompt_settlement_with_termination(
+            session_id,
+            agent_id,
+            provider_run_id,
+            prompt,
+            completed_at_ms,
+            started_at_ms,
+            settlement_status,
+            None,
+        );
+    }
+
+    pub(crate) fn record_prompt_settlement_with_termination(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt: &PromptQueueItem,
+        completed_at_ms: u64,
+        started_at_ms: Option<u64>,
+        settlement_status: CompletedTurnSettlementStatus,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) {
         let mut projection = CompletedGitTurnActionProjection {
             turn_id: prompt.id().to_string(),
             prompt_id: prompt.id().to_string(),
@@ -192,6 +217,7 @@ impl CompletedGitTurnSnapshotStore {
             external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
             completed_at_ms,
             settlement_status,
+            provider_termination,
             duration_ms: started_at_ms
                 .map(|started_at_ms| completed_at_ms.saturating_sub(started_at_ms)),
             changed_paths: Vec::new(),
@@ -288,6 +314,7 @@ impl CompletedGitTurnSnapshotStore {
             (Some(observed), Some(settled)) if observed.prompt_id == settled.prompt_id => {
                 Some(CompletedGitTurnActionProjection {
                     settlement_status: settled.settlement_status,
+                    provider_termination: settled.provider_termination,
                     ..observed
                 })
             }
@@ -360,6 +387,7 @@ impl CompletedGitTurnSnapshot {
             external_provider_turn_id: self.before.external_provider_turn_id.clone(),
             completed_at_ms: self.completed_at_ms,
             settlement_status: CompletedTurnSettlementStatus::Completed,
+            provider_termination: None,
             duration_ms: self.duration_ms,
             changed_paths: self
                 .change

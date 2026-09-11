@@ -17,10 +17,35 @@ pub(crate) struct BrowserImportDestination {
     environment_id: String,
     id: ImportRequestId,
     verified: bool,
+    recovery_completion: bool,
+    binding: Option<ImportBinding>,
     _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
+impl Drop for BrowserImportDestination {
+    fn drop(&mut self) {
+        if let Some(binding) = &self.binding {
+            self.runtime
+                .owned
+                .browser_controller_processes
+                .clear_planned_browser_import(&binding.room_id, self.id.as_str());
+        }
+    }
+}
+
 impl BrowserImportDestination {
+    fn authorize_execution(&self) -> Result<(), DaemonError> {
+        self.runtime
+            .owned
+            .browser_import_admission
+            .authorize_active(
+                &self.id,
+                self.binding.as_ref().ok_or_else(denied)?,
+                Instant::now(),
+            )
+            .map_err(|_| denied())
+    }
+
     /// Trusted executor only, after verified application or rollback. Cleanup
     /// must acknowledge removal of the matching encrypted recovery journal.
     /// Any failure retains the durable admission block for restart recovery.
@@ -35,13 +60,17 @@ impl BrowserImportDestination {
                 .map_err(|_| denied())?;
         }
         cleanup.await.map_err(|_| denied())?;
+        if self.recovery_completion {
+            self.runtime
+                .owned
+                .browser_import_admission
+                .finish_recovery(&self.id)
+        } else {
+            self.runtime.owned.browser_import_admission.finish(&self.id)
+        }
+        .map_err(|_| denied())?;
         store
             .clear_recovered_browser_import(&self.environment_id, self.id.as_str())
-            .map_err(|_| denied())?;
-        self.runtime
-            .owned
-            .browser_import_admission
-            .finish(&self.id)
             .map_err(|_| denied())
     }
 }
@@ -154,6 +183,7 @@ impl KernelRuntimeState {
             environment_id: selection.environment_id.clone(),
         };
         let frozen_domains = selection.domains.clone();
+        destination.authorize_execution()?;
         let result = self
             .room_browser_controller_command(
                 &selection.session_id,
@@ -233,6 +263,8 @@ impl KernelRuntimeState {
             environment_id: environment.environment_id,
             id,
             verified: true,
+            recovery_completion: true,
+            binding: None,
             _guard: guard,
         })
     }
@@ -262,6 +294,8 @@ impl KernelRuntimeState {
             environment_id: pending.environment_id,
             id,
             verified: true,
+            recovery_completion: true,
+            binding: None,
             _guard: guard,
         })
     }
@@ -295,11 +329,17 @@ impl KernelRuntimeState {
                 &binding.room_id,
             )
             .map_err(|_| denied())?;
+        self.owned
+            .browser_controller_processes
+            .plan_browser_import(&binding.room_id, id.as_str())
+            .map_err(|_| denied())?;
         Ok(BrowserImportDestination {
             runtime: self.clone(),
-            environment_id: binding.environment_id,
+            environment_id: binding.environment_id.clone(),
             id,
             verified: false,
+            recovery_completion: false,
+            binding: Some(binding),
             _guard: guard,
         })
     }
@@ -360,11 +400,54 @@ impl KernelRuntimeState {
                     .cancel(&id, &user_id, &request.session_id)
                     .map_err(|_| denied())?;
                 if active {
-                    let response = self.room_browser_controller_command(&request.session_id,
-                        crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelCookieImport {
-                            request_id:id.as_str().to_string(),
-                        }).await?;
-                    if !matches!(response,crate::transport::room_browser_controller::RoomBrowserControllerResult::CancellationRequested { accepted:true }) {
+                    let response = self
+                        .room_browser_controller_command(
+                            &request.session_id,
+                            crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelCookieImport {
+                                request_id: id.as_str().to_string(),
+                            },
+                        )
+                        .await?;
+                    let crate::transport::room_browser_controller::RoomBrowserControllerResult::CancellationRequested { .. } = response else {
+                        return Err(denied());
+                    };
+                    // An accepted controller cancellation confirms the registered
+                    // stdio operation stopped. A false result can only race before
+                    // registration (or after its terminal result); in either case,
+                    // draining the kernel destination guard is the authoritative
+                    // stop fence. Do not acknowledge either path until any durable
+                    // rollback recovery and journal cleanup have also completed.
+                    let guard = self
+                        .owned
+                        .environment_execution_gates
+                        .for_room(&request.session_id)
+                        .write_owned()
+                        .await;
+                    let pending = self
+                        .owned
+                        .durable_state_store
+                        .pending_browser_import_for_room(&request.session_id)?;
+                    let needs_recovery = match pending {
+                        None => false,
+                        Some(ref pending)
+                            if pending.request_id == id.as_str()
+                                && pending.user_id == user_id
+                                && pending.room_id == request.session_id =>
+                        {
+                            true
+                        }
+                        Some(_) => return Err(denied()),
+                    };
+                    drop(guard);
+                    if needs_recovery {
+                        self.recover_pending_browser_import(&request.session_id)
+                            .await?;
+                    }
+                    if self
+                        .owned
+                        .durable_state_store
+                        .browser_import_pending_for_room(&request.session_id)?
+                    {
                         return Err(denied());
                     }
                 }

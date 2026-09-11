@@ -97,6 +97,15 @@ impl ProviderOutputDeadlineStore {
             state.deadlines.pop();
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn contains(&self, provider_run_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("provider output deadline store poisoned")
+            .current
+            .contains_key(provider_run_id)
+    }
 }
 
 #[cfg(test)]

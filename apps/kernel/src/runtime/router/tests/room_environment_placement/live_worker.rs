@@ -1,5 +1,8 @@
 use super::*;
-use chariox_relay::{RelayConfig, RelayServer};
+use chariox_relay::{
+    RelayAction, RelayAuthVerifier, RelayConfig, RelayServer, RelaySubjectKind, RelayTokenClaims,
+    ScopedTokenVerifier,
+};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
@@ -58,33 +61,52 @@ impl LiveWorker {
     }
 
     async fn start_configured(private_relay: bool, browser_controller: bool) -> Self {
-        Self::start_configured_with_home_vault(private_relay, browser_controller, None).await
+        Self::start_configured_with_home_vault(private_relay, browser_controller, None, false).await
     }
 
     async fn start_configured_with_home_vault(
         private_relay: bool,
         browser_controller: bool,
         home_vault_backend: Option<crate::config::CredentialVaultBackend>,
+        managed_slice_worker: bool,
     ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
-        const SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
+        const LOCAL_SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
+        let mut home_state = TestState::new();
+        let mut worker_state = TestState::new();
+        if let Some(backend) = home_vault_backend {
+            home_state.config.user_config.credential_vault.backend = backend;
+        }
+        let slice_token = if managed_slice_worker {
+            managed_slice_runtime_token(&worker_state.config.relay_public_key)
+        } else {
+            LOCAL_SLICE_TOKEN.to_string()
+        };
         let (shutdown, receiver) = watch::channel(false);
         let tokens = if private_relay {
-            vec![SLICE_TOKEN, HOME_TOKEN]
+            vec![slice_token.clone(), HOME_TOKEN.to_string()]
         } else {
-            vec![HOME_TOKEN]
+            vec![HOME_TOKEN.to_string()]
         };
         let mut relays = Vec::new();
         let mut tasks = Vec::new();
         for token in tokens {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
-            let relay = Arc::new(RelayServer::new(RelayConfig {
+            let relay_config = RelayConfig {
                 host: address.ip().to_string(),
                 port: address.port(),
-                shared_token: Some(token.to_string()),
-            }));
+                shared_token: (!managed_slice_worker).then(|| token.to_string()),
+            };
+            let relay = Arc::new(if managed_slice_worker {
+                RelayServer::with_auth_verifier(
+                    relay_config,
+                    managed_slice_relay_auth(&slice_token, &worker_state.config.relay_public_key),
+                )
+            } else {
+                RelayServer::new(relay_config)
+            });
             relays.push((Arc::clone(&relay), address));
             let mut relay_shutdown = receiver.clone();
             tasks.push(tokio::spawn(async move {
@@ -101,11 +123,6 @@ impl LiveWorker {
         let (home_relay, home_address) = relays.last().unwrap();
         let home_registry = home_relay.registry();
 
-        let mut home_state = TestState::new();
-        let mut worker_state = TestState::new();
-        if let Some(backend) = home_vault_backend {
-            home_state.config.user_config.credential_vault.backend = backend;
-        }
         for state in [&mut home_state, &mut worker_state] {
             state.config.relay_url = Some(format!("ws://{address}"));
             state.config.relay_token = Some("environment-worker-fixture".to_string());
@@ -113,11 +130,19 @@ impl LiveWorker {
         }
         home_state.config.relay_url = Some(format!("ws://{home_address}"));
         if private_relay {
-            worker_state.config.relay_token = Some(SLICE_TOKEN.to_string());
+            worker_state.config.relay_token = Some(slice_token.clone());
+        } else if managed_slice_worker {
+            worker_state.config.relay_token = Some(slice_token.clone());
+            worker_state.config.managed_slice_relay_owner_public_key =
+                Some(home_state.config.relay_public_key.clone());
         }
         home_state.config.daemon_id = "environment-home".to_string();
         worker_state.config.daemon_id = "environment-worker".to_string();
-        worker_state.config.daemon_alias = Some("desktop-worker".to_string());
+        worker_state.config.daemon_alias = Some(if managed_slice_worker {
+            "slice:slice-1:worker:test".to_string()
+        } else {
+            "desktop-worker".to_string()
+        });
         worker_state.config.host_machine_id = "slice:slice-1".to_string();
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
@@ -157,11 +182,41 @@ impl LiveWorker {
             home_state,
             _worker_state: worker_state,
         };
-        for router in [home, worker] {
-            let state = router.app.lock().await.relay_client_state();
+        let state = home.app.lock().await.relay_client_state();
+        if managed_slice_worker {
+            fixture.tasks.push(tokio::spawn(
+                crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+                    home,
+                    state,
+                    receiver.clone(),
+                    format!("ws://{address}"),
+                    HOME_TOKEN.to_string(),
+                ),
+            ));
+        } else {
             fixture.tasks.push(tokio::spawn(
                 crate::transport::relay_client::run_daemon_relay_connector_with_router(
-                    router,
+                    home,
+                    state,
+                    receiver.clone(),
+                ),
+            ));
+        }
+        let state = worker.app.lock().await.relay_client_state();
+        if managed_slice_worker {
+            fixture.tasks.push(tokio::spawn(
+                crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+                    worker,
+                    state,
+                    receiver.clone(),
+                    format!("ws://{address}"),
+                    slice_token,
+                ),
+            ));
+        } else {
+            fixture.tasks.push(tokio::spawn(
+                crate::transport::relay_client::run_daemon_relay_connector_with_router(
+                    worker,
                     state,
                     receiver.clone(),
                 ),
@@ -169,17 +224,33 @@ impl LiveWorker {
         }
         timeout(Duration::from_secs(10), async {
             loop {
-                let home_registered = home_registry
-                    .read()
-                    .await
-                    .daemon("environment-home")
-                    .is_some();
-                let registered = home_registered
-                    && worker_registry
+                let home_registered = if managed_slice_worker {
+                    home_registry
                         .read()
                         .await
-                        .daemon("environment-worker")
-                        .is_some();
+                        .daemon_in_realm("live-worker", "environment-home")
+                        .is_some()
+                } else {
+                    home_registry
+                        .read()
+                        .await
+                        .daemon("environment-home")
+                        .is_some()
+                };
+                let registered = home_registered
+                    && if managed_slice_worker {
+                        worker_registry
+                            .read()
+                            .await
+                            .daemon_in_realm("live-worker", "environment-worker")
+                            .is_some()
+                    } else {
+                        worker_registry
+                            .read()
+                            .await
+                            .daemon("environment-worker")
+                            .is_some()
+                    };
                 if registered {
                     break;
                 }
@@ -290,6 +361,106 @@ impl LiveWorker {
             );
         }
     }
+}
+
+fn managed_slice_relay_auth(slice_token: &str, worker_public_key: &str) -> RelayAuthVerifier {
+    const HOME_TOKEN: &str = "environment-worker-fixture";
+    let claims = [
+        (
+            HOME_TOKEN,
+            RelayTokenClaims {
+                issuer: "live-worker-test".to_string(),
+                subject: "environment-home".to_string(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: "live-worker".to_string(),
+                allowed_actions: vec![
+                    RelayAction::DaemonRegister,
+                    RelayAction::DaemonHeartbeat,
+                    RelayAction::ClientMetadataRead,
+                    RelayAction::PacketRoute,
+                    RelayAction::PeerRequest,
+                    RelayAction::PeerEvent,
+                ],
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: HOME_TOKEN.to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: None,
+                device_id: None,
+                machine_id: None,
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: None,
+                entitlements_version: None,
+            },
+        ),
+        (
+            slice_token,
+            RelayTokenClaims {
+                issuer: "live-worker-test".to_string(),
+                subject: "slice:slice-1:worker:test".to_string(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: "live-worker".to_string(),
+                allowed_actions: vec![
+                    RelayAction::DaemonRegister,
+                    RelayAction::DaemonHeartbeat,
+                    RelayAction::PacketRoute,
+                    RelayAction::PeerRequest,
+                    RelayAction::PeerEvent,
+                ],
+                allowed_targets: Some(vec!["environment-home".to_string()]),
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: slice_token.to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: None,
+                device_id: None,
+                machine_id: None,
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(worker_public_key),
+                ),
+                entitlements_version: None,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(token, claims)| (token.to_string(), claims))
+    .collect();
+    RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+        claims,
+        std::collections::BTreeMap::new(),
+        Some(10),
+    ))
+}
+
+fn managed_slice_runtime_token(worker_public_key: &str) -> String {
+    let payload = serde_json::json!({
+        "sub": "slice:slice-1:worker:test",
+        "subject_kind": "kernel",
+        "allowed_actions": [
+            "daemon.register",
+            "daemon.heartbeat",
+            "packet.route",
+            "peer.request",
+            "peer.event",
+        ],
+        "allowed_targets": ["environment-home"],
+        "machine_id": "environment-home-machine",
+        "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(worker_public_key),
+        "exp": crate::session::unix_epoch_ms() / 1_000 + 86_400,
+    });
+    format!(
+        "test.{}.signature",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).expect("managed slice token payload"),
+        )
+    )
 }
 
 impl Drop for LiveWorker {

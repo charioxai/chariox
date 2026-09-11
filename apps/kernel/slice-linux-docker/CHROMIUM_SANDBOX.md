@@ -36,6 +36,14 @@ container/home to work around startup failures. Do not silently fall back to
 `--no-sandbox` on hosts that restrict user namespaces through another policy.
 Managed-host AppArmor/rootless configurations need their own live validation.
 
+The focused X11 Computer drills and Cloud publication screenshot transport use
+the same non-root and namespace assumptions. Before their real launch they run
+a bounded sandboxed headless probe, require private writable profile and runtime
+directories, and fail with `CHARIOX_CHROMIUM_SANDBOX_PREFLIGHT_FAILED` when the
+sandbox cannot initialize. Disposable X11 drill containers use the production
+Chromium seccomp profile; the host screenshot transport uses the browser's
+native platform sandbox. No drill falls back to a sandbox-disabling switch.
+
 ## Focused local validation
 
 Run `node --test apps/kernel/slice-linux-docker/chromium-sandbox.test.mjs`

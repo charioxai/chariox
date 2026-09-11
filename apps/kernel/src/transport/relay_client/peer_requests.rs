@@ -691,6 +691,7 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
+            expected_profile,
             prompt,
             hidden_system_context,
             attachments,
@@ -704,6 +705,7 @@ pub(super) async fn handle_daemon_peer_request(
             let submitted = router
                 .relay_submit_leased_prompt(
                     &leased_agent_id,
+                    expected_profile,
                     &prompt,
                     &hidden_system_context,
                     attachments,
@@ -851,6 +853,19 @@ pub(super) async fn handle_daemon_peer_request(
                         } else {
                             None
                         };
+                    let provider_termination =
+                        if let Some(provider_run_id) = provider_run_id.as_deref() {
+                            router
+                                .relay_leased_agent_provider_termination(
+                                    &leased_agent_id,
+                                    provider_run_id,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
                     let (git_observations, workspace_live_sync_change) =
                         if let Some(provider_run_id) = provider_run_id.as_deref() {
                             router
@@ -863,6 +878,7 @@ pub(super) async fn handle_daemon_peer_request(
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
+                        provider_termination,
                         git_observations,
                         workspace_live_sync_change,
                         completion,
@@ -919,20 +935,6 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match handled {
                 Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::ForwardWorkflowProviderFailure { context, message } => {
-            let handled = router
-                .dispatch_forwarded_workflow_provider_failure(context, message)
-                .await;
-            match handled {
-                Ok(()) => RelayPeerResponse::WorkflowProviderFailureHandled,
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

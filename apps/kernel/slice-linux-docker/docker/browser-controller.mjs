@@ -195,26 +195,36 @@ export class BrowserControllerStdioServer {
           continue;
         }
         const action = actions.get(target);
-        action?.abort();
-        this.write(successResponse(request.id, { accepted: Boolean(action) }));
+        action?.controller.abort();
+        if (action) await action.stopped;
+        const accepted = Boolean(action) && (action.method !== "browser.cookies.import"
+          || action.response?.result?.status === "rolled_back"
+          || action.response?.error?.code === "browser_action_cancelled");
+        this.write(successResponse(request.id, { accepted }));
         continue;
       }
       if (queued >= 64 || actions.has(request.id)) {
         this.write(errorResponse(request.id, "controller_busy", "controller queue is full or request id is already pending"));
         continue;
       }
-      const action = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog"].includes(request.method) ? new AbortController() : null;
+      let stopAction;
+      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import"].includes(request.method) ? new AbortController() : null;
+      const action = controller ? {controller,method:request.method,response:null,
+        stopped:new Promise(resolve => { stopAction = resolve; })} : null;
       if (action) actions.set(request.id, action);
       queued += 1;
       pending = pending.then(async () => {
         try {
-          this.write(await handleBrowserControllerRequest(request, {
+          const response = await handleBrowserControllerRequest(request, {
             processId: this.processId,
             browser: this.browser,
-            signal: action?.signal,
-          }));
+            signal: action?.controller.signal,
+          });
+          if (action) action.response = response;
+          this.write(response);
         } finally {
           actions.delete(request.id);
+          stopAction?.();
           queued -= 1;
         }
       });

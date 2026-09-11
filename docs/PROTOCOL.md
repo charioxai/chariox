@@ -385,6 +385,26 @@ Relay peer protocol v15 carries the home kernel's private hidden prompt context 
 context when a queued prompt is dispatched to a leased worker; older workers are
 rejected by the existing relay peer version check.
 
+Relay peer protocol v25 requires `SubmitLeasedPrompt.expected_profile`, containing
+the home-selected provider, stable provider-account ID, optional model, and optional
+effort. It carries no credentials. The worker reconciles this profile before replay
+or admission, using its lease owner's existing account registry. An unavailable
+account blocks admission rather than selecting a different account. Profile changes
+and prompt admission are serialized per leased agent through provider launch and
+prompt ownership assignment. Confirming an unchanged profile is safe during a
+replayed active turn; changing it requires an idle agent. This makes the next prompt
+use the profile committed at home even if an earlier worker update acknowledgement
+was lost. Incompatible peer versions must be rebound before dispatch.
+
+Version 25 also removes the separate `ForwardWorkflowProviderFailure` request and
+its acknowledgement. Workers settle failed leased turns locally without waiting
+for a home RPC. The existing runtime projection carries the terminal diagnostic
+and correlated, replayable completion. The home settles only the matching active
+turn, reserves agent admission, releases the failed workflow's workspace claim,
+and confirms the selected substitute on the worker before advancing queued work.
+Rejected profile acknowledgements preserve the queue. Delayed managed projections
+cannot re-establish a cleared worker-run binding after a profile change.
+
 ## 4.1 Current Kernel Transport Baseline
 
 For the current local baseline, the kernel exposes a request/response plus pushed-event surface over a daemon-owned WebSocket transport.
@@ -557,7 +577,7 @@ Current slice-management surface:
 
 - `slice.list`, `slice.create`, `slice.get`, `slice.start`, `slice.stop`, `slice.delete`, `slice.display_endpoint.get`, `slice.logs.get`, `slice.state.save`, `slice.state.status`, `slice.state.reset`, `slice.backup.create`, and `slice.backup.restore` are daemon-owned local requests.
 - Local Docker slice records persist their assigned host port set in `local_docker_ports`; clients may display these diagnostics, but launch, relay, display, and log behavior must use the kernel-owned values rather than reconstructing ports from the slice id.
-- Protocol v280 adds `slice.create.display_backend`, accepting `novnc` or `selkies`. Omitting it preserves the existing noVNC default during staged rollout. Unknown values fail decoding. Headed slices persist the selection in `display_endpoint.kind`; provisioning and later desktop lifecycle commands derive the backend from that record, not a client's process environment. Headless slices have no display endpoint.
+- Protocol v280 adds `slice.create.display_backend`, accepting `novnc` or `selkies`. Unknown values fail decoding. Headed slices persist the selection in `display_endpoint.kind`; provisioning and later desktop lifecycle commands derive the backend from that record, not a client's process environment. Headless slices have no display endpoint. Protocol v322 makes omitted headed backends select Selkies for new slices; `novnc` remains an explicit rollback selection and durable slices continue to use their recorded endpoint kind. Clients that create headed slices using the product default require v322.
 - A Selkies endpoint advertises `view`, `websocket`, `h264`, and `software_encoding`. It does not grant keyboard, pointer, clipboard, or resize authority. Those remain kernel-owned Environment operations. Its local URL identifies the private slice process, not a publicly usable viewer link. Selkies never uses the legacy raw HTTP display tunnel. Clients that select or interpret this backend require v280; clients that do not use it keep their existing minimum version.
 - Protocol v281 defines encrypted display fragments with `protocol: "chariox-display-v1"`, a connection-specific `stream_id`, sender direction (`kernel` or `viewer`), a zero-based per-direction `sequence`, message `kind` (`text` or `binary`), `final_fragment`, and `data_base64`. The entire fragment is encrypted with the existing relay payload encryption to the admitted peer key. Each fragment carries at most 64 KiB of raw data, and a reassembled message is at most 4 MiB. Wrong peer, stream, direction, version, replay, out-of-order, malformed, and oversized packets permanently close that channel. Reconnect requires a fresh stream identity. This fragment layer grants neither admission nor input authority and has no history persistence. Protocol v293 supplies its runtime admission path; plaintext Selkies bytes must never enter the legacy tunnel. Clients using these encrypted fragments require v281.
 - Protocol v293 and relay peer protocol v30 add kernel-owned Room viewer admission. A Selkies `slice.display_endpoint.get` request must carry `session_id`, `attachment_id`, and `viewer_public_key`; their optional wire representation preserves the legacy one-argument noVNC request. The home kernel accepts a local client or a remote client whose authenticated relay-key thumbprint matches `viewer_public_key`. It rejects service, metaagent, and kernel callers, and verifies attachment membership, attachment owner, persisted Room-to-slice placement, running slice state, and the Selkies backend before contacting the bound worker. The worker independently verifies the authenticated home kernel key plus exact Room and slice provisioner binding before registering a display target. A successful response adds `stream_protocol`, `stream_id`, and `peer_public_key` to the endpoint.

@@ -81,6 +81,8 @@ pub(crate) async fn destroy_relay_execution_lease(
     runtime_state.destroy_relay_execution_lease(lease_id).await
 }
 
+// These transport adapters preserve the explicit relay request fields.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_relay_leased_agent(
     runtime_state: &KernelRuntimeState,
     lease_id: &str,
@@ -237,9 +239,11 @@ pub(crate) async fn resize_relay_leased_provider_terminal(
         .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
     prompt: &str,
     hidden_system_context: &str,
     attachments: Vec<RelayPromptAttachment>,
@@ -255,6 +259,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     runtime_state
         .submit_relay_leased_prompt(
             leased_agent_id,
+            expected_profile,
             prompt,
             hidden_system_context,
             attachments,
@@ -362,6 +367,16 @@ pub(crate) async fn relay_leased_agent_provider_run_id(
 ) -> Result<Option<String>, DaemonError> {
     runtime_state
         .relay_leased_agent_provider_run_id(leased_agent_id)
+        .await
+}
+
+pub(crate) async fn relay_leased_agent_provider_termination(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+    runtime_state
+        .relay_leased_agent_provider_termination(leased_agent_id, provider_run_id)
         .await
 }
 
