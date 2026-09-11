@@ -372,5 +372,50 @@ mod tests {
         assert_eq!(body["metadata"]["relay_public_key"], "public");
         assert_eq!(body["metadata"]["kernel_started_at_ms"], 0);
         assert_eq!(body["metadata"]["accepting_remote_leases"], true);
+        assert_eq!(body["metadata"]["leased_agent_count"], 0);
+    }
+
+    #[test]
+    fn presence_body_publishes_exhausted_lease_capacity_and_only_a_scalar_count() {
+        let registration = DaemonRegistration {
+            auth_token: "relay-token".to_string(),
+            daemon_id: "kernel-1".to_string(),
+            machine_id: "machine-1".to_string(),
+            machine_alias: None,
+            os_name: None,
+            kernel_started_at_ms: 0,
+            daemon_alias: None,
+            kernel_alias: None,
+            public_key: "public".to_string(),
+            capabilities: Vec::new(),
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+            accepting_remote_leases: false,
+            leased_agent_count: 1,
+            local_session_count: 0,
+        };
+
+        let body = cloud_kernel_presence_body(
+            &config(Some(profile())),
+            &profile(),
+            true,
+            Some(&registration),
+        )
+        .expect("presence body should build");
+        let metadata = body["metadata"]
+            .as_object()
+            .expect("presence metadata should be an object");
+
+        assert_eq!(metadata["accepting_remote_leases"], false);
+        assert_eq!(metadata["leased_agent_count"], 1);
+        assert!(metadata["leased_agent_count"].is_u64());
+        for forbidden in [
+            "session_id",
+            "agent_id",
+            "prompt_id",
+            "provider_run_id",
+        ] {
+            assert!(!metadata.contains_key(forbidden));
+        }
     }
 }
