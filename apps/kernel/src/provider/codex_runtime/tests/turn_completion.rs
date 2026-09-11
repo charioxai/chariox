@@ -1634,6 +1634,36 @@ fn long_healthy_external_turn_has_bounded_authoritative_reconciliation() {
 }
 
 #[test]
+fn completed_tool_evidence_has_finite_authoritative_reconciliation_during_silent_model_work() {
+    use std::time::{Duration, Instant};
+
+    let mut tracker = CodexTurnTracker::default();
+    tracker.note_tool_started("tool-1");
+    tracker.note_tool_completed("tool-1");
+    tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    let mut full_thread_requests = 0;
+    let mut last_backfill_at = None;
+    for _ in 0..10_000 {
+        let recovery_requested = codex_turn_should_backfill(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            &tracker,
+            true,
+        );
+        if codex_authoritative_backfill_due(true, recovery_requested, last_backfill_at) {
+            full_thread_requests += 1;
+            last_backfill_at = Instant::now().checked_sub(Duration::from_millis(500));
+        }
+    }
+
+    assert!(
+        full_thread_requests <= 16,
+        "completed-tool evidence requested {full_thread_requests} full-thread reconciliations"
+    );
+}
+
+#[test]
 fn completion_evidence_rearms_authoritative_backfill_after_a_bounded_gate() {
     use std::time::{Duration, Instant};
 
