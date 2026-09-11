@@ -24,9 +24,10 @@ use cloud::{
 pub use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, VerifiedRelease};
 use state::{
-    remove_envelope, valid_disposable_identifier, valid_identifier, valid_secret, BootstrapConfig,
-    BootstrapEnvelope, BootstrapReceipt, BootstrapReceiptDocument, BootstrapReceiptStatus,
-    DisposableWorkerBootstrapEnvelope, DisposableWorkerBootstrapReceipt, ManagedBootstrapEnvelope,
+    remove_envelope, remove_receipt, valid_disposable_identifier, valid_identifier, valid_secret,
+    BootstrapConfig, BootstrapEnvelope, BootstrapReceipt, BootstrapReceiptDocument,
+    BootstrapReceiptStatus, DisposableWorkerBootstrapEnvelope, DisposableWorkerBootstrapReceipt,
+    DisposableWorkerBootstrapReceiptStatus, ManagedBootstrapEnvelope,
 };
 
 const MAX_DISPOSABLE_WORKER_ENVELOPE_TTL_SECONDS: i64 = 30 * 60;
@@ -313,6 +314,22 @@ fn begin_disposable_worker(
             "disposable worker bootstrap binding does not match the local identity",
         ));
     }
+    let pending_receipt = DisposableWorkerBootstrapReceipt {
+        schema_version: 1,
+        kind: "disposable_worker".to_string(),
+        status: DisposableWorkerBootstrapReceiptStatus::ExchangePending,
+        allocation_id: binding.allocation_id.clone(),
+        user_id: binding.user_id.clone(),
+        realm_id: binding.realm_id.clone(),
+        machine_id: identity.machine_id.clone(),
+        kernel_id: identity.kernel_id.clone(),
+        relay_public_key: identity.relay_public_key.clone(),
+        runtime_release_digest: binding.runtime_release_digest.clone(),
+        binding_digest: envelope.binding_digest.clone(),
+        exchanged_at: None,
+        cloud_relay: None,
+    };
+    pending_receipt.persist(&config.receipt_path)?;
     let request = DisposableWorkerExchangeRequest {
         token: envelope.token.clone(),
         allocation_id: binding.allocation_id.clone(),
@@ -331,6 +348,7 @@ fn begin_disposable_worker(
     )? {
         DisposableWorkerExchangeOutcome::Accepted(value) => value,
         DisposableWorkerExchangeOutcome::Rejected => {
+            remove_receipt(&config.receipt_path)?;
             remove_envelope(&config.envelope_path)?;
             return Err(bootstrap_error(
                 "Cloud terminally rejected the disposable worker bootstrap",
@@ -338,13 +356,14 @@ fn begin_disposable_worker(
         }
     };
     if let Err(error) = validate_disposable_worker_exchange(envelope, identity, &exchanged) {
+        remove_receipt(&config.receipt_path)?;
         remove_envelope(&config.envelope_path)?;
         return Err(error);
     }
-    persist_managed_cloud_relay_profile(persisted_profile(exchanged.cloud_relay))?;
-    DisposableWorkerBootstrapReceipt {
+    let receipt = DisposableWorkerBootstrapReceipt {
         schema_version: 1,
         kind: "disposable_worker".to_string(),
+        status: DisposableWorkerBootstrapReceiptStatus::Exchanged,
         allocation_id: binding.allocation_id.clone(),
         user_id: binding.user_id.clone(),
         realm_id: binding.realm_id.clone(),
@@ -353,9 +372,16 @@ fn begin_disposable_worker(
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: binding.runtime_release_digest.clone(),
         binding_digest: envelope.binding_digest.clone(),
-        exchanged_at: exchanged.exchanged_at,
-    }
-    .persist(&config.receipt_path)?;
+        exchanged_at: Some(exchanged.exchanged_at),
+        cloud_relay: Some(exchanged.cloud_relay),
+    };
+    receipt.persist(&config.receipt_path)?;
+    persist_managed_cloud_relay_profile(persisted_profile(
+        receipt
+            .cloud_relay
+            .clone()
+            .ok_or_else(|| bootstrap_error("disposable worker relay receipt is missing"))?,
+    ))?;
     remove_envelope(&config.envelope_path)
 }
 
@@ -384,8 +410,23 @@ fn resume_disposable_worker(
             ));
         }
     }
-    let profile = load_managed_cloud_relay_profile()
-        .ok_or_else(|| bootstrap_error("disposable worker Cloud profile is missing"))?;
+    if receipt.status == DisposableWorkerBootstrapReceiptStatus::ExchangePending {
+        return Err(bootstrap_error(
+            "disposable worker exchange outcome is indeterminate; refusing replay",
+        ));
+    }
+    let receipt_relay = receipt
+        .cloud_relay
+        .clone()
+        .ok_or_else(|| bootstrap_error("disposable worker relay receipt is missing"))?;
+    let profile = match load_managed_cloud_relay_profile() {
+        Some(profile) => profile,
+        None => {
+            let profile = persisted_profile(receipt_relay);
+            persist_managed_cloud_relay_profile(profile.clone())?;
+            profile
+        }
+    };
     if profile.machine_id.as_deref() != Some(receipt.machine_id.as_str())
         || profile.user_id != receipt.user_id
         || profile.realm_id != receipt.realm_id

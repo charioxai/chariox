@@ -11,6 +11,7 @@ use crate::config::write_private_file;
 use crate::error::DaemonError;
 
 use super::context_plan::ManagedKernelContextPlan;
+use super::cloud::ManagedCloudRelayProfile;
 
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 
@@ -45,7 +46,7 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) runtime_release_digest: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct DisposableWorkerBinding {
     pub(super) allocation_id: String,
@@ -95,11 +96,19 @@ pub(super) struct BootstrapReceipt {
     pub(super) context_plan: Option<ManagedKernelContextPlan>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DisposableWorkerBootstrapReceiptStatus {
+    ExchangePending,
+    Exchanged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct DisposableWorkerBootstrapReceipt {
     pub(super) schema_version: u32,
     pub(super) kind: String,
+    pub(super) status: DisposableWorkerBootstrapReceiptStatus,
     pub(super) allocation_id: String,
     pub(super) user_id: String,
     pub(super) realm_id: String,
@@ -108,7 +117,8 @@ pub(super) struct DisposableWorkerBootstrapReceipt {
     pub(super) relay_public_key: String,
     pub(super) runtime_release_digest: String,
     pub(super) binding_digest: String,
-    pub(super) exchanged_at: String,
+    pub(super) exchanged_at: Option<String>,
+    pub(super) cloud_relay: Option<ManagedCloudRelayProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -329,7 +339,13 @@ impl DisposableWorkerBootstrapReceipt {
             || self.relay_public_key.trim().is_empty()
             || !valid_digest(&self.runtime_release_digest)
             || !valid_digest(&self.binding_digest)
-            || DateTime::parse_from_rfc3339(&self.exchanged_at).is_err()
+            || match (&self.status, self.exchanged_at.as_deref(), &self.cloud_relay) {
+                (DisposableWorkerBootstrapReceiptStatus::ExchangePending, None, None) => false,
+                (DisposableWorkerBootstrapReceiptStatus::Exchanged, Some(value), Some(_)) => {
+                    DateTime::parse_from_rfc3339(value).is_err()
+                }
+                _ => true,
+            }
         {
             return Err(state_error("disposable worker bootstrap receipt is invalid"));
         }
@@ -352,6 +368,14 @@ pub(super) fn remove_envelope(path: &Path) -> Result<(), DaemonError> {
         return Err(state_error(
             "managed bootstrap envelope is not a regular file",
         ));
+    }
+    fs::remove_file(path).map_err(|error| state_error(&error.to_string()))
+}
+
+pub(super) fn remove_receipt(path: &Path) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| state_error(&error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(state_error("managed bootstrap receipt is not a regular file"));
     }
     fs::remove_file(path).map_err(|error| state_error(&error.to_string()))
 }

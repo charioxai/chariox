@@ -64,7 +64,7 @@ pub(super) enum DisposableWorkerExchangeOutcome {
     Rejected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedCloudRelayProfile {
     pub(super) api_url: String,
