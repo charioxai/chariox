@@ -137,6 +137,10 @@ impl CodexTurnTracker {
                 .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
     }
 
+    pub(super) fn completion_recovery_version(&self) -> Option<Instant> {
+        self.last_activity_at
+    }
+
     #[cfg(test)]
     pub(super) fn force_pending_terminal_quiet_for_tests(&mut self) {}
 
