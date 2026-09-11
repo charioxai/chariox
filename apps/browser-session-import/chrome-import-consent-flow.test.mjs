@@ -63,6 +63,27 @@ test('preparation reads no cookies, then gesture permissions precede kernel appr
   assert.deepEqual(await flow.cancel(),{kernelCancellationConfirmed:true});
 });
 
+test('trusted confirmation delivers directly and scrubs the source batch after encrypted handoff', async () => {
+  const f = fixture();
+  const generatedValue = crypto.randomUUID();
+  f.options.chrome.cookies.getAll = async () => [{name:'session',value:generatedValue,
+    domain:'example.test',path:'/',hostOnly:true,secure:true,httpOnly:true,session:true,
+    sameSite:'lax',storeId:'normal'}];
+  let delivered;
+  const flow = await prepareChromeCookieImport(f.options);
+  const completing = flow.confirmAndDeliver(async value => {
+    delivered = value;
+    assert.equal(value.requestId,id);
+    assert.equal(value.cookies[0].value,generatedValue);
+    return {BrowserImportDelivered:{cookie_count:1}};
+  });
+  assert.equal(f.count('permission'),1);
+  assert.deepEqual(await completing,{cookieCount:1});
+  assert.equal(flow.state,'delivered');
+  assert.equal(delivered.cookies[0].value,'');
+  assert.equal(JSON.stringify(f.calls).includes(generatedValue),false);
+});
+
 test('caller mutations cannot change displayed selection, granted hosts or source store', async () => {
   const f = fixture();
   const flow = await prepareChromeCookieImport(f.options);

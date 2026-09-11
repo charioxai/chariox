@@ -1,9 +1,11 @@
 import {encryptRelayPayload} from '../../packages/kernel-client/src/browser-relay-crypto.ts';
-import {browserImportConsentMinimumProtocolVersion} from '../../packages/kernel-client/src/browser-import-requests.ts';
+import {browserImportConsentMinimumProtocolVersion,browserImportDeliveryMinimumProtocolVersion} from '../../packages/kernel-client/src/browser-import-requests.ts';
 import {decryptBrowserImportResponse} from './relay-response.mjs';
 import {snapshotImportRequest} from './relay-request-metadata.mjs';
 
-const maxFrameChars = 262144;
+const maxFrameChars = 1048576;
+const maxBufferedChars = 262144;
+const maxCookiePayloadBytes = 512 * 1024;
 const maxPending = 8;
 const failure = () => new Error('browser import transport unavailable');
 
@@ -79,7 +81,7 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
               || frame.daemon_public_key !== kernelPublicKey) throw failure();
           ready = true;
           clearTimeout(handshakeTimer);
-          resolve({request,close});
+          resolve({request,deliver,close});
           return;
         }
         if (frame?.kind !== 'client_response') throw failure();
@@ -99,10 +101,17 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
         const result = await decryptBrowserImportResponse(sender.privateKey,frame.encrypted_response,
           kernelPublicKey,entry.nonce);
         if (pending.get(frame.request_id) !== entry) return;
-        const consent = result?.BrowserImportConsent;
-        if (!consent || typeof consent.request_id !== 'string' || !/^[a-fA-F0-9]{32}$/.test(consent.request_id)
-            || consent.status !== entry.status || (entry.requestId && consent.request_id !== entry.requestId)
-            || Object.keys(result).length !== 1 || Object.keys(consent).length !== 2) throw failure();
+        if (entry.delivery) {
+          const delivered = result?.BrowserImportDelivered;
+          if (!delivered || !Number.isSafeInteger(delivered.cookie_count)
+              || delivered.cookie_count < 0 || delivered.cookie_count > 512
+              || Object.keys(result).length !== 1 || Object.keys(delivered).length !== 1) throw failure();
+        } else {
+          const consent = result?.BrowserImportConsent;
+          if (!consent || typeof consent.request_id !== 'string' || !/^[a-fA-F0-9]{32}$/.test(consent.request_id)
+              || consent.status !== entry.status || (entry.requestId && consent.request_id !== entry.requestId)
+              || Object.keys(result).length !== 1 || Object.keys(consent).length !== 2) throw failure();
+        }
         settle(frame.request_id,result,false);
       } catch { if (pending.get(frame.request_id) === entry) settle(frame.request_id,null,true); }
     }
@@ -122,7 +131,7 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
       const plaintext = JSON.stringify({command_id:crypto.randomUUID(),request:metadata.request});
       if (plaintext.length > 131072) throw failure();
       return new Promise((resolveRequest,rejectRequest) => {
-        const entry = {resolve:resolveRequest,reject:rejectRequest,nonce:null,decoding:false,
+        const entry = {resolve:resolveRequest,reject:rejectRequest,nonce:null,decoding:false,delivery:false,
           requestId:metadata.requestId,status:metadata.status,signal:requestSignal,
           abort:() => settle(id,null,true),timer:setTimeout(() => settle(id,null,true),delay)};
         pending.set(id,entry);
@@ -138,7 +147,51 @@ export async function connectBrowserImportRelay({relayUrl, authToken, daemonId,
             entry.nonce = encrypted.payload.nonce;
             const frame = JSON.stringify({kind:'client_request',request_id:id,
               target:{daemon_id:daemonId},encrypted_request:encrypted.payload});
-            if (frame.length > maxFrameChars || socket.bufferedAmount > maxFrameChars) throw failure();
+            if (frame.length > maxFrameChars || socket.bufferedAmount > maxBufferedChars) throw failure();
+            socket.send(frame);
+          } catch { settle(id,null,true); }
+        }
+      });
+    }
+
+    async function deliver({requestId,selection,cookies}, options = {}) {
+      let requestSignal, delay, selected, payload;
+      try {
+        requestSignal = options.signal;
+        if (protocolVersion < browserImportDeliveryMinimumProtocolVersion
+            || closed || !ready || pending.size >= maxPending || !validSignal(requestSignal)
+            || requestSignal?.aborted || !Array.isArray(cookies) || cookies.length > 512) throw failure();
+        delay = deadline(options.timeoutMs ?? timeoutMs);
+        const metadata = snapshotImportRequest({AuthorizeBrowserImportSource:{request_id:requestId,selection}});
+        selected = metadata.request.AuthorizeBrowserImportSource.selection;
+        const bytes = new TextEncoder().encode(JSON.stringify(cookies));
+        if (bytes.length > maxCookiePayloadBytes) throw failure();
+        payload = bytesToBase64(bytes);
+        bytes.fill(0);
+      } catch { throw failure(); }
+      const id = crypto.randomUUID();
+      const plaintext = JSON.stringify({browser_import_delivery:{request_id:requestId,
+        selection:selected,payload_base64:payload}});
+      payload = '';
+      if (plaintext.length > maxFrameChars) throw failure();
+      return new Promise((resolveRequest,rejectRequest) => {
+        const entry = {resolve:resolveRequest,reject:rejectRequest,nonce:null,decoding:false,delivery:true,
+          requestId,status:null,signal:requestSignal,abort:() => settle(id,null,true),
+          timer:setTimeout(() => settle(id,null,true),delay)};
+        pending.set(id,entry);
+        try {
+          requestSignal?.addEventListener('abort',entry.abort,{once:true});
+          if (requestSignal?.aborted) { entry.abort(); return; }
+          void send();
+        } catch { settle(id,null,true); }
+        async function send() {
+          try {
+            const encrypted = await encryptRelayPayload(kernelPublicKey,plaintext,sender);
+            if (closed || pending.get(id) !== entry) return;
+            entry.nonce = encrypted.payload.nonce;
+            const frame = JSON.stringify({kind:'client_request',request_id:id,
+              target:{daemon_id:daemonId},encrypted_request:encrypted.payload});
+            if (frame.length > maxFrameChars || socket.bufferedAmount > maxBufferedChars) throw failure();
             socket.send(frame);
           } catch { settle(id,null,true); }
         }
@@ -168,4 +221,12 @@ function deadline(value) {
 
 function validSignal(value) {
   return value === undefined || value === null || value instanceof AbortSignal;
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset,offset + 0x8000));
+  }
+  return btoa(binary);
 }

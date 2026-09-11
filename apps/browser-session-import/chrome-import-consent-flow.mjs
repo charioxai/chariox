@@ -115,8 +115,40 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
       throw safeError(failure);
     }
   }
+
+  // Trusted connector completion path. Invoke directly from the confirmation
+  // click just like confirmAndRead: that call synchronously reaches Chrome's
+  // permission request before the first await. `deliver` must be the paired
+  // relay connector's encrypted-only delivery method, never a page callback.
+  async function confirmAndDeliver(deliver) {
+    if (typeof deliver !== 'function') throw error('cookie_destination_unavailable');
+    const reading = confirmAndRead();
+    let result;
+    try {
+      result = await reading;
+      state = 'delivering';
+      const response = await deliver({requestId,selection:selected,cookies:result.cookies},
+        {signal:active.signal,timeoutMs:Math.min(30000,Math.max(1,deadline - performance.now()))});
+      const delivered = response?.BrowserImportDelivered;
+      if (!delivered || !Number.isSafeInteger(delivered.cookie_count)
+          || delivered.cookie_count < 0 || delivered.cookie_count > 512
+          || Object.keys(response).length !== 1 || Object.keys(delivered).length !== 1) {
+        throw error('cookie_destination_unavailable');
+      }
+      state = 'delivered';
+      return {cookieCount:delivered.cookie_count};
+    } catch (failure) {
+      if (state === 'delivering') state = 'delivery_uncertain';
+      if (failure?.code?.startsWith('cookie_source_')) throw failure;
+      throw error('cookie_destination_unavailable');
+    } finally {
+      if (Array.isArray(result?.cookies)) {
+        for (const cookie of result.cookies) if (cookie && typeof cookie === 'object') cookie.value = '';
+      }
+    }
+  }
   return Object.freeze({selection:selected,sourceTabId,
-    get state() { return state; },confirmAndRead,cancel});
+    get state() { return state; },confirmAndRead,confirmAndDeliver,cancel});
 }
 
 function matches(response,id,status) {

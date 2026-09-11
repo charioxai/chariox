@@ -47,6 +47,64 @@ impl BrowserImportDestination {
 }
 
 impl KernelRuntimeState {
+    /// Private encrypted-transport destination entry point. The delivery payload
+    /// is never projected through LocalDaemonRequest or an Environment action.
+    pub(crate) async fn execute_browser_import_delivery(
+        &self,
+        command: &KernelCommand,
+        request: crate::runtime::browser_import_payload::BrowserImportDeliveryRequest,
+    ) -> Result<u16, DaemonError> {
+        let (request_id, selection, payload) = request.into_parts();
+        let destination = self
+            .claim_browser_import_destination(command, &selection, &request_id)
+            .await?;
+        let target = self
+            .room_environment_controller_tab_binding(&selection.session_id, &selection.tab_id)
+            .map_err(|_| denied())?;
+        if target.document_revision != selection.document_revision {
+            return Err(denied());
+        }
+        let binding = crate::transport::room_browser_controller::RoomBrowserImportBinding {
+            request_id,
+            user_id: command.caller.user_id.clone().ok_or_else(denied)?,
+            room_id: selection.session_id.clone(),
+            environment_id: selection.environment_id.clone(),
+        };
+        let result = self
+            .room_browser_controller_command(
+                &selection.session_id,
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ImportCookies {
+                    binding,
+                    browser_generation: selection.runtime_generation,
+                    target_id: target.runtime_target_id,
+                    document_id: target.document_id,
+                    source_store_id: selection.source_store_id,
+                    domains: selection.domains,
+                    partition_sites: selection.partition_sites,
+                    overwrite: selection.overwrite,
+                    payload,
+                },
+            )
+            .await?;
+        match result {
+            crate::transport::room_browser_controller::RoomBrowserControllerResult::CookiesImported {
+                cookie_count,
+            } => {
+                destination
+                    .complete_after_verification(async { Ok(()) })
+                    .await?;
+                Ok(cookie_count)
+            }
+            crate::transport::room_browser_controller::RoomBrowserControllerResult::CookieImportRolledBack => {
+                destination
+                    .complete_after_verification(async { Ok(()) })
+                    .await?;
+                Err(denied())
+            }
+            _ => Err(denied()),
+        }
+    }
+
     /// Resume cleanup only when verification was durably acknowledged. This
     /// does not authorize replay of cookie writes or treat missing state as success.
     pub(crate) async fn resume_browser_import_cleanup(

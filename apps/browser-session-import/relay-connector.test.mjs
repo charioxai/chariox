@@ -61,6 +61,49 @@ test('paired import requests cross a live socket using the existing encrypted re
   }
 });
 
+test('cookie delivery uses a distinct encrypted-only envelope and returns a bounded summary', async () => {
+  const kernel = await createRelayKeypair();
+  const sender = await createRelayKeypair();
+  const server = new WebSocketServer({host:'127.0.0.1',port:0,maxPayload:1048576});
+  await once(server,'listening');
+  const generatedValue = crypto.randomUUID();
+  const wire = [];
+  server.on('connection', socket => socket.on('message', async data => {
+    wire.push(String(data));
+    const frame = JSON.parse(String(data));
+    if (frame.kind === 'client_connect') {
+      socket.send(JSON.stringify({kind:'client_connected',target:{daemon_id:'kernel-1'},
+        daemon_public_key:kernel.publicKeyBase64}));
+      return;
+    }
+    const decoded = JSON.parse(await decryptRelayPayload(kernel.privateKey,
+      frame.encrypted_request,sender.publicKeyBase64));
+    assert.equal(decoded.request,undefined);
+    assert.equal(JSON.parse(Buffer.from(decoded.browser_import_delivery.payload_base64,'base64'))[0].value,
+      generatedValue);
+    const response = {BrowserImportDelivered:{cookie_count:1}};
+    const encrypted = await encryptRelayPayload(sender.publicKeyBase64,
+      JSON.stringify({request_nonce:frame.encrypted_request.nonce,response}),kernel);
+    socket.send(JSON.stringify({kind:'client_response',request_id:frame.request_id,
+      encrypted_response:encrypted.payload,error:null}));
+  }));
+  let client;
+  try {
+    client = await connectBrowserImportRelay({relayUrl:`ws://127.0.0.1:${server.address().port}`,
+      authToken:'synthetic-relay-token',daemonId:'kernel-1',kernelPublicKey:kernel.publicKeyBase64,
+      sender,protocolVersion:320});
+    const result = await client.deliver({requestId:'a'.repeat(32),selection,
+      cookies:[{name:'session',value:generatedValue,domain:'example.test',path:'/',secure:true,
+        httpOnly:true,hostOnly:true,session:true,sameSite:'lax',storeId:'normal'}]});
+    assert.deepEqual(result,{BrowserImportDelivered:{cookie_count:1}});
+    assert.equal(wire.some(frame => frame.includes(generatedValue)),false);
+  } finally {
+    client?.close();
+    for (const socket of server.clients) socket.terminate();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 // Only the socket peer is a fixture. Framing, encryption, reply validation and
 // source-reader composition execute the production modules.
 async function fixture(t, {handshake, onRequest} = {}) {

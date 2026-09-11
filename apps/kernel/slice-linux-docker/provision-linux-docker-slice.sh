@@ -354,6 +354,13 @@ refresh_slice_support_files() {
     || log "browser controller snapshot module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller.mjs" \
     || log "browser controller overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /opt/chariox-slice/browser-session-import \
+    || log "browser import runtime directory refresh unavailable; continuing"
+  local browser_import_module
+  for browser_import_module in chrome-cookie-batch.mjs controller-cookie-import.mjs cookie-import-completion.mjs cookie-import-journal.mjs cookie-import-transaction.mjs production-destination.mjs; do
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/browser-session-import/$browser_import_module" "$SLICE_NAME:/opt/chariox-slice/browser-session-import/$browser_import_module" \
+      || log "browser import runtime module refresh unavailable; continuing"
+  done
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" \
     || log "provider isolation probe overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh" \

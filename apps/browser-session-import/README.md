@@ -1,9 +1,10 @@
 # Browser session import components
 
-These are internal import components, not a usable importer. Cookie transfer is
-not wired to a user's profile or product Environment. The source
-reader uses Chrome's extension APIs when called by a trusted connector. It does
-not request permissions, transmit cookies or register a web-accessible endpoint.
+This directory contains the first production OSS runtime path for cookie import.
+An already paired trusted Chrome connector can obtain explicit consent, read the
+selected Chrome cookie scope, and deliver the batch through the encrypted relay
+to the kernel-owned managed Environment transaction. There is still no packaged
+MV3 connector, enrollment UI, Web UI, or web-accessible import endpoint.
 
 ## Standard managed-browser boundary
 
@@ -109,7 +110,14 @@ requests. Chrome permissions can outlive one import. This flow does not remove
 them on cancellation because another import or a previous user grant may own
 them. The product UI still needs explicit permission management, pairing and
 source/destination selection. There is no installable connector or page-message
-endpoint in this change, and no user's profile is imported automatically.
+endpoint in this slice, and no user's profile is imported automatically.
+
+The production connector caller uses `confirmAndDeliver(client.deliver)` directly
+from the confirmation click. It reaches `permissions.request` before yielding the
+gesture, completes the sender-bound source checks, sends the batch only through
+the encrypted delivery method, and clears the returned cookie value fields after
+handoff. It returns only the applied count. An uncertain delivery is not retried
+or cancelled automatically because the destination may already be quarantined.
 
 ## Source reader
 
@@ -280,8 +288,11 @@ The outer relay request ID is not authenticated and cannot replace this check.
 Retries must use fresh encryption nonces. Missing bindings and old bare responses
 fail closed. This decoder does not open a socket, pair a client or grant access.
 
-`connectBrowserImportRelay` now provides the internal socket transport for the
-metadata-only consent requests. It uses the existing `client_connect`,
+`connectBrowserImportRelay` provides the connector socket transport. Consent and
+source requests remain strict metadata-only `LocalDaemonRequest` values. Protocol
+320 additionally provides `deliver`, whose distinct `browser_import_delivery`
+plaintext exists only inside relay encryption and is never accepted as a public
+local-daemon request. It uses the existing `client_connect`,
 `client_request` and `client_response` frames and shared encryption. Its caller
 must supply an already authorized relay token, exact daemon ID, retained sender
 keypair and kernel public key obtained through trusted pairing. A key received
@@ -290,7 +301,9 @@ unencrypted `ws:` is restricted to loopback development. URL credentials,
 query strings and fragments are rejected.
 
 The connector snapshots the sender identity and whitelists bounded selection
-metadata. It does not accept general kernel commands or cookie payloads. Replies
+metadata. It does not accept general kernel commands. Delivery accepts at most
+512 records and 512 KiB before base64/encryption; the 1 MiB frame ceiling retains
+the existing 256 KiB backlog guard. Replies
 must match the expected consent phase and identifier as well as the pinned kernel
 and encrypted request nonce. There are at most eight pending requests, bounded
 frames and send backlog, and deadlines of five seconds by default with a maximum
@@ -305,8 +318,8 @@ filtering, mid-read revocation, deadlines, cancellation, disconnect, pending lim
 and malformed frames. Backpressure and a stalled handshake use socket doubles.
 The server and Chrome cookies API are fixtures, not a deployed relay/kernel or a
 real browser profile. No credentials or cookies from a user's account are read.
-This transport creates no enrollment UI, relay token issuer, extension endpoint
-or cookie-application route, and is not yet installed in a product connector.
+This transport creates no enrollment UI, relay token issuer, or extension
+endpoint, and is not yet installed in a product connector.
 
 This fixture tests encrypted component composition, not delivery through a live
 relay, authenticated kernel pairing or destination admission. Its recipient key,
@@ -328,13 +341,13 @@ no destination writer. Destination execution has a separate private claim and
 cannot start from an unclaimed approval.
 
 The grant-aware reader wires these requests to the source authorization
-checkpoints. Source-connector pairing, permission UX and live encrypted delivery
-still need integration. No public cookie-apply request exists yet; destination
-authorization and exclusion remain separate requirements.
+checkpoints. Protocol 320 wires the paired connector's encrypted delivery to the
+private destination claim; no public cookie-apply request exists. Connector
+packaging, pairing/permission UX and Web UI remain separate product work.
 
-`applyCookieImport` and `createCdpCookieStore` provide the internal destination
-operation. They are not routed from the Browser Controller, a web endpoint or a
-kernel request yet. The operation validates input, reads a bounded destination
+`applyCookieImport` and `createCdpCookieStore` provide the destination operation
+used by the private bound browser-controller process. It is not exposed through
+a web endpoint or public kernel request. The operation validates input, reads a bounded destination
 snapshot, rejects existing-cookie conflicts unless overwrite was explicitly
 approved, applies the batch, and verifies values and supported semantics. It
 returns only counts and approved domain names. The CDP adapter binds reads and
@@ -373,15 +386,15 @@ Any transport/write exception sets `recoveryRequired: true`, even if the cleanup
 read looks correct, because a lost acknowledgement can hide a late mutation.
 Rollback failure and unrelated-cookie loss also set it. The kernel must quarantine
 that Environment until recovery verifies it. Fixed error codes never include
-original transport errors or cookies. These recovery flags are not yet wired to
-kernel lifecycle state. Without the optional journal, snapshots remain in memory.
-Product recovery after process death or browser restart remains unhandled. This must not
-be advertised as durable atomic import.
+original transport errors or cookies. The production caller wires uncertain
+outcomes to the kernel's durable Environment quarantine. Without the journal,
+injected test callers still retain snapshots only in memory and must not be
+treated as production executors.
 
 ### Internal recovery storage
 
 `openCookieImportJournal({directory,key,binding})` provides encrypted pending-record
-storage for the future Environment executor. `applyCookieImport` accepts it as an
+storage for the Environment executor. `applyCookieImport` accepts it as an
 optional `journal` dependency: pending records block another import, the encrypted
 snapshot and intended cookies are synced before mutation, and uncertain failures
 retain the record. Verified application retains it for durable kernel completion;
@@ -390,9 +403,9 @@ during preparation clears it without touching the browser. This is internal
 transaction integration only, not kernel lifecycle, connector or transport wiring.
 It does not authorize import or establish a second credential vault.
 
-Successful browser readback is not a durable browser commit. The product executor
-still needs durable outcome/quarantine state and recovery replay before this
-adapter can safely serve real imports across browser or machine crashes.
+Successful browser readback is not itself a durable browser commit. The production
+executor records a durable outcome before journal discard and keeps the home
+Environment quarantined whenever that acknowledgement is uncertain.
 
 `recoverCookieImport({journal,store,runExclusive,authorize})` is an internal replay
 operation. The kernel must stop the previous executor and all cookie writers,
@@ -506,29 +519,28 @@ The ledger holds at most 128 bounded metadata records and never stores cookies.
 Unclaimed expired entries are reclaimed; active or cancelled writers remain
 reserved until completion. A fresh kernel rejects old request IDs.
 
-This ledger is not an authentication mechanism or a complete consent flow. Its
-internal callers must supply identities from authenticated transports and scope
-from trusted kernel state, never from a cookie payload or a sender's approval
-boolean. Protocol 313 provides the human prepare/approve/cancel handlers described
-above, but there is no source-connector pairing or cookie application authorized
-by these methods in the product. A connector-bound claim path and live encrypted
-IPC/relay acceptance still need implementation and validation. The ledger
-alone does not quarantine a controller after process death, stop page/network
-writers, validate DNS cookie semantics, or provide durable recovery. Those
-remain requirements of the Environment executor.
+This ledger is not an authentication mechanism by itself. Its callers supply
+identities from the authenticated relay and scope from trusted kernel state,
+never from a cookie payload or a sender's approval boolean. Protocol 320 uses the
+same live client/key/attachment binding for delivery, claims the destination
+under exclusive Environment ownership, and creates durable quarantine before
+routing the private controller command. The controller fence and encrypted
+journal provide writer exclusion, verification, rollback, and fail-closed cleanup.
 
-The bridge is not yet called by a kernel request. It does not consume kernel
-consent and no controller apply command is exposed. Run its
+The bridge is called only by the private protocol-320 delivery path after the home
+kernel consumes sender-bound consent and creates durable quarantine. Run its
 `controller-cookie-import.browser-test.mjs` with `PLAYWRIGHT_MODULE` for a
 disposable, sandboxed Chrome test with the real controller connection.
 
-Implement the MV3 connector and source-profile/site selection, consent UI and
-destination application authorization, encrypted transport, bounded decoding,
-expiry and replay protection, cancellation and transactional application with
-rollback. Add shared protocol versioning and Web/TUI progress and results when
-that transport is implemented.
-The remaining destination work includes kernel integration and
-process/browser-crash drills.
+Remaining product work is the installable MV3 connector bundle, trusted pairing
+and source-profile/site selection UI, explicit permission management, plus Web UI
+progress/result presentation. Add managed process/browser-crash acceptance drills
+before claiming broad service portability.
+
+Run `browser-import-production-path-drill.test.mjs` for the focused protocol-320
+drill. It uses a runtime-generated value and disposable private home, exercises
+the production controller fence, encrypted recovery journal, browser readback,
+durable non-secret outcome and cleanup, then removes the complete fixture.
 Complete the security and service validation matrix in
 `docs/BROWSER_SESSION_IMPORT_RESEARCH.md` before importing real sign-ins.
 

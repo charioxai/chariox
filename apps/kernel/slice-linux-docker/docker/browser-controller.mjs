@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { BrowserActionError } from "./browser-controller-actions.mjs";
 
+let browserImportModule;
+
 export async function handleBrowserControllerRequest(
   request,
   { processId = process.pid, browser = new BrowserCdpClient(), signal } = {},
@@ -98,6 +100,15 @@ export async function handleBrowserControllerRequest(
         request.id,
         browser.pollEvents(request.params),
       );
+    }
+    if (request.method === "browser.cookies.import") {
+      const modulePath = process.env.CHARIOX_BROWSER_IMPORT_MODULE
+        ?? new URL("../../../browser-session-import/production-destination.mjs",import.meta.url).href;
+      browserImportModule ??= import(modulePath);
+      const {applyProductionBrowserImport} = await browserImportModule;
+      return successResponse(request.id,await applyProductionBrowserImport({
+        controller:browser,params:request.params,
+      }));
     }
     if (request.method === "shutdown") {
       await browser.close();

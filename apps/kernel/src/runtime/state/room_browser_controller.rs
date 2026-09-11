@@ -30,7 +30,10 @@ impl KernelRuntimeState {
     ) -> Result<Response, DaemonError> {
         // Cleanup must remain available while the Room is quarantined, including
         // when the durable store cannot establish that execution is safe.
-        if !matches!(&command, Command::CancelAction { .. } | Command::Release) {
+        if !matches!(
+            &command,
+            Command::CancelAction { .. } | Command::ImportCookies { .. } | Command::Release
+        ) {
             self.ensure_browser_import_execution_allowed(session_id)
                 .map_err(browser_import_execution_gate::execution_error)?;
         }
@@ -46,6 +49,7 @@ impl KernelRuntimeState {
                 | Command::Navigate { .. }
                 | Command::ComputerInput { .. }
                 | Command::CancelDownload { .. }
+                | Command::ImportCookies { .. }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local
@@ -697,6 +701,40 @@ async fn execute_local(
         Command::ComputerClipboardRead { .. } => {
             unreachable!("Computer clipboard reads execute before the blocking controller path")
         }
+        Command::ImportCookies {
+            binding,
+            browser_generation,
+            target_id,
+            document_id,
+            source_store_id,
+            domains,
+            partition_sites,
+            overwrite,
+            payload,
+        } => processes
+            .import_browser_cookies(
+                &session_id,
+                &binding,
+                browser_generation,
+                &target_id,
+                &document_id,
+                &source_store_id,
+                &domains,
+                &partition_sites,
+                overwrite,
+                &payload,
+            )
+            .and_then(|cookie_count| {
+                cookie_count.ok_or_else(|| "browser controller is unavailable".to_string())
+            })
+            .map(|outcome| match outcome {
+                crate::runtime::browser_controller_process::BrowserCookieImportOutcome::Applied(
+                    cookie_count,
+                ) => Response::CookiesImported { cookie_count },
+                crate::runtime::browser_controller_process::BrowserCookieImportOutcome::RolledBack => {
+                    Response::CookieImportRolledBack
+                }
+            }),
     })
     .await
     .map_err(|error| controller_route_error(&error.to_string()))?;

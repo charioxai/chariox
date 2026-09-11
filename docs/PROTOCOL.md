@@ -1026,6 +1026,32 @@ outer request IDs when the client retains its paired key. Pre-317 unbound replie
 must be rejected. Import clients require 317; ordinary relay replies, local IPC
 response shapes, general Web/TUI minimums and relay peer version are unchanged.
 
+Protocol v320 and relay peer v48 add the first private browser-cookie delivery
+path. Protocol 319 was already assigned to managed Environment Git credential
+enrollment at the required integration head, so this serialized addition advances
+monotonically. A paired client sends
+`{browser_import_delivery:{request_id,selection,payload_base64}}` only as the
+plaintext of the existing authenticated encrypted `client_request` frame.
+`payload_base64` decodes to a JSON array bounded to 512 cookies and 512 KiB.
+This envelope is not a `LocalDaemonRequest`, is rejected on unencrypted/public
+request paths, and requires the same live Client identity, attachment thumbprint,
+sender key, realm, consent request, immutable selection, and current destination
+generation/document used for the source read. Consent/source metadata requests
+remain cookie-free.
+
+The home kernel claims exclusive Environment execution and writes its durable
+recovery row before routing the redacted `import_cookies` peer command. The worker
+passes the payload only to its bound browser-controller process. That process
+uses the encrypted mode-0600 recovery journal, quiesces cookie writers, validates
+the target/document and kernel-owned scope, applies through CDP, verifies browser
+readback, durably records the outcome, and removes the journal before returning a
+bounded cookie count. Uncertain application retains quarantine and returns a
+fixed error; it is never cached or automatically replayed. Ordinary action/event
+history and diagnostics receive only command kind, IDs, byte counts, and the
+bounded result, never cookie values. Workers must negotiate relay peer v48 and
+delivery clients require local protocol 320. Consent-only clients may remain at
+317. Kernel and Linux slice images must be deployed together for this version.
+
 Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.

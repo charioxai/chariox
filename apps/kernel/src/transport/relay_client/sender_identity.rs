@@ -29,6 +29,13 @@ pub(super) fn validate_browser_import_sender(
     if !is_browser_import_request(request) {
         return Ok(());
     }
+    require_browser_import_sender(caller_identity, encrypted_request).map(|_| ())
+}
+
+pub(super) fn require_browser_import_sender<'a>(
+    caller_identity: Option<&'a RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<&'a RelayCallerIdentity, RelayError> {
     let identity = caller_identity
         .filter(|identity| identity.subject_kind == RelaySubjectKind::Client)
         .ok_or_else(|| unauthorized("browser import requires an authenticated client identity"))?;
@@ -37,7 +44,8 @@ pub(super) fn validate_browser_import_sender(
         .public_key_thumbprint
         .as_deref()
         .ok_or_else(|| unauthorized("browser import requires a sender-bound client identity"))?;
-    validate_sender_key(thumbprint, encrypted_request, "client")
+    validate_sender_key(thumbprint, encrypted_request, "client")?;
+    Ok(identity)
 }
 
 pub(super) fn validate_bound_service_sender(
