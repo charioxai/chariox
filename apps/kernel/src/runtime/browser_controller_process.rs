@@ -35,6 +35,8 @@ mod configuration_cancellation;
 mod lifecycle_cancellation;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
+mod import_cancellation_tests;
+#[cfg(test)]
 mod upload_cancellation_tests;
 
 const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
@@ -369,6 +371,7 @@ impl BrowserControllerProcessStdioBackend {
                 | "browser.navigate"
                 | "browser.history"
                 | "browser.dialog"
+                | "browser.cookies.import"
         )
         .then(|| self.action_cancellation.clone())
         .flatten();
@@ -401,6 +404,9 @@ impl BrowserControllerProcessStdioBackend {
             .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
         let started = Instant::now();
         let mut cancellation_sent = false;
+        let mut cancellation_request_id = None;
+        let mut cancellation_acknowledged = false;
+        let mut terminal_response = None;
         loop {
             if !cancellation_sent
                 && cancellation
@@ -422,6 +428,7 @@ impl BrowserControllerProcessStdioBackend {
                     .and_then(|()| process.stdin.flush())
                     .map_err(|error| error.to_string())?;
                 cancellation_sent = true;
+                cancellation_request_id = Some(cancel_id);
             }
             let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
@@ -459,10 +466,28 @@ impl BrowserControllerProcessStdioBackend {
                     return Err(format!("browser controller exited during `{method}`"))
                 }
             };
-            if response.id == Some(request_id) {
-                if let Some(signal) = cancellation.as_ref().filter(|signal| signal.requested()) {
-                    signal.confirm_stop();
+            if response.id == cancellation_request_id {
+                cancellation_acknowledged = true;
+                let accepted = response.ok
+                    && response
+                        .result
+                        .as_ref()
+                        .and_then(|value| value.get("accepted"))
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true);
+                if let Some(signal) = &cancellation {
+                    if accepted {
+                        signal.confirm_stop();
+                    } else {
+                        signal.reject_after_stop();
+                    }
                 }
+                if let Some(response) = terminal_response.take() {
+                    return Ok(response);
+                }
+                continue;
+            }
+            if response.id == Some(request_id) {
                 if !response.ok
                     && response
                         .error
@@ -472,6 +497,13 @@ impl BrowserControllerProcessStdioBackend {
                     if let Some(signal) = &cancellation {
                         signal.confirm_stop();
                     }
+                }
+                if cancellation_sent {
+                    if cancellation_acknowledged {
+                        return Ok(response);
+                    }
+                    terminal_response = Some(response);
+                    continue;
                 }
                 return Ok(response);
             }

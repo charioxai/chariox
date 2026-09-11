@@ -367,6 +367,37 @@ impl KernelRuntimeState {
                     if !matches!(response,crate::transport::room_browser_controller::RoomBrowserControllerResult::CancellationRequested { accepted:true }) {
                         return Err(denied());
                     }
+                    // The controller only confirms after the exact stdio import has
+                    // stopped. Drain its destination guard, then retain quarantine
+                    // until rollback recovery and authoritative cleanup are complete.
+                    let guard = self
+                        .owned
+                        .environment_execution_gates
+                        .for_room(&request.session_id)
+                        .write_owned()
+                        .await;
+                    let pending = self
+                        .owned
+                        .durable_state_store
+                        .pending_browser_import_for_room(&request.session_id)?;
+                    let needs_recovery = match pending {
+                        None => false,
+                        Some(ref pending) if pending.request_id == id.as_str()
+                            && pending.user_id == user_id
+                            && pending.room_id == request.session_id => true,
+                        Some(_) => return Err(denied()),
+                    };
+                    drop(guard);
+                    if needs_recovery {
+                        self.recover_pending_browser_import(&request.session_id).await?;
+                    }
+                    if self
+                        .owned
+                        .durable_state_store
+                        .browser_import_pending_for_room(&request.session_id)?
+                    {
+                        return Err(denied());
+                    }
                 }
                 (id, BrowserImportConsentStatus::Cancelled)
             }
