@@ -1206,7 +1206,6 @@ async function captureSpawnedIdentity(name, child) {
     } catch (error) { lastError = error }
     await sleep(10)
   }
-  try { child.kill("SIGKILL") } catch {}
   throw new Error(`${name} detached process identity could not be captured${lastError ? `: ${bounded(lastError?.message ?? lastError)}` : ""}`)
 }
 
