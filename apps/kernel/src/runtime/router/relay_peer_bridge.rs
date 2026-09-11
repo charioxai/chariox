@@ -8,11 +8,11 @@ impl CommandRouter {
         self.config_projection.snapshot().kernel_runtime_role
     }
 
-    pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String)> {
+    pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String, String)> {
         self.config_projection
             .snapshot()
             .cloud_relay
-            .map(|profile| (profile.realm_id, profile.user_id))
+            .and_then(|profile| Some((profile.realm_id, profile.user_id, profile.machine_id?)))
     }
 
     pub(crate) async fn relay_authorize_execution_lease_caller(
@@ -528,6 +528,27 @@ impl CommandRouter {
             &self.runtime_state,
             leased_agent_id,
             provider_run_id,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_observe_leased_git_after_authorized(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<
+        (
+            Vec<crate::transport::relay_peer::RemoteGitObservation>,
+            Option<crate::git_observer::WorkspaceLiveSyncChange>,
+        ),
+        DaemonError,
+    > {
+        relay_peer_runtime::observe_relay_leased_git_after(
+            &self.runtime_state,
+            leased_agent_id,
+            provider_run_id,
+            true,
         )
         .await
     }
@@ -590,6 +611,25 @@ impl CommandRouter {
             provider_run_id,
             pump_output,
             replay_settled_completion,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_drain_leased_runtime_projection_authorized(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        pump_output: bool,
+        replay_settled_completion: bool,
+    ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
+        relay_peer_runtime::drain_relay_leased_runtime_projection(
+            &self.runtime_state,
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+            replay_settled_completion,
+            true,
         )
         .await
     }

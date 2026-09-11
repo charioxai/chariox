@@ -340,6 +340,7 @@ pub(crate) async fn observe_relay_leased_git_after(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
     provider_run_id: &str,
+    require_authorization: bool,
 ) -> Result<
     (
         Vec<RemoteGitObservation>,
@@ -348,7 +349,7 @@ pub(crate) async fn observe_relay_leased_git_after(
     DaemonError,
 > {
     runtime_state
-        .observe_relay_leased_git_after(leased_agent_id, provider_run_id)
+        .observe_relay_leased_git_after(leased_agent_id, provider_run_id, require_authorization)
         .await
 }
 
@@ -404,6 +405,7 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
     provider_run_id: &str,
     pump_output: bool,
     replay_settled_completion: bool,
+    require_authorization: bool,
 ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
     runtime_state
         .drain_relay_leased_runtime_projection(
@@ -411,6 +413,7 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
             provider_run_id,
             pump_output,
             replay_settled_completion,
+            require_authorization,
         )
         .await
 }

@@ -131,7 +131,8 @@ pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_processes::{ProviderLaunchProcessRuntime, ProviderProcessReapSummary};
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    LeaseCallerBinding, PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
+    LeaseCallerBinding, LeasedAgentCleanupPhase, PreparedLeasedProviderRun, RemoteLeaseRuntime,
+    RemoteProviderFailure,
 };
 
 pub struct DaemonApp {
@@ -184,8 +185,15 @@ pub struct DaemonApp {
     leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     completed_leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    pending_execution_lease_authorizations:
+        BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
+    pending_leased_agent_authorizations:
+        BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
     completed_leased_agent_deletions: VecDeque<String>,
     completed_execution_lease_deletions: VecDeque<String>,
+    leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
+    #[cfg(test)]
+    leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -357,8 +365,13 @@ impl DaemonApp {
             leased_agent_callers: BTreeMap::new(),
             completed_execution_lease_callers: BTreeMap::new(),
             completed_leased_agent_callers: BTreeMap::new(),
+            pending_execution_lease_authorizations: BTreeMap::new(),
+            pending_leased_agent_authorizations: BTreeMap::new(),
             completed_leased_agent_deletions: VecDeque::new(),
             completed_execution_lease_deletions: VecDeque::new(),
+            leased_agent_cleanup_phases: BTreeMap::new(),
+            #[cfg(test)]
+            leased_agent_cleanup_failures: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
@@ -377,15 +390,11 @@ impl DaemonApp {
         let restore_started = Instant::now();
         app.restore_durable_state()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-            && app
-                .sessions
-                .list_all_sessions()
-                .iter()
-                .any(|session| !session.is_hidden())
+            && !app.sessions.list_all_sessions().is_empty()
         {
             return Err(DaemonError::KernelRuntimeRoleDenied {
                 role: app.config.kernel_runtime_role.as_str(),
-                operation: "startup.public_session",
+                operation: "startup.restored_session",
             });
         }
         let restored_publication_tunnel_count = {

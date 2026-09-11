@@ -94,6 +94,16 @@ pub(super) async fn handle_daemon_peer_request(
     let lease_worker_caller = if router.kernel_runtime_role()
         == crate::config::KernelRuntimeRole::RemoteLeaseWorker
     {
+        if !lease_worker_peer_request_allowed(&request) {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "kernel_runtime_role_denied",
+                    "remote lease worker rejects non-lease peer authority",
+                    false,
+                )),
+            };
+        }
         let caller = match authenticated_lease_worker_caller(
             router,
             from_daemon_id,
@@ -904,7 +914,7 @@ pub(super) async fn handle_daemon_peer_request(
             pump_output,
         } => {
             let drained = router
-                .relay_drain_leased_runtime_projection(
+                .relay_drain_leased_runtime_projection_authorized(
                     &leased_agent_id,
                     &provider_run_id,
                     pump_output,
@@ -985,7 +995,7 @@ pub(super) async fn handle_daemon_peer_request(
             leased_agent_id,
             provider_run_id,
         } => match router
-            .relay_observe_leased_git_after(&leased_agent_id, &provider_run_id)
+            .relay_observe_leased_git_after_authorized(&leased_agent_id, &provider_run_id)
             .await
         {
             Ok((git_observations, workspace_live_sync_change)) => {
@@ -1562,6 +1572,23 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
 }
 
+fn canonical_peer_daemon_id(from_daemon_id: &str) -> Option<&str> {
+    const PEER_TMP: &str = ":peer-tmp:daemon-peer-tmp-";
+    let (daemon_id, suffix) = match from_daemon_id.split_once(PEER_TMP) {
+        Some((daemon_id, suffix)) => (daemon_id, Some(suffix)),
+        None => (from_daemon_id, None),
+    };
+    if daemon_id.trim().is_empty()
+        || daemon_id.contains(":peer-tmp:")
+        || suffix.is_some_and(|suffix| {
+            suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    Some(daemon_id)
+}
+
 fn authenticated_lease_worker_caller(
     router: &CommandRouter,
     from_daemon_id: &str,
@@ -1569,7 +1596,20 @@ fn authenticated_lease_worker_caller(
     encrypted_request: &EncryptedRelayPayload,
 ) -> Result<crate::app::LeaseCallerBinding, chariox_relay::protocol::RelayError> {
     let identity = require_bound_kernel_sender(identity, encrypted_request)?;
-    let home_kernel_id = stable_peer_daemon_id(from_daemon_id);
+    let home_kernel_id = canonical_peer_daemon_id(from_daemon_id).ok_or_else(|| {
+        relay_error(
+            "unauthorized",
+            "execution lease caller has an invalid peer daemon identity",
+            false,
+        )
+    })?;
+    if identity.subject != home_kernel_id {
+        return Err(relay_error(
+            "unauthorized",
+            "execution lease transport identity does not match authenticated kernel subject",
+            false,
+        ));
+    }
     let owner_user_id = identity.user_id.as_deref().ok_or_else(|| {
         relay_error(
             "unauthorized",
@@ -1584,7 +1624,9 @@ fn authenticated_lease_worker_caller(
             false,
         )
     })?;
-    let Some((worker_realm_id, worker_user_id)) = router.lease_worker_enrollment() else {
+    let Some((worker_realm_id, worker_user_id, authenticated_machine_id)) =
+        router.lease_worker_enrollment()
+    else {
         return Err(relay_error(
             "unauthorized",
             "remote lease worker has no Cloud relay enrollment",
@@ -1603,6 +1645,7 @@ fn authenticated_lease_worker_caller(
     }
     Ok(crate::app::LeaseCallerBinding {
         home_kernel_id: home_kernel_id.to_string(),
+        authenticated_machine_id,
         owner_user_id: owner_user_id.to_string(),
         realm_id: identity.realm_id.clone(),
         public_key_thumbprint: public_key_thumbprint.to_string(),
@@ -1669,6 +1712,13 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         }
         _ => None,
     }
+}
+
+fn lease_worker_peer_request_allowed(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::Ping { .. } | RelayPeerRequest::CreateExecutionLease { .. }
+    ) || lease_resource(request).is_some()
 }
 
 fn scoped_unbound_kernel_subject(identity: Option<&RelayCallerIdentity>) -> Option<String> {
@@ -1745,10 +1795,7 @@ mod tests {
                 viewer_public_key: "viewer-key".to_string(),
             }
         ));
-        assert_eq!(
-            canonical_peer_daemon_id("home-kernel"),
-            Some("home-kernel")
-        );
+        assert_eq!(canonical_peer_daemon_id("home-kernel"), Some("home-kernel"));
         assert_eq!(
             canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-17"),
             Some("home-kernel")
@@ -1757,7 +1804,10 @@ mod tests {
             canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-17:forged"),
             None
         );
-        assert_eq!(canonical_peer_daemon_id(":peer-tmp:daemon-peer-tmp-17"), None);
+        assert_eq!(
+            canonical_peer_daemon_id(":peer-tmp:daemon-peer-tmp-17"),
+            None
+        );
     }
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
@@ -1806,6 +1856,7 @@ mod tests {
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             realm_id: "realm-1".to_string(),
             user_id: "user-1".to_string(),
+            machine_id: Some("machine-worker-1".to_string()),
             ..PersistedCloudRelayProfile::default()
         });
         config

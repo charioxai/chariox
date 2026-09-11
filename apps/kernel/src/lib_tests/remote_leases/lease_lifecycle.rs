@@ -77,6 +77,7 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
         .expect("execution lease should be created");
     let caller = LeaseCallerBinding {
         home_kernel_id: "home-kernel".to_string(),
+        authenticated_machine_id: "home-machine".to_string(),
         owner_user_id: "user-home".to_string(),
         realm_id: "realm-home".to_string(),
         public_key_thumbprint: "key-home".to_string(),
@@ -126,6 +127,13 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
             .authorize_leased_agent_caller(&leased_agent.id, &replacement_key),
         Err(DaemonError::LeaseCallerUnauthorized { .. })
     ));
+    let mut replacement_machine = caller.clone();
+    replacement_machine.authenticated_machine_id = "replacement-machine".to_string();
+    assert!(matches!(
+        RemoteLeaseRuntime::new(&mut app)
+            .authorize_leased_agent_caller(&leased_agent.id, &replacement_machine),
+        Err(DaemonError::LeaseCallerUnauthorized { .. })
+    ));
 
     RemoteLeaseRuntime::new(&mut app)
         .destroy_leased_agent(&leased_agent.id)
@@ -154,7 +162,7 @@ fn leased_agent_cleanup_is_retryable_and_retains_authority_and_capacity() {
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let caller = LeaseCallerBinding {
         home_kernel_id: "home-kernel".to_string(),
-        home_machine_id: "home-machine".to_string(),
+        authenticated_machine_id: "home-machine".to_string(),
         owner_user_id: "user-home".to_string(),
         realm_id: "realm-home".to_string(),
         public_key_thumbprint: "key-home".to_string(),

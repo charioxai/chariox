@@ -9,14 +9,10 @@ pub(crate) fn ensure_public_request_allowed(
     if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
         return Ok(());
     }
-    let operation = match request {
-        LocalDaemonRequest::CreateSession(_) => "session.create",
-        LocalDaemonRequest::JoinSessionInvite(_) => "session.invite.join",
-        LocalDaemonRequest::ImportExternalProviderSession(_) => "external_session.import",
-        LocalDaemonRequest::ImportExternalProviderAgent(_) => "external_agent.import",
-        _ => return Ok(()),
-    };
-    Err(role_denied(config.kernel_runtime_role, operation))
+    if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
+        return Ok(());
+    }
+    Err(role_denied(config.kernel_runtime_role, "public.request"))
 }
 
 pub(crate) fn ensure_managed_context_import_allowed(

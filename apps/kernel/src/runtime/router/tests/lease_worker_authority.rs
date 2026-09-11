@@ -64,10 +64,32 @@ fn denied_requests() -> Vec<LocalDaemonRequest> {
         LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
             include_archived: true,
         }),
-        LocalDaemonRequest::GetProviderCatalog(crate::local::GetProviderCatalogRequest),
-        LocalDaemonRequest::GetWaitingRoomInventory(
-            crate::local::GetWaitingRoomInventoryRequest,
-        ),
+        LocalDaemonRequest::GetProviderCatalog(crate::local::GetProviderCatalogRequest::default()),
+        LocalDaemonRequest::PollRuntimeNotices(crate::local::PollRuntimeNoticesRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+        }),
+        LocalDaemonRequest::ListSlices(crate::local::ListSlicesRequest),
+        LocalDaemonRequest::ListWorkflows(crate::local::ListWorkflowsRequest {
+            session_id: "session-1".to_string(),
+        }),
+        LocalDaemonRequest::ReadFile(crate::local::ReadFileCapabilityRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            path: "README.md".into(),
+        }),
+        LocalDaemonRequest::ListMetaagentEvents(crate::local::ListMetaagentEventsRequest {
+            session_id: "session-1".to_string(),
+            metaagent_id: "metaagent-1".to_string(),
+            limit: None,
+            status: None,
+            kind: None,
+        }),
+        LocalDaemonRequest::CancelBrowserImport(crate::local::CancelBrowserImportRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            request_id: "browser-import-1".to_string(),
+        }),
     ]
 }
 
