@@ -19,6 +19,14 @@ const screenTool = path.join(
   "docker",
   "slice-screen.sh",
 )
+const chromiumPreflight = path.join(scriptDir, "lib", "chromium-sandbox-preflight.mjs")
+const chromiumSeccomp = path.join(
+  repoRoot,
+  "apps",
+  "kernel",
+  "slice-linux-docker",
+  "chromium-seccomp.json",
+)
 const image = process.env.CHARIOX_SLICE_IMAGE ?? "chariox-slice-linux:0.1.0"
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${process.pid}`
 const containerName = `chariox-computer-secret-x11-${process.pid}`
@@ -344,6 +352,8 @@ async function main() {
       "256",
       "--network",
       "none",
+      "--security-opt",
+      `seccomp=${chromiumSeccomp}`,
       "--entrypoint",
       "/bin/sleep",
       image,
@@ -386,6 +396,7 @@ async function main() {
     await docker(["exec", "-u", "root", containerName, "mkdir", "-p", "/tmp/chariox-secret-x11"])
     await docker(["cp", pagePath, `${containerName}:/tmp/chariox-secret-x11/index.html`])
     await docker(["cp", screenTool, `${containerName}:/tmp/chariox-secret-x11/slice-screen.sh`])
+    await docker(["cp", chromiumPreflight, `${containerName}:/tmp/chariox-secret-x11/chromium-sandbox-preflight.mjs`])
     await docker([
       "exec",
       "-u",
@@ -395,6 +406,17 @@ async function main() {
       "-R",
       "slice:slice",
       "/tmp/chariox-secret-x11",
+    ])
+    await docker([
+      "exec", "-u", "slice", containerName, "/bin/bash", "-lc",
+      "chmod 0700 /tmp/chariox-secret-x11",
+    ])
+    await docker([
+      "exec", "-u", "slice", containerName, "node",
+      "/tmp/chariox-secret-x11/chromium-sandbox-preflight.mjs",
+      "chromium",
+      "/tmp/chariox-secret-x11/profile",
+      "/tmp/chariox-secret-x11/runtime",
     ])
 
     await docker([
@@ -448,10 +470,12 @@ async function main() {
       "slice",
       "-e",
       "DISPLAY=:99",
+      "-e",
+      "XDG_RUNTIME_DIR=/tmp/chariox-secret-x11/runtime",
       containerName,
       "/bin/bash",
       "-lc",
-      "exec chromium --user-data-dir=/tmp/chariox-secret-x11/profile --no-sandbox --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 http://127.0.0.1:8765/ >/tmp/chariox-secret-x11/chromium.log 2>&1",
+      "exec chromium --user-data-dir=/tmp/chariox-secret-x11/profile --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-dev-shm-usage --disable-gpu --disable-background-networking --window-size=1280,800 http://127.0.0.1:8765/ >/tmp/chariox-secret-x11/chromium.log 2>&1",
     ])
 
     await waitFor(async () => {
