@@ -25,6 +25,8 @@ test('connector persists only permission lease metadata in session storage and h
     assert.equal(source.includes(forbidden),false,forbidden);
   }
   assert.match(source,/chrome\.storage\.session/);
+  assert.match(source,/port\.sender\?\.documentId/);
+  assert.match(source,/runtime\.getContexts/);
   assert.match(source,/permissions\.request/);
   assert.match(source,/deliverBrowserImport/);
   assert.match(source,/browser_import_delivery_unavailable/);
@@ -35,4 +37,6 @@ test('connector persists only permission lease metadata in session storage and h
   assert.equal(click.includes('await '),false);
   assert.match(connector,/finally \{\s*await flow\?\.releasePermissions\(\)/);
   assert.match(connector,/pagehide.*flow\?\.cancel\(\)/);
+  assert.match(connector,/kernelCancellationConfirmed === true/);
+  assert.match(connector,/browser_import_cancellation_unconfirmed/);
 });

@@ -159,6 +159,30 @@ test('permission lifecycle releases on denial, cancellation and idle timeout', a
   }
 });
 
+test('permission release distinguishes definitive denial from an unresolved late grant', async () => {
+  const denied=fixture();
+  const deniedReleases=[];
+  denied.options.chrome.permissions.request=async () => false;
+  denied.options.permissionLifecycle={reserve:async()=>{},activate:async()=>{},
+    release:async value => deniedReleases.push(value)};
+  const deniedFlow=await prepareChromeCookieImport(denied.options);
+  await assert.rejects(deniedFlow.confirmAndRead(),{code:'cookie_source_denied'});
+  assert.deepEqual(deniedReleases,[{outcome:'denied'}]);
+
+  const pending=fixture();
+  const permission=deferred();
+  const pendingReleases=[];
+  pending.options.chrome.permissions.request=() => permission.promise;
+  pending.options.permissionLifecycle={reserve:async()=>{},activate:async()=>{},
+    release:async value => pendingReleases.push(value)};
+  const pendingFlow=await prepareChromeCookieImport(pending.options);
+  const reading=pendingFlow.confirmAndRead();
+  await pendingFlow.cancel();
+  assert.deepEqual(pendingReleases,[{outcome:'possible_late'}]);
+  permission.resolve(true);
+  await assert.rejects(reading,{code:'cookie_source_cancelled'});
+});
+
 test('caller mutations cannot change displayed selection, granted hosts or source store', async () => {
   const f = fixture();
   const flow = await prepareChromeCookieImport(f.options);

@@ -92,3 +92,73 @@ done
     store.shutdown().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cancellation_before_registration_fences_the_later_import_before_stdio_dispatch() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-import-cancel-before-register-{:032x}",
+        rand::random::<u128>()
+    ));
+    fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    fs::write(
+        &script,
+        r#"set -eu
+root=$1
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.cookies.import"'*) printf '%s\n' "$request" > "$root/unexpected-import"; printf '{"id":%s,"ok":true,"result":{"status":"applied","results":[]}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    let store = BrowserControllerProcessStore::new(
+        "/bin/sh",
+        vec![
+            script.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+        ],
+        Duration::from_secs(2),
+    );
+    store.acquire("room").unwrap();
+    store.plan_browser_import("room", REQUEST).unwrap();
+    let binding = RoomBrowserImportBinding {
+        request_id: REQUEST.into(),
+        user_id: "user".into(),
+        room_id: "room".into(),
+        environment_id: "environment".into(),
+    };
+    let payload = BrowserImportPayload::new(Zeroizing::new("[]".into())).unwrap();
+    std::thread::scope(|scope| {
+        let cancellation = scope.spawn(|| store.cancel_browser_import_and_wait("room", REQUEST));
+        std::thread::sleep(Duration::from_millis(30));
+        let result = store
+            .perform_cancellable_browser_import(
+                "room",
+                &binding,
+                1,
+                "target",
+                "document",
+                "0",
+                &["example.test".into()],
+                &[],
+                false,
+                &payload,
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            Response::ActionCancelled {
+                controller_fenced: false,
+            }
+        );
+        assert!(cancellation.join().unwrap());
+    });
+    assert!(!root.join("unexpected-import").exists());
+    store.shutdown().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}

@@ -46,7 +46,7 @@ test('protocol-321 production path applies exact domain results and restart clea
       browser_generation:1,target_id:'target',document_id:'document',source_store_id:'normal',
       domains:['example.test'],partition_sites:[],overwrite:false,payload_json:JSON.stringify(payload),
     }}),{status:'rolled_back',results:[]});
-    assert.deepEqual(cookies,[]);
+    assert.equal(cookies.length,0);
     controller.browserGeneration=1;
     const result = await applyProductionBrowserImport({controller,home,params:{
       binding:{request_id:'a'.repeat(32),user_id:'user',room_id:'room',environment_id:'environment'},
@@ -82,7 +82,49 @@ test('protocol-321 production path applies exact domain results and restart clea
       domains:['example.test'],partition_sites:[],overwrite:false,payload_json:JSON.stringify(payload),
     }});
     assert.deepEqual(rolledBack,{status:'rolled_back',results:[]});
-    assert.deepEqual(cookies,[]);
+    assert.equal(cookies.length,0);
+    await assert.rejects(stat(path.join(directory,'cookie-import.pending')),{code:'ENOENT'});
+  } finally { await rm(home,{recursive:true,force:true}); }
+});
+
+test('production transaction cancellation during the cookie write verifies rollback before returning',async () => {
+  const home=await mkdtemp(path.join(tmpdir(),'chariox-browser-import-cancel-'));
+  const began=Promise.withResolvers();
+  const resume=Promise.withResolvers();
+  let cookies=[];
+  const connection={isOpen:()=>true,send:async (method,params) => {
+    if (method === 'Page.getFrameTree') return {frameTree:{frame:{loaderId:'document'}}};
+    if (method === 'Target.getTargetInfo') return {targetInfo:{targetId:'target'}};
+    if (method === 'Storage.getCookies') return {cookies:structuredClone(cookies)};
+    if (method === 'Storage.setCookies') {
+      began.resolve();
+      await resume.promise;
+      cookies=params.cookies.map(({url,...cookie}) => ({...cookie,
+        domain:cookie.domain ?? new URL(url).hostname,session:cookie.expires === undefined,
+        expires:cookie.expires ?? -1}));
+      return {};
+    }
+    if (method === 'Network.deleteCookies') { cookies=[]; return {}; }
+    throw new Error('unexpected fixture command');
+  }};
+  const controller={browserGeneration:1,resolvePageTarget:async()=>({connection,sessionId:'cdp'}),
+    withCookieWritersQuiesced:operation=>operation({retain:()=>{}})};
+  const cancellation=new AbortController();
+  const params={binding:{request_id:'d'.repeat(32),user_id:'user',room_id:'room',environment_id:'cancel-environment'},
+    browser_generation:1,target_id:'target',document_id:'document',source_store_id:'normal',
+    domains:['example.test'],partition_sites:[],overwrite:false,payload_json:JSON.stringify([
+      {name:'session',value:randomUUID(),domain:'example.test',path:'/',secure:true,httpOnly:true,
+        hostOnly:true,session:true,sameSite:'lax',storeId:'normal'},
+    ])};
+  try {
+    const applying=applyProductionBrowserImport({controller,home,params,signal:cancellation.signal});
+    await began.promise;
+    cancellation.abort();
+    resume.resolve();
+    assert.deepEqual(await applying,{status:'rolled_back',results:[]});
+    assert.equal(cookies.length,0);
+    const directory=path.join(home,'browser-import',
+      'ac389e9449366c5c2addfe0cd552bed1dfcec8c227c4c24bd7764e2aaa585229');
     await assert.rejects(stat(path.join(directory,'cookie-import.pending')),{code:'ENOENT'});
   } finally { await rm(home,{recursive:true,force:true}); }
 });

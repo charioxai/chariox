@@ -59,24 +59,31 @@ Pairing is attended, independently anchored and one-use:
    `*://<confirmed-host>/*` origins. No consent round trip or cookie read precedes
    that gesture.
 6. Closing/cancelling aborts owned waits, sends the bounded existing kernel
-   cancellation, closes the relay, ignores late replies and reports a fixed
-   result code. The extension does not retry one-use operations.
+   cancellation, closes the relay and ignores late replies. The UI reports
+   cancellation only when the kernel confirms it; an unconfirmed request is
+   displayed as quarantined pending recovery. The extension does not retry
+   one-use operations.
 
 Before the confirmation gesture, the connector snapshots `cookies` and each
 exact host permission independently and reserves those needs with the shared MV3
 service worker. Chrome's permission-added event plus post-grant activation marks
-only grants absent from that snapshot as connector-owned. Completion, denial,
+only grants absent from that snapshot as connector-owned. Definitive denial
+discards pending ownership. Only an interrupted permission prompt can create a
+possible-late-acquisition record, and that metadata expires after two minutes.
+Completion, denial,
 cancellation, timeout, explicit page release, tab close and delivery failure all release the
 lease. A grant is removed only when connector-owned and no other active connector
 page needs it; permissions that predated the operation are never removed.
 
-The coordinator stores only its versioned operation ID, owner tab ID, exact
+The coordinator stores only its versioned operation ID, owner tab/document IDs, exact
 permission names/origins, preexisting/acquired/pending sets and active state in
 `chrome.storage.session`. This Chrome-120-supported worker-lifecycle seam lets a
 fresh service worker recover leases idempotently, coordinate concurrent pages,
 and retry late-grant cleanup from a 30-second alarm without busy polling. A port
 disconnect is not treated as page close because service-worker suspension also
-disconnects ports; explicit release and `tabs.onRemoved` are authoritative.
+disconnects ports. Recovery uses `runtime.getContexts` to require the exact live
+connector URL and document ID, so navigation, reload, document replacement and
+tab removal tear down the old lease while a worker restart preserves it.
 The connector uses no local/sync extension storage, content script, externally
 connectable endpoint, web-accessible resource or page message bridge. Cookie values exist only in the short-lived source batch passed
 to the private delivery adapter. They never enter extension storage, DOM text,
@@ -642,6 +649,8 @@ and overwrite choice. Approval, claim and active authorization compare that
 immutable binding. Requests expire after two minutes. Concurrent claims have
 one winner; cancellation revokes authorization without freeing an active
 Environment slot until the trusted executor reports verification or recovery.
+Normal completion accepts only an applying admission; a cancelled admission can
+be retired only by the durable recovery-completion path.
 The ledger holds at most 128 bounded metadata records and never stores cookies.
 Unclaimed expired entries are reclaimed; active or cancelled writers remain
 reserved until completion. A fresh kernel rejects old request IDs.
@@ -655,8 +664,12 @@ routing the private controller command. The controller fence and encrypted
 journal provide writer exclusion, verification, rollback, and fail-closed cleanup.
 Kernel-owned controller startup/reconnect resumes matching cleanup or performs
 rollback before releasing quarantine. Active cancellation is bound to the exact
-request/execution ID in both the Rust stdio path and Node controller registry,
-passes an `AbortSignal` through the production destination/transaction, and is
+request/execution ID in both the Rust stdio path and Node controller registry.
+The kernel plans that identity before controller dispatch, making cancellation
+before execution registration a terminal pre-dispatch fence. If cancellation
+races the plan itself, admission revalidation rejects dispatch and the kernel
+drains the destination guard before completing durable recovery. It passes an
+`AbortSignal` through the production destination/transaction, and is
 acknowledged to the caller only after the controller stops and authoritative
 rollback/cleanup releases durable quarantine. Results contain exact metadata-only
 coverage of the selected domains.

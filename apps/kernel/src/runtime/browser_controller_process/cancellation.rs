@@ -60,6 +60,7 @@ struct CompletedExecution {
 struct ExecutionRegistryState {
     active: BTreeMap<ExecutionKey, Arc<ExecutionRecord>>,
     completed: VecDeque<CompletedExecution>,
+    planned_imports: BTreeMap<ExecutionKey, Arc<CancellationSignal>>,
 }
 
 #[derive(Clone, Default)]
@@ -147,6 +148,7 @@ impl BrowserActionExecutions {
         session_id: &str,
         execution_id: &str,
         fingerprint: [u8; 32],
+        consume_pending_import_cancellation: bool,
     ) -> Result<ExecutionAdmission, String> {
         if execution_id.len() != 32 || !execution_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("browser action requires a 128-bit execution identity".into());
@@ -173,7 +175,14 @@ impl BrowserActionExecutions {
         if state.active.len() >= 64 {
             return Err("browser execution capacity is exhausted".into());
         }
-        let signal = Arc::new(CancellationSignal::default());
+        let signal = if consume_pending_import_cancellation {
+            state
+                .planned_imports
+                .remove(&key)
+                .unwrap_or_default()
+        } else {
+            Arc::new(CancellationSignal::default())
+        };
         let record = Arc::new(ExecutionRecord {
             fingerprint,
             signal: Arc::clone(&signal),
@@ -252,31 +261,81 @@ impl BrowserActionExecutions {
 }
 
 impl BrowserControllerProcessStore {
+    pub(crate) fn plan_browser_import(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<(), String> {
+        if request_id.len() != 32 || !request_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("browser import requires a 128-bit execution identity".into());
+        }
+        let mut state = self
+            .executions
+            .state
+            .lock()
+            .map_err(|_| "browser execution registry poisoned")?;
+        let key = (session_id.to_string(), request_id.to_string());
+        if state.active.contains_key(&key) || state.completed.iter().any(|entry| entry.key == key) {
+            return Err("browser import execution identity is already in use".into());
+        }
+        if !state.planned_imports.contains_key(&key) && state.planned_imports.len() >= 64 {
+            return Err("browser import execution capacity is exhausted".into());
+        }
+        state
+            .planned_imports
+            .entry(key)
+            .or_insert_with(|| Arc::new(CancellationSignal::default()));
+        Ok(())
+    }
+
+    pub(crate) fn clear_planned_browser_import(&self, session_id: &str, request_id: &str) {
+        self.executions
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .planned_imports
+            .remove(&(session_id.to_string(), request_id.to_string()));
+    }
+
     pub(crate) fn cancel_browser_import_and_wait(
         &self,
         session_id: &str,
         request_id: &str,
     ) -> bool {
-        let record = {
-            let state = self
+        let (signal, planned) = {
+            let mut state = self
                 .executions
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state
-                .active
-                .get(&(session_id.to_string(), request_id.to_string()))
-                .cloned()
+            let key = (session_id.to_string(), request_id.to_string());
+            if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
+                return matches!(
+                    &completed.outcome,
+                    Ok(Response::ActionCancelled { .. })
+                );
+            }
+            if let Some(record) = state.active.get(&key) {
+                (Arc::clone(&record.signal), false)
+            } else if let Some(signal) = state.planned_imports.get(&key) {
+                (Arc::clone(signal), true)
+            } else {
+                return false;
+            }
         };
-        let Some(record) = record else {
-            return false;
-        };
-        record.signal.requested.store(true, Ordering::Release);
+        signal.requested.store(true, Ordering::Release);
+        if planned {
+            // The kernel registered this identity before dispatch, so the
+            // requested bit is a complete pre-dispatch fence. A later executor
+            // consumes the same signal and cannot reach stdio.
+            signal.confirm_stop();
+            return true;
+        }
         let deadline = Instant::now() + Duration::from_secs(15);
-        while !record.signal.stopped.load(Ordering::Acquire) && Instant::now() < deadline {
+        while !signal.stopped.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        record.signal.stopped.load(Ordering::Acquire) && record.signal.accepted()
+        signal.stopped.load(Ordering::Acquire) && signal.accepted()
     }
     #[cfg(test)]
     pub(crate) fn test_forget_completed_browser_actions(&self) {
@@ -397,11 +456,12 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "failed to fingerprint browser import".to_string())?,
         )
         .into();
-        self.perform_cancellable_operation(
+        self.perform_cancellable_operation_inner(
             session_id,
             &binding.request_id,
             fingerprint,
             Response::CookieImportRolledBack,
+            true,
             |ownership| {
                 ownership
                     .import_browser_cookies(
@@ -434,12 +494,31 @@ impl BrowserControllerProcessStore {
         unavailable: Response,
         operation: impl FnOnce(&mut StdioOwnership) -> ExecutionOutcome,
     ) -> ExecutionOutcome {
+        self.perform_cancellable_operation_inner(
+            session_id,
+            execution_id,
+            fingerprint,
+            unavailable,
+            false,
+            operation,
+        )
+    }
+
+    fn perform_cancellable_operation_inner(
+        &self,
+        session_id: &str,
+        execution_id: &str,
+        fingerprint: [u8; 32],
+        unavailable: Response,
+        consume_pending_import_cancellation: bool,
+        operation: impl FnOnce(&mut StdioOwnership) -> ExecutionOutcome,
+    ) -> ExecutionOutcome {
         let Some(ownership) = &self.ownership else {
             return Ok(unavailable);
         };
         let active = match self
             .executions
-            .register(session_id, execution_id, fingerprint)?
+            .register(session_id, execution_id, fingerprint, consume_pending_import_cancellation)?
         {
             ExecutionAdmission::Replay(outcome) => return outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
@@ -541,7 +620,7 @@ mod tests {
         let executions = BrowserActionExecutions::default();
         let fingerprint = [7; 32];
         let ExecutionAdmission::Start(active) = executions
-            .register("room", "00000000000000000000000000000001", fingerprint)
+            .register("room", "00000000000000000000000000000001", fingerprint, false)
             .unwrap()
         else {
             panic!("first execution must start");
@@ -549,11 +628,16 @@ mod tests {
         assert_eq!(active.finish(completed()), completed());
         assert!(matches!(
             executions
-                .register("room", "00000000000000000000000000000001", fingerprint)
+                .register("room", "00000000000000000000000000000001", fingerprint, false)
                 .unwrap(),
             ExecutionAdmission::Replay(outcome) if outcome == completed()
         ));
-        let error = match executions.register("room", "00000000000000000000000000000001", [8; 32]) {
+        let error = match executions.register(
+            "room",
+            "00000000000000000000000000000001",
+            [8; 32],
+            false,
+        ) {
             Ok(_) => panic!("changed request must not reuse an execution identity"),
             Err(error) => error,
         };
@@ -571,7 +655,7 @@ mod tests {
         let executions = BrowserActionExecutions::default();
         let execution_id = "00000000000000000000000000000002";
         let ExecutionAdmission::Start(active) =
-            executions.register("room", execution_id, [9; 32]).unwrap()
+            executions.register("room", execution_id, [9; 32], false).unwrap()
         else {
             panic!("first execution must start");
         };
@@ -591,7 +675,7 @@ mod tests {
         for sequence in 0..=COMPLETED_BROWSER_ACTION_LIMIT {
             let execution_id = format!("{sequence:032x}");
             let ExecutionAdmission::Start(active) = executions
-                .register("room", &execution_id, [sequence as u8; 32])
+                .register("room", &execution_id, [sequence as u8; 32], false)
                 .unwrap()
             else {
                 panic!("new execution must start");

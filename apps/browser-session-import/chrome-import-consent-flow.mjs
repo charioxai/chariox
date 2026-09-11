@@ -31,10 +31,12 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
 
   let permissionsReleased = false;
   let permissionRelease;
+  let permissionOutcome = 'terminal';
   const releasePermissions = () => {
     if (permissionRelease) return permissionRelease;
     permissionsReleased = true;
-    permissionRelease = Promise.resolve().then(() => permissionLifecycle?.release()).catch(() => undefined);
+    permissionRelease = Promise.resolve().then(() => permissionLifecycle?.release({outcome:permissionOutcome}))
+      .catch(() => undefined);
     return permissionRelease;
   };
   try { await permissionLifecycle?.reserve(structuredClone(permission)); }
@@ -109,10 +111,21 @@ export async function prepareChromeCookieImport({chrome,selection,sourceTabId,re
     state = 'requesting_permission';
     try {
       live();
-      const granted = chrome.permissions.request(structuredClone(permission));
-      if (await sourceCall(() => granted,active.signal,deadline) !== true) throw error('cookie_source_denied');
+      permissionOutcome = 'possible_late';
+      let granted;
+      try { granted = chrome.permissions.request(structuredClone(permission)); }
+      catch (failure) { permissionOutcome='denied'; throw failure; }
+      let permissionGranted;
+      try { permissionGranted = await sourceCall(() => granted,active.signal,deadline); }
+      catch (failure) {
+        if (!active.signal.aborted && !signal?.aborted && performance.now() < deadline) permissionOutcome='denied';
+        throw failure;
+      }
+      if (permissionGranted !== true) { permissionOutcome='denied'; throw error('cookie_source_denied'); }
+      permissionOutcome = 'granted';
       live();
       await sourceCall(() => permissionLifecycle?.activate(),active.signal,deadline);
+      permissionOutcome = 'terminal';
       live();
       state = 'approving';
       if (!matches(await send(approveBrowserImportRequest(requestId,selected)),requestId,'approved')) {
