@@ -381,12 +381,28 @@ async function validateProtocolTransition(currentRoot, currentProtocol, targetRo
     fail("managed kernel protocol transition is invalid")
   }
   if (currentProtocol === targetProtocol) return
-  const supported = targetProtocol > currentProtocol
-    ? (await readTransitionPolicy(targetRoot, targetProtocol)).upgradeFrom.includes(currentProtocol)
-    : (await readTransitionPolicy(currentRoot, currentProtocol)).rollbackTo.includes(targetProtocol)
-  if (!supported) {
-    fail(`local daemon protocol transition ${currentProtocol} to ${targetProtocol} is not explicitly supported`)
+  const newerRoot = targetProtocol > currentProtocol ? targetRoot : currentRoot
+  const newerProtocol = Math.max(currentProtocol, targetProtocol)
+  const olderProtocol = Math.min(currentProtocol, targetProtocol)
+  const policy = await readTransitionPolicy(newerRoot, newerProtocol)
+  if (!policy.upgradeFrom.includes(olderProtocol) || !policy.rollbackTo.includes(olderProtocol)) {
+    fail(`local daemon protocol transition ${currentProtocol} to ${targetProtocol} is not reciprocally authorized`)
   }
+}
+
+async function durableDirectoryRename(source, destination, label) {
+  const sourceMetadata = await lstat(source).catch(() => null)
+  if (!sourceMetadata || sourceMetadata.isSymbolicLink() || !sourceMetadata.isDirectory()) {
+    fail(`${label} source is invalid`)
+  }
+  if (dirname(source) !== dirname(destination)) fail(`${label} paths do not share a parent`)
+  const destinationMetadata = await lstat(destination).catch((error) => {
+    if (error.code === "ENOENT") return null
+    throw error
+  })
+  if (destinationMetadata) fail(`${label} destination is obstructed`)
+  await rename(source, destination)
+  await fsyncDirectory(dirname(destination))
 }
 
 async function atomicText(contents, destination) {
@@ -474,6 +490,18 @@ async function run(args) {
   if (operation === "validate-protocol-transition" && values.length === 4) {
     await validateProtocolTransition(
       resolve(values[0]), Number(values[1]), resolve(values[2]), Number(values[3]),
+    )
+    return
+  }
+  if (operation === "publish-transaction" && values.length === 2) {
+    await durableDirectoryRename(
+      resolve(values[0]), resolve(values[1]), "managed kernel upgrade transaction publication",
+    )
+    return
+  }
+  if (operation === "tombstone-transaction" && values.length === 2) {
+    await durableDirectoryRename(
+      resolve(values[0]), resolve(values[1]), "managed kernel upgrade transaction tombstone",
     )
     return
   }

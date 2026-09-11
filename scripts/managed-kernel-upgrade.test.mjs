@@ -24,6 +24,7 @@ import { test } from "node:test"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const upgrade = join(repositoryRoot, "deploy/managed-kernel/upgrade-image.sh")
+const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-upgrade-state.mjs")
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
@@ -321,7 +322,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "tombstone-transaction" ]; then
-  terminal_phase=$(sed -n '1p' "\${4:-}/phase")
+  terminal_phase=$(sed -n '1p' "\${3:-}/phase")
   marker="$HARNESS_STATE/crash-after-\${terminal_phase}-tombstone"
   if [ -f "$marker" ]; then
     "${process.execPath}" "$@"
@@ -902,6 +903,30 @@ test("managed kernel upgrade recovers interruption after every persisted nonterm
   }
 })
 
+test("cross-protocol recovery authorizes automatic rollback and re-upgrade before shutdown", async (context) => {
+  const harness = await makeHarness(context, {
+    currentProtocol: 322,
+    targetProtocol: 323,
+    targetTransitionPolicy: {
+      schemaVersion: 1,
+      protocol: 323,
+      upgradeFrom: [322, 323],
+      rollbackTo: [322, 323],
+    },
+  })
+  await put(join(harness.state, "crash-after-phase-activated"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  const retried = harness.run()
+  assert.equal(retried.status, 0, retried.stderr)
+  const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
+  assert.equal(calls.filter((call) => call === `stop ${serviceName}`).length, 3)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+})
+
 test("managed kernel upgrade recovers interruption after the persisted committed phase", async (context) => {
   const harness = await makeHarness(context)
   await put(join(harness.state, "crash-after-phase-committed"), "crash\n")
@@ -953,6 +978,7 @@ test("managed kernel upgrade discards a rolled-back tombstone after cleanup inte
 
 test("managed kernel upgrade remains a dedicated offline release operation", async () => {
   const contents = await readFile(upgrade, "utf8")
+  const stateContents = await readFile(upgradeState, "utf8")
   const serviceContents = await readFile(managedService, "utf8")
   assert.match(contents, /verify-image-release\.mjs/)
   assert.match(contents, /--print-local-daemon-protocol-version/)
@@ -969,11 +995,12 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.doesNotMatch(serviceContents, /systemctl restart/)
 
   const publishRelease = contents.indexOf('mv "$pending_release" "$published_release"')
-  const publishTransaction = contents.indexOf('mv "$pending_transaction" "$transaction_root"', publishRelease)
+  const publishTransaction = contents.indexOf('publish-transaction \\', publishRelease)
   const stopService = contents.indexOf('if ! systemctl stop "$service_name"', publishTransaction)
   assert.ok(publishRelease >= 0 && publishTransaction > publishRelease && stopService > publishTransaction)
   assert.match(contents.slice(0, publishRelease), /sync-tree[^\n]*\$pending_release/)
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-directory[^\n]*\$releases_root/)
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-tree[^\n]*\$pending_transaction/)
-  assert.match(contents.slice(publishTransaction, stopService), /sync-directory[^\n]*\$chariox_root/)
+  assert.match(contents.slice(publishTransaction, stopService), /publish-transaction/)
+  assert.match(stateContents, /await rename\(source, destination\)\n  await fsyncDirectory\(dirname\(destination\)\)/)
 })
