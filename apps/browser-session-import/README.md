@@ -26,6 +26,13 @@ sandbox-disabling flag is used. Restarts reuse the
 same `--user-data-dir` and request Chromium's native session restore when a
 restorable session exists.
 
+The other current launch switches are `--no-default-browser-check`,
+`--disable-dev-shm-usage` and `--disable-gpu`. The product may add
+`--unsafely-treat-insecure-origin-as-secure` for the exact origins in
+`CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS`; its current default is only
+`http://host.docker.internal:4321`. This scoped development-origin exception is
+not a renderer-sandbox exception and must not be widened to arbitrary origins.
+
 Browser-native password import transfers saved passwords only. It does not
 transfer an authenticated web session, passkeys, payment credentials, Chrome
 Sync state, host keychain entries, device registration or device-bound keys.
