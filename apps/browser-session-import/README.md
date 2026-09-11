@@ -3,9 +3,9 @@
 These components include the production OSS runtime path and an installable,
 attended Chrome MV3 source connector. The connector reuses the consent flow,
 current-profile source reader, and direct encrypted relay transport in this
-directory. Its final-delivery adapter remains disabled until the reviewed
-protocol-320 runtime lifecycle is integrated; it fails closed and does not
-simulate success in its absence.
+directory. The protocol-321 runtime lifecycle is integrated. Its packaged
+final-delivery adapter remains disabled until the reviewed Web/connector binding
+is complete; it fails closed and does not simulate success in its absence.
 
 ## Chrome MV3 connector
 
@@ -40,7 +40,7 @@ Pairing is attended, independently anchored and one-use:
    and destination there.
 2. Chariox returns a short-lived authenticated bootstrap containing a random
    `bootstrap_id`, the selected relay URL, daemon, kernel public key, immutable
-   destination selection, protocol 320/capability version and echoed connector
+   destination selection, local protocol/capability version and echoed connector
    sender/source metadata. The extension validates and freezes this bootstrap
    before creating the pairing challenge. It is the independent trust anchor;
    the later pairing response cannot select or replace those fields.
@@ -146,12 +146,11 @@ overwrite value fails before application.
 
 ### Runtime and Web integration
 
-After `codex/browser-import-production-runtime` lands:
+The protocol-321 production runtime is integrated. Remaining product binding:
 
-1. Export protocol 320 and capability `{name:"browser_import_final_delivery",
-   version:1}` only when private delivery admission, durable recovery and the
-   controller transaction are all available. Keep consent/source operations on
-   their existing shared request builders.
+1. Require protocol 321 and capability `{name:"browser_import_final_delivery",
+   version:1}` for private delivery. Keep consent/source operations on their
+   existing shared request builders.
 2. Implement `deliverBrowserImport()` only against that private runtime command.
    Encrypt inside the adapter with the retained connector key; send directly over
    the existing relay connection; clear local batch references in `finally`; map
@@ -172,7 +171,7 @@ After `codex/browser-import-production-runtime` lands:
 4. Forward progress with that exact request ID and selected-domain count. Accept
    completion only from the authoritative kernel result; the extension and Web
    UI must never infer success from permission grant, source read or socket send.
-5. Run the connector regressions here, the protocol-320 runtime command tests and
+5. Run the connector regressions here, the protocol-321 runtime command tests and
    the Web adapter/coordinator/entry tests together before enabling the capability.
 
 ## Standard managed-browser boundary
@@ -721,8 +720,8 @@ kernel consumes sender-bound consent and creates durable quarantine. Run its
 disposable, sandboxed Chrome test with the real controller connection.
 
 Remaining product work is binding the packaged MV3 connector's final-delivery
-adapter to the reviewed protocol-320 lifecycle and enabling the guarded Web
-progress/results adapter only for that exact capability. Add managed
+adapter to the reviewed protocol-321 delivery lifecycle and enabling the guarded
+Web progress/results adapter only for that exact capability. Add managed
 process/browser-crash acceptance drills before claiming broad service portability.
 
 Run `browser-import-production-path-drill.test.mjs` for the focused protocol-321

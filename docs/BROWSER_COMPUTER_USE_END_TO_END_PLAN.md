@@ -312,7 +312,7 @@ Each evidence manifest must include:
 Linear: CHA-18, with inputs from CHA-23, CHA-25, CHA-26, and CHA-31.
 
 Create the local functional and failure-reproduction harness before replacing
-the current implementation. It must run against the current noVNC and one-shot
+the pre-cutover implementation. It must run against the baseline noVNC and one-shot
 CDP stack, fail for the missing product behavior, and run against each later
 implementation. This milestone establishes correctness tests, not benchmark
 rankings or optimization targets.
@@ -320,7 +320,7 @@ rankings or optimization targets.
 Deliverables:
 
 - reproducible local Mac and local Linux or Docker test profiles
-- current noVNC display behavior capture
+- pre-cutover noVNC display behavior capture
 - current structured-browser, screenshot, OCR, mouse, and keyboard behavior
   capture
 - per-slice memory, CPU, disk, and process measurements used only to keep the

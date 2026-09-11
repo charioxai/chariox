@@ -7,12 +7,12 @@ import test from 'node:test';
 
 import {applyProductionBrowserImport,recoverProductionBrowserImport} from './production-destination.mjs';
 
-test('protocol-321 production path applies exact domain results and restart cleanup is matching and durable',async () => {
+test('protocol-321 production path remains covered by the protocol-322 runtime',async () => {
   const [localProtocol,peerProtocol] = await Promise.all([
     readFile(new URL('../kernel/src/local/api/types.rs',import.meta.url),'utf8'),
     readFile(new URL('../kernel/src/transport/relay_peer.rs',import.meta.url),'utf8'),
   ]);
-  assert.match(localProtocol,/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 321/);
+  assert.match(localProtocol,/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 322/);
   assert.match(peerProtocol,/RELAY_PEER_PROTOCOL_VERSION: u32 = 49/);
   const home = await mkdtemp(path.join(tmpdir(),'chariox-browser-import-production-'));
   const generatedValue = randomUUID();

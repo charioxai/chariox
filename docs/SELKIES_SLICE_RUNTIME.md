@@ -179,8 +179,9 @@ A selected Selkies failure never falls back silently. Browser tools do not
 require a healthy viewer process.
 
 Run `pnpm --filter @chariox/cli run slice:display-default-drill` for the focused,
-non-live protocol/client/runtime-default check. Durable legacy endpoint routing
-is covered by the kernel slice regression and remains keyed by endpoint kind.
+non-live protocol/client/runtime-default check. A kernel durable-event replay
+regression reconstructs a historical headed noVNC record and verifies later
+runtime routing remains keyed by its recorded endpoint kind.
 
 The `slice-runtime-deps` image target contains the real browser and desktop
 dependencies without building provider CLIs or the Rust kernel. Run

@@ -70,4 +70,6 @@ pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
 /// Version 320 adds encrypted browser-cookie delivery to a consent-bound Environment.
+/// Version 321 adds admitted private browser-cookie delivery and durable recovery.
+/// Version 322 makes Selkies the omitted backend for new headed slices.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 322;
