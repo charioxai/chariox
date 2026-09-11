@@ -1670,6 +1670,7 @@ fn completed_tool_evidence_stays_bounded_across_ordinary_activity_bursts() {
         let mut tracker = CodexTurnTracker::default();
         tracker.note_tool_started("tool-1");
         tracker.note_tool_completed("tool-1");
+        let completed_tool_evidence = tracker.completion_recovery_version();
 
         let mut full_thread_requests = 0;
         let mut gate = CodexAuthoritativeBackfillGate::default();
@@ -1689,6 +1690,7 @@ fn completed_tool_evidence_stays_bounded_across_ordinary_activity_bursts() {
                 &tracker,
                 true,
             );
+            assert_eq!(recovery_evidence, completed_tool_evidence);
             if gate.is_due(true, recovery_evidence, now) {
                 full_thread_requests += 1;
             }
@@ -1735,9 +1737,10 @@ fn completion_evidence_rearms_authoritative_backfill_after_a_bounded_gate() {
         assert!(recovery_evidence.is_some());
         let mut gate = CodexAuthoritativeBackfillGate::default();
         let now = Instant::now();
-        assert!(gate.is_due(true, recovery_evidence, now));
+        assert!(gate.is_due(true, None, now));
         assert!(!gate.is_due(true, recovery_evidence, now));
         assert!(gate.is_due(true, recovery_evidence, now + Duration::from_millis(500)));
+        assert!(!gate.is_due(true, recovery_evidence, now + Duration::from_millis(500)));
     }
 }
 
@@ -1761,11 +1764,25 @@ fn newer_completion_evidence_and_each_turn_reset_authoritative_backfill_budget()
     assert!(!gate.is_due(true, evidence, now));
 
     tracker.note_assistant_content();
+    tracker.note_assistant_item_completed();
     tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
     let newer_evidence = tracker.completion_recovery_version();
     assert_ne!(newer_evidence, evidence);
     assert!(gate.is_due(true, newer_evidence, now));
 
+    tracker.reset_for_started();
+    assert_eq!(
+        codex_turn_recovery_evidence(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            &tracker,
+            true,
+        ),
+        None
+    );
+    tracker.note_legacy_completion_hint();
+    let next_turn_evidence = tracker.completion_recovery_version();
+    assert_ne!(next_turn_evidence, newer_evidence);
     gate.reset();
-    assert!(gate.is_due(true, newer_evidence, now));
+    assert!(gate.is_due(true, next_turn_evidence, now));
 }

@@ -95,7 +95,9 @@ pub fn submit_codex_prompt(
         &response,
         envelope.steering,
     );
-    state.authoritative_backfill_gate.reset();
+    if active_steering_turn_id.is_none() {
+        state.authoritative_backfill_gate.reset();
+    }
     crate::logging::debug_with_fields(
         "daemon.provider.codex",
         "codex turn start response trace",

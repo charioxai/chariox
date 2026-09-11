@@ -10,7 +10,7 @@ const CODEX_AUTHORITATIVE_BACKFILL_MAX_RECOVERY_ATTEMPTS: u8 = 14;
 #[derive(Debug, Clone, Default)]
 pub(super) struct CodexAuthoritativeBackfillGate {
     last_attempt_at: Option<Instant>,
-    evidence_version: Option<Instant>,
+    evidence_version: Option<u64>,
     recovery_attempts: u8,
 }
 
@@ -18,7 +18,7 @@ impl CodexAuthoritativeBackfillGate {
     pub(super) fn is_due(
         &mut self,
         has_active_turn: bool,
-        evidence_version: Option<Instant>,
+        evidence_version: Option<u64>,
         now: Instant,
     ) -> bool {
         if !has_active_turn {
@@ -58,7 +58,7 @@ impl CodexAuthoritativeBackfillGate {
         *self = Self::default();
     }
 
-    fn record_attempt(&mut self, evidence_version: Option<Instant>, now: Instant) {
+    fn record_attempt(&mut self, evidence_version: Option<u64>, now: Instant) {
         if self.evidence_version == evidence_version && evidence_version.is_some() {
             self.recovery_attempts = self.recovery_attempts.saturating_add(1);
         } else {

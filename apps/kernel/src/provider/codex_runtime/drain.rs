@@ -132,7 +132,7 @@ pub(super) fn codex_turn_recovery_evidence(
     has_active_turn: bool,
     turn_tracker: &super::turn::CodexTurnTracker,
     drained_to_quiet: bool,
-) -> Option<std::time::Instant> {
+) -> Option<u64> {
     let recovery_requested = has_active_turn
         && (turn_tracker.has_pending_terminal()
             || turn_tracker.has_legacy_completion_hint()
