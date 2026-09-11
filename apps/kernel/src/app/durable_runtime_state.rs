@@ -1952,6 +1952,66 @@ mod tests {
     }
 
     #[test]
+    fn durable_replay_preserves_historical_headed_novnc_endpoint() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+        let event = DurableStateEvent {
+            sequence: 1,
+            event_id: "event-legacy-headed-novnc".to_string(),
+            kind: "slice.created".to_string(),
+            subject_id: Some("slice-7".to_string()),
+            timestamp_ms: 7,
+            payload: serde_json::json!({
+                "slice": {
+                    "id": "slice-7",
+                    "name": "legacy-headed-novnc",
+                    "owner_kernel_id": config.daemon_id.clone(),
+                    "owner_machine_id": config.host_machine_id.clone(),
+                    "backend": "local_docker",
+                    "os": "linux",
+                    "display_mode": "headed",
+                    "status": "stopped",
+                    "workspace_mount": "/repo",
+                    "worker_kernel_ref": "slice:legacy-headed-novnc",
+                    "display_endpoint": {
+                        "slice_id": "slice-7",
+                        "kind": "novnc",
+                        "url": "http://127.0.0.1:6080/vnc.html?autoconnect=true",
+                        "access": "local",
+                        "capabilities": ["view", "keyboard", "mouse"]
+                    },
+                    "created_at_ms": 1,
+                    "updated_at_ms": 1
+                }
+            }),
+        };
+        let mut diagnostics = DurableRestoreDiagnostics::default();
+
+        app.restore_durable_state_event(event, &mut diagnostics)
+            .expect("historical noVNC slice event should replay");
+
+        let restored = app
+            .slices()
+            .resolve("slice-7")
+            .expect("historical slice should restore");
+        assert_eq!(
+            restored.display_mode,
+            crate::slice::SliceDisplayMode::Headed
+        );
+        assert_eq!(
+            restored
+                .display_endpoint
+                .as_ref()
+                .map(|endpoint| &endpoint.kind),
+            Some(&crate::slice::SliceDisplayEndpointKind::Novnc)
+        );
+        assert_eq!(
+            restored.display_backend(),
+            crate::slice::SliceDisplayBackend::Novnc
+        );
+    }
+
+    #[test]
     fn durable_restore_replays_slice_and_saved_state_as_one_committed_event() {
         let config = crate::config::DaemonConfig::for_tests();
         let state_id = "transactional-slice-state";
