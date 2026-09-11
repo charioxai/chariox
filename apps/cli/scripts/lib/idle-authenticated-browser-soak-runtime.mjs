@@ -147,18 +147,25 @@ async function executeSoak({ options, paths, allocation, source, image, baseline
     await writeFile(markerPath, markerSecret, { mode: 0o600 })
     markerDigest = digest(markerSecret)
     fixture = await startFixtureServer(sessionSecret, markerDigest, options.healthIntervalSeconds * 1_000)
-    chromium = spawnSoakChromium({ profileRoot, debugPort: allocation.debugPort, url: fixture.loginUrl, cwd: repoRoot, logsRoot })
-    await waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000)
-    chromiumIdentity = await captureProcessIdentity(chromium.pid)
-    ownedProcesses.push({ name: "chromium-initial", ...chromiumIdentity })
-    controller = new ControllerClient(spawnProtocol("browser-controller", process.execPath, [
-      path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker", "browser-controller.mjs"), "stdio",
-    ], { cwd: repoRoot, logsRoot, env: { ...process.env, CHARIOX_BROWSER_DEBUGGER_ENDPOINT: `http://127.0.0.1:${allocation.debugPort}` } }))
-    controllerIdentity = await captureProcessIdentity(controller.child.pid)
-    ownedProcesses.push({ name: "browser-controller", ...controllerIdentity })
-    await writeOwnership()
+    const initialChromium = await launchOwnedProcess({
+      name: "chromium-initial",
+      start: () => spawnSoakChromium({ profileRoot, debugPort: allocation.debugPort, url: fixture.loginUrl, cwd: repoRoot, logsRoot }),
+      record: async identity => { ownedProcesses.push({ name: "chromium-initial", ...identity }); await writeOwnership() },
+      ready: () => waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000),
+    })
+    chromium = initialChromium.child
+    chromiumIdentity = initialChromium.identity
+    const launchedController = await launchOwnedProcess({
+      name: "browser-controller",
+      start: () => spawnProtocol("browser-controller", process.execPath, [
+        path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker", "browser-controller.mjs"), "stdio",
+      ], { cwd: repoRoot, logsRoot, env: { ...process.env, CHARIOX_BROWSER_DEBUGGER_ENDPOINT: `http://127.0.0.1:${allocation.debugPort}` } }),
+      record: async identity => { ownedProcesses.push({ name: "browser-controller", ...identity }); await writeOwnership() },
+    })
+    controllerIdentity = launchedController.identity
+    controller = new ControllerClient(launchedController.child)
     await writeJson(paths.profile, { schema: "chariox.synthetic_profile_marker.v1", markerDigest, browserStorage: "localStorage", secretRetained: false })
-    await checkpoint("initial")
+    await raceActive(checkpoint("initial"))
     soakStartedMonotonic = monotonicMs()
     const durationMs = options.durationSeconds * 1_000
     let nextHealth = options.healthIntervalSeconds * 1_000
@@ -170,31 +177,35 @@ async function executeSoak({ options, paths, allocation, source, image, baseline
       await assertOwnedAlive(controller.child, controllerIdentity, "browser-controller")
       const elapsed = monotonicMs() - soakStartedMonotonic
       if (!controlledRestartCompleted && elapsed >= restartAt) {
+        allowOwnedTermination(chromium)
         const stopped = await terminateOwnedTree("chromium-controlled-restart", chromiumIdentity)
         if (!stopped.ok) throw new Error("controlled Chromium restart could not stop the exact owned tree")
         await waitForLogClosed(chromium)
         await waitForPortAvailable(allocation.debugPort, 5_000)
-        chromium = spawnSoakChromium({ profileRoot, debugPort: allocation.debugPort, url: fixture.authenticatedUrl, cwd: repoRoot, logsRoot })
-        await waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000)
-        chromiumIdentity = await captureProcessIdentity(chromium.pid)
-        ownedProcesses.push({ name: "chromium-restarted", ...chromiumIdentity })
-        await writeOwnership()
+        const restartedChromium = await launchOwnedProcess({
+          name: "chromium-restarted",
+          start: () => spawnSoakChromium({ profileRoot, debugPort: allocation.debugPort, url: fixture.authenticatedUrl, cwd: repoRoot, logsRoot }),
+          record: async identity => { ownedProcesses.push({ name: "chromium-restarted", ...identity }); await writeOwnership() },
+          ready: () => waitForHttp(`http://127.0.0.1:${allocation.debugPort}/json/version`, 20_000),
+        })
+        chromium = restartedChromium.child
+        chromiumIdentity = restartedChromium.identity
         controlledRestartCompleted = true
-        const restarted = await checkpoint("restart")
+        const restarted = await raceActive(checkpoint("restart"))
         cookiePersistedAfterRestart = restarted.profileMarkerObserved && restarted.freshAuthenticatedRequest
       }
       if (elapsed >= nextHealth) {
-        await checkpoint("periodic")
+        await raceActive(checkpoint("periodic"))
         nextHealth += options.healthIntervalSeconds * 1_000
       }
       if (elapsed >= nextSample) {
-        await sample("periodic")
+        await raceActive(sample("periodic"))
         nextSample += options.sampleIntervalSeconds * 1_000
       }
       const remaining = durationMs - (monotonicMs() - soakStartedMonotonic)
-      await sleep(Math.min(250, Math.max(1, Math.min(nextHealth - elapsed, nextSample - elapsed, remaining))))
+      await raceActive(sleep(Math.min(250, Math.max(1, Math.min(nextHealth - elapsed, nextSample - elapsed, remaining)))))
     }
-    const finalCheckpoint = await checkpoint("final")
+    const finalCheckpoint = await raceActive(checkpoint("final"))
     await assertOwnedAlive(chromium, chromiumIdentity, "chromium")
     await assertOwnedAlive(controller.child, controllerIdentity, "browser-controller")
     finalResource = await sample("final")
@@ -301,6 +312,10 @@ async function executeSoak({ options, paths, allocation, source, image, baseline
     return value
   }
 
+  function raceActive(operation) {
+    return raceOwnedFailures(operation, [chromium, controller?.child].filter(Boolean))
+  }
+
   async function writeOwnership() {
     await writeJson(paths.ownership, { schema: "chariox.idle_authenticated_browser_soak_ownership.v1", ownerPid: process.pid,
       processes: [{ name: "runner", ...(await captureProcessIdentity(process.pid)) }, ...ownedProcesses],
@@ -330,8 +345,14 @@ export class ControllerClient {
       for (const pending of this.pending.values()) pending.reject(error)
       this.pending.clear()
       this.protocolError = error
+      child.failOwnedLifecycle?.("protocol parser error", error)
     })
     child.once("exit", () => { for (const pending of this.pending.values()) pending.reject(new Error("Browser Controller exited")); this.pending.clear() })
+    child.terminalFailure?.then(error => {
+      for (const pending of this.pending.values()) pending.reject(error)
+      this.pending.clear()
+      this.protocolError = error
+    })
   }
   request(method, params) {
     if (this.protocolError) return Promise.reject(this.protocolError)
@@ -344,6 +365,7 @@ export class ControllerClient {
   }
   async shutdown() {
     if (this.child.exitCode !== null) return
+    allowOwnedTermination(this.child)
     await this.request("shutdown").catch(() => {})
     this.child.stdin.end()
   }
@@ -384,12 +406,14 @@ checkpoint(); setInterval(checkpoint, ${Math.max(1_000, Math.floor(healthInterva
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) }
 }
 
-async function cleanupOwned({ controller, chromium, ownedProcesses, fixture, stateRoot, allocation, requiredTerminalIdentities }) {
+export async function cleanupOwned({ controller, chromium, ownedProcesses, fixture, stateRoot, allocation, requiredTerminalIdentities = [] }) {
   const actions = []
   for (const identity of requiredTerminalIdentities) {
     const current = identity && await currentProcessIdentity(identity.pid)
     actions.push({ name: `terminal-process-${identity?.pid ?? "missing"}`, ok: Boolean(current && processIdentityMatches(identity, current)) })
   }
+  allowOwnedTermination(controller?.child)
+  allowOwnedTermination(chromium)
   try { await controller?.shutdown(); actions.push({ name: "controller-shutdown", ok: true }) } catch (error) { actions.push({ name: "controller-shutdown", ok: false, error: bounded(error) }) }
   for (const identity of [...ownedProcesses].reverse()) {
     try { actions.push(await terminateOwnedTree(identity.name, identity)) }
@@ -400,11 +424,7 @@ async function cleanupOwned({ controller, chromium, ownedProcesses, fixture, sta
   try { await fixture?.close(); actions.push({ name: "fixture-close", ok: true }) } catch (error) { actions.push({ name: "fixture-close", ok: false, error: bounded(error) }) }
   try { if (stateRoot) await rm(stateRoot, { recursive: true, force: true }); actions.push({ name: "state-remove", ok: true }) } catch (error) { actions.push({ name: "state-remove", ok: false, error: bounded(error) }) }
   await sleep(250)
-  const remainingPids = []
-  for (const identity of ownedProcesses) {
-    const current = await currentProcessIdentity(identity.pid)
-    if (current && processIdentityMatches(identity, current)) remainingPids.push(identity.pid)
-  }
+  const remainingPids = await recursiveOwnedSurvivors(ownedProcesses)
   for (const action of actions) for (const pid of action.survivors ?? []) if (!remainingPids.includes(pid)) remainingPids.push(pid)
   const remainingListeners = []
   if (!await portAvailable(allocation.debugPort)) remainingListeners.push({ port: allocation.debugPort, purpose: "chromium-debug" })
@@ -413,6 +433,16 @@ async function cleanupOwned({ controller, chromium, ownedProcesses, fixture, sta
     remainingPids, remainingListeners, debugPortReleased: !remainingListeners.some(entry => entry.purpose === "chromium-debug"),
     stateRemoved: !stateRoot || !await exists(stateRoot),
     clean: remainingPids.length === 0 && remainingListeners.length === 0 && (!stateRoot || !await exists(stateRoot)) && actions.every(action => action.ok) }
+}
+
+async function recursiveOwnedSurvivors(ownedProcesses) {
+  const survivors = new Set()
+  for (const identity of ownedProcesses) {
+    const current = await currentProcessIdentity(identity.pid)
+    if (current && !processIdentityMatches(identity, current)) continue
+    for (const candidate of await exactSurvivors(mergeIdentities([identity], await ownedTree(identity)))) survivors.add(candidate.pid)
+  }
+  return [...survivors].sort((left, right) => left - right)
 }
 
 async function resourceSnapshot(label, rootPids, diskPath) {
@@ -510,11 +540,13 @@ function commandEvidence(options, paths, allocation) {
   return `node apps/cli/scripts/live-idle-authenticated-browser-soak.mjs --detach --duration-seconds ${options.durationSeconds} --health-interval-seconds ${options.healthIntervalSeconds} --sample-interval-seconds ${options.sampleIntervalSeconds} --max-cpu-percent ${options.maxCpuPercent} --max-rss-mb ${options.maxRssMb} --max-processes ${options.maxProcesses} --min-free-disk-mb ${options.minFreeDiskMb} --evidence-root ${JSON.stringify(options.evidenceRoot)} --run-dir ${JSON.stringify(paths.runDir)} --debug-port ${allocation.debugPort}`
 }
 
-function spawnLogged(name, command, args, { cwd, logsRoot, env = process.env }) {
+export function spawnLogged(name, command, args, { cwd, logsRoot, env = process.env }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.log`), { flags: "a", mode: 0o600 })
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
   child.logClosed = new Promise(resolve => log.once("close", resolve))
-  child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false }); child.once("exit", () => log.end())
+  observeOwnedProcess(name, child, [child.stdout, child.stderr, log])
+  child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false })
+  child.once("exit", () => log.end()); child.once("error", () => log.end())
   return child
 }
 
@@ -522,7 +554,58 @@ function spawnProtocol(name, command, args, { cwd, logsRoot, env }) {
   const log = createWriteStream(path.join(logsRoot, `${name}.stderr.log`), { flags: "a", mode: 0o600 })
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] })
   child.logClosed = new Promise(resolve => log.once("close", resolve))
-  child.stderr.pipe(log); child.once("exit", () => log.end()); return child
+  observeOwnedProcess(name, child, [child.stdin, child.stdout, child.stderr, log])
+  child.stderr.pipe(log); child.once("exit", () => log.end()); child.once("error", () => log.end()); return child
+}
+
+function observeOwnedProcess(name, child, streams) {
+  let terminal
+  child.terminalFailure = new Promise(resolve => { terminal = resolve })
+  child.failOwnedLifecycle = (source, error) => {
+    child.ownedLifecycleError ??= new Error(`${name} ${source}: ${bounded(error)}`)
+    terminal(child.ownedLifecycleError)
+  }
+  child.once("error", error => child.failOwnedLifecycle("process error", error))
+  child.once("exit", (code, signal) => {
+    if (!child.ownedTerminationAllowed) child.failOwnedLifecycle("exited", signal ?? `code ${code}`)
+  })
+  for (const stream of streams.filter(Boolean)) stream.on("error", error => child.failOwnedLifecycle("log/stream error", error))
+  return child
+}
+
+function allowOwnedTermination(child) { if (child) child.ownedTerminationAllowed = true }
+
+export async function launchOwnedProcess({ name, start, record, ready = async () => {} }) {
+  const child = start()
+  try {
+    const identity = await raceOwnedFailure(captureProcessIdentity(child.pid), child)
+    await record(identity)
+    await raceOwnedFailure(ready(child), child)
+    return { child, identity }
+  } catch (error) {
+    child.failOwnedLifecycle?.("readiness", error)
+    throw error
+  }
+}
+
+async function raceOwnedFailure(operation, child) {
+  const outcome = await Promise.race([
+    Promise.resolve(operation).then(value => ({ value }), error => ({ error })),
+    child.terminalFailure.then(error => ({ error })),
+  ])
+  if (outcome.error) throw outcome.error
+  return outcome.value
+}
+
+async function raceOwnedFailures(operation, children) {
+  const immediate = children.find(child => child.ownedLifecycleError)?.ownedLifecycleError
+  if (immediate) throw immediate
+  const outcome = await Promise.race([
+    Promise.resolve(operation).then(value => ({ value }), error => ({ error })),
+    ...children.map(child => child.terminalFailure.then(error => ({ error }))),
+  ])
+  if (outcome.error) throw outcome.error
+  return outcome.value
 }
 
 function readJsonLines(stream, consume, fail) {
@@ -570,22 +653,30 @@ function spawnSoakChromium({ profileRoot, debugPort, url, cwd, logsRoot }) {
 
 export async function captureProcessIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("process identity requires a positive PID")
-  const value = await readFile(`/proc/${pid}/stat`, "utf8")
-  const close = value.lastIndexOf(")")
-  if (close < 0) throw new Error(`cannot parse process identity for ${pid}`)
-  const fields = value.slice(close + 2).trim().split(/\s+/)
-  const identity = { pid, state: fields[0], ppid: Number(fields[1]), pgid: Number(fields[2]), startTime: fields[19] }
-  if (!Number.isSafeInteger(identity.ppid) || !Number.isSafeInteger(identity.pgid) || !/^\d+$/.test(identity.startTime ?? "")) {
+  let identity
+  try {
+    const value = await readFile(`/proc/${pid}/stat`, "utf8")
+    const close = value.lastIndexOf(")")
+    if (close < 0) throw new Error(`cannot parse process identity for ${pid}`)
+    const fields = value.slice(close + 2).trim().split(/\s+/)
+    identity = { pid, state: fields[0], ppid: Number(fields[1]), pgid: Number(fields[2]), startTime: fields[19] }
+  } catch {
+    const { stdout } = await execFileAsync("ps", ["-o", "state=,ppid=,pgid=,lstart=", "-p", String(pid)], { timeout: 5_000 })
+    const fields = stdout.trim().split(/\s+/)
+    identity = { pid, state: fields.shift(), ppid: Number(fields.shift()), pgid: Number(fields.shift()), startTime: fields.join(" ") }
+  }
+  if (!Number.isSafeInteger(identity.ppid) || !Number.isSafeInteger(identity.pgid) || !String(identity.startTime ?? "").trim()) {
     throw new Error(`cannot parse process identity for ${pid}`)
   }
   return identity
 }
 
 async function currentProcessIdentity(pid) {
-  try { const identity = await captureProcessIdentity(pid); return identity.state === "Z" ? null : identity } catch { return null }
+  try { const identity = await captureProcessIdentity(pid); return identity.state.startsWith("Z") ? null : identity } catch { return null }
 }
 
 async function assertOwnedAlive(child, identity, name) {
+  if (child?.ownedLifecycleError) throw child.ownedLifecycleError
   const current = await currentProcessIdentity(identity?.pid)
   if (!child || child.exitCode !== null || !current || !processIdentityMatches(identity, current)) {
     throw new Error(`${name} exact owned process exited during soak`)
@@ -608,6 +699,7 @@ async function ownedTree(rootIdentity) {
 }
 
 export async function terminateOwnedTree(name, rootIdentity) {
+  if (!rootIdentity) return { name, ok: true, alreadyExited: true, survivors: [] }
   const current = await currentProcessIdentity(rootIdentity?.pid)
   if (current && !processIdentityMatches(rootIdentity, current)) return { name, ok: true, pidReused: true, survivors: [] }
   let identities = await ownedTree(rootIdentity)
@@ -695,7 +787,7 @@ async function findSameSourceSmoke(evidenceRoot, currentRunDir, source) {
     completedAt: candidates[0].completedAt, resultPath: candidates[0].resultPath }
 }
 
-async function materializeLaunchFailure(paths, options, source, error, ownedIdentity) {
+export async function materializeLaunchFailure(paths, options, source, error, ownedIdentity) {
   let action = null
   if (ownedIdentity) {
     try { action = await terminateOwnedTree("detached-runner", ownedIdentity) }
@@ -730,9 +822,14 @@ async function waitForPortAvailable(port, timeoutMs) {
   throw new Error(`owned listener on port ${port} did not terminate`)
 }
 
-async function waitForLogClosed(child) {
+export async function waitForLogClosed(child) {
   if (!child?.logClosed) return
-  await Promise.race([child.logClosed, new Promise((_, reject) => setTimeout(() => reject(new Error("owned process log did not close")), 5_000))])
+  let timer
+  try {
+    await Promise.race([child.logClosed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("owned process log did not close")), 5_000) })])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function availablePort(minimum, maximum) {

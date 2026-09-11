@@ -20,14 +20,19 @@ import {
 import {
   assertControllerReady,
   captureProcessIdentity,
+  cleanupOwned,
   ControllerClient,
+  launchOwnedProcess,
+  materializeLaunchFailure,
   parseControllerResponseLine,
   processIdentityMatches,
   runIdleAuthenticatedBrowserSoak,
+  spawnLogged,
   startFixtureServer,
   terminateOwnedTree,
   validateTerminalIdleSoakEvidence,
   waitForDetachContract,
+  waitForLogClosed,
 } from "./idle-authenticated-browser-soak-runtime.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..", "..")
@@ -239,6 +244,60 @@ test("an asynchronous controller parser failure rejects the active request and r
   }
 })
 
+test("an owned child is recorded before readiness and readiness failure remains terminal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-idle-owned-readiness-"))
+  const events = []
+  let child
+  try {
+    await assert.rejects(launchOwnedProcess({
+      name: "readiness-fixture",
+      start: () => {
+        child = spawnLogged("readiness-fixture", process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: root, logsRoot: root })
+        return child
+      },
+      record: async identity => events.push(["record", identity.pid]),
+      ready: async () => { events.push(["ready", child.pid]); throw new Error("readiness failed") },
+    }), /readiness failed/)
+    assert.deepEqual(events, [["record", child.pid], ["ready", child.pid]])
+    assert.match((await child.terminalFailure).message, /readiness failed/)
+  } finally {
+    if (child?.pid) await terminateOwnedTree("readiness-fixture", await captureProcessIdentity(child.pid).catch(() => null))
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("child and log-stream errors become one terminal lifecycle failure", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-idle-log-failure-"))
+  const missingLogs = path.join(root, "missing")
+  let child
+  try {
+    child = spawnLogged("log-failure", process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: root, logsRoot: missingLogs })
+    const error = await child.terminalFailure
+    assert.match(error.message, /log-failure.*log/i)
+  } finally {
+    if (child?.pid) await terminateOwnedTree("log-failure", await captureProcessIdentity(child.pid).catch(() => null))
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("spawn errors use the same terminal process lifecycle channel", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-idle-spawn-failure-"))
+  try {
+    const child = spawnLogged("spawn-failure", path.join(root, "missing-command"), [], { cwd: root, logsRoot: root })
+    assert.match((await child.terminalFailure).message, /spawn-failure process error/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("completed log close clears its losing timeout", async () => {
+  const before = process.getActiveResourcesInfo().filter(name => name === "Timeout").length
+  await waitForLogClosed({ logClosed: Promise.resolve() })
+  await new Promise(resolve => setImmediate(resolve))
+  const after = process.getActiveResourcesInfo().filter(name => name === "Timeout").length
+  assert.equal(after, before)
+})
+
 test("PID reuse never matches an owned process identity", () => {
   const owned = { pid: 44, startTime: "100", pgid: 44 }
   assert.equal(processIdentityMatches(owned, { pid: 44, startTime: "100", pgid: 44 }), true)
@@ -256,6 +315,68 @@ test("exact owned process-tree cleanup terminates descendants without broad proc
   assert.equal(outcome.survivors.length, 0)
   assert.ok(outcome.pids.includes(child.pid))
   assert.ok(outcome.pids.length >= 2)
+})
+
+test("cleanup finds a descendant after its recorded parent exits and preserves an unrelated process", async () => {
+  const root = spawn(process.execPath, ["-e", "const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});console.log(c.pid);setTimeout(()=>process.exit(0),100)"], {
+    detached: true, stdio: ["ignore", "pipe", "ignore"],
+  })
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" })
+  const rootIdentity = await captureProcessIdentity(root.pid)
+  const unrelatedIdentity = await captureProcessIdentity(unrelated.pid)
+  const descendantPid = Number(await new Promise((resolve, reject) => {
+    root.stdout.once("data", chunk => resolve(String(chunk).trim()))
+    root.once("error", reject)
+  }))
+  await new Promise(resolve => root.once("exit", resolve))
+  try {
+    const outcome = await terminateOwnedTree("escaped-descendant", rootIdentity)
+    assert.equal(outcome.ok, true)
+    assert.ok(outcome.pids.includes(descendantPid))
+    assert.equal(processIdentityMatches(unrelatedIdentity, await captureProcessIdentity(unrelated.pid)), true)
+  } finally {
+    await terminateOwnedTree("unrelated", unrelatedIdentity)
+  }
+})
+
+test("terminal cleanup removes the disposable profile, closes listeners, and leaves no recursive process leak", async () => {
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-idle-cleanup-fixture-"))
+  await mkdir(path.join(stateRoot, "chromium-profile"))
+  const fixture = await startFixtureServer("fixture-secret", "a".repeat(64), 1_000)
+  const child = spawn(process.execPath, ["-e", "const {spawn}=require('node:child_process');spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});setInterval(()=>{},1000)"], {
+    detached: true, stdio: "ignore",
+  })
+  const identity = await captureProcessIdentity(child.pid)
+  const cleanup = await cleanupOwned({
+    ownedProcesses: [{ name: "fixture-tree", ...identity }], fixture, stateRoot,
+    allocation: { debugPort: fixture.port },
+  })
+  assert.equal(cleanup.clean, true)
+  assert.deepEqual(cleanup.remainingPids, [])
+  assert.deepEqual(cleanup.remainingListeners, [])
+  assert.equal(cleanup.stateRemoved, true)
+  await assert.rejects(readFile(stateRoot), /ENOENT|EISDIR/)
+  for (const action of cleanup.actions) {
+    for (const pid of action.pids ?? []) await assert.rejects(captureProcessIdentity(pid))
+  }
+})
+
+test("detached launch failures publish terminal status and a failure marker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-idle-detached-terminal-"))
+  const paths = buildIdleSoakPaths(root, "run")
+  await mkdir(paths.runDir)
+  try {
+    await materializeLaunchFailure(paths, { mode: "detach" }, { commit: "b".repeat(40), dirty: false }, new Error("detached fixture failed"))
+    const status = JSON.parse(await readFile(paths.status, "utf8"))
+    const failure = JSON.parse(await readFile(paths.failure, "utf8"))
+    const cleanup = JSON.parse(await readFile(paths.cleanup, "utf8"))
+    assert.equal(status.status, "failed")
+    assert.equal(status.failureMarker, paths.failure)
+    assert.match(failure.marker, /detached fixture failed/)
+    assert.equal(cleanup.clean, true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("setup failures materialize terminal failure status and cleanup evidence", async () => {
