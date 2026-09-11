@@ -25,6 +25,7 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
     "--image-signature-key",
     "--container-engine",
     "--runtime-container-id",
+    "--launch-gate",
     "--max-cadence-gap-seconds",
     "--max-rss-mib",
     "--max-cpu-percent",
@@ -76,6 +77,12 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
   const internalRun = flags.has("--internal-run")
   if (preflight && detach) throw new Error("--preflight cannot be combined with --detach")
   if (internalRun && (preflight || detach)) throw new Error("--internal-run cannot be combined with --preflight or --detach")
+  const launchGate = values.has("--launch-gate") ? path.resolve(values.get("--launch-gate")) : null
+  if (launchGate && !internalRun) throw new Error("--launch-gate is reserved for an internal detached run")
+  if (launchGate) assertExternalEvidencePath(launchGate, repoRoot)
+  if (launchGate && (!runDir || launchGate !== path.join(runDir, ".launch-ready"))) {
+    throw new Error("internal launch gate must be the run directory launch gate")
+  }
 
   const viewerBackend = values.get("--viewer-backend") ?? process.env.CHARIOX_SLICE_VIEWER_BACKEND ?? "selkies"
   if (!new Set(["selkies", "novnc"]).has(viewerBackend)) throw new Error("viewer-backend must be selkies or novnc")
@@ -103,6 +110,7 @@ export function parseBrowserComputerSoakArgs(argv, { repoRoot, homeDir }) {
     imageSignatureKey: values.get("--image-signature-key") ?? process.env.CHARIOX_SLICE_IMAGE_SIGNATURE_KEY ?? null,
     containerEngine,
     runtimeContainerId: values.get("--runtime-container-id") ?? process.env.CHARIOX_SOAK_RUNTIME_CONTAINER_ID ?? null,
+    launchGate,
     limits: {
       maxCadenceGapMs: maxCadenceGapSeconds * 1_000,
       maxRssBytes: integer(values.get("--max-rss-mib") ?? "4096", "max-rss-mib", 128, 65_536) * 1024 * 1024,
@@ -130,6 +138,7 @@ export function buildSoakPaths(evidenceRoot, runId) {
     cleanup: path.join(runDir, "cleanup-ledger.json"),
     failure: path.join(runDir, "failure.json"),
     preflight: path.join(runDir, "preflight.json"),
+    launchGate: path.join(runDir, ".launch-ready"),
   }
 }
 
@@ -168,7 +177,7 @@ export function validateCompletedSoakResult(value) {
     || !/^[0-9a-f]{40}$/.test(provenance.source?.commit ?? "")
     || !/^[0-9a-f]{40}$/.test(provenance.source?.tree ?? "")
     || !validVerifiedImage(provenance.image)
-    || !validRuntimeImageBinding(provenance.runtimeImage, provenance.image)
+    || !validRuntimeImageBinding(provenance.runtimeImage, provenance.image, provenance.source)
     || stableJson(provenance.limits) !== stableJson(value.resources?.limits)
     || provenance.viewer?.backend !== value.viewer?.backend
     || stableJson(provenance.source) !== stableJson(value.source)
@@ -284,7 +293,7 @@ export function validateGatePrerequisites({ preflight, smoke, provenance, now = 
   if (!validVerifiedImage(provenance?.image)) {
     throw new Error("gate requires a verified immutable image signature and attestation")
   }
-  if (!validRuntimeImageBinding(provenance?.runtimeImage, provenance?.image)) {
+  if (!validRuntimeImageBinding(provenance?.runtimeImage, provenance?.image, provenance?.source)) {
     throw new Error("gate requires the exercised runtime container to match the verified image")
   }
   const expected = gateFingerprint(provenance)
@@ -347,9 +356,10 @@ function validVerifiedImage(image) {
     && /^[0-9a-f]{64}$/.test(image.attestation.bundleSha256 ?? "")
 }
 
-function validRuntimeImageBinding(runtime, image) {
+function validRuntimeImageBinding(runtime, image, source) {
   return /^[0-9a-f]{64}$/.test(runtime?.containerId ?? "")
     && runtime.running === true
     && runtime.imageId === image?.engineImageId
     && runtime.identity === image?.identity
+    && runtime?.sourceRevision === source?.commit
 }

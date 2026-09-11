@@ -25,6 +25,7 @@ const execFileAsync = promisify(execFile)
 const schema = "chariox.browser_computer_soak.v1"
 const minimumFreeBytes = 512 * 1024 * 1024
 const maximumRetainedProcessLogBytes = 8 * 1024 * 1024
+const signedRuntimeRoot = "/opt/chariox-slice"
 const sensitiveEnvironmentName = /(authorization|cookie|credential|key|pass(word)?|secret|session|token)/i
 const retainedSecretValues = [...new Set(Object.entries(process.env)
   .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === "string" && value.length >= 4)
@@ -45,7 +46,21 @@ export function buildSanitizedChildEnvironment(base, additions = {}) {
   ])
 }
 
-const helperEnvironment = () => buildSanitizedChildEnvironment(process.env)
+export function verifiedRuntimeLayout() {
+  return {
+    root: signedRuntimeRoot,
+    node: "/usr/local/bin/node",
+    selkiesPython: "/opt/chariox-selkies/bin/python",
+    selkiesBinary: "/opt/chariox-selkies/bin/selkies",
+  }
+}
+
+export function runHostHelper(command, args, options = {}, {
+  exec = execFileAsync,
+  baseEnvironment = process.env,
+} = {}) {
+  return exec(command, args, { ...options, env: buildSanitizedChildEnvironment(baseEnvironment) })
+}
 
 export function redactEvidence(value, { secretValues = retainedSecretValues } = {}) {
   if (Array.isArray(value)) return value.map((entry) => redactEvidence(entry, { secretValues }))
@@ -126,7 +141,7 @@ export async function resolveVerifiedImage({ imageRef, signatureKey, engine = "d
   }
 }
 
-export async function inspectDigestBoundRuntime({ containerId, image }, {
+export async function inspectDigestBoundRuntime({ containerId, image, source }, {
   exec = execFileAsync,
   baseEnvironment = process.env,
 } = {}) {
@@ -154,7 +169,11 @@ export async function inspectDigestBoundRuntime({ containerId, image }, {
   if (inspected?.Image !== image.engineImageId || inspected?.Config?.Image !== image.identity) {
     throw new Error("runtime image does not match the verified image digest and engine image ID")
   }
-  return { containerId: inspected.Id, imageId: inspected.Image, identity: inspected.Config.Image, running: true }
+  const sourceRevision = inspected?.Config?.Labels?.["io.chariox.runtime-source-revision"]
+  if (!/^[0-9a-f]{40}$/.test(sourceRevision ?? "") || sourceRevision !== source?.commit) {
+    throw new Error("runtime source revision does not match the clean source commit")
+  }
+  return { containerId: inspected.Id, imageId: inspected.Image, identity: inspected.Config.Image, sourceRevision, running: true }
 }
 
 export function assertCurrentContainerIdentity(containerId, hostname = os.hostname()) {
@@ -266,12 +285,13 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
   let source = null
   let baseline = null
   try {
+    if (options.launchGate) await awaitDetachedLaunchGate(options.launchGate)
     await mkdir(paths.runDir, { recursive: true, mode: 0o700 })
     if (options.mode === "run") {
       await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 })
       await writeJson(paths.status, { schema, status: "starting", pid: process.pid, startedAt, runDir: paths.runDir })
     }
-    source = await sourceIdentity(repoRoot)
+    source = await captureSourceIdentity(repoRoot)
     const provenance = await captureProvenance({ options, repoRoot, source })
     assertFinalDetachPrerequisites(options, provenance)
     allocation = await allocateRuntime(options)
@@ -293,6 +313,7 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
         args: [scriptPath, ...args],
         cwd: repoRoot,
         logPath: paths.log,
+        gatePath: paths.launchGate,
         env: buildSanitizedChildEnvironment(process.env, {
           CHARIOX_SLICE_IMAGE: options.imageRef,
           CHARIOX_SLICE_IMAGE_SIGNATURE_KEY: options.imageSignatureKey,
@@ -308,6 +329,9 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
             startedAt,
             runDir: paths.runDir,
           })
+        },
+        persistFailure: async (error) => {
+          await persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt })
         },
       })
       console.log(JSON.stringify(detachedLaunchSummary(paths, child.pid)))
@@ -325,16 +349,21 @@ export async function runBrowserComputerSoak({ options, repoRoot, scriptPath }) 
   }
 }
 
-export async function launchDetachedRunner({ command, args, cwd, env, logPath }, {
+export async function launchDetachedRunner({ command, args, cwd, env, logPath, gatePath }, {
   openLog = (candidate) => open(candidate, "a", 0o600),
+  prepareLaunchGate = (candidate) => rm(candidate, { force: true }),
   spawnChild = spawn,
   captureIdentity = (name, child) => captureSpawnedIdentity(name, child),
   writeStartupEvidence,
+  releaseLaunchGate = releaseDetachedLaunchGate,
   terminate = terminateOwnedProcessGroup,
+  persistFailure = async () => {},
 } = {}) {
   let descriptor = null
   let child = null
   try {
+    if (typeof gatePath !== "string" || gatePath === "") throw new Error("detached runner requires a launch gate")
+    await prepareLaunchGate(gatePath)
     descriptor = await openLog(logPath)
     child = spawnChild(command, args, { cwd, env, detached: true, stdio: ["ignore", descriptor.fd, descriptor.fd] })
     child.ownedIdentity = await captureIdentity("detached runner", child)
@@ -342,6 +371,7 @@ export async function launchDetachedRunner({ command, args, cwd, env, logPath },
     descriptor = null
     await writeStartupEvidence(child)
     child.unref()
+    await releaseLaunchGate(gatePath)
     return child
   } catch (cause) {
     if (descriptor) await descriptor.close().catch(() => {})
@@ -349,6 +379,7 @@ export async function launchDetachedRunner({ command, args, cwd, env, logPath },
       ? await terminate("detached-runner-rollback", child)
       : { name: "detached-runner-rollback", ok: true, notStarted: true, pidReuseSafe: true }
     const error = cause instanceof Error ? cause : new Error(bounded(cause))
+    error.detachedChildPid = child?.pid ?? null
     error.terminalCleanup = {
       schema: "chariox.browser_computer_soak_cleanup.v1",
       at: new Date().toISOString(),
@@ -359,13 +390,44 @@ export async function launchDetachedRunner({ command, args, cwd, env, logPath },
       verificationCompleted: true,
       clean: action.ok === true && action.pidReuseSafe === true,
     }
+    try {
+      await persistFailure(error)
+    } catch (persistenceError) {
+      error.failurePersistenceError = bounded(persistenceError?.message ?? persistenceError)
+    }
     throw error
   }
 }
 
+async function releaseDetachedLaunchGate(candidate, {
+  write = writeFile,
+  move = rename,
+  remove = rm,
+} = {}) {
+  const temporary = `${candidate}.${process.pid}.tmp`
+  try {
+    await write(temporary, `${process.pid}\n`, { mode: 0o600 })
+    await move(temporary, candidate)
+  } catch (error) {
+    await remove(temporary, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
+async function awaitDetachedLaunchGate(gatePath, {
+  pathExists = exists,
+  remove = rm,
+} = {}) {
+  await retry(async () => {
+    if (!await pathExists(gatePath)) throw new Error("launch gate not released")
+  }, 30_000, "detached soak launch gate was not released")
+  await remove(gatePath, { force: true })
+}
+
 async function executeSoak({ options, allocation, paths, repoRoot, source, baseline, provenance }) {
   const startedAt = new Date().toISOString()
-  const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
+  const runtime = verifiedRuntimeLayout()
+  const sourceRoot = runtime.root
   let stateRoot = null
   let runtimeRoot = null
   let profileRoot = null
@@ -495,10 +557,10 @@ async function executeSoak({ options, allocation, paths, repoRoot, source, basel
     selkiesPid = selkies.pid
     ownedIdentities.push(...await captureOwnedIdentities([["viewer", selkiesPid]]))
 
-    controller = new ControllerClient(await spawnProtocol("browser-controller", process.execPath, [path.join(sourceRoot, "browser-controller.mjs"), "stdio"], {
+    controller = new ControllerClient(await spawnProtocol("browser-controller", runtime.node, [path.join(sourceRoot, "browser-controller.mjs"), "stdio"], {
       env: environment, cwd: repoRoot, logsRoot,
     }))
-    stream = new StreamClient(await spawnProtocol("selkies-stream", "/opt/chariox-selkies/bin/python", [
+    stream = new StreamClient(await spawnProtocol("selkies-stream", runtime.selkiesPython, [
       path.join(sourceRoot, "slice-selkies-stream.py"), "--lease-ms", "60000",
     ], { env: environment, cwd: sourceRoot, logsRoot }))
     await stream.waitReady(15_000)
@@ -736,10 +798,11 @@ async function runPreflight({ options, allocation, paths, repoRoot, source, base
   if (options.viewerBackend !== "selkies") {
     throw new Error("noVNC may provide diagnostic evidence but cannot run the active final-gate stream contract")
   }
-  const sourceRoot = path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "docker")
+  const runtime = verifiedRuntimeLayout()
+  const sourceRoot = runtime.root
   const commands = ["Xvfb", "openbox", "tint2", "chromium", "scrot", "xdpyinfo", "xdotool", "ps"]
   const commandPaths = {}
-  for (const command of commands) commandPaths[command] = (await execFileAsync("which", [command], { timeout: 5_000, env: helperEnvironment() })).stdout.trim()
+  for (const command of commands) commandPaths[command] = (await runHostHelper("which", [command], { timeout: 5_000 })).stdout.trim()
   const files = [
     "browser-controller.mjs",
     "browser-controller-cdp.mjs",
@@ -750,8 +813,9 @@ async function runPreflight({ options, allocation, paths, repoRoot, source, base
   ]
   for (const file of files) await stat(path.join(sourceRoot, file))
   await Promise.all([
-    stat("/opt/chariox-selkies/bin/python"),
-    stat("/opt/chariox-selkies/bin/selkies"),
+    stat(runtime.node),
+    stat(runtime.selkiesPython),
+    stat(runtime.selkiesBinary),
   ])
   if (baseline.host.freeMemoryBytes < minimumFreeBytes) throw new Error("preflight requires at least 512 MiB free RAM")
   if (baseline.disk.availableBytes < minimumFreeBytes) throw new Error("preflight requires at least 512 MiB free disk")
@@ -953,7 +1017,7 @@ export function createLifecycleGuard() {
 }
 
 async function scanRuntimeLeaks({ stateRoot, allocation }) {
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], { timeout: 10_000, env: helperEnvironment() })
+  const { stdout } = await runHostHelper("ps", ["-eo", "pid=,comm=,args="], { timeout: 10_000 })
   const markers = [stateRoot, `Xvfb :${allocation.displayNumber}`, `--display :${allocation.displayNumber}`].filter(Boolean)
   const matches = findRuntimeLeakMatches(stdout, { markers, currentPid: process.pid })
   return { clean: matches.length === 0, matches }
@@ -1198,7 +1262,7 @@ export async function terminateOwnedProcessGroup(name, child, {
 
 const terminateGroup = terminateOwnedProcessGroup
 
-async function terminateCapturedProcessGroup(name, expected, {
+export async function terminateCapturedProcessGroup(name, expected, {
   identity = processIdentity,
   signal = process.kill,
 } = {}) {
@@ -1239,7 +1303,7 @@ async function waitForRetainedLog(child) {
 }
 
 async function resourceSnapshot(label, rootPids, diskPath) {
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,rss=,%cpu=,comm="], { timeout: 10_000, env: helperEnvironment() })
+  const { stdout } = await runHostHelper("ps", ["-eo", "pid=,ppid=,rss=,%cpu=,comm="], { timeout: 10_000 })
   const rows = stdout.split("\n").map((line) => line.trim().split(/\s+/, 5)).filter((parts) => parts.length === 5).map(([pid, ppid, rss, cpu, command]) => ({
     pid: Number(pid), ppid: Number(ppid), rssKb: Number(rss), cpuPercent: Number(cpu), command,
   })).filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid))
@@ -1380,19 +1444,22 @@ function descendantIds(rows, roots) {
   return ids
 }
 
-async function sourceIdentity(repoRoot) {
-  const env = helperEnvironment()
+export async function captureSourceIdentity(repoRoot, {
+  exec = execFileAsync,
+  baseEnvironment = process.env,
+} = {}) {
+  const run = (command, args, options) => runHostHelper(command, args, options, { exec, baseEnvironment })
   const [{ stdout: commit }, { stdout: tree }, { stdout: branch }, { stdout: status }] = await Promise.all([
-    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000, env }),
-    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000, env }),
-    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "branch", "--show-current"], { cwd: repoRoot, timeout: 10_000, env }),
-    execFileAsync("git", ["-c", `safe.directory=${repoRoot}`, "status", "--short"], { cwd: repoRoot, timeout: 10_000, env }),
+    run("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD"], { cwd: repoRoot, timeout: 10_000 }),
+    run("git", ["-c", `safe.directory=${repoRoot}`, "rev-parse", "HEAD^{tree}"], { cwd: repoRoot, timeout: 10_000 }),
+    run("git", ["-c", `safe.directory=${repoRoot}`, "branch", "--show-current"], { cwd: repoRoot, timeout: 10_000 }),
+    run("git", ["-c", `safe.directory=${repoRoot}`, "status", "--short"], { cwd: repoRoot, timeout: 10_000 }),
   ])
   return { commit: commit.trim(), tree: tree.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
 }
 
 async function assertSourceUnchanged(repoRoot, expected) {
-  const observed = await sourceIdentity(repoRoot)
+  const observed = await captureSourceIdentity(repoRoot)
   if (observed.dirty || observed.commit !== expected?.commit || observed.tree !== expected?.tree || observed.branch !== expected?.branch) {
     throw new Error("source changed after provenance capture")
   }
@@ -1408,7 +1475,7 @@ async function captureProvenance({ options, repoRoot, source }) {
   const protocol = Number(protocolSource.match(/LOCAL_DAEMON_PROTOCOL_VERSION:\s*u32\s*=\s*(\d+)/)?.[1])
   if (!Number.isSafeInteger(protocol)) throw new Error("could not identify the local daemon protocol version")
   assertCurrentContainerIdentity(options.runtimeContainerId)
-  const runtimeImage = await inspectDigestBoundRuntime({ containerId: options.runtimeContainerId, image })
+  const runtimeImage = await inspectDigestBoundRuntime({ containerId: options.runtimeContainerId, image, source })
   return {
     schema: "chariox.browser_computer_soak_provenance.v1",
     capturedAt: new Date().toISOString(),
@@ -1477,6 +1544,7 @@ function detachedArgs({ options, paths, allocation }) {
     "--viewer-port", String(allocation.viewerPort),
     "--viewer-backend", options.viewerBackend,
     "--runtime-container-id", options.runtimeContainerId,
+    "--launch-gate", paths.launchGate,
     "--max-cadence-gap-seconds", String(options.limits.maxCadenceGapMs / 1_000),
     "--max-rss-mib", String(options.limits.maxRssBytes / 1024 / 1024),
     "--max-cpu-percent", String(options.limits.maxCpuPercent),
@@ -1689,6 +1757,7 @@ async function waitForExit(child, timeoutMs, reject = true) {
 async function persistStartupFailure({ error, options, allocation, paths, source, baseline, startedAt }) {
   const completedAt = new Date().toISOString()
   const marker = bounded(error?.stack ?? error)
+  const failedPid = Number.isSafeInteger(error?.detachedChildPid) ? error.detachedChildPid : process.pid
   const cleanup = error?.terminalCleanup ?? {
     schema: "chariox.browser_computer_soak_cleanup.v1",
     at: completedAt,
@@ -1705,7 +1774,7 @@ async function persistStartupFailure({ error, options, allocation, paths, source
     schema,
     status: "failed",
     phase: "startup",
-    pid: process.pid,
+    pid: failedPid,
     startedAt,
     completedAt,
     durationSeconds: options.durationSeconds,
@@ -1717,7 +1786,7 @@ async function persistStartupFailure({ error, options, allocation, paths, source
     cleanup,
     failure: marker,
   }
-  await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 })
+  await writeFile(paths.pid, `${failedPid}\n`, { mode: 0o600 })
   await writeJson(paths.cleanup, cleanup)
   await writeJson(paths.failure, {
     schema: "chariox.browser_computer_soak_failure.v1",
@@ -1731,7 +1800,7 @@ async function persistStartupFailure({ error, options, allocation, paths, source
     schema,
     status: "failed",
     phase: "startup",
-    pid: process.pid,
+    pid: failedPid,
     startedAt,
     completedAt,
     result: paths.result,
