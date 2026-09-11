@@ -22,6 +22,7 @@ import {
   attributableNetworkDelta,
   baselineResourceSnapshot,
   buildSanitizedChildEnvironment,
+  captureSourceIdentity,
   createRuntimeState,
   createLifecycleGuard,
   createRedactingTransform,
@@ -30,12 +31,15 @@ import {
   inspectDigestBoundRuntime,
   launchDetachedRunner,
   networkNamespaceAttribution,
+  runHostHelper,
   redactEvidence,
   resolveVerifiedImage,
   processIdentityMatches,
   terminateOwnedProcessGroup,
+  terminateCapturedProcessGroup,
   runBrowserComputerSoak,
   verifyComputerInputEffect,
+  verifiedRuntimeLayout,
 } from "./browser-computer-soak-runtime.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..", "..")
@@ -226,6 +230,7 @@ test("run paths keep logs, state, samples, status, result, PID, and cleanup toge
   assert.equal(paths.activity, `${paths.runDir}/activity.jsonl`)
   assert.equal(paths.cleanup, `${paths.runDir}/cleanup-ledger.json`)
   assert.equal(paths.failure, `${paths.runDir}/failure.json`)
+  assert.equal(paths.launchGate, `${paths.runDir}/.launch-ready`)
 })
 
 test("detached launch summary preserves numeric PID and started status", () => {
@@ -295,6 +300,7 @@ test("completion requires authoritative clean source, image, backend, protocol, 
     (value) => { value.provenance.image.signature.verified = false },
     (value) => { value.provenance.image.attestation.verified = false },
     (value) => { value.provenance.runtimeImage.imageId = "sha256:" + "9".repeat(64) },
+    (value) => { value.provenance.runtimeImage.sourceRevision = "f".repeat(40) },
     (value) => { value.provenance.viewer.backend = "novnc" },
     (value) => { value.provenance.localDaemonProtocolVersion = 321 },
     (value) => { value.provenance.limits.maxProcesses += 1 },
@@ -424,20 +430,35 @@ test("fake or missing engine digest, signature, and attestation fail closed", as
 test("the exercised container must be the exact verified image", async () => {
   const image = verifiedImage("c")
   const containerId = "b".repeat(64)
+  const source = { commit: "a".repeat(40) }
   const inspect = async () => ({ stdout: JSON.stringify({
     Id: containerId,
     Image: image.engineImageId,
-    Config: { Image: image.identity },
+    Config: { Image: image.identity, Labels: { "io.chariox.runtime-source-revision": source.commit } },
     State: { Running: true },
   }) })
-  assert.deepEqual(await inspectDigestBoundRuntime({ containerId, image }, { exec: inspect }), {
-    containerId, imageId: image.engineImageId, identity: image.identity, running: true,
+  assert.deepEqual(await inspectDigestBoundRuntime({ containerId, image, source }, { exec: inspect }), {
+    containerId, imageId: image.engineImageId, identity: image.identity, sourceRevision: source.commit, running: true,
   })
-  await assert.rejects(inspectDigestBoundRuntime({ containerId, image }, {
-    exec: async () => ({ stdout: JSON.stringify({ Id: containerId, Image: "sha256:" + "9".repeat(64), Config: { Image: image.identity }, State: { Running: true } }) }),
+  await assert.rejects(inspectDigestBoundRuntime({ containerId, image, source }, {
+    exec: async () => ({ stdout: JSON.stringify({ Id: containerId, Image: "sha256:" + "9".repeat(64), Config: { Image: image.identity, Labels: { "io.chariox.runtime-source-revision": source.commit } }, State: { Running: true } }) }),
   }), /runtime image.*verified image/i)
+  await assert.rejects(inspectDigestBoundRuntime({ containerId, image, source }, {
+    exec: async () => ({ stdout: JSON.stringify({ Id: containerId, Image: image.engineImageId, Config: { Image: image.identity, Labels: { "io.chariox.runtime-source-revision": "f".repeat(40) } }, State: { Running: true } }) }),
+  }), /runtime source revision.*clean source/i)
   assert.doesNotThrow(() => assertCurrentContainerIdentity("abcdef1234567890", "abcdef123456"))
   assert.throws(() => assertCurrentContainerIdentity("abcdef1234567890", "999999999999"), /not the container executing/)
+})
+
+test("runtime commands and assets come only from the signed image filesystem", () => {
+  const layout = verifiedRuntimeLayout()
+  assert.deepEqual(layout, {
+    root: "/opt/chariox-slice",
+    node: "/usr/local/bin/node",
+    selkiesPython: "/opt/chariox-selkies/bin/python",
+    selkiesBinary: "/opt/chariox-selkies/bin/selkies",
+  })
+  assert.equal(JSON.stringify(layout).includes(repoRoot), false)
 })
 
 test("detach requires protocol 322, Selkies, and a full eight-hour duration", () => {
@@ -519,6 +540,14 @@ test("network exclusivity fails closed when a namespace member disappears or is 
   assert.equal(attribution.exclusive, false)
   assert.deepEqual(attribution.unreadablePids, [102])
   assert.match(attribution.reason, /incomplete/i)
+
+  const vanishedInventory = await networkNamespaceAttribution(new Set([100]), 32, {
+    currentPid: 100,
+    listProc: async () => { throw Object.assign(new Error("proc vanished"), { code: "ENOENT" }) },
+    readNamespace,
+  })
+  assert.equal(vanishedInventory.exclusive, false)
+  assert.match(vanishedInventory.reason, /inventory unavailable/i)
 })
 
 test("controller, browser, and stream death each fail immediately", () => {
@@ -566,6 +595,14 @@ test("pre-signal PID reuse prevents every process-group signal and cannot claim 
   })
   assert.deepEqual(lateSignals, [[-42, "SIGTERM"]], "reused PID must never receive SIGKILL")
   assert.equal(late.pidReuseSafe, false)
+
+  const capturedSignals = []
+  const captured = await terminateCapturedProcessGroup("viewer", expected, {
+    identity: async () => ({ ...expected, startedAtTicks: "101" }),
+    signal: (...args) => capturedSignals.push(args),
+  })
+  assert.deepEqual(capturedSignals, [])
+  assert.equal(captured.pidReuseSafe, false)
 })
 
 test("all helper subprocesses receive only the shared allowlisted environment", async () => {
@@ -587,25 +624,63 @@ test("all helper subprocesses receive only the shared allowlisted environment", 
     assert.equal(call.env.PATH, helperEnv.PATH)
     assert.equal(call.env.LANG, helperEnv.LANG)
   }
+
+  const hostCalls = []
+  await runHostHelper("ps", ["-eo", "pid="], { timeout: 100 }, {
+    baseEnvironment: { PATH: "/usr/bin", LANG: "C.UTF-8", GITHUB_TOKEN: "leak" },
+    exec: async (command, args, options) => { hostCalls.push({ command, args, options }); return { stdout: "" } },
+  })
+  assert.deepEqual(hostCalls[0].options.env, { PATH: "/usr/bin", LANG: "C.UTF-8" })
+
+  const gitCalls = []
+  const replies = ["a".repeat(40), "b".repeat(40), "codex/test", ""]
+  const identity = await captureSourceIdentity("/repo", {
+    baseEnvironment: { PATH: "/usr/bin", LANG: "C.UTF-8", GITHUB_TOKEN: "leak" },
+    exec: async (command, args, options) => {
+      gitCalls.push({ command, args, options })
+      return { stdout: replies[gitCalls.length - 1] }
+    },
+  })
+  assert.deepEqual(identity, { commit: "a".repeat(40), tree: "b".repeat(40), branch: "codex/test", dirty: false })
+  assert.equal(gitCalls.length, 4)
+  assert.equal(gitCalls.every((call) => call.command === "git" && call.options.env.GITHUB_TOKEN === undefined), true)
 })
 
 test("post-spawn evidence or log-close failure rolls back the exact detached child", async () => {
   const expected = { pid: 42, startedAtTicks: "100", executable: "/usr/bin/node", processGroupId: 42 }
-  for (const failAt of ["log", "evidence"]) {
+  for (const failAt of ["log", "evidence", "gate"]) {
     const child = { pid: 42, exitCode: null, signalCode: null, unref() {}, ownedIdentity: expected }
     const terminated = []
-    const failure = await launchDetachedRunner({ command: "/usr/bin/node", args: ["runner"], cwd: "/repo", env: { PATH: "/usr/bin" }, logPath: "/evidence/log" }, {
+    const persistedFailures = []
+    const failure = await launchDetachedRunner({ command: "/usr/bin/node", args: ["runner"], cwd: "/repo", env: { PATH: "/usr/bin" }, logPath: "/evidence/log", gatePath: "/evidence/launch-ready" }, {
       openLog: async () => ({ fd: 7, close: async () => { if (failAt === "log") throw new Error("log close failed") } }),
       spawnChild: () => child,
       captureIdentity: () => expected,
       writeStartupEvidence: async () => { if (failAt === "evidence") throw new Error("startup evidence failed") },
+      releaseLaunchGate: async () => { if (failAt === "gate") throw new Error("launch gate failed") },
       terminate: async (_name, owned) => { terminated.push(owned.ownedIdentity); return { name: "detached-runner-rollback", ok: true, pidReuseSafe: true } },
+      persistFailure: async (error) => { persistedFailures.push(error.terminalCleanup) },
     }).then(() => null, (error) => error)
-    assert.match(failure.message, failAt === "log" ? /log close failed/ : /startup evidence failed/)
+    assert.match(failure.message, failAt === "log" ? /log close failed/ : failAt === "evidence" ? /startup evidence failed/ : /launch gate failed/)
     assert.deepEqual(terminated, [expected])
+    assert.equal(persistedFailures.length, 1)
     assert.equal(failure.terminalCleanup.clean, true)
     assert.equal(failure.terminalCleanup.actions[0].name, "detached-runner-rollback")
   }
+})
+
+test("detached child remains gated until log close and starting evidence are durable", async () => {
+  const order = []
+  const child = { pid: 42, exitCode: null, signalCode: null, unref() { order.push("unref") } }
+  await launchDetachedRunner({ command: "/usr/bin/node", args: ["runner"], cwd: "/repo", env: { PATH: "/usr/bin" }, logPath: "/evidence/log", gatePath: "/evidence/launch-ready" }, {
+    openLog: async () => ({ fd: 7, close: async () => { order.push("log-close") } }),
+    spawnChild: () => { order.push("spawn"); return child },
+    captureIdentity: async () => ({ pid: 42, startedAtTicks: "100", executable: "/usr/bin/node", processGroupId: 42 }),
+    writeStartupEvidence: async () => { order.push("evidence") },
+    releaseLaunchGate: async () => { order.push("gate") },
+    persistFailure: async () => { throw new Error("unexpected failure") },
+  })
+  assert.deepEqual(order, ["spawn", "log-close", "evidence", "unref", "gate"])
 })
 
 test("leak scanning is bounded, excludes the runner, and never retains full arguments", () => {
@@ -698,5 +773,5 @@ function verifiedImage(hex) {
 
 function verifiedRuntime(hex) {
   const image = verifiedImage(hex)
-  return { containerId: "b".repeat(64), imageId: image.engineImageId, identity: image.identity, running: true }
+  return { containerId: "b".repeat(64), imageId: image.engineImageId, identity: image.identity, sourceRevision: "a".repeat(40), running: true }
 }
