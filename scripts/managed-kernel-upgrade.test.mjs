@@ -604,11 +604,21 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
-test("managed kernel upgrade rejects a release with an incompatible local daemon protocol", async (context) => {
+test("managed kernel upgrade accepts a newer local daemon protocol", async (context) => {
   const harness = await makeHarness(context, { targetProtocol: 324 })
   const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+})
+
+test("managed kernel upgrade rejects a local daemon protocol downgrade", async (context) => {
+  const harness = await makeHarness(context, { targetProtocol: 322 })
+  const result = harness.run()
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /target local daemon protocol 324 is incompatible with installed protocol 323/)
+  assert.match(result.stderr, /target local daemon protocol 322 is older than installed protocol 323/)
   assert.equal(
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,

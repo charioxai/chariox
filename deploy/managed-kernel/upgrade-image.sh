@@ -393,8 +393,8 @@ node "$script_root/verify-image-release.mjs" "$image_root" "$expected_new_digest
 
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
-if [ "$target_protocol" != "$current_protocol" ]; then
-  echo "target local daemon protocol $target_protocol is incompatible with installed protocol $current_protocol" >&2
+if [ "$target_protocol" -lt "$current_protocol" ]; then
+  echo "target local daemon protocol $target_protocol is older than installed protocol $current_protocol" >&2
   exit 1
 fi
 
