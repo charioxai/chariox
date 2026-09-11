@@ -17,12 +17,20 @@ import {
 import {
   assertProcessHealth,
   assertSandboxCapableChromiumIdentity,
+  assertFinalDetachPrerequisites,
+  attributableNetworkDelta,
   baselineResourceSnapshot,
+  buildSanitizedChildEnvironment,
+  createRuntimeState,
   createLifecycleGuard,
+  createRedactingTransform,
   finalGateEligibility,
   findRuntimeLeakMatches,
+  redactEvidence,
+  resolveVerifiedImage,
   processIdentityMatches,
   runBrowserComputerSoak,
+  verifyComputerInputEffect,
 } from "./browser-computer-soak-runtime.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..", "..")
@@ -51,11 +59,17 @@ test("explicit duration and external evidence root are accepted", () => {
     "--activity-interval-seconds=3",
     "--sample-interval-seconds", "4",
     "--evidence-root", evidenceRoot,
+    "--image-ref", "registry.example/chariox/slice:final",
+    "--image-signature-key", "/public/chariox.pub",
+    "--container-engine", "podman",
   ], { repoRoot, homeDir: os.tmpdir() })
   assert.equal(options.durationSeconds, 42)
   assert.equal(options.activityIntervalSeconds, 3)
   assert.equal(options.sampleIntervalSeconds, 4)
   assert.equal(options.evidenceRoot, evidenceRoot)
+  assert.equal(options.imageRef, "registry.example/chariox/slice:final")
+  assert.equal(options.imageSignatureKey, "/public/chariox.pub")
+  assert.equal(options.containerEngine, "podman")
 })
 
 test("historical long intervals derive a safe cadence bound unless explicitly tightened", () => {
@@ -150,7 +164,7 @@ test("startup failures leave terminal status, result, failure, and cleanup evide
   }
   await assert.rejects(
     runBrowserComputerSoak({ options, repoRoot, scriptPath: "/unused" }),
-    /debug-port and viewer-port must differ/,
+    /verified image requires/,
   )
   const [status, result, failure, cleanup] = await Promise.all([
     readFile(paths.status, "utf8").then(JSON.parse),
@@ -161,8 +175,39 @@ test("startup failures leave terminal status, result, failure, and cleanup evide
   assert.equal(status.status, "failed")
   assert.equal(result.status, "failed")
   assert.equal(result.phase, "startup")
-  assert.match(failure.marker, /debug-port and viewer-port must differ/)
+  assert.match(failure.marker, /verified image requires/)
   assert.equal(cleanup.clean, true)
+})
+
+test("partial state and disk setup failures clean with verified truthfulness", async () => {
+  const removed = []
+  let present = true
+  const failure = await createRuntimeState(buildSoakPaths("/evidence", "run"), {
+    temporaryRoot: "/tmp",
+    makeTemporary: async () => "/tmp/partial-soak-state",
+    makeDirectory: async (candidate) => {
+      if (candidate.endsWith("process-logs")) throw new Error("simulated disk failure SECRET_VALUE")
+    },
+    write: async () => {},
+    remove: async (candidate) => { removed.push(candidate); present = false },
+    pathExists: async () => present,
+  }).then(() => null, (error) => error)
+  assert.match(failure.message, /simulated disk failure/)
+  assert.deepEqual(removed, ["/tmp/partial-soak-state"])
+  assert.equal(failure.terminalCleanup.verificationCompleted, true)
+  assert.equal(failure.terminalCleanup.stateRemoved, true)
+  assert.equal(failure.terminalCleanup.clean, true)
+
+  const unclean = await createRuntimeState(buildSoakPaths("/evidence", "run"), {
+    temporaryRoot: "/tmp",
+    makeTemporary: async () => "/tmp/unclean-soak-state",
+    makeDirectory: async () => { throw new Error("disk full") },
+    remove: async () => { throw new Error("remove failed") },
+    pathExists: async () => true,
+  }).then(() => null, (error) => error)
+  assert.equal(unclean.terminalCleanup.verificationCompleted, true)
+  assert.equal(unclean.terminalCleanup.stateRemoved, false)
+  assert.equal(unclean.terminalCleanup.clean, false, "cleanup must never claim clean when removal cannot be proved")
 })
 
 test("run paths keep logs, state, samples, status, result, PID, and cleanup together", () => {
@@ -241,6 +286,9 @@ test("completion requires authoritative clean source, image, backend, protocol, 
     (value) => { value.provenance.source.dirty = true },
     (value) => { value.provenance.source.commit = "not-a-commit" },
     (value) => { value.provenance.image.identity = "" },
+    (value) => { value.provenance.image.digest = "sha256:" + "f".repeat(64) },
+    (value) => { value.provenance.image.signature.verified = false },
+    (value) => { value.provenance.image.attestation.verified = false },
     (value) => { value.provenance.viewer.backend = "novnc" },
     (value) => { value.provenance.localDaemonProtocolVersion = 321 },
     (value) => { value.provenance.limits.maxProcesses += 1 },
@@ -255,6 +303,7 @@ test("completion rejects clock gaps, stale evidence, unbounded resources, and cl
   const valid = completedResult()
   for (const mutate of [
     (value) => { value.timing.monotonicElapsedMs = value.timing.expectedDurationMs - 1 },
+    (value) => { value.durationSeconds = 12 },
     (value) => { value.timing.observedMaxCadenceGapMs = value.timing.maxCadenceGapMs + 1 },
     (value) => { value.timing.wallMonotonicSkewMs = value.timing.maxCadenceGapMs + 1 },
     (value) => { value.resources.withinBounds = false },
@@ -294,9 +343,10 @@ test("Selkies final-gate eligibility activates exactly at protocol 322", () => {
 test("preflight and smoke receipts must be fresh and match clean source, image, and limits", () => {
   const provenance = {
     source: { commit: "a".repeat(40), tree: "b".repeat(40), dirty: false },
-    image: { identity: "sha256:" + "c".repeat(64) },
+    image: verifiedImage("c"),
     limits: { maxRssBytes: 1024, maxCpuPercent: 200 },
     viewer: { backend: "selkies" },
+    localDaemonProtocolVersion: 322,
   }
   const fingerprint = gateFingerprint(provenance)
   const now = Date.parse("2026-09-11T08:00:00.000Z")
@@ -305,6 +355,7 @@ test("preflight and smoke receipts must be fresh and match clean source, image, 
   assert.doesNotThrow(() => validateGatePrerequisites({ preflight, smoke, provenance, now }))
   for (const mutate of [
     ({ provenance: value }) => { value.source.dirty = true },
+    ({ provenance: value }) => { value.localDaemonProtocolVersion = 321 },
     ({ preflight: value }) => { value.fingerprint = "wrong" },
     ({ smoke: value }) => { value.fingerprint = "wrong" },
     ({ smoke: value }) => { value.completedAt = "2026-09-10T00:00:00.000Z" },
@@ -314,6 +365,118 @@ test("preflight and smoke receipts must be fresh and match clean source, image, 
     mutate(candidate)
     assert.throws(() => validateGatePrerequisites({ ...candidate, now }), /preflight|smoke|clean|stale/i)
   }
+})
+
+test("image provenance comes from matching engine digest plus verified signature and attestation", async () => {
+  const digest = "sha256:" + "c".repeat(64)
+  const calls = []
+  const image = await resolveVerifiedImage({
+    imageRef: "registry.example/chariox/slice:final",
+    signatureKey: "/public/chariox.pub",
+    engine: "docker",
+  }, { readKey: async () => Buffer.from("public-key"), exec: async (command, args) => {
+    calls.push([command, args])
+    if (command === "docker") return { stdout: JSON.stringify({
+      Id: "sha256:" + "d".repeat(64),
+      RepoDigests: [`registry.example/chariox/slice@${digest}`],
+    }) }
+    if (args[0] === "verify-attestation") return { stdout: JSON.stringify({
+      payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: "c".repeat(64) } }] })).toString("base64"),
+    }) }
+    return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": digest } } }]) }
+  } })
+  assert.equal(image.digest, digest)
+  assert.equal(image.identity, `registry.example/chariox/slice@${digest}`)
+  assert.equal(image.signature.verified, true)
+  assert.equal(image.attestation.verified, true)
+  assert.deepEqual(calls.map(([command]) => command), ["docker", "cosign", "cosign"])
+  assert.equal(JSON.stringify(image).includes("/public/chariox.pub"), false)
+})
+
+test("fake or missing engine digest, signature, and attestation fail closed", async () => {
+  const digest = "sha256:" + "c".repeat(64)
+  const base = { imageRef: "registry.example/chariox/slice:final", signatureKey: "/public/key", engine: "docker" }
+  await assert.rejects(resolveVerifiedImage(base, { exec: async () => ({ stdout: JSON.stringify({ Id: digest, RepoDigests: [] }) }) }), /immutable engine RepoDigest/)
+  await assert.rejects(resolveVerifiedImage(base, { exec: async () => ({ stdout: JSON.stringify({ Id: "fake", RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }) }), /immutable local image ID/)
+  await assert.rejects(resolveVerifiedImage({ ...base, imageRef: `registry.example/chariox/slice@${"sha256:" + "f".repeat(64)}` }, {
+    exec: async () => ({ stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }),
+  }), /does not match/)
+  await assert.rejects(resolveVerifiedImage(base, { readKey: async () => Buffer.from("public-key"), exec: async (command, args) => {
+    if (command === "docker") return { stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }
+    if (args[0] === "verify") return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": "sha256:" + "e".repeat(64) } } }]) }
+    return { stdout: "[]" }
+  } }), /signature.*digest|attestation/i)
+  await assert.rejects(resolveVerifiedImage(base, { readKey: async () => Buffer.from("public-key"), exec: async (command, args) => {
+    if (command === "docker") return { stdout: JSON.stringify({ Id: digest, RepoDigests: [`registry.example/chariox/slice@${digest}`] }) }
+    if (args[0] === "verify") return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": digest } } }]) }
+    return { stdout: JSON.stringify({ payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: "e".repeat(64) } }] })).toString("base64") }) }
+  } }), /attestation.*digest/i)
+  await assert.rejects(resolveVerifiedImage({ ...base, signatureKey: null }, { exec: async () => ({ stdout: "{}" }) }), /signature key/i)
+})
+
+test("detach requires protocol 322, Selkies, and a full eight-hour duration", () => {
+  const provenance = { localDaemonProtocolVersion: 322, viewer: { backend: "selkies" } }
+  const options = { mode: "detach", durationSeconds: 28_800, viewerBackend: "selkies" }
+  assert.doesNotThrow(() => assertFinalDetachPrerequisites(options, provenance))
+  assert.throws(() => assertFinalDetachPrerequisites(options, { ...provenance, localDaemonProtocolVersion: 321 }), /protocol 322/)
+  assert.throws(() => assertFinalDetachPrerequisites({ ...options, durationSeconds: 28_799 }, provenance), /28,800/)
+  assert.throws(() => assertFinalDetachPrerequisites({ ...options, viewerBackend: "novnc" }, provenance), /Selkies/)
+})
+
+test("child environment is allowlisted and every evidence surface redacts secrets", () => {
+  const secret = "super-secret-process-value"
+  const environment = buildSanitizedChildEnvironment({
+    PATH: "/usr/bin", LANG: "C.UTF-8", HOME: "/secret/home", AWS_SECRET_ACCESS_KEY: secret,
+    GITHUB_TOKEN: `token-${secret}`, CHARIOX_SLICE_IMAGE_ID: `fake-${secret}`,
+  }, { DISPLAY: ":77" })
+  assert.deepEqual(environment, { PATH: "/usr/bin", LANG: "C.UTF-8", DISPLAY: ":77" })
+  const retained = redactEvidence({
+    stdout: `token=${secret}`,
+    stderr: `Authorization: Bearer ${secret}`,
+    failure: new Error(`failed ${secret}`).stack,
+    activity: [`https://user:${secret}@example.invalid/private`],
+    cleanup: { error: `GITHUB_TOKEN=token-${secret}` },
+    provenance: { path: `/tmp/${secret}/image` },
+  }, { secretValues: [secret, `token-${secret}`] })
+  assert.equal(JSON.stringify(retained).includes(secret), false)
+  assert.match(retained.stdout, /\[REDACTED\]/)
+})
+
+test("retained process output redacts secrets split across stream chunks", async () => {
+  const secret = "split-secret-process-value"
+  const redactor = createRedactingTransform({ secretValues: [secret] })
+  let output = ""
+  redactor.setEncoding("utf8")
+  redactor.on("data", (chunk) => { output += chunk })
+  redactor.write(`stdout before ${secret.slice(0, 7)}`)
+  redactor.write(`${secret.slice(7)} stderr Authorization: Bearer hostile-token`)
+  redactor.end()
+  await new Promise((resolve, reject) => { redactor.once("end", resolve); redactor.once("error", reject) })
+  assert.equal(output.includes(secret), false)
+  assert.equal(output.includes("hostile-token"), false)
+  assert.match(output, /\[REDACTED\]/)
+})
+
+test("Computer input proof rejects no-op and misrouted pointer movement", async () => {
+  const replies = ["X=10\nY=10\n", "X=25\nY=30\n"]
+  const proven = await verifyComputerInputEffect({ iteration: 0, env: { DISPLAY: ":77" }, cwd: repoRoot }, {
+    exec: async (_command, args) => ({ stdout: args[0] === "getmouselocation" ? replies.shift() : "" }),
+  })
+  assert.deepEqual(proven.before, { x: 10, y: 10 })
+  assert.deepEqual(proven.after, { x: 25, y: 30 })
+  await assert.rejects(verifyComputerInputEffect({ iteration: 0, env: { DISPLAY: ":77" }, cwd: repoRoot }, {
+    exec: async (_command, args) => ({ stdout: args[0] === "getmouselocation" ? "X=10\nY=10\n" : "" }),
+  }), /physical pointer did not move/)
+  await assert.rejects(verifyComputerInputEffect({ iteration: 0, env: { DISPLAY: ":77" }, cwd: repoRoot }, {
+    exec: async (_command, args, options) => ({ stdout: args[0] === "getmouselocation" ? `X=${options.env.DISPLAY === ":77" ? 10 : 25}\nY=10\n` : "" }),
+  }), /physical pointer did not move/)
+})
+
+test("network bound requires exclusive attributable namespace accounting", () => {
+  const exclusive = { exclusive: true, namespace: "net:[42]" }
+  assert.equal(attributableNetworkDelta({ totalBytes: 100, attribution: exclusive }, { totalBytes: 350 }, exclusive), 250)
+  assert.throws(() => attributableNetworkDelta({ totalBytes: 100, attribution: exclusive }, { totalBytes: 350 }, { exclusive: false, foreignPids: [1] }), /attributable network accounting unavailable/)
+  assert.throws(() => attributableNetworkDelta({ totalBytes: 400, attribution: exclusive }, { totalBytes: 350 }, exclusive), /network counters regressed/)
 })
 
 test("controller, browser, and stream death each fail immediately", () => {
@@ -364,6 +527,7 @@ function completedResult() {
   return {
     schema: "chariox.browser_computer_soak.v1",
     status: "passed",
+    durationSeconds: 28_800,
     startedAt: "2026-09-11T00:00:00.000Z",
     completedAt: "2026-09-11T08:00:00.000Z",
     source,
@@ -371,7 +535,7 @@ function completedResult() {
       schema: "chariox.browser_computer_soak_provenance.v1",
       capturedAt: "2026-09-10T23:59:59.000Z",
       source: { ...source },
-      image: { identity: "sha256:" + "c".repeat(64) },
+      image: verifiedImage("c"),
       limits: { ...limits },
       viewer: { backend: "selkies" },
       localDaemonProtocolVersion: 322,
@@ -404,5 +568,17 @@ function completedResult() {
     },
     cleanup: { clean: true, pidReuseSafe: true, remainingPids: [], remainingListeners: [], leakScan: { clean: true, matches: [] } },
     gate: { eligible: true, reason: null },
+  }
+}
+
+function verifiedImage(hex) {
+  const digest = "sha256:" + hex.repeat(64)
+  return {
+    identity: `registry.example/chariox/slice@${digest}`,
+    digest,
+    engine: "docker",
+    engineImageId: "sha256:" + "d".repeat(64),
+    signature: { verified: true, verifier: "cosign", keySha256: "e".repeat(64), bundleSha256: "f".repeat(64) },
+    attestation: { verified: true, type: "slsaprovenance", bundleSha256: "a".repeat(64) },
   }
 }

@@ -902,11 +902,15 @@ pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
 pnpm --filter @chariox/cli run browser-computer:soak -- --detach
 ```
 
-The detached command defaults to eight hours. Do not start it unless preflight
-and the short smoke pass from the same clean source tree, final runtime-image
-identity, viewer backend, resource limits, and external evidence root. The
-receipts are bounded and detach fails closed when either is missing, stale, or
-mismatched. Retain its external evidence
+The detached command defaults to eight hours and refuses a shorter duration,
+source protocol below 322, or a backend other than Selkies. Do not start it
+unless preflight and the short smoke pass from the same clean source tree,
+engine-resolved immutable image digest with a verified Cosign signature and
+signed SLSA provenance attestation, viewer backend, resource limits, and
+external evidence root. The receipts expire after one hour and detach fails
+closed when either is missing, stale, or mismatched. The runner also fails
+preflight unless its Linux network namespace is exclusively attributable to
+the owned process tree. Retain its external evidence
 directory, including PID/status/result files, resource samples, failure marker,
 process logs, latest screen capture, and cleanup ledger.
 
