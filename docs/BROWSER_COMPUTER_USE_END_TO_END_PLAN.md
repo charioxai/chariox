@@ -261,11 +261,15 @@ work, interrupt it, or use it as an implementation sub-agent. Review must remain
 independent and arrive through the established reviewer and PR-comment path.
 
 The independent reviewer services and state under `~/.chariox-reviewer` are
-shared infrastructure owned outside this implementation program. The
-implementation agent is not responsible for operating, diagnosing, repairing,
-restarting, stopping, pruning, or modifying that infrastructure. Do not touch it
-unless the user explicitly changes this instruction and assigns reviewer repair
-as a separate task.
+shared infrastructure. For this program the implementation owner is explicitly
+responsible for reviewer health: monitor event delivery, provider substitution,
+workflow completion, and exact-head PR comments without weakening reviewer
+independence. Diagnose and repair reviewer defects narrowly, preserve its state,
+and do not restart, stop, prune, or replace healthy reviewer infrastructure.
+Every posted review must identify the provider, model, account role, and effort
+that actually executed that turn; a fallback review must not reuse the primary
+provider's identity block. Treat missing, stale-head, duplicate, falsely
+attributed, or incomplete review comments as an unresolved gate.
 
 If the reviewer is delayed, unavailable, or temporarily stops posting comments,
 record the exact commit SHA awaiting review and continue useful independent work
