@@ -544,5 +544,5 @@ function managedProviderAccountSelectionKey(
 export function managedProviderAccountIsTransferable(
   profile: NonNullable<WaitingRoomRemoteState["providerAccounts"]>[number],
 ): boolean {
-  return profile.auth_state === "authenticated"
+  return profile.provider !== "claude" && profile.auth_state === "authenticated"
 }

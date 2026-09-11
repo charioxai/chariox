@@ -110,7 +110,7 @@ test("new managed Machine dialog owns every conditional configuration row", () =
   )
 })
 
-test("clean kernel plus Current Project exports every available provider account from one source", () => {
+test("clean kernel plus Current Project exports every transferable provider account from one source", () => {
   const state: WaitingRoomState = {
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
@@ -137,8 +137,6 @@ test("clean kernel plus Current Project exports every available provider account
       kind: "selected",
       accounts: [
         { provider: "opencode", accountProfile: "opencode-work" },
-        { provider: "claude", accountProfile: "default" },
-        { provider: "claude", accountProfile: "claude-work" },
       ],
     },
     gitCredentials: { kind: "none" },
@@ -368,7 +366,6 @@ test("managed Machine setup selects accounts across provider families", () => {
     kind: "selected",
     accounts: [
       { provider: "opencode", accountProfile: "opencode-work" },
-      { provider: "claude", accountProfile: "claude-work" },
       { provider: "codex", accountProfile: "codex-work" },
     ],
   })
@@ -376,17 +373,17 @@ test("managed Machine setup selects accounts across provider families", () => {
     waitingRoomManagedMachineFocusTargets(state, selectionRemote)
       .filter((target) => target.focus === "managed-provider-account")
       .map((target) => target.managedProviderAccountIndex),
-    [0, 1, 2, 3],
+    [0, 3],
   )
   const rows = waitingRoomManagedMachineDialogRows(state, selectionRemote)
-  assert.equal(rows.find((row) => row.id === "managed-provider-accounts")?.value, "3 selected")
+  assert.equal(rows.find((row) => row.id === "managed-provider-accounts")?.value, "2 selected")
   assert.equal(
     rows.find((row) => row.id === "managed-provider-account:opencode:opencode-work")?.value,
     "OpenCode · Included",
   )
   assert.equal(
     rows.find((row) => row.id === "managed-provider-account:claude:default")?.value,
-    "Claude · Excluded",
+    "Claude · Unavailable, authenticated",
   )
   assert.equal(
     rows.find((row) => row.id === "managed-provider-account:codex:codex-work")?.value,
@@ -406,14 +403,12 @@ test("managed Machine setup selects accounts across provider families", () => {
     kind: "selected",
     accounts: [
       { provider: "opencode", accountProfile: "opencode-work" },
-      { provider: "claude", accountProfile: "default" },
-      { provider: "claude", accountProfile: "claude-work" },
       { provider: "codex", accountProfile: "codex-work" },
     ],
   })
 })
 
-test("managed Machine setup disables unauthenticated provider accounts", () => {
+test("managed Machine setup disables unauthenticated and unsupported provider accounts", () => {
   const unavailableRemote = remote()
   unavailableRemote.providerAccounts = (unavailableRemote.providerAccounts ?? []).map((profile, index) => ({
     ...profile,
@@ -434,16 +429,15 @@ test("managed Machine setup disables unauthenticated provider accounts", () => {
     focus: "managed-provider-account",
     managedProviderAccountIndex: 0,
   }, [], catalog(), 1, undefined, unavailableRemote)
-  assert.equal(state.managedProviderAccountSource, "selected_account")
+  assert.equal(state.managedProviderAccountSource, "none")
   assert.deepEqual(managedEnvironmentContextPlanInput(state, unavailableRemote).providerAccounts, {
-    kind: "selected",
-    accounts: [{ provider: "claude", accountProfile: "claude-work" }],
+    kind: "none",
   })
   assert.deepEqual(
     waitingRoomManagedMachineFocusTargets(state, unavailableRemote)
       .filter((target) => target.focus === "managed-provider-account")
       .map((target) => target.managedProviderAccountIndex),
-    [2],
+    [],
   )
   const rows = waitingRoomManagedMachineDialogRows(state, unavailableRemote)
   assert.deepEqual(
@@ -462,8 +456,8 @@ test("managed Machine setup disables unauthenticated provider accounts", () => {
       selectable: false,
     }, {
       id: "managed-provider-account:claude:claude-work",
-      value: "Claude · Included",
-      selectable: true,
+      value: "Claude · Unavailable, authenticated",
+      selectable: false,
     }],
   )
   assert.equal(
@@ -479,7 +473,7 @@ test("managed Machine setup disables unauthenticated provider accounts", () => {
   )
 })
 
-test("both Claude execution modes transfer the canonical Claude account", () => {
+test("managed Machine setup rejects Claude credential-file transfer before provisioning", () => {
   for (const providerId of ["claude-headless", "claude-p"] as const) {
     let state = normalizeWaitingRoomState({
       ...baseState(),
@@ -501,11 +495,14 @@ test("both Claude execution modes transfer the canonical Claude account", () => 
       }],
     }
     assert.equal(state.accountProfileId, "claude-work")
-    assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
-    assert.deepEqual(managedEnvironmentContextPlanInput(state, remote()).providerAccounts, {
-      kind: "selected",
-      accounts: [{ provider: "claude", accountProfile: "claude-work" }],
-    })
+    assert.equal(
+      managedEnvironmentDraftBlockReason(state, remote()),
+      "One or more selected provider accounts are unavailable or not authenticated.",
+    )
+    assert.throws(
+      () => managedEnvironmentContextPlanInput(state, remote()),
+      /unavailable or not authenticated/,
+    )
   }
 })
 
