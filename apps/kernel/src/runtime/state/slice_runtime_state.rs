@@ -727,6 +727,36 @@ impl KernelRuntimeState {
         Ok(slice)
     }
 
+    pub(crate) fn reconcile_authenticated_slice_worker_presence(
+        &self,
+        worker: &chariox_relay::protocol::RelayKernelPresence,
+    ) -> Result<bool, DaemonError> {
+        let Some(slice) = self
+            .owned
+            .slice_store
+            .reconcile_authenticated_worker_presence(
+                &worker.kernel_id,
+                &worker.machine_id,
+                &worker.available_providers,
+                crate::session::unix_epoch_ms(),
+            )?
+        else {
+            return Ok(false);
+        };
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        crate::logging::info_with_fields(
+            "daemon.slice_reconcile",
+            "repaired transient slice health from authenticated worker presence",
+            serde_json::json!({
+                "slice_id": slice.id,
+                "slice_name": slice.name,
+                "worker_kernel_id": worker.kernel_id,
+                "worker_machine_id": worker.machine_id,
+            }),
+        );
+        Ok(true)
+    }
+
     pub(crate) fn claim_slice_starting_worker_identity(
         &self,
         slice_ref: &str,

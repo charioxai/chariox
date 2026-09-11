@@ -571,6 +571,115 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_worker_presence_repairs_only_transient_restart_health() {
+        let store = SliceStore::default();
+        let transient = store
+            .create("kernel-1", "machine-1", create_input("transient"))
+            .expect("transient slice should create");
+        store
+            .set_worker_presence(
+                &transient.id,
+                Some("worker-1".to_string()),
+                Some(format!("slice:{}", transient.id)),
+                vec!["codex".to_string()],
+                43,
+            )
+            .expect("transient worker presence should update");
+        store
+            .set_status(&transient.id, SliceStatus::Running, 44)
+            .expect("transient slice should be running");
+        store
+            .reconcile_after_kernel_restart_with_host_state(45, |_| SliceHostRuntimeState::Unknown);
+
+        assert!(store
+            .reconcile_authenticated_worker_presence(
+                "worker-1",
+                "slice:wrong-slice",
+                &["codex".to_string()],
+                46,
+            )
+            .expect("mismatched worker reconciliation should succeed")
+            .is_none());
+
+        let repaired = store
+            .reconcile_authenticated_worker_presence(
+                "worker-1",
+                &format!("slice:{}", transient.id),
+                &["codex".to_string(), "opencode".to_string()],
+                46,
+            )
+            .expect("authenticated worker reconciliation should succeed")
+            .expect("transient restart health should repair");
+
+        assert_eq!(repaired.status, SliceStatus::Running);
+        assert_eq!(repaired.providers, vec!["codex", "opencode"]);
+        assert_eq!(repaired.last_error, None);
+        assert_eq!(repaired.updated_at_ms, 46);
+
+        let unhealthy = store
+            .create("kernel-1", "machine-1", create_input("unhealthy"))
+            .expect("unhealthy slice should create");
+        store
+            .set_worker_presence(
+                &unhealthy.id,
+                Some("worker-2".to_string()),
+                Some(format!("slice:{}", unhealthy.id)),
+                vec!["codex".to_string()],
+                47,
+            )
+            .expect("unhealthy worker presence should update");
+        store
+            .set_status(&unhealthy.id, SliceStatus::Unhealthy, 48)
+            .expect("slice should be unhealthy");
+        store
+            .set_operation_diagnostics(
+                &unhealthy.id,
+                "start",
+                SliceOperationStatus::Failed,
+                Some("container health check failed"),
+                48,
+            )
+            .expect("unhealthy diagnostics should update");
+
+        assert!(store
+            .reconcile_authenticated_worker_presence(
+                "worker-2",
+                &format!("slice:{}", unhealthy.id),
+                &["codex".to_string()],
+                49,
+            )
+            .expect("genuine unhealthy reconciliation should succeed")
+            .is_none());
+        assert_eq!(
+            store
+                .resolve(&unhealthy.id)
+                .expect("slice should resolve")
+                .status,
+            SliceStatus::Unhealthy
+        );
+
+        store
+            .set_status(&transient.id, SliceStatus::Stopped, 50)
+            .expect("transient fixture should stop");
+        assert!(store
+            .reconcile_authenticated_worker_presence(
+                "worker-1",
+                &format!("slice:{}", transient.id),
+                &["codex".to_string()],
+                51,
+            )
+            .expect("stopped reconciliation should succeed")
+            .is_none());
+        assert_eq!(
+            store
+                .resolve(&transient.id)
+                .expect("slice should resolve")
+                .status,
+            SliceStatus::Stopped
+        );
+    }
+
+    #[test]
     fn slice_store_reconciles_interrupted_stop_after_kernel_restart() {
         let store = SliceStore::default();
         let slice = store
