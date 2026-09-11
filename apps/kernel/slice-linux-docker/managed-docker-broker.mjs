@@ -263,6 +263,15 @@ function validateDockerExec(args) {
   if (args[2] === "slice" && exactArguments(command, ["gh", "auth", "token", "--hostname", "github.com"])) return
   if (
     args[2] === "slice" &&
+    exactArguments(command, [
+      "jq",
+      "-r",
+      ".relay_url",
+      "/home/slice/.chariox/daemon/config.json",
+    ])
+  ) return
+  if (
+    args[2] === "slice" &&
     command.length === 2 &&
     command[0] === "/opt/chariox-slice/slice-screen.sh" &&
     SCREEN_ACTIONS.has(command[1])

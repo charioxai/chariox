@@ -866,10 +866,12 @@ pub fn inspect_local_docker_slice_relay_endpoint(
     let output = docker_command()
         .args([
             "exec",
-            "--user",
+            "-u",
             "slice",
             &container,
-            "cat",
+            "jq",
+            "-r",
+            ".relay_url",
             "/home/slice/.chariox/daemon/config.json",
         ])
         .output()
@@ -878,20 +880,14 @@ pub fn inspect_local_docker_slice_relay_endpoint(
         return None;
     }
     let stdout = Zeroizing::new(output.stdout);
-    relay_endpoint_from_persisted_daemon_config(record, stdout.as_slice())
+    relay_endpoint_from_persisted_daemon_relay_url(record, stdout.as_slice())
 }
 
-fn relay_endpoint_from_persisted_daemon_config(
+fn relay_endpoint_from_persisted_daemon_relay_url(
     record: &SliceRecord,
-    config_json: &[u8],
+    relay_url: &[u8],
 ) -> Option<SliceRelayEndpoint> {
-    #[derive(serde::Deserialize)]
-    struct PersistedRelayConfig {
-        relay_url: Option<String>,
-    }
-
-    let config: PersistedRelayConfig = serde_json::from_slice(config_json).ok()?;
-    let relay_url = config.relay_url?.trim().to_string();
+    let relay_url = std::str::from_utf8(relay_url).ok()?.trim().to_string();
     let parsed = url::Url::parse(&relay_url).ok()?;
     if !matches!(parsed.scheme(), "ws" | "wss") {
         return None;

@@ -334,6 +334,21 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   assert.equal(arbitraryExec.status, 1)
   assert.match(arbitraryExec.stderr, /Docker exec command shape is not allowed/)
 
+  const relayUrlRead = validate({
+    kind: "docker",
+    args: [
+      "exec",
+      "-u",
+      "slice",
+      "chariox-slice-dev",
+      "jq",
+      "-r",
+      ".relay_url",
+      "/home/slice/.chariox/daemon/config.json",
+    ],
+  }, share)
+  assert.equal(relayUrlRead.status, 0, relayUrlRead.stderr)
+
   const runtimeLogs = [
     "exec",
     "-u",

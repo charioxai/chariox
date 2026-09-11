@@ -2094,14 +2094,12 @@ fn private_relay_discovery_uses_private_relay_credential() {
 }
 
 #[test]
-fn persisted_daemon_config_recovers_public_slice_relay_endpoint() {
+fn persisted_daemon_relay_url_recovers_public_slice_relay_endpoint() {
     let record = test_record();
 
-    let endpoint = relay_endpoint_from_persisted_daemon_config(
-        &record,
-        br#"{"relay_url":"wss://relay.example.test","relay_token":"secret"}"#,
-    )
-    .expect("public relay endpoint should recover");
+    let endpoint =
+        relay_endpoint_from_persisted_daemon_relay_url(&record, b"wss://relay.example.test\n")
+            .expect("public relay endpoint should recover");
 
     assert_eq!(
         endpoint,
@@ -2113,14 +2111,12 @@ fn persisted_daemon_config_recovers_public_slice_relay_endpoint() {
 }
 
 #[test]
-fn persisted_daemon_config_maps_container_loopback_to_private_host_endpoint() {
+fn persisted_daemon_relay_url_maps_container_loopback_to_private_host_endpoint() {
     let record = test_record();
 
-    let endpoint = relay_endpoint_from_persisted_daemon_config(
-        &record,
-        br#"{"relay_url":"ws://127.0.0.1:43118"}"#,
-    )
-    .expect("private relay endpoint should recover");
+    let endpoint =
+        relay_endpoint_from_persisted_daemon_relay_url(&record, b"ws://127.0.0.1:43118\n")
+            .expect("private relay endpoint should recover");
 
     assert_eq!(endpoint, local_docker_private_relay_endpoint(&record));
 }
