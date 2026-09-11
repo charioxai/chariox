@@ -1325,7 +1325,10 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let document = self.read_document()?;
         let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
-        let files = materialization_files(&stored.locator, profile_id)?;
+        let files = materialization_files(
+            &stored.locator,
+            stored.public.origin == ProviderAccountProfileOrigin::Default,
+        )?;
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: stored.public.owner_user_id.clone(),
@@ -1359,13 +1362,14 @@ impl ProviderAccountProfileRegistry {
             return Ok(profile);
         }
         let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
-        let files = materialization_files(&locator, profile_id)?;
-        if files.is_empty() {
-            return Err(registry_error(
-                "materialize deployment account profile",
-                "provider credential profile is empty",
-            ));
-        }
+        let files = materialization_files(&locator, is_default)?;
+        let credential_path = match provider {
+            "codex" => "auth.json",
+            "claude" => ".credentials.json",
+            "opencode" => "data/opencode/auth.json",
+            _ => return Err(unsupported_provider(provider)),
+        };
+        require_materialization_file(&files, credential_path, provider, profile_id)?;
         self.materialize_replica(
             owner_user_id,
             &ProviderAccountMaterialization {
@@ -1405,11 +1409,32 @@ impl ProviderAccountProfileRegistry {
                 )?;
                 require_managed_materialization_file(&files, "auth.json", provider, profile_id)?;
             }
-            ProviderAccountLocator::Claude { .. } => {
-                return Err(registry_error(
-                    "export managed account profile",
-                    "Claude managed-context credential transfer is disabled; use the kernel-managed Chariox-vault setup-token launch path",
-                ));
+            ProviderAccountLocator::Claude {
+                claude_config_dir, ..
+            } => {
+                validate_materialization_root(claude_config_dir)?;
+                collect_optional_file_bounded(
+                    claude_config_dir,
+                    ".credentials.json",
+                    ".credentials.json",
+                    &mut files,
+                    MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES,
+                )?;
+                discard_nonportable_claude_credentials(&mut files);
+                if !materialization_has_file(&files, ".credentials.json") {
+                    collect_scoped_claude_keychain_credentials(claude_config_dir, &mut files)?;
+                }
+                if stored.public.origin == ProviderAccountProfileOrigin::Default
+                    && !materialization_has_file(&files, ".credentials.json")
+                {
+                    collect_legacy_claude_keychain_credentials(&mut files)?;
+                }
+                require_managed_materialization_file(
+                    &files,
+                    ".credentials.json",
+                    provider,
+                    profile_id,
+                )?;
             }
             ProviderAccountLocator::Opencode { xdg_data_home, .. } => {
                 let auth_root = xdg_data_home.join("opencode");
@@ -2613,7 +2638,7 @@ fn validate_profile_id(profile_id: &str) -> Result<&str, DaemonError> {
 
 fn materialization_files(
     locator: &ProviderAccountLocator,
-    _profile_id: &str,
+    include_default_claude_keychain: bool,
 ) -> Result<Vec<ProviderAccountMaterializationFile>, DaemonError> {
     let mut files = Vec::new();
     match locator {
@@ -2624,11 +2649,17 @@ fn materialization_files(
         ProviderAccountLocator::Claude {
             claude_config_dir, ..
         } => {
-            // Remote workers receive a vaulted setup token only for the
-            // lifetime of an official Claude CLI launch. Provider-owned
-            // refresh credentials are never replicated.
-            for name in ["settings.json", "stats-cache.json"] {
+            for name in [".credentials.json", "settings.json", "stats-cache.json"] {
                 collect_optional_file(claude_config_dir, name, name, &mut files)?;
+            }
+            discard_nonportable_claude_credentials(&mut files);
+            if !materialization_has_file(&files, ".credentials.json") {
+                collect_scoped_claude_keychain_credentials(claude_config_dir, &mut files)?;
+            }
+            if include_default_claude_keychain
+                && !materialization_has_file(&files, ".credentials.json")
+            {
+                collect_legacy_claude_keychain_credentials(&mut files)?;
             }
         }
         ProviderAccountLocator::Opencode {
@@ -2843,6 +2874,15 @@ fn materialization_has_file(
     files.iter().any(|file| file.relative_path == relative_path)
 }
 
+fn discard_nonportable_claude_credentials(files: &mut Vec<ProviderAccountMaterializationFile>) {
+    files.retain(|file| {
+        file.relative_path != ".credentials.json"
+            || base64::engine::general_purpose::STANDARD
+                .decode(&file.contents_base64)
+                .is_ok_and(|contents| claude_credentials_are_portable(&contents))
+    });
+}
+
 fn claude_credentials_are_portable(contents: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(contents)
         .ok()
@@ -2852,6 +2892,73 @@ fn claude_credentials_are_portable(contents: &[u8]) -> bool {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|refresh_token| !refresh_token.trim().is_empty())
         })
+}
+
+#[cfg(target_os = "macos")]
+fn claude_keychain_service_name(claude_config_dir: &Path) -> String {
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(claude_config_dir.as_os_str().as_encoded_bytes())
+    );
+    format!("Claude Code-credentials-{}", &digest[..8])
+}
+
+#[cfg(target_os = "macos")]
+fn collect_scoped_claude_keychain_credentials(
+    claude_config_dir: &Path,
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    collect_claude_keychain_credentials(&claude_keychain_service_name(claude_config_dir), files)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn collect_scoped_claude_keychain_credentials(
+    _claude_config_dir: &Path,
+    _files: &mut [ProviderAccountMaterializationFile],
+) -> Result<(), DaemonError> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn collect_legacy_claude_keychain_credentials(
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    collect_claude_keychain_credentials("Claude Code-credentials", files)
+}
+
+#[cfg(target_os = "macos")]
+fn collect_claude_keychain_credentials(
+    service: &str,
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .output()
+        .map_err(registry_io("export Claude Keychain credentials"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Ok(());
+    }
+    if output.stdout.len() > MAX_MATERIALIZATION_BYTES {
+        return Err(registry_error(
+            "export Claude Keychain credentials",
+            "Claude Keychain credential exceeds the materialization safety limit",
+        ));
+    }
+    if !claude_credentials_are_portable(&output.stdout) {
+        return Ok(());
+    }
+    files.push(ProviderAccountMaterializationFile {
+        relative_path: ".credentials.json".to_string(),
+        contents_base64: base64::engine::general_purpose::STANDARD.encode(output.stdout),
+    });
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn collect_legacy_claude_keychain_credentials(
+    _files: &mut [ProviderAccountMaterializationFile],
+) -> Result<(), DaemonError> {
+    Ok(())
 }
 
 fn materialization_destination(
@@ -3819,6 +3926,34 @@ mod tests {
     }
 
     #[test]
+    fn deployment_profiles_reject_nonrefreshable_claude_credentials_before_materialization() {
+        let (root, registry) = fixture();
+        let source_home = root.join("mounted-profile/home");
+        fs::create_dir_all(source_home.join(".claude")).unwrap();
+        fs::write(source_home.join(".claude/settings.json"), "{}").unwrap();
+        fs::write(
+            source_home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"expired"}}"#,
+        )
+        .unwrap();
+
+        let error = registry
+            .materialize_deployment_profile(
+                "local",
+                "claude",
+                "cloud-profile-2",
+                "Claude validation",
+                false,
+                &source_home,
+            )
+            .expect_err("non-refreshable Claude credentials must fail before provisioning");
+
+        assert!(error.to_string().contains("no transferable credentials"));
+        assert!(registry.get("local", "claude", "cloud-profile-2").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn codex_file_mode_preserves_existing_configuration() {
         let (root, registry) = fixture();
         let profile = registry.create_managed("owner-a", "codex", "Work").unwrap();
@@ -4504,7 +4639,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_context_rejects_claude_refresh_credential_transfer() {
+    fn managed_context_transfers_claude_refresh_credentials() {
         let (source_root, source) = fixture();
         let profile = source
             .create_managed("owner-a", "claude", "Work")
@@ -4518,12 +4653,21 @@ mod tests {
         )
         .expect("write provider-owned credential fixture");
 
-        let error = source
+        let materialization = source
             .export_managed_context_materialization("owner-a", "claude", &profile.profile_id)
-            .expect_err("Claude refresh credentials must stay out of managed contexts");
-        assert!(error.to_string().contains("setup-token launch path"));
-        assert!(!error.to_string().contains("secret"));
+            .expect("Claude refresh credentials should transfer to managed contexts");
+        assert_eq!(materialization.files.len(), 1);
+        assert_eq!(materialization.files[0].relative_path, ".credentials.json");
         let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_keychain_service_is_scoped_to_the_config_directory() {
+        assert_eq!(
+            claude_keychain_service_name(Path::new("/tmp/chariox-claude-profile")),
+            "Claude Code-credentials-bc2236e0"
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@ impl Drop for ProfileFixture {
 }
 
 #[test]
-fn claude_account_export_keeps_settings_but_excludes_provider_credentials() {
+fn claude_account_export_includes_refresh_credentials_and_settings() {
     let source = ProfileFixture::new();
     let profile = source
         .registry
@@ -74,19 +74,34 @@ fn claude_account_export_keeps_settings_but_excludes_provider_credentials() {
     let exported = source
         .registry
         .export_materialization("owner", "claude", &profile.profile_id)
-        .expect("non-secret Claude settings should remain portable");
-    assert_eq!(exported.files.len(), 1);
-    assert_eq!(exported.files[0].relative_path, "settings.json");
-    assert!(!format!("{exported:?}").contains("fixture-refresh"));
+        .expect("Claude credentials and settings should remain portable");
+    assert_eq!(exported.files.len(), 2);
+    assert_eq!(exported.files[0].relative_path, ".credentials.json");
+    assert_eq!(exported.files[1].relative_path, "settings.json");
 }
 
 #[test]
-fn claude_deployment_materializes_nonsecret_state_without_refresh_credentials() {
+fn claude_deployment_requires_refresh_credentials_before_materialization() {
     let source = ProfileFixture::new();
     let source_home = source.root.join("deployment-home");
     let config_dir = source_home.join(".claude");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(config_dir.join("settings.json"), b"{}").unwrap();
+    let error = source
+        .registry
+        .materialize_deployment_profile(
+            "owner",
+            "claude",
+            "deployment-claude",
+            "Deployment",
+            false,
+            &source_home,
+        )
+        .expect_err("settings-only deployment profile must be rejected");
+    assert!(error.to_string().contains("no transferable credentials"));
+
+    let credentials = br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#;
+    fs::write(config_dir.join(".credentials.json"), credentials).unwrap();
     let profile = source
         .registry
         .materialize_deployment_profile(
@@ -97,17 +112,14 @@ fn claude_deployment_materializes_nonsecret_state_without_refresh_credentials() 
             false,
             &source_home,
         )
-        .expect("settings-only deployment profile should materialize");
-
-    let credentials = br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#;
-    fs::write(config_dir.join(".credentials.json"), credentials).unwrap();
+        .expect("refreshable Claude deployment profile should materialize");
     let export = source
         .registry
         .export_materialization("owner", "claude", &profile.profile_id)
         .expect("materialized account should remain transferable");
-    assert_eq!(export.files.len(), 1);
-    assert_eq!(export.files[0].relative_path, "settings.json");
-    assert!(!format!("{export:?}").contains("fixture-refresh"));
+    assert_eq!(export.files.len(), 2);
+    assert_eq!(export.files[0].relative_path, ".credentials.json");
+    assert_eq!(export.files[1].relative_path, "settings.json");
 }
 
 #[test]
@@ -136,14 +148,16 @@ fn claude_account_export_preserves_the_ordinary_transfer_size_budget() {
     let export = source
         .registry
         .export_materialization("owner", "claude", &profile.profile_id)
-        .expect("ordinary non-secret state keeps the existing transfer budget");
-    assert_eq!(export.files.len(), 1);
-    assert_eq!(export.files[0].relative_path, "stats-cache.json");
-    let error = source
+        .expect("ordinary Claude state keeps the existing transfer budget");
+    assert_eq!(export.files.len(), 2);
+    assert_eq!(export.files[0].relative_path, ".credentials.json");
+    assert_eq!(export.files[1].relative_path, "stats-cache.json");
+    let managed = source
         .registry
         .export_managed_context_materialization("owner", "claude", &profile.profile_id)
-        .expect_err("managed context must not export Claude refresh credentials");
-    assert!(error.to_string().contains("setup-token launch path"));
+        .expect("managed context should export only Claude refresh credentials");
+    assert_eq!(managed.files.len(), 1);
+    assert_eq!(managed.files[0].relative_path, ".credentials.json");
 }
 
 #[test]
