@@ -13,6 +13,7 @@ export async function snapshotPermissionState(chrome,permission) {
 
 export class PermissionGrantCoordinator {
   #operations = new Map();
+  #lateAcquisitions = new Set();
   #transientOwned = new Set();
   #cleanup = Promise.resolve();
   constructor(remove) {
@@ -27,13 +28,14 @@ export class PermissionGrantCoordinator {
     const acquired = new Set();
     if (!prior.cookies) acquired.add('cookies');
     for (const origin of value.origins) if (!prior.origins[origin]) acquired.add(origin);
-    this.#operations.set(id,{needs,acquired,active:false});
+    this.#operations.set(id,{needs,acquired,pending:new Set(acquired),active:false});
   }
   activate(id) {
     const operation = this.#operations.get(id);
     if (!operation || operation.active) throw permissionError();
     operation.active = true;
     for (const value of operation.acquired) this.#transientOwned.add(value);
+    operation.pending.clear();
   }
   observeAdded(permission) {
     const added = new Set();
@@ -42,11 +44,28 @@ export class PermissionGrantCoordinator {
       if (typeof origin === 'string') added.add(origin);
     }
     for (const operation of this.#operations.values()) {
-      for (const value of operation.acquired) if (added.has(value)) this.#transientOwned.add(value);
+      for (const value of [...operation.pending]) if (added.has(value)) {
+        operation.pending.delete(value);
+        this.#transientOwned.add(value);
+      }
     }
+    let late = false;
+    for (const value of [...this.#lateAcquisitions]) if (added.has(value)) {
+      this.#lateAcquisitions.delete(value);
+      this.#transientOwned.add(value);
+      late = true;
+    }
+    return late ? this.#enqueueCleanup() : this.#cleanup;
   }
   release(id) {
-    this.#operations.delete(id);
+    const operation = this.#operations.get(id);
+    if (operation) {
+      this.#operations.delete(id);
+      for (const value of operation.pending) this.#lateAcquisitions.add(value);
+    }
+    return this.#enqueueCleanup();
+  }
+  #enqueueCleanup() {
     this.#cleanup = this.#cleanup.then(() => this.#removeUnused(),() => this.#removeUnused());
     return this.#cleanup;
   }
