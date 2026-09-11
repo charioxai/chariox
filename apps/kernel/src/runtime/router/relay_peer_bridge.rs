@@ -4,6 +4,37 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    pub(crate) fn kernel_runtime_role(&self) -> crate::config::KernelRuntimeRole {
+        self.config_projection.snapshot().kernel_runtime_role
+    }
+
+    pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String)> {
+        self.config_projection
+            .snapshot()
+            .cloud_relay
+            .map(|profile| (profile.realm_id, profile.user_id))
+    }
+
+    pub(crate) async fn relay_authorize_execution_lease_caller(
+        &self,
+        lease_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .authorize_relay_execution_lease_caller(lease_id, caller)
+            .await
+    }
+
+    pub(crate) async fn relay_authorize_leased_agent_caller(
+        &self,
+        leased_agent_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .authorize_relay_leased_agent_caller(leased_agent_id, caller)
+            .await
+    }
+
     pub(crate) async fn relay_room_browser_controller(
         &self,
         kernel_id: &str,
@@ -170,6 +201,27 @@ impl CommandRouter {
             owner_user_id,
         )
         .await
+    }
+
+    pub(crate) async fn relay_create_bound_execution_lease(
+        &self,
+        home_kernel_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        home_agent_metaagent: bool,
+        owner_user_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
+        self.runtime_state
+            .create_bound_relay_execution_lease(
+                home_kernel_id,
+                home_session_id,
+                home_agent_id,
+                home_agent_metaagent,
+                owner_user_id,
+                caller,
+            )
+            .await
     }
 
     pub(crate) async fn relay_destroy_execution_lease(

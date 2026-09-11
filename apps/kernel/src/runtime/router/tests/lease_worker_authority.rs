@@ -7,7 +7,10 @@ fn lease_worker_router() -> (CommandRouter, Arc<Mutex<DaemonApp>>) {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config).expect("lease worker should bootstrap"),
     ));
-    (CommandRouter::with_interactive_capacity(Arc::clone(&app), 1), app)
+    (
+        CommandRouter::with_interactive_capacity(Arc::clone(&app), 1),
+        app,
+    )
 }
 
 fn denied_requests() -> Vec<LocalDaemonRequest> {
@@ -45,7 +48,8 @@ fn denied_requests() -> Vec<LocalDaemonRequest> {
 async fn lease_worker_rejects_public_session_authority_requests_before_side_effects() {
     for request in denied_requests() {
         let (router, app) = lease_worker_router();
-        let command = KernelCommand::from_local_request("lease-worker-denied", None, None, &request);
+        let command =
+            KernelCommand::from_local_request("lease-worker-denied", None, None, &request);
         let error = router
             .dispatch(command, request)
             .await
@@ -67,7 +71,8 @@ async fn general_kernel_preserves_public_session_creation() {
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("general kernel should bootstrap"),
     ));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new("workspace", "worktree"));
+    let request =
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new("workspace", "worktree"));
     let command = KernelCommand::from_local_request("general-create", None, None, &request);
     assert!(matches!(
         router.dispatch(command, request).await,

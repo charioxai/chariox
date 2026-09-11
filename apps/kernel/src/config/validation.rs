@@ -16,7 +16,9 @@ impl DaemonConfig {
             });
         }
         if self.kernel_runtime_role == super::KernelRuntimeRole::RemoteLeaseWorker
-            && self.remote_lease_capacity.is_none_or(|capacity| capacity == 0)
+            && self
+                .remote_lease_capacity
+                .is_none_or(|capacity| capacity == 0)
         {
             return Err(DaemonError::InvalidConfig {
                 field: "remote_lease_capacity",

@@ -28,7 +28,9 @@ fn lease_worker_requires_positive_bounded_capacity() {
     let mut config = DaemonConfig::for_tests();
     config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config.remote_lease_capacity = Some(1);
-    config.validate().expect("bounded lease worker should validate");
+    config
+        .validate()
+        .expect("bounded lease worker should validate");
 }
 
 #[test]

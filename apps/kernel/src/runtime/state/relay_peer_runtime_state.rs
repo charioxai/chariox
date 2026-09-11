@@ -136,6 +136,58 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn create_bound_relay_execution_lease(
+        &self,
+        home_kernel_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        home_agent_metaagent: bool,
+        owner_user_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<ExecutionLease, DaemonError> {
+        let home_kernel_id = home_kernel_id.to_string();
+        let home_session_id = home_session_id.to_string();
+        let home_agent_id = home_agent_id.to_string();
+        let owner_user_id = owner_user_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            let lease = runtime.create_execution_lease(
+                &home_kernel_id,
+                &home_session_id,
+                &home_agent_id,
+                home_agent_metaagent,
+                &owner_user_id,
+            )?;
+            runtime.bind_execution_lease_caller(&lease.id, caller)?;
+            Ok(lease)
+        })
+        .await
+    }
+
+    pub(crate) async fn authorize_relay_execution_lease_caller(
+        &self,
+        lease_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        let lease_id = lease_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).authorize_execution_lease_caller(&lease_id, &caller)
+        })
+        .await
+    }
+
+    pub(crate) async fn authorize_relay_leased_agent_caller(
+        &self,
+        leased_agent_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).authorize_leased_agent_caller(&leased_agent_id, &caller)
+        })
+        .await
+    }
+
     pub(crate) async fn destroy_relay_execution_lease(
         &self,
         lease_id: &str,

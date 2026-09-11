@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::LeaseCallerBinding;
 
 #[test]
 fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
@@ -62,6 +63,8 @@ fn execution_lease_capacity_rejects_concurrent_lease_and_reopens_after_destroy()
 fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
+    config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease(
@@ -72,6 +75,15 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
             "user-home",
         )
         .expect("execution lease should be created");
+    let caller = LeaseCallerBinding {
+        home_kernel_id: "home-kernel".to_string(),
+        owner_user_id: "user-home".to_string(),
+        realm_id: "realm-home".to_string(),
+        public_key_thumbprint: "key-home".to_string(),
+    };
+    RemoteLeaseRuntime::new(&mut app)
+        .bind_execution_lease_caller(&lease.id, caller.clone())
+        .expect("execution lease caller should bind");
     let worktree = std::env::temp_dir().join(format!(
         "chariox-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
@@ -98,11 +110,22 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
         .sessions()
         .get_session(&leased_agent.backing_session_id)
         .expect("backing session should exist");
+    assert!(backing_session.is_hidden());
     assert_eq!(
         backing_session.worktree_id(),
         worktree.display().to_string()
     );
     assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
+    RemoteLeaseRuntime::new(&mut app)
+        .authorize_leased_agent_caller(&leased_agent.id, &caller)
+        .expect("leased agent should inherit the execution lease caller");
+    let mut replacement_key = caller.clone();
+    replacement_key.public_key_thumbprint = "replacement-key".to_string();
+    assert!(matches!(
+        RemoteLeaseRuntime::new(&mut app)
+            .authorize_leased_agent_caller(&leased_agent.id, &replacement_key),
+        Err(DaemonError::LeaseCallerUnauthorized { .. })
+    ));
 
     RemoteLeaseRuntime::new(&mut app)
         .destroy_leased_agent(&leased_agent.id)
@@ -112,6 +135,14 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
         .get_agent(&leased_agent.backing_agent_id)
         .is_err());
     assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
+    RemoteLeaseRuntime::new(&mut app)
+        .authorize_leased_agent_caller(&leased_agent.id, &caller)
+        .expect("owner should retain idempotent deletion authority");
+    assert!(matches!(
+        RemoteLeaseRuntime::new(&mut app)
+            .authorize_leased_agent_caller(&leased_agent.id, &replacement_key),
+        Err(DaemonError::LeaseCallerUnauthorized { .. })
+    ));
 }
 
 #[test]

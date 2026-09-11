@@ -70,6 +70,15 @@ pub enum KernelRuntimeRole {
     RemoteLeaseWorker,
 }
 
+impl KernelRuntimeRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::RemoteLeaseWorker => "remote_lease_worker",
+        }
+    }
+}
+
 fn parse_kernel_runtime_role(value: Option<&str>) -> Result<KernelRuntimeRole, &'static str> {
     match value {
         None => Ok(KernelRuntimeRole::General),

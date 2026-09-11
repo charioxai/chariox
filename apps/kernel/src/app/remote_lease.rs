@@ -27,11 +27,21 @@ pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 // Expiry or a worker restart must fail closed rather than infer successful cleanup.
 const COMPLETED_WORKER_CLEANUP_LIMIT: usize = 256;
 
-fn remember_completed_cleanup(completed: &mut VecDeque<String>, id: &str) {
+fn remember_completed_cleanup(completed: &mut VecDeque<String>, id: &str) -> Option<String> {
+    let mut evicted = None;
     if completed.len() == COMPLETED_WORKER_CLEANUP_LIMIT {
-        completed.pop_front();
+        evicted = completed.pop_front();
     }
     completed.push_back(id.to_string());
+    evicted
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LeaseCallerBinding {
+    pub(crate) home_kernel_id: String,
+    pub(crate) owner_user_id: String,
+    pub(crate) realm_id: String,
+    pub(crate) public_key_thumbprint: String,
 }
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
@@ -75,6 +85,60 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(lease)
     }
 
+    pub(crate) fn bind_execution_lease_caller(
+        &mut self,
+        lease_id: &str,
+        caller: LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        if !self.app.execution_leases.contains_key(lease_id) {
+            return Err(DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            });
+        }
+        self.app
+            .execution_lease_callers
+            .insert(lease_id.to_string(), caller);
+        Ok(())
+    }
+
+    pub(crate) fn authorize_execution_lease_caller(
+        &self,
+        lease_id: &str,
+        caller: &LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        let owner = self
+            .app
+            .execution_lease_callers
+            .get(lease_id)
+            .or_else(|| self.app.completed_execution_lease_callers.get(lease_id));
+        if owner == Some(caller) {
+            Ok(())
+        } else {
+            Err(DaemonError::LeaseCallerUnauthorized {
+                resource_id: lease_id.to_string(),
+            })
+        }
+    }
+
+    pub(crate) fn authorize_leased_agent_caller(
+        &self,
+        leased_agent_id: &str,
+        caller: &LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        let owner = self
+            .app
+            .leased_agent_callers
+            .get(leased_agent_id)
+            .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id));
+        if owner == Some(caller) {
+            Ok(())
+        } else {
+            Err(DaemonError::LeaseCallerUnauthorized {
+                resource_id: leased_agent_id.to_string(),
+            })
+        }
+    }
+
     pub(crate) fn destroy_execution_lease(&mut self, lease_id: &str) -> Result<(), DaemonError> {
         if !self.app.execution_leases.contains_key(lease_id) {
             return if self
@@ -101,7 +165,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             self.destroy_leased_agent(&agent_id)?;
         }
         self.app.execution_leases.remove(lease_id);
-        remember_completed_cleanup(&mut self.app.completed_execution_lease_deletions, lease_id);
+        if let Some(caller) = self.app.execution_lease_callers.remove(lease_id) {
+            self.app
+                .completed_execution_lease_callers
+                .insert(lease_id.to_string(), caller);
+        }
+        if let Some(evicted) =
+            remember_completed_cleanup(&mut self.app.completed_execution_lease_deletions, lease_id)
+        {
+            self.app.completed_execution_lease_callers.remove(&evicted);
+        }
         Ok(())
     }
 
@@ -295,6 +368,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             backing_agent.id().to_string(),
             attachment.id().to_string(),
         );
+        if let Some(caller) = self.app.execution_lease_callers.get(lease_id).cloned() {
+            self.app
+                .leased_agent_callers
+                .insert(agent.id.clone(), caller);
+        }
         self.app.leased_agents.insert(agent_id, agent.clone());
         Ok(agent)
     }
@@ -369,10 +447,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let _ = self.app.sessions.end_session(&agent.backing_session_id);
             let _ = self.app.sessions.delete_session(&agent.backing_session_id);
         }
-        remember_completed_cleanup(
+        if let Some(caller) = self.app.leased_agent_callers.remove(leased_agent_id) {
+            self.app
+                .completed_leased_agent_callers
+                .insert(leased_agent_id.to_string(), caller);
+        }
+        if let Some(evicted) = remember_completed_cleanup(
             &mut self.app.completed_leased_agent_deletions,
             leased_agent_id,
-        );
+        ) {
+            self.app.completed_leased_agent_callers.remove(&evicted);
+        }
         Ok(())
     }
 

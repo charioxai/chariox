@@ -76,6 +76,82 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    if managed_context_request(&request)
+        && crate::runtime::kernel_runtime_role_policy::ensure_managed_context_import_allowed(
+            router.kernel_runtime_role(),
+        )
+        .is_err()
+    {
+        return encrypt_peer_response(
+            &daemon_private_key,
+            &requester_public_key,
+            RelayPeerResponse::ManagedContextImportFailed {
+                code: "kernel_runtime_role_denied".to_string(),
+                retryable: false,
+            },
+        );
+    }
+    let lease_worker_caller = if router.kernel_runtime_role()
+        == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+    {
+        let caller = match authenticated_lease_worker_caller(
+            router,
+            from_daemon_id,
+            caller_identity.as_ref(),
+            &encrypted_request,
+        ) {
+            Ok(caller) => caller,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
+        };
+        if let RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id,
+            owner_user_id,
+            ..
+        } = &request
+        {
+            if caller.home_kernel_id != *home_kernel_id || caller.owner_user_id != *owner_user_id {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "execution lease claims do not match the authenticated home kernel",
+                        false,
+                    )),
+                };
+            }
+        } else if let Some(resource) = lease_resource(&request) {
+            let authorization = match resource {
+                LeaseResource::ExecutionLease(lease_id) => {
+                    router
+                        .relay_authorize_execution_lease_caller(lease_id, caller.clone())
+                        .await
+                }
+                LeaseResource::LeasedAgent(leased_agent_id) => {
+                    router
+                        .relay_authorize_leased_agent_caller(leased_agent_id, caller.clone())
+                        .await
+                }
+            };
+            if authorization.is_err() {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "authenticated home kernel does not own the leased resource",
+                        false,
+                    )),
+                };
+            }
+        }
+        Some(caller)
+    } else {
+        None
+    };
     let managed_context_caller = if managed_context_request(&request) {
         let identity = match require_bound_managed_context_sender(
             caller_identity.as_ref(),
@@ -426,15 +502,28 @@ pub(super) async fn handle_daemon_peer_request(
             home_agent_metaagent,
             owner_user_id,
         } => {
-            let lease = router
-                .relay_create_execution_lease(
-                    &home_kernel_id,
-                    &home_session_id,
-                    &home_agent_id,
-                    home_agent_metaagent,
-                    &owner_user_id,
-                )
-                .await;
+            let lease = if let Some(caller) = lease_worker_caller {
+                router
+                    .relay_create_bound_execution_lease(
+                        &home_kernel_id,
+                        &home_session_id,
+                        &home_agent_id,
+                        home_agent_metaagent,
+                        &owner_user_id,
+                        caller,
+                    )
+                    .await
+            } else {
+                router
+                    .relay_create_execution_lease(
+                        &home_kernel_id,
+                        &home_session_id,
+                        &home_agent_id,
+                        home_agent_metaagent,
+                        &owner_user_id,
+                    )
+                    .await
+            };
             match lease {
                 Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated {
                     lease,
@@ -1473,6 +1562,115 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
 }
 
+fn authenticated_lease_worker_caller(
+    router: &CommandRouter,
+    from_daemon_id: &str,
+    identity: Option<&RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<crate::app::LeaseCallerBinding, chariox_relay::protocol::RelayError> {
+    let identity = require_bound_kernel_sender(identity, encrypted_request)?;
+    let home_kernel_id = stable_peer_daemon_id(from_daemon_id);
+    let owner_user_id = identity.user_id.as_deref().ok_or_else(|| {
+        relay_error(
+            "unauthorized",
+            "execution lease caller has no authenticated user",
+            false,
+        )
+    })?;
+    let public_key_thumbprint = identity.public_key_thumbprint.as_deref().ok_or_else(|| {
+        relay_error(
+            "unauthorized",
+            "execution lease caller has no authenticated sender key",
+            false,
+        )
+    })?;
+    let Some((worker_realm_id, worker_user_id)) = router.lease_worker_enrollment() else {
+        return Err(relay_error(
+            "unauthorized",
+            "remote lease worker has no Cloud relay enrollment",
+            false,
+        ));
+    };
+    if home_kernel_id.trim().is_empty()
+        || identity.realm_id != worker_realm_id
+        || owner_user_id != worker_user_id
+    {
+        return Err(relay_error(
+            "unauthorized",
+            "execution lease caller does not match worker enrollment",
+            false,
+        ));
+    }
+    Ok(crate::app::LeaseCallerBinding {
+        home_kernel_id: home_kernel_id.to_string(),
+        owner_user_id: owner_user_id.to_string(),
+        realm_id: identity.realm_id.clone(),
+        public_key_thumbprint: public_key_thumbprint.to_string(),
+    })
+}
+
+enum LeaseResource<'a> {
+    ExecutionLease(&'a str),
+    LeasedAgent(&'a str),
+}
+
+fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
+    match request {
+        RelayPeerRequest::DestroyExecutionLease { lease_id }
+        | RelayPeerRequest::SpawnLeasedAgent { lease_id, .. } => {
+            Some(LeaseResource::ExecutionLease(lease_id))
+        }
+        RelayPeerRequest::DestroyLeasedAgent { leased_agent_id }
+        | RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::UpdateLeasedAgentProfile {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::UpdateLeasedAgentMetaMode {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::LaunchLeasedNativeProviderRun {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::SendLeasedNativeProviderInput {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::ResizeLeasedProviderTerminal {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::SteerLeasedPrompt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::DrainLeasedRuntimeProjection {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id }
+        | RelayPeerRequest::ObserveLeasedGitAfter {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
+            Some(LeaseResource::LeasedAgent(leased_agent_id))
+        }
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
+            Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
+        }
+        RelayPeerRequest::CheckRemoteMcpAvailability { context, .. } => {
+            Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
+        }
+        RelayPeerRequest::EnsureRemoteProviderAccount { context, .. } => {
+            Some(LeaseResource::ExecutionLease(&context.execution_lease_id))
+        }
+        _ => None,
+    }
+}
+
 fn scoped_unbound_kernel_subject(identity: Option<&RelayCallerIdentity>) -> Option<String> {
     identity
         .filter(|identity| {
@@ -1508,6 +1706,7 @@ mod tests {
     use std::process::Command;
     use tokio::sync::Mutex;
 
+    use crate::app::RemoteLeaseRuntime;
     use crate::config::PersistedCloudRelayProfile;
     use crate::error::DaemonError;
     use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
@@ -1562,6 +1761,241 @@ mod tests {
             user_id: Some("user-1".to_string()),
             public_key_thumbprint,
         }
+    }
+
+    fn lease_worker_config() -> DaemonConfig {
+        let mut config = DaemonConfig::for_tests();
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        config.remote_lease_capacity = Some(1);
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        config
+    }
+
+    async fn send_lease_worker_request(
+        router: &Arc<CommandRouter>,
+        state: &Arc<RwLock<RelayClientState>>,
+        outgoing_tx: &RelayOutgoingSender,
+        from_daemon_id: &str,
+        identity: RelayCallerIdentity,
+        source_private_key: &str,
+        target_public_key: &str,
+        request: RelayPeerRequest,
+    ) -> RelayRequestOutcome {
+        let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+            source_private_key,
+            target_public_key,
+            &serde_json::to_vec(&request).expect("serialize lease request"),
+        )
+        .expect("encrypt lease request");
+        handle_daemon_peer_request(
+            router,
+            state,
+            outgoing_tx,
+            from_daemon_id,
+            Some(identity),
+            encrypted_request,
+        )
+        .await
+    }
+
+    #[test]
+    fn lease_worker_binds_creation_and_idempotent_deletion_to_authenticated_home() {
+        std::thread::Builder::new()
+            .name("lease-worker-authority".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("lease worker authority test runtime")
+                    .block_on(lease_worker_binds_creation_and_idempotent_deletion_to_authenticated_home_inner());
+            })
+            .expect("lease worker authority test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn lease_worker_binds_creation_and_idempotent_deletion_to_authenticated_home_inner() {
+        let app = DaemonApp::bootstrap(lease_worker_config()).expect("lease worker should boot");
+        let target_public_key = app.config().relay_public_key.clone();
+        let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&app),
+            1,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("source public key");
+        let identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&source_public_key)), u64::MAX);
+        let request =
+            |home_kernel_id: &str, owner_user_id: &str| RelayPeerRequest::CreateExecutionLease {
+                home_kernel_id: home_kernel_id.to_string(),
+                home_session_id: "session-1".to_string(),
+                home_agent_id: "agent-1".to_string(),
+                home_agent_metaagent: false,
+                owner_user_id: owner_user_id.to_string(),
+            };
+
+        for forged in [
+            request("forged-home", "user-1"),
+            request("source-kernel-1", "forged-user"),
+        ] {
+            let outcome = send_lease_worker_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                "source-kernel-1",
+                identity.clone(),
+                &source_private_key,
+                &target_public_key,
+                forged,
+            )
+            .await;
+            assert_eq!(
+                outcome.error.expect("forged lease must fail").code,
+                "unauthorized"
+            );
+        }
+        {
+            let mut app = app.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+        }
+
+        let created = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1:peer-tmp:daemon-peer-tmp-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            request("source-kernel-1", "user-1"),
+        )
+        .await;
+        let encrypted = created
+            .encrypted_response
+            .expect("lease response should encrypt");
+        let plaintext =
+            relay_crypto::decrypt_payload_for_private_key(&source_private_key, &encrypted)
+                .expect("decrypt lease response");
+        let RelayPeerResponse::ExecutionLeaseCreated { lease, .. } =
+            serde_json::from_slice(&plaintext.plaintext).expect("decode lease response")
+        else {
+            panic!("unexpected lease response")
+        };
+
+        let rotated_private_key = relay_crypto::generate_private_key_base64();
+        let rotated_public_key =
+            relay_crypto::public_key_from_private_key_base64(&rotated_private_key)
+                .expect("rotated public key");
+        let rotated_identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&rotated_public_key)), u64::MAX);
+        let destroy = RelayPeerRequest::DestroyExecutionLease {
+            lease_id: lease.id.clone(),
+        };
+        let rotated_denied = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            rotated_identity.clone(),
+            &rotated_private_key,
+            &target_public_key,
+            destroy.clone(),
+        )
+        .await;
+        assert_eq!(
+            rotated_denied
+                .error
+                .expect("same-home replacement key must fail")
+                .code,
+            "unauthorized"
+        );
+
+        let attacker_private_key = relay_crypto::generate_private_key_base64();
+        let attacker_public_key =
+            relay_crypto::public_key_from_private_key_base64(&attacker_private_key)
+                .expect("attacker public key");
+        let mut attacker =
+            scoped_kernel_identity(Some(public_key_thumbprint(&attacker_public_key)), u64::MAX);
+        attacker.subject = "attacker-kernel".to_string();
+        let denied = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "attacker-kernel",
+            attacker.clone(),
+            &attacker_private_key,
+            &target_public_key,
+            destroy.clone(),
+        )
+        .await;
+        assert_eq!(
+            denied.error.expect("cross-home destroy must fail").code,
+            "unauthorized"
+        );
+
+        for _ in 0..2 {
+            let deleted = send_lease_worker_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                "source-kernel-1",
+                identity.clone(),
+                &source_private_key,
+                &target_public_key,
+                destroy.clone(),
+            )
+            .await;
+            assert!(
+                deleted.error.is_none(),
+                "owner deletion and retry should succeed"
+            );
+        }
+        let denied_retry = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "attacker-kernel",
+            attacker,
+            &attacker_private_key,
+            &target_public_key,
+            destroy,
+        )
+        .await;
+        assert_eq!(
+            denied_retry
+                .error
+                .expect("cross-home tombstone must fail")
+                .code,
+            "unauthorized"
+        );
+        let rotated_retry = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            rotated_identity,
+            &rotated_private_key,
+            &target_public_key,
+            RelayPeerRequest::DestroyExecutionLease { lease_id: lease.id },
+        )
+        .await;
+        assert_eq!(
+            rotated_retry
+                .error
+                .expect("replacement key must not claim the deletion tombstone")
+                .code,
+            "unauthorized"
+        );
     }
 
     #[test]

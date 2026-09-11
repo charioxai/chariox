@@ -47,6 +47,12 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),
+        DaemonError::KernelRuntimeRoleDenied { .. } => {
+            relay_error("kernel_runtime_role_denied", &error.to_string(), false)
+        }
+        DaemonError::LeaseCallerUnauthorized { .. } => {
+            relay_error("unauthorized", &error.to_string(), false)
+        }
         DaemonError::RemoteLeasesDisabled { .. } => {
             relay_error("remote_leases_disabled", &error.to_string(), false)
         }

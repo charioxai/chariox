@@ -131,7 +131,7 @@ pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_processes::{ProviderLaunchProcessRuntime, ProviderProcessReapSummary};
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
+    LeaseCallerBinding, PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
 };
 
 pub struct DaemonApp {
@@ -180,6 +180,10 @@ pub struct DaemonApp {
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    completed_leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     completed_leased_agent_deletions: VecDeque<String>,
     completed_execution_lease_deletions: VecDeque<String>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
@@ -269,6 +273,14 @@ impl DaemonApp {
                 managed_context_root.join("managed-context-transfers"),
                 managed_context_launch_recovery.as_ref(),
             )?;
+        if config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && managed_context_transfers.has_incomplete_import()
+        {
+            return Err(DaemonError::KernelRuntimeRoleDenied {
+                role: config.kernel_runtime_role.as_str(),
+                operation: "startup.managed_context_import",
+            });
+        }
         let managed_context_outbound =
             crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
                 managed_context_root.join("managed-context-outbound"),
@@ -341,6 +353,10 @@ impl DaemonApp {
                 provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            execution_lease_callers: BTreeMap::new(),
+            leased_agent_callers: BTreeMap::new(),
+            completed_execution_lease_callers: BTreeMap::new(),
+            completed_leased_agent_callers: BTreeMap::new(),
             completed_leased_agent_deletions: VecDeque::new(),
             completed_execution_lease_deletions: VecDeque::new(),
             leased_workflow_turns: BTreeMap::new(),
@@ -360,6 +376,18 @@ impl DaemonApp {
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && app
+                .sessions
+                .list_all_sessions()
+                .iter()
+                .any(|session| !session.is_hidden())
+        {
+            return Err(DaemonError::KernelRuntimeRoleDenied {
+                role: app.config.kernel_runtime_role.as_str(),
+                operation: "startup.public_session",
+            });
+        }
         let restored_publication_tunnel_count = {
             let sessions = app.sessions();
             let mut relay_state = app.relay_client_state.try_write().map_err(|error| {

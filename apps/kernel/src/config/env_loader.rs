@@ -6,12 +6,12 @@ use std::process::Command;
 
 use super::identity::{load_or_create_runtime_identity, persist_runtime_display_aliases};
 use super::{
-    default_os_name, load_user_config_from_path,
+    default_os_name, load_user_config_from_path, parse_kernel_runtime_role,
+    parse_remote_lease_capacity,
     persisted_daemon::{
         load_cli_cloud_relay_profile, load_persisted_relay_config, PersistedCloudRelayProfile,
     },
-    parse_kernel_runtime_role, parse_remote_lease_capacity, DaemonConfig, KernelRuntimeRole,
-    DEFAULT_RELAY_HEARTBEAT_MS,
+    DaemonConfig, KernelRuntimeRole, DEFAULT_RELAY_HEARTBEAT_MS,
 };
 
 impl DaemonConfig {
