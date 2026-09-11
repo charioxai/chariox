@@ -119,6 +119,21 @@ does not proxy or inspect runtime terminal traffic.
 
 ### Browser controller
 
+The Apps Phase 1 release depends on a production Chromium launch with renderer
+sandboxing enabled, including fallback launches and restored Environments. The
+current Linux slice launcher uses `--no-sandbox`; remove that production
+dependency only with a working sandbox configuration for the supported container
+topologies. A container enclosing the entire Environment does not replace
+isolation between Apps and browser services inside it.
+
+Investigate the reported connection between sandbox flags and lost Google login
+state after slice save/restore. Treat that cause as a hypothesis until reproduced.
+Check browser profile capture, cookie encryption, keyring/password-store state,
+shutdown ordering and restore generations. Keep both containment and session
+persistence as required outcomes. A production App view cannot use an unsafe
+launch fallback to pass a persistence drill. See the
+[Apps implementation and Phase 1 validation contract](/Users/miguel/arroba-cloud/docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html).
+
 Replace the one-process-per-action CDP helper with one long-running,
 kernel-managed Chariox Browser Controller. It may use Playwright Core or an
 equivalently complete CDP implementation internally. Agents receive stable
@@ -448,6 +463,8 @@ The View page must support:
 - Open display and Retry
 - explicit loading, reconnecting, degraded, unavailable, local-only,
   unsupported-client, unsafe-endpoint, and permission states
+- reconnect and background inventory refresh without a document reload, empty
+  route outlet, full-grey frame, lost scroll/focus, or terminal-root remount
 - keyboard access and accessible labels
 - no layout jump during refresh or retry
 
@@ -658,6 +675,10 @@ memory. Resource monitoring is part of correctness, not optional diagnostics.
 Before a drill:
 
 - record total and available memory, swap, load, CPU count, and disk space
+- on macOS, include total process footprint and compressed memory (`top` MEM
+  and CMPRS), OS memory-pressure state, and swap growth; RSS and the reported
+  free-memory percentage alone are not sufficient. Include the desktop agent
+  application itself, not just build and drill children
 - list Chariox kernels, relays, workers, provider processes, containers,
   volumes, and listeners
 - record existing managed-machine and slice inventory
@@ -675,6 +696,11 @@ During a drill:
 
 - sample host and per-container CPU and memory at a fixed interval
 - sample disk, swap, network, open files, and process count
+- use an automatic watchdog for heavy local builds as well as live drills;
+  sample every five seconds and terminate only that job's owned process group
+  when its evidence-based memory budget or OS-pressure safety limits are
+  exceeded. Validate the watchdog's stop path before relying on it. Reassess
+  budgets from measured footprint and host headroom, not repeated blind retries
 - watch kernel, relay, Browser Controller, streamer, Chromium, and provider
   liveness
 - stop adding concurrent slices when the forecast peak would consume the
@@ -859,6 +885,7 @@ them without an explicitly approved tradeoff.
 | Controller restarts during queued mutations | completed actions are not repeated and incomplete actions fail or resume deterministically |
 | Human takeover during reconnect | ownership does not revert silently to the agent |
 | Web disconnect while TUI remains | TUI and kernel continue; Web reconnects to the same authoritative state |
+| Web relay or inventory reconnect | terminal shell stays mounted and visible; no document reload, full-grey frame, empty route outlet, lost focus, or stale status timer |
 | TUI disconnect while Web remains | Web and kernel continue; TUI replay does not duplicate interactions |
 | DNS, TLS, or relay endpoint failure | connection fails loudly, uses no unsafe fallback, and recovers after the endpoint is healthy |
 | Clock skew and expired tokens | refresh or rejection is deterministic and does not bypass authorization |
@@ -933,6 +960,15 @@ small graphical program. Save, remove the container and home volume, restore,
 and verify every marker through the same agent.
 
 ### Drill B: real service and vault
+
+For the Apps Phase 1 dependency, run this authenticated-session regression with
+renderer sandboxing active before and after save, complete container/home-volume
+removal, restore, browser restart and fallback launch. Run Drill A under the same
+configuration first. Retain redacted browser launch/sandbox evidence and profile
+generation markers, never cookie values or key material. Distinguish Chariox state
+loss from provider-driven session invalidation; reproduce and fix any
+Chariox-caused loss before the Apps release. The reported Google persistence issue
+is not resolved merely by removing `--no-sandbox` or by passing a page-load check.
 
 From Web View, ask a slice agent to sign into Gmail or a comparable public
 service using a vault-backed credential. Send a first message, save and restart
