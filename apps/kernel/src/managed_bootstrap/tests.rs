@@ -20,6 +20,8 @@ use super::supervisor::run_kernel_once;
 use super::ManagedKernelContextPlan;
 use crate::error::DaemonError;
 
+mod disposable_worker;
+
 struct FakeCloud {
     exchange_response: ExchangeResponse,
     exchange_calls: Mutex<Vec<ExchangeRequest>>,
