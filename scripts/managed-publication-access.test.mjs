@@ -100,3 +100,40 @@ fi
   assert.equal(result.stderr, "managed-publication-access.sh: ACL_INSPECTION_FAILED\n")
   assert.doesNotMatch(result.stderr, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
 })
+
+test("managed publication grant verifies the repository ACL it installs", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-grant-verify-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  const storage = join(share, "slices", "development", "slice-1")
+  const destination = join(storage, "development")
+  const repository = join(destination, "repository")
+  const bin = join(root, "bin")
+  await mkdir(repository, { recursive: true })
+  await mkdir(bin)
+  await writeFile(join(repository, "file"), "content\n")
+  const helper = join(root, "managed-publication-access.sh")
+  const source = (await readFile(helperUrl, "utf8"))
+    .replace("share_root=/var/lib/chariox-slice-share", `share_root=${share}`)
+  await writeFile(helper, source, { mode: 0o755 })
+  await writeFile(join(root, "managed-publication-acl.awk"), await readFile(validatorUrl), { mode: 0o644 })
+  await writeFile(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  await writeFile(join(bin, "getfacl"), `#!/bin/sh
+for value do path=$value; done
+if [ "$path" = "${repository}" ]; then
+  printf '%s\\n' '${directoryAccess}' 'user:995:--x' '${defaults}'
+elif [ "$path" = "${join(repository, "file")}" ]; then
+  printf '%s\\n' '${access}'
+else
+  printf '%s\\n' 'user::rwx' 'user:995:--x' 'group::---' 'mask::--x' 'other::---'
+fi
+`, { mode: 0o755 })
+  await chmod(join(bin, "setfacl"), 0o755)
+  await chmod(join(bin, "getfacl"), 0o755)
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }
+
+  const grant = spawnSync(helper, ["grant", storage, destination, repository], { encoding: "utf8", env })
+  assert.equal(grant.status, 0, grant.stderr)
+  const verify = spawnSync(helper, ["verify", storage, destination, repository], { encoding: "utf8", env })
+  assert.equal(verify.status, 0, verify.stderr)
+})

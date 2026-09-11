@@ -144,6 +144,7 @@ async function makeHarness(context, { targetProtocol = 323 } = {}) {
   await chmod(releases, 0o755)
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
+  await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
   const receiptPath = join(installRoot, "var/lib/chariox/home/managed/bootstrap-receipt.json")
   const receipt = {
     schemaVersion: 1,
@@ -242,6 +243,15 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   kill -KILL "$PPID"
   exit 1
 fi
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
+  && [ "\${2:-}" = "atomic-symlink" ] \
+  && [ "\${4##*/}" = "slice-build-context" ] \
+  && [ -f "$HARNESS_STATE/crash-after-facade-symlink" ]; then
+  rm -f "$HARNESS_STATE/crash-after-facade-symlink"
+  "${process.execPath}" "$@"
+  kill -KILL "$PPID"
+  exit 1
+fi
 exec "${process.execPath}" "$@"
 `, 0o755)
   await put(join(bin, "stat"), `#!/bin/sh
@@ -282,6 +292,15 @@ exec /usr/bin/stat "$@"
   return { root, installRoot, receiptPath, receipt, persistent, current, target, trustedKey, state, run }
 }
 
+async function installManagedHotpatchFacade(harness) {
+  const facade = join(harness.installRoot, "usr/lib/chariox/slice-build-context")
+  const hotpatch = join(harness.root, "usr/local/lib/chariox/managed-hotpatch/slice-build-context-6694e438d1")
+  await mkdir(hotpatch, { recursive: true })
+  await rm(facade)
+  await symlink(hotpatch, facade)
+  return { facade, hotpatch }
+}
+
 async function persistentSnapshot(paths) {
   return Promise.all(Object.entries(paths).map(async ([name, path]) => ({
     name,
@@ -317,6 +336,43 @@ test("managed kernel upgrade atomically advances the release and receipt without
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("managed kernel upgrade supersedes a managed-hotpatch slice context facade", async (context) => {
+  const harness = await makeHarness(context)
+  const { facade } = await installManagedHotpatchFacade(harness)
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(await readlink(facade), "current/usr/lib/chariox/slice-build-context")
+  assert.equal(
+    await readFile(join(facade, "apps/kernel/slice-linux-docker/runtime.txt"), "utf8"),
+    "target\n",
+  )
+})
+
+test("managed kernel failed health restores the exact prior slice context facade", async (context) => {
+  const harness = await makeHarness(context)
+  const { facade, hotpatch } = await installManagedHotpatchFacade(harness)
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
+  assert.equal(await readlink(facade), hotpatch)
+})
+
+test("managed kernel recovery restores a hotpatch facade after interrupted activation", async (context) => {
+  const harness = await makeHarness(context)
+  const { facade, hotpatch } = await installManagedHotpatchFacade(harness)
+  await put(join(harness.state, "crash-after-facade-symlink"), "crash\n")
+  const interrupted = harness.run()
+  assert.equal(interrupted.signal, "SIGKILL")
+  assert.equal(await readlink(facade), "current/usr/lib/chariox/slice-build-context")
+
+  await put(join(harness.state, "fail-health-once"), "fail\n")
+  const recovered = harness.run()
+  assert.equal(recovered.status, 1)
+  assert.match(recovered.stderr, /health check failed; restored previous managed kernel release/)
+  assert.equal(await readlink(facade), hotpatch)
 })
 
 test("managed kernel health rejects an unrelated listener without a fresh matching kernel presence", async (context) => {
