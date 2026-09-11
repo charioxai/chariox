@@ -92,6 +92,9 @@ impl KernelRuntimeState {
         let session_outcome = self
             .settle_unexpected_provider_run_exit(session_id, provider_run_id, agent_id)
             .await?;
+        if !session_outcome.had_active_prompt {
+            return Ok(true);
+        }
         let recipients = owned
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -103,14 +106,10 @@ impl KernelRuntimeState {
                 "Provider run `{}` for `{}` ended unexpectedly. {}",
                 provider_run_id,
                 exit.ended_run.provider(),
-                if session_outcome.had_active_prompt {
-                    if session_outcome.started_next_prompt {
-                        "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
-                    } else {
-                        "The active prompt was closed without starting the queued backlog."
-                    }
+                if session_outcome.started_next_prompt {
+                    "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
-                    "No active prompt was running."
+                    "The active prompt was closed without starting the queued backlog."
                 }
             ),
         );

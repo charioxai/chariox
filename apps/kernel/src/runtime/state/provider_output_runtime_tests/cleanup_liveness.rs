@@ -91,21 +91,18 @@ async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_st
         )
         .expect("provider should launch");
     let state_before = agent.state();
-    let ended = app
-        .providers_mut()
-        .mark_run_ended_provider_only(session.id(), run.id())
-        .expect("provider run should end")
-        .into_run();
-    app.update_provider_run_projection(ended);
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .remove_run(run.id())
+        .expect("idle provider process should stop");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    let outcome = runtime
-        .settle_unexpected_provider_run_exit(session.id(), run.id(), agent.id())
+    let ended = runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
         .await
-        .expect("idle provider exit should settle");
+        .expect("idle provider exit should reconcile");
 
-    assert!(!outcome.had_active_prompt);
+    assert!(ended);
     assert_eq!(
         runtime
             .owned
@@ -115,6 +112,18 @@ async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_st
             .state(),
         state_before,
     );
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("idle agent history should load");
+    assert!(!history.iter().any(|event| {
+        event.kind == crate::history::HistoryEventKind::Notice
+            && event
+                .content
+                .as_deref()
+                .is_some_and(|content| content.contains("ended unexpectedly"))
+    }));
 }
 
 #[tokio::test]
