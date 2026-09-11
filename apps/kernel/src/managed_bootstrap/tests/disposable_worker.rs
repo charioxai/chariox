@@ -369,6 +369,7 @@ fn disposable_worker_recovers_after_the_exchange_receipt_was_persisted() {
         receipt.status,
         DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted
     );
+    assert!(!fixture.config.envelope_path.exists());
     prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
     assert_eq!(cloud.exchange_calls.lock().unwrap().len(), 1);
     assert_eq!(cloud.recovery_calls.lock().unwrap().len(), 2);

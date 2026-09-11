@@ -355,6 +355,11 @@ fn resume_disposable_worker(
         DisposableWorkerBootstrapReceiptStatus::ExchangePending
             | DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted
     ) {
+        if receipt.status == DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted
+            && config.envelope_path.exists()
+        {
+            remove_envelope(&config.envelope_path)?;
+        }
         return match cloud.recover_disposable_worker_exchange(
             &receipt.cloud_api_url,
             &receipt.binding_digest,
@@ -487,6 +492,9 @@ fn accept_disposable_worker_enrollment(
         return Err(error);
     }
     receipt.persist(&config.receipt_path)?;
+    if config.envelope_path.exists() {
+        remove_envelope(&config.envelope_path)?;
+    }
     match cloud.recover_disposable_worker_exchange(
         &receipt.cloud_api_url,
         &receipt.binding_digest,
