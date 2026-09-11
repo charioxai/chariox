@@ -1662,12 +1662,13 @@ impl ProviderAccountProfileRegistry {
         let profile_id = validate_profile_id(profile_id)?;
         let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
         let files = materialization_files(&locator, false)?;
-        if files.is_empty() {
-            return Err(registry_error(
-                "materialize deployment account profile",
-                "provider credential profile is empty",
-            ));
-        }
+        let credential_path = match provider {
+            "codex" => "auth.json",
+            "claude" => ".credentials.json",
+            "opencode" => "data/opencode/auth.json",
+            _ => return Err(unsupported_provider(provider)),
+        };
+        require_materialization_file(&files, credential_path, provider, profile_id)?;
         self.materialize_replica(
             owner_user_id,
             &ProviderAccountMaterialization {
@@ -4593,6 +4594,35 @@ mod tests {
             "{\"token\":\"secret\"}"
         );
         assert!(codex_home.starts_with(root.join("provider-accounts/local/codex/cloud-profile-2")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deployment_profiles_reject_nonrefreshable_claude_credentials_before_materialization() {
+        let (root, registry) = fixture();
+        let source_home = root.join("mounted-profile/home");
+        fs::create_dir_all(source_home.join(".claude")).unwrap();
+        fs::write(source_home.join(".claude/settings.json"), "{}").unwrap();
+        fs::write(
+            source_home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"expired"}}"#,
+        )
+        .unwrap();
+
+        let error = registry
+            .materialize_deployment_profile(
+                "local",
+                "claude",
+                "cloud-profile-2",
+                "Claude validation",
+                &source_home,
+            )
+            .expect_err("non-refreshable Claude credentials must fail before provisioning");
+
+        assert!(error.to_string().contains("no transferable credentials"));
+        assert!(registry
+            .get("local", "claude", "cloud-profile-2")
+            .is_err());
         let _ = fs::remove_dir_all(root);
     }
 
