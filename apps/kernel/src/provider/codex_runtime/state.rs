@@ -1,11 +1,11 @@
 //! Codex runtime state and poll result types.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
 
 use crate::provider::{CodexNotification, CodexRunSelection, CodexSocket, ProviderRunTokenUsage};
 use crate::terminal::TerminalOutputKind;
 
+use super::backfill::CodexAuthoritativeBackfillGate;
 use super::transcript::{CodexTextTranscriptState, CodexToolTranscriptState};
 use super::turn::CodexTurnTracker;
 
@@ -44,7 +44,7 @@ pub struct CodexRuntimeState {
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
     pub(super) turn_tracker: CodexTurnTracker,
-    pub(super) last_authoritative_backfill_at: Option<Instant>,
+    pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
 }
@@ -72,8 +72,8 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field("active_turn_id", &self.active_turn_id)
             .field("turn_tracker", &self.turn_tracker)
             .field(
-                "last_authoritative_backfill_at",
-                &self.last_authoritative_backfill_at,
+                "authoritative_backfill_gate",
+                &self.authoritative_backfill_gate,
             )
             .field("text_items", &self.text_items)
             .field("tool_items", &self.tool_items)
@@ -100,7 +100,7 @@ impl CodexRuntimeState {
             buffered_notifications: Vec::new(),
             active_turn_id: None,
             turn_tracker: CodexTurnTracker::default(),
-            last_authoritative_backfill_at: None,
+            authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
         }
@@ -125,7 +125,7 @@ impl CodexRuntimeState {
             buffered_notifications: Vec::new(),
             active_turn_id: None,
             turn_tracker: CodexTurnTracker::default(),
-            last_authoritative_backfill_at: None,
+            authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
         }
@@ -181,7 +181,7 @@ impl CodexRuntimeState {
         self.buffered_notifications.clear();
         self.active_turn_id = None;
         self.turn_tracker = CodexTurnTracker::default();
-        self.last_authoritative_backfill_at = None;
+        self.authoritative_backfill_gate.reset();
         self.text_items.clear();
         self.tool_items.clear();
     }
