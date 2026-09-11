@@ -1,7 +1,7 @@
 # Optional Chrome session import
 
 Status: source, encrypted component transfer and bounded destination application fixture-tested; product import not implemented.
-Updated: 2026-09-07.
+Updated: 2026-09-11.
 
 ## User request
 
@@ -32,6 +32,16 @@ Do not promise universal Google session portability. A site may require a new
 login after import. Cookies also do not cover all origin storage or saved
 passwords. The initial feature should import supported web sessions, not password
 manager entries, passkeys, provider CLI credentials or whole Chrome profiles.
+
+Saved passwords use Chromium's attended import UI and remain browser-owned.
+Managed startup no longer writes Chromium's `Preferences` file or disables
+browser-owned settings on each launch. Chariox does not inspect or translate
+password payloads. The managed browser still launches with `--disable-sync`,
+`--no-first-run`, a dedicated persistent `--user-data-dir`, a profile-local
+`--password-store=basic`, and loopback-only remote debugging. It never uses a
+sandbox-disabling flag. Consequently, neither Chrome Sync nor Chromium's
+automatic host-default-browser first-run import is a supported Chariox path.
+See the component README for the exact launch boundary and service limits.
 
 ## Proposed first-creation flow
 

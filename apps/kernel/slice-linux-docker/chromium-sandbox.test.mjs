@@ -31,6 +31,18 @@ test("desktop startup and URL fallback share one Chromium launch configuration",
   assert.match(source, /chrome_startup_target_args=\(-- "\$CHROME_URL"\)/);
 });
 
+test("managed startup leaves local credentials under Chromium ownership", async () => {
+  const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /configure_chromium_profile_preferences/);
+  assert.doesNotMatch(source, /signin\["allowed"\]/);
+  assert.doesNotMatch(source, /prefs\.setdefault\("sync"/);
+  assert.doesNotMatch(source, /credentials_enable_service/);
+  assert.doesNotMatch(source, /password_manager_enabled/);
+  assert.doesNotMatch(source, /password_manager_leak_detection/);
+  assert.match(source, /--password-store=basic/);
+  assert.match(source, /--disable-sync/);
+});
+
 test("browser recovery drill uses the production task cap without extra swap", async () => {
   const provisioner = await readFile(new URL("./provision-linux-docker-slice.sh", import.meta.url), "utf8");
   const drill = await readFile(new URL("./live-browser-profile-drill.mjs", import.meta.url), "utf8");

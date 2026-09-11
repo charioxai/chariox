@@ -136,37 +136,6 @@ chromium_has_restorable_session() {
   [[ -s "$default_profile/Last Session" || -s "$default_profile/Current Session" ]]
 }
 
-configure_chromium_profile_preferences() {
-  python3 - "$CHROME_PROFILE" <<'PY' >/dev/null 2>&1 || true
-import json
-import os
-import sys
-
-profile = sys.argv[1]
-default_dir = os.path.join(profile, "Default")
-os.makedirs(default_dir, exist_ok=True)
-path = os.path.join(default_dir, "Preferences")
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        prefs = json.load(handle)
-except Exception:
-    prefs = {}
-
-signin = prefs.setdefault("signin", {})
-signin["allowed"] = False
-prefs.setdefault("sync", {})["requested"] = False
-prefs["credentials_enable_service"] = False
-profile_prefs = prefs.setdefault("profile", {})
-profile_prefs["password_manager_enabled"] = False
-profile_prefs["password_manager_leak_detection"] = False
-
-tmp = f"{path}.tmp"
-with open(tmp, "w", encoding="utf-8") as handle:
-    json.dump(prefs, handle, separators=(",", ":"))
-os.replace(tmp, path)
-PY
-}
-
 screen_missing_components() {
   local missing=()
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
@@ -238,7 +207,6 @@ launch_chromium() {
   fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     clear_chromium_profile_locks
-    configure_chromium_profile_preferences
     if chromium_has_restorable_session; then
       chrome_startup_target_args+=(--restore-last-session)
     fi

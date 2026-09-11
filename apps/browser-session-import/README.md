@@ -5,6 +5,47 @@ not wired to a user's profile or product Environment. The source
 reader uses Chrome's extension APIs when called by a trusted connector. It does
 not request permissions, transmit cookies or register a web-accessible endpoint.
 
+## Standard managed-browser boundary
+
+The managed Chromium profile is the product's durable destination. Chromium,
+not Chariox, owns saved-password import and storage. Managed startup does not
+write Chromium's `Preferences` file, so a user can use the browser's attended
+password import UI and Chromium retains the user's browser-owned settings.
+Chariox does not read, parse, log or convert that payload. This is separate from
+the cookie connector described below and does not make password import available
+to an unattended agent.
+
+The launch remains `--disable-sync` and `--no-first-run`: Chrome Sync and
+Chromium's automatic import from a host default browser are intentionally not a
+transfer path. A slice cannot see an arbitrary host Chrome profile unless the
+user explicitly makes source data available. `--password-store=basic` keeps the
+browser store inside the slice profile instead of depending on a host keyring;
+it does not add OS-keyring encryption, so slice/home access controls are the
+store's protection boundary. CDP remains bound to loopback, and no
+sandbox-disabling flag is used. Restarts reuse the
+same `--user-data-dir` and request Chromium's native session restore when a
+restorable session exists.
+
+Browser-native password import transfers saved passwords only. It does not
+transfer an authenticated web session, passkeys, payment credentials, Chrome
+Sync state, host keychain entries, device registration or device-bound keys.
+Cookie import transfers only the explicitly approved cookie fields documented
+below; it does not transfer local storage, IndexedDB, Cache Storage or service
+worker state. Those origin stores persist after they are created inside the
+managed profile, but they are not imported from Chrome.
+
+### Service limits
+
+| Service class | Expected result |
+| --- | --- |
+| Google accounts and Workspace | Cookie import is best effort. [Device-bound session credentials](https://developer.chrome.com/docs/web-platform/device-bound-session-credentials) and [passkeys](https://support.google.com/accounts/answer/13548313) do not move; Google may require a fresh sign-in or verification. Chrome Sync is disabled. |
+| Microsoft Entra / Microsoft 365 | Cookie-only SSO may be incomplete. [Conditional Access session controls](https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-conditional-access-session), sign-in frequency, PRT-backed cookies and token protection may require a registered device or fresh authentication. |
+| GitHub.com | A supported cookie session may transfer, but [GitHub documents](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github) separate `github.com` and `gist.github.com` cookies. New-device checks, SAML SSO, 2FA and sudo-mode reauthentication still apply. [Passkeys](https://docs.github.com/en/authentication/authenticating-with-a-passkey/about-passkeys) remain with their authenticator. |
+| Other sites | Treat fixture success as no portability promise. Expiry, revocation, origin storage, MFA, risk checks and device binding may require normal sign-in. |
+
+Never weaken or bypass a service check. Report `Sign in required` rather than
+claiming that an incomplete or rejected session imported successfully.
+
 ## Kernel recovery execution barrier
 
 The kernel checks durable pending-import metadata by Room before authorizing
