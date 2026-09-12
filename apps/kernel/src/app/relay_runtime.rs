@@ -5,6 +5,14 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 
 impl DaemonApp {
+    pub(crate) fn accepting_remote_leases(&self) -> bool {
+        self.config.accept_remote_leases
+            && self
+                .config
+                .remote_lease_capacity
+                .is_none_or(|capacity| self.execution_leases.len() < capacity)
+    }
+
     pub fn relay_registration(&mut self) -> DaemonRegistration {
         let available_providers = self.providers.registry().advertised_provider_ids();
         let provider_accounts = self
@@ -45,7 +53,7 @@ impl DaemonApp {
             ],
             available_providers,
             provider_accounts,
-            accepting_remote_leases: self.config.accept_remote_leases,
+            accepting_remote_leases: self.accepting_remote_leases(),
             leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
         }

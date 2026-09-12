@@ -41,7 +41,7 @@ isolated-PR, review, evidence, resource, and cleanup rules in this plan.
 Ship one Chariox-owned shared browser and computer environment per Room that is
 usable by humans and every agent in that Room.
 
-Work proceeds in three ordered phases. A later phase cannot compensate for a
+Work proceeds in four ordered phases. A later phase cannot compensate for a
 failure in an earlier one.
 
 1. Implement and prove the complete functional contract locally. Run the
@@ -51,12 +51,24 @@ failure in an earlier one.
    Local proof includes every functional matrix row that does not inherently
    require a remote machine. Do not use a managed-machine run to discover basic
    product defects that a local test should have caught.
-2. Deploy the locally proven implementation to a fresh Chariox-managed machine
-   through the in-house OpenShip stack. Repeat the applicable functional,
+2. Upgrade the active Chariox-managed kernel to the reviewed signed release and
+   close the client/runtime defects exposed by real remote use. Before resuming
+   Browser and Computer feature work, implement path 1 from
+   `chariox-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`: one disposable
+   Cloud VM per isolated worker behind the provider-neutral worker contract.
+   Prove ordinary-kernel behavior, all three official provider harnesses, selected
+   context and credential transfer, remote Git, reconnect/recovery, resource
+   bounds, cost controls, and complete provider-resource deletion. Hetzner is the
+   first live adapter; no kernel, protocol, or client behavior may depend on it.
+   Bare-metal or nested-virtualization microVM hosting is path 2 and is explicitly
+   deferred until path 1 is accepted.
+3. Deploy the locally proven Browser and Computer implementation to a fresh
+   Chariox-managed machine through the in-house OpenShip stack. Repeat the
+   applicable functional,
    security, reconnect, persistence, resiliency, Web, and TUI drills through
    the hosted Caddy-fronted `wss://` relay. This phase proves portability,
    deployment, hosted transport, machine lifecycle, and production topology.
-3. Start benchmarking only after the complete local and managed-machine
+4. Start benchmarking only after the complete local and managed-machine
    functional gates pass. Build reproducible submissions for every relevant
    public browser-use and computer-use benchmark, compare Chariox with the
    published leaders under equivalent conditions, profile failures, and
@@ -118,6 +130,21 @@ provisions, issues scoped relay tokens, and renders control-plane state, but it
 does not proxy or inspect runtime terminal traffic.
 
 ### Browser controller
+
+The Apps Phase 1 release depends on a production Chromium launch with renderer
+sandboxing enabled, including fallback launches and restored Environments. The
+current Linux slice launcher uses `--no-sandbox`; remove that production
+dependency only with a working sandbox configuration for the supported container
+topologies. A container enclosing the entire Environment does not replace
+isolation between Apps and browser services inside it.
+
+Investigate the reported connection between sandbox flags and lost Google login
+state after slice save/restore. Treat that cause as a hypothesis until reproduced.
+Check browser profile capture, cookie encryption, keyring/password-store state,
+shutdown ordering and restore generations. Keep both containment and session
+persistence as required outcomes. A production App view cannot use an unsafe
+launch fallback to pass a persistence drill. See the
+[Apps implementation and Phase 1 validation contract](/Users/miguel/arroba-cloud/docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html).
 
 Replace the one-process-per-action CDP helper with one long-running,
 kernel-managed Chariox Browser Controller. It may use Playwright Core or an
@@ -246,11 +273,15 @@ work, interrupt it, or use it as an implementation sub-agent. Review must remain
 independent and arrive through the established reviewer and PR-comment path.
 
 The independent reviewer services and state under `~/.chariox-reviewer` are
-shared infrastructure owned outside this implementation program. The
-implementation agent is not responsible for operating, diagnosing, repairing,
-restarting, stopping, pruning, or modifying that infrastructure. Do not touch it
-unless the user explicitly changes this instruction and assigns reviewer repair
-as a separate task.
+shared infrastructure. For this program the implementation owner is explicitly
+responsible for reviewer health: monitor event delivery, provider substitution,
+workflow completion, and exact-head PR comments without weakening reviewer
+independence. Diagnose and repair reviewer defects narrowly, preserve its state,
+and do not restart, stop, prune, or replace healthy reviewer infrastructure.
+Every posted review must identify the provider, model, account role, and effort
+that actually executed that turn; a fallback review must not reuse the primary
+provider's identity block. Treat missing, stale-head, duplicate, falsely
+attributed, or incomplete review comments as an unresolved gate.
 
 If the reviewer is delayed, unavailable, or temporarily stops posting comments,
 record the exact commit SHA awaiting review and continue useful independent work
@@ -292,6 +323,10 @@ Store persistent local development state under:
 
 Use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, kernel state,
 logs, drill scratch, browser profiles, or slice homes inside a repository.
+The idle authenticated-browser runner is stricter: its authoritative retained
+evidence belongs under
+`~/.codex/evidence/browser-computer-use/idle-authenticated-browser-soak/`;
+development state may hold only removable runtime scratch.
 
 Each evidence manifest must include:
 
@@ -312,7 +347,7 @@ Each evidence manifest must include:
 Linear: CHA-18, with inputs from CHA-23, CHA-25, CHA-26, and CHA-31.
 
 Create the local functional and failure-reproduction harness before replacing
-the current implementation. It must run against the current noVNC and one-shot
+the pre-cutover implementation. It must run against the baseline noVNC and one-shot
 CDP stack, fail for the missing product behavior, and run against each later
 implementation. This milestone establishes correctness tests, not benchmark
 rankings or optimization targets.
@@ -320,7 +355,7 @@ rankings or optimization targets.
 Deliverables:
 
 - reproducible local Mac and local Linux or Docker test profiles
-- current noVNC display behavior capture
+- pre-cutover noVNC display behavior capture
 - current structured-browser, screenshot, OCR, mouse, and keyboard behavior
   capture
 - per-slice memory, CPU, disk, and process measurements used only to keep the
@@ -448,6 +483,8 @@ The View page must support:
 - Open display and Retry
 - explicit loading, reconnecting, degraded, unavailable, local-only,
   unsupported-client, unsafe-endpoint, and permission states
+- reconnect and background inventory refresh without a document reload, empty
+  route outlet, full-grey frame, lost scroll/focus, or terminal-root remount
 - keyboard access and accessible labels
 - no layout jump during refresh or retry
 
@@ -616,8 +653,9 @@ After all functional, benchmark, and resource gates pass:
 2. Run a soak period with noVNC fallback available.
 3. Compare error rate, reconnect rate, task success, latency, CPU, memory,
    bandwidth, and support incidents against the baseline.
-4. Make Selkies the default only after explicit sign-off.
-5. Retain noVNC fallback for one rollback window.
+4. Validate the Selkies product default on signed images across Web, local TUI,
+   and remote TUI before rollout acceptance.
+5. Retain explicit noVNC fallback for one rollback window.
 6. Remove noVNC packages, code, fixtures, capability names, and documentation
    in a dedicated cleanup PR after the rollback window.
 
@@ -658,6 +696,10 @@ memory. Resource monitoring is part of correctness, not optional diagnostics.
 Before a drill:
 
 - record total and available memory, swap, load, CPU count, and disk space
+- on macOS, include total process footprint and compressed memory (`top` MEM
+  and CMPRS), OS memory-pressure state, and swap growth; RSS and the reported
+  free-memory percentage alone are not sufficient. Include the desktop agent
+  application itself, not just build and drill children
 - list Chariox kernels, relays, workers, provider processes, containers,
   volumes, and listeners
 - record existing managed-machine and slice inventory
@@ -675,6 +717,11 @@ During a drill:
 
 - sample host and per-container CPU and memory at a fixed interval
 - sample disk, swap, network, open files, and process count
+- use an automatic watchdog for heavy local builds as well as live drills;
+  sample every five seconds and terminate only that job's owned process group
+  when its evidence-based memory budget or OS-pressure safety limits are
+  exceeded. Validate the watchdog's stop path before relying on it. Reassess
+  budgets from measured footprint and host headroom, not repeated blind retries
 - watch kernel, relay, Browser Controller, streamer, Chromium, and provider
   liveness
 - stop adding concurrent slices when the forecast peak would consume the
@@ -844,6 +891,7 @@ them without an explicitly approved tradeoff.
 | Selkies crash | View degrades and retries without blocking kernel work |
 | Viewer closes mid-action | agent action ownership remains deterministic |
 | Queue saturation | fail-fast or bounded backpressure, relay readers stay live |
+| Provider run terminates with queued prompts | the kernel records one authoritative bounded termination reason, closes the active run once, promotes the queued backlog exactly once, preserves provider-thread/history continuity, and projects the same card, tooltip, timer, transcript, and next-prompt state before and after reconnect |
 | Slow viewer | other viewers and agents remain unaffected |
 | Network latency and loss | measured degradation and no protocol corruption |
 | Low memory | admission rejection or graceful stop before OOM |
@@ -859,6 +907,8 @@ them without an explicitly approved tradeoff.
 | Controller restarts during queued mutations | completed actions are not repeated and incomplete actions fail or resume deterministically |
 | Human takeover during reconnect | ownership does not revert silently to the agent |
 | Web disconnect while TUI remains | TUI and kernel continue; Web reconnects to the same authoritative state |
+| Web relay or inventory reconnect | terminal shell stays mounted and visible; no document reload, full-grey frame, empty route outlet, lost focus, or stale status timer |
+| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; retained provider/transcript history is never treated as liveness; the waiting-room cache keys external-working generations atomically with the session revision; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
 | TUI disconnect while Web remains | Web and kernel continue; TUI replay does not duplicate interactions |
 | DNS, TLS, or relay endpoint failure | connection fails loudly, uses no unsafe fallback, and recovers after the endpoint is healthy |
 | Clock skew and expired tokens | refresh or rejection is deterministic and does not bypass authorization |
@@ -893,6 +943,37 @@ after the local scale and leak checks pass. Run at least:
 Scale is a resource-bound admission problem. The test must prove graceful
 rejection at the limit, not merely find the point where the machine crashes.
 
+The idle authenticated-browser soak must use monotonic duration accounting,
+meet its checkpoint cadence minimum, and finish with a fresh authenticated
+browser request plus exact ready Controller PID. It must restart Chromium once
+against the same profile and observe both the session cookie and a
+browser-storage marker after restart, without turning the idle interval into a
+navigation loop. A pass is valid only after terminal status/result/log scanning
+and exact owned-process/listener cleanup. Its credential-free loopback fixture
+does not substitute for Google authentication or full managed-machine
+recreation evidence.
+
+The repository-supported entry point for the active browser/controller/stream
+gate is:
+
+```bash
+pnpm --filter @chariox/cli run browser-computer:soak -- --preflight
+pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
+pnpm --filter @chariox/cli run browser-computer:soak -- --detach
+```
+
+The detached command defaults to eight hours and refuses a shorter duration,
+source protocol below 322, or a backend other than Selkies. Do not start it
+unless preflight and the short smoke pass from the same clean source tree,
+engine-resolved immutable image digest with a verified Cosign signature and
+signed SLSA provenance attestation, viewer backend, resource limits, and
+external evidence root. The receipts expire after one hour and detach fails
+closed when either is missing, stale, or mismatched. The runner also fails
+preflight unless its Linux network namespace is exclusively attributable to
+the owned process tree. Retain its external evidence
+directory, including PID/status/result files, resource samples, failure marker,
+process logs, latest screen capture, and cleanup ledger.
+
 ## Regression matrix for adjacent Chariox features
 
 Browser/computer work touches kernel, relay, slice, Cloud, provider, security,
@@ -909,6 +990,7 @@ and persistence paths. Every milestone must select and run the relevant rows.
 | Vault | browser controller or traces reveal secrets | full M26 and CHA-29 leak matrix |
 | History and Recall | browser/action events corrupt or overwhelm history | persistence, filtering, replay, and bounded event volume |
 | Workflows | browser tools block scheduler or relay readers | concurrent workflow and browser task with cancel/retry |
+| Agent-to-agent coordination | kernel-originated messages enter the user prompt backlog or stall behind an active turn | deliver into the active provider turn at the next safe message boundary, deliver immediately when idle, and verify reconnect deduplication, ordering, cancellation, and a queue-free Web/TUI projection |
 | Workflow endpoints | managed-machine work changes routing | connected ingress and deployment invocation drill |
 | Workspace Live Sync | downloads/uploads and slice files collide with sync | managed, tracked, cross-branch, conflict, and permission drills |
 | Managed remote kernels | headed slices affect heartbeat and admission | provision, restart, stale heartbeat, resource cap, teardown |
@@ -933,6 +1015,15 @@ small graphical program. Save, remove the container and home volume, restore,
 and verify every marker through the same agent.
 
 ### Drill B: real service and vault
+
+For the Apps Phase 1 dependency, run this authenticated-session regression with
+renderer sandboxing active before and after save, complete container/home-volume
+removal, restore, browser restart and fallback launch. Run Drill A under the same
+configuration first. Retain redacted browser launch/sandbox evidence and profile
+generation markers, never cookie values or key material. Distinguish Chariox state
+loss from provider-driven session invalidation; reproduce and fix any
+Chariox-caused loss before the Apps release. The reported Google persistence issue
+is not resolved merely by removing `--no-sandbox` or by passing a page-load check.
 
 From Web View, ask a slice agent to sign into Gmail or a comparable public
 service using a vault-backed credential. Send a first message, save and restart
@@ -1066,11 +1157,20 @@ CHA-16 is complete only when:
 - Web and local/remote TUI clients prove parity against one live environment
 - all three providers pass structured browser and computer fallback drills
 - user takeover, multi-agent concurrency, permissions, and actor traces pass
+- kernel-routed agent-to-agent messages never appear as queued user prompts and pass active, idle, reconnect, deduplication, ordering, cancellation, and Web/TUI projection drills
+- provider termination and queued-prompt advancement use one kernel-owned lifecycle across local, registered managed, relay-attached, and leased agents; progress-without-final, provider closure, reconnect/reload, stale event ordering, preserved conversation context, exactly-once backlog promotion, and the next accepted prompt leave card, tooltip, timer, transcript, and durable history consistent
+- focused-agent navigation, history refresh, relay reconnect, and inventory refresh preserve the rendered Web terminal grid, expose bounded target-pane loading and failure states, and never flash an unlabelled whole-workspace placeholder
+- `WORKING` status, elapsed timer, provider/tool trace, and queued-prompt admission share one freshness contract; retained external/provider history cannot manufacture live work, external-working state and the session revision are read and cached atomically, a stale provider/tool heartbeat cannot leave a silent multi-hour turn or hide the active operation, and reconciliation is identical before and after Web reconnect/reload
+- a mixed same-kernel drill keeps a healthy agent live while two deliberately stale provider records reproduce the observed multi-hour silent-turn case; only the stale agents settle, their timers stop, their pending inter-agent messages enter through the kernel prompt path, and the healthy agent remains unaffected
 - state, installed programs, browser authentication, and provider threads
   survive save/restart and full recreation
 - vault-backed public-service work passes leak scans
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
+- disposable Cloud-VM workers pass the provider-neutral path-1 allocation,
+  enrollment, ordinary-kernel parity, Codex/Claude/OpenCode, selected context and
+  credential transfer, remote Git, reconnect/recovery, bounded lifetime, cost,
+  and residue-free deletion gates before Browser and Computer feature work resumes
 - Chariox has a verified first-place public result on every relevant maintained
   browser-use and computer-use benchmark, with all inclusions and exclusions
   recorded

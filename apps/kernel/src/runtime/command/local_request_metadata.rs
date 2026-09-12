@@ -72,6 +72,46 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::PrepareBrowserImport(request) => {
+            LocalRequestMetadata::new("browser.import.prepare", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::ApproveBrowserImport(request) => {
+            LocalRequestMetadata::new("browser.import.approve", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::ClaimBrowserImportSource(request) => {
+            LocalRequestMetadata::new("browser.import.source.claim", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::AuthorizeBrowserImportSource(request) => {
+            LocalRequestMetadata::new("browser.import.source.authorize", Interactive)
+                .session(&request.selection.session_id)
+                .attachment(&request.selection.attachment_id)
+        }
+        LocalDaemonRequest::CancelBrowserImport(request) => {
+            LocalRequestMetadata::new("browser.import.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::BindRoomEnvironmentSlice(request) => {
+            LocalRequestMetadata::new("environment.slice.bind", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::GetRoomEnvironmentSlice(request) => {
+            LocalRequestMetadata::new("environment.slice.get", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
+            LocalRequestMetadata::new("environment.screenshot.capture", Normal)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => {
+            LocalRequestMetadata::new("environment.screenshot.read", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
@@ -115,6 +155,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .optional_session(request.session_id.as_deref())
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::SetProviderAccountCredential(request) => {
+            LocalRequestMetadata::new("provider_account.credential.set", Interactive)
+                .optional_session(request.session_id.as_deref())
+                .optional_agent(request.agent_id.as_deref())
+        }
         LocalDaemonRequest::GetCredentialVaultStatus(_) => {
             LocalRequestMetadata::new("credential_vault.status", Normal)
         }
@@ -134,6 +179,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
             LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
+        }
+        LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_) => {
+            LocalRequestMetadata::new("managed_environment.git_credentials.enroll", Interactive)
         }
         LocalDaemonRequest::CreateManagedEnvironment(_) => {
             LocalRequestMetadata::new("managed_environment.create", Interactive)
@@ -446,6 +494,31 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::PrepareBrowserImport(_) => "browser.import.prepare",
+        LocalDaemonRequest::ApproveBrowserImport(_) => "browser.import.approve",
+        LocalDaemonRequest::ClaimBrowserImportSource(_) => "browser.import.source.claim",
+        LocalDaemonRequest::AuthorizeBrowserImportSource(_) => "browser.import.source.authorize",
+        LocalDaemonRequest::CancelBrowserImport(_) => "browser.import.cancel",
+        LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
+        LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
+        LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
+        LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",
+        LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
+        LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
+        LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
+        LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(_) => "environment.pointer.update",
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
+            "environment.browser_action.submit"
+        }
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(_) => "environment.clipboard.read",
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::SearchMetaagentCommands(_) => "metaagent.command.search",
         LocalDaemonRequest::GetMetaagentTurnOverview(_) => "metaagent.turn.overview",
         LocalDaemonRequest::GetMetaagentTurnBlob(_) => "metaagent.turn.blob",
@@ -523,6 +596,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
+        LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
@@ -557,6 +631,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetSliceStateStatus(_) => "slice.state.status",
         LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
         LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
+        LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
@@ -808,6 +883,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
+        | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)

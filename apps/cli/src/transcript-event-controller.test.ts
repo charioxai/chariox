@@ -4,6 +4,13 @@ import test from "node:test"
 import type { AgentInstance, TranscriptEntry } from "./cli-types.js"
 import { createTranscriptEventController } from "./transcript-event-controller.js"
 
+test("Room notice keys reach the pane without attaching activity to a provider turn", () => {
+  const harness = eventHarness({ focusedAgentId: "agent-1", responsePrimaryAgentId: "agent-1" })
+  harness.controller.appendNotice("Room action", "muted", "room-environment:room:env:1:0")
+  assert.deepEqual(harness.entries, [{ role: "notice", text: "Room action", emphasis: "muted",
+    mergeKey: "room-environment:room:env:1:0", turnTracking: "none" }])
+})
+
 test("transcript event controller appends primary user prompts", () => {
   const harness = eventHarness({
     focusedAgentId: "agent-1",

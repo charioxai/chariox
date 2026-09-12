@@ -6,6 +6,7 @@ import {
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
   prepareManagedEnvironmentContextTransferRequest,
+  prepareManagedEnvironmentGitCredentialEnrollmentRequest,
   requestManagedEnvironmentLifecycleRequest,
   type ManagedEnvironmentSummary,
 } from "./ipc-managed-environment-requests.js"
@@ -17,6 +18,17 @@ test("managed environment requests use the shared local daemon shape", () => {
   })
   assert.deepEqual(prepareManagedEnvironmentContextTransferRequest("environment-1"), {
     PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" },
+  })
+  assert.deepEqual(prepareManagedEnvironmentGitCredentialEnrollmentRequest({
+    environmentId: "environment-1",
+    sourceTargetId: "source-target-1",
+    gitCredentials: { kind: "selected", credentialIds: ["github"] },
+  }), {
+    PrepareManagedEnvironmentGitCredentialEnrollment: {
+      environmentId: "environment-1",
+      sourceTargetId: "source-target-1",
+      gitCredentials: { kind: "selected", credentialIds: ["github"] },
+    },
   })
   assert.deepEqual(createManagedEnvironmentRequest({
     clientRequestId: "request-1",

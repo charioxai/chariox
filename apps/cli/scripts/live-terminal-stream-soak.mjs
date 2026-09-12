@@ -7,9 +7,6 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "../../../packages/kernel-client/dist/ipc.js"
-import * as requests from "../../../packages/kernel-client/dist/ipc-requests.js"
-
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const args = process.argv.slice(2)
 const durationSeconds = argNumber("--duration-seconds", 1_800)
@@ -17,6 +14,8 @@ const bytesPerSecond = argNumber("--bytes-per-second", 1_048_576)
 const maxRssMb = argNumber("--max-rss-mb", 1_024)
 const maxCpuPercent = argNumber("--max-cpu-percent", 150)
 const output = path.resolve(argValue("--output") ?? path.join(repoRoot, ".artifacts", "stream-soak", `run-${process.pid}.json`))
+const buildProfile = buildProfileArg()
+const cargoTargetDir = cargoTargetPath()
 const dryRun = args.includes("--dry-run")
 const chunkBytes = 65_536
 const chunksPerTick = Math.ceil(bytesPerSecond / chunkBytes)
@@ -24,17 +23,20 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
 
 if (args.includes("--help")) {
-  console.log("Usage: live-terminal-stream-soak.mjs [--duration-seconds 1800] [--bytes-per-second 1048576] [--max-rss-mb 1024] [--max-cpu-percent 150] [--output PATH] [--dry-run]")
+  console.log("Usage: live-terminal-stream-soak.mjs [--duration-seconds 1800] [--bytes-per-second 1048576] [--max-rss-mb 1024] [--max-cpu-percent 150] [--build-profile release|debug] [--output PATH] [--dry-run]")
   process.exit(0)
 }
 if (dryRun) {
-  console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, maxRssMb, maxCpuPercent, output, release: true }, null, 2))
+  console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, maxRssMb, maxCpuPercent, buildProfile, cargoTargetDir, output, release: buildProfile === "release" }, null, 2))
   process.exit(0)
 }
 
+const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
+const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
+
 const port = await availablePort()
 const root = path.join(os.tmpdir(), `chariox-stream-soak-${process.pid}-${Date.now()}`)
-const kernel = spawn(path.join(repoRoot, "target", "release", "chariox-kernel"), [], {
+const kernel = spawn(path.join(cargoTargetDir, buildProfile, "chariox-kernel"), [], {
   cwd: repoRoot,
   detached: true,
   stdio: "ignore",
@@ -125,6 +127,8 @@ try {
   )
   report = {
     ok: peakRssMb <= maxRssMb && cpuP95Percent <= maxCpuPercent,
+    buildProfile,
+    cargoTargetDir,
     durationSeconds,
     bytesPerSecond,
     sentBytes,
@@ -150,7 +154,7 @@ try {
   }
   if (!report.ok) process.exitCode = 1
 } catch (error) {
-  report = { ok: false, error: String(error?.stack ?? error), durationSeconds, bytesPerSecond, port }
+  report = { ok: false, error: String(error?.stack ?? error), durationSeconds, bytesPerSecond, buildProfile, cargoTargetDir, port }
   process.exitCode = 1
 } finally {
   await client?.close?.().catch(() => undefined)
@@ -169,6 +173,16 @@ function argValue(flag) {
 function argNumber(flag, fallback) {
   const value = Number(argValue(flag) ?? fallback)
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${flag} must be a positive integer`)
+  return value
+}
+function buildProfileArg() {
+  const value = argValue("--build-profile") ?? "release"
+  if (value !== "debug" && value !== "release") throw new Error("--build-profile must be debug or release")
+  return value
+}
+function cargoTargetPath() {
+  const value = process.env.CARGO_TARGET_DIR?.trim() || path.join(repoRoot, "target")
+  if (!path.isAbsolute(value)) throw new Error("CARGO_TARGET_DIR must be absolute")
   return value
 }
 async function availablePort() {

@@ -215,13 +215,7 @@ fn validate_catalog_materialization(
             slice_ref.as_str(),
         ),
     };
-    let materialized = profile.materializations.iter().any(|status| {
-        status.target_kind == target.0
-            && status.target_ref == target.1
-            && status.state
-                == crate::account_profile::ProviderAccountMaterializationState::Materialized
-    });
-    if materialized {
+    if profile.is_installed_at(target.0, target.1) {
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
@@ -238,10 +232,24 @@ pub(crate) fn provider_auth_status_response(
     owner_user_id: &str,
     request: GetProviderAuthStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let profile = registry.get(owner_user_id, &request.provider, &request.account_profile)?;
-    let environment =
-        registry.resolve_environment(owner_user_id, &request.provider, &profile.profile_id)?;
-    match crate::provider::canonical_provider_family(&request.provider) {
+    let status = observe_provider_auth_status(
+        registry,
+        owner_user_id,
+        &request.provider,
+        &request.account_profile,
+    )?;
+    Ok(LocalDaemonResponse::ProviderAuthStatus { status })
+}
+
+pub(crate) fn observe_provider_auth_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
+    match crate::provider::canonical_provider_family(provider) {
         Some("codex") => {
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
@@ -251,32 +259,27 @@ pub(crate) fn provider_auth_status_response(
             let client = CodexClient::new("provider-auth", &endpoint)?;
             let status = client.auth_status(&profile.profile_id)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
-            Ok(LocalDaemonResponse::ProviderAuthStatus { status })
+            Ok(status)
         }
-        Some("claude") => Ok(LocalDaemonResponse::ProviderAuthStatus {
-            status: {
-                let status =
-                    claude_auth_status(&request.provider, &profile.profile_id, &environment)?;
-                update_profile_auth_observation(registry, owner_user_id, &status)?;
-                status
-            },
-        }),
-        Some("opencode") => Ok(LocalDaemonResponse::ProviderAuthStatus {
-            status: {
-                let status = opencode_auth_status(&profile.profile_id, &environment)?;
-                update_profile_auth_observation(registry, owner_user_id, &status)?;
-                registry.update_services(
-                    owner_user_id,
-                    "opencode",
-                    &profile.profile_id,
-                    inspect_opencode_services(&environment),
-                )?;
-                status
-            },
-        }),
+        Some("claude") => {
+            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            update_profile_auth_observation(registry, owner_user_id, &status)?;
+            Ok(status)
+        }
+        Some("opencode") => {
+            let status = opencode_auth_status(&profile.profile_id, &environment)?;
+            update_profile_auth_observation(registry, owner_user_id, &status)?;
+            registry.update_services(
+                owner_user_id,
+                "opencode",
+                &profile.profile_id,
+                inspect_opencode_services(&environment),
+            )?;
+            Ok(status)
+        }
         _ => Err(unsupported_auth_provider(
             "get_provider_auth_status",
-            &request.provider,
+            provider,
         )),
     }
 }
@@ -381,23 +384,26 @@ fn claude_auth_status(
             operation: "get_provider_auth_status",
             message: format!("failed to run Claude auth status: {error}"),
         })?;
-    if !output.status.success() {
-        return Ok(ProviderAuthStatus {
-            provider: provider.to_string(),
-            auth_state: "not_logged_in".to_string(),
-            account_profile: account_profile.to_string(),
-            identity_summary: None,
-            plan: None,
-            login_hint: Some("Run `claude auth login` to authenticate Claude Code.".to_string()),
-            detected_version: claude_version().ok(),
-        });
+    // The managed launcher can fail before Claude executes. Exit 1 alone
+    // therefore does not establish that the user's account is logged out.
+    // Never include provider stdout/stderr in the diagnostic: it may contain
+    // credential material even when the command failed.
+    let verification_error = || {
+        DaemonError::LocalTransport {
+        operation: "get_provider_auth_status",
+        message: format!(
+            "Claude authentication verification failed ({}): no valid authentication status. Check the provider launcher and configuration before signing in again.",
+            output.status
+        ),
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    };
     let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("Claude auth status returned invalid JSON: {error}"),
-        })?;
+        serde_json::from_slice(&output.stdout).map_err(|_| verification_error())?;
+    let logged_in = value.get("loggedIn").and_then(serde_json::Value::as_bool);
+    match (output.status.code(), logged_in) {
+        (Some(0), Some(_)) | (Some(1), Some(false)) => {}
+        _ => return Err(verification_error()),
+    }
     Ok(claude_auth_status_from_value(
         provider,
         account_profile,
@@ -1286,7 +1292,126 @@ mod tests {
         let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
             .expect("materialized selection should resolve");
         assert_eq!(selected["codex"].profile_id, work.profile_id);
+
+        registry
+            .update_materialization_status(
+                "owner-a",
+                "codex",
+                &work.profile_id,
+                crate::account_profile::ProviderAccountMaterializationStatus {
+                    target_kind:
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+                    target_ref: "slice-a".to_string(),
+                    state: crate::account_profile::ProviderAccountMaterializationState::Stale,
+                    observed_at_ms: 2,
+                    last_error: None,
+                },
+            )
+            .expect("legacy stale installation should be recorded");
+        resolve_catalog_profiles(&registry, "owner-a", &request)
+            .expect("a previously installed independent profile remains selectable");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_auth_status_reports_claude_launcher_failure_without_login_advice() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-auth-failure-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).expect("fixture root should create");
+        struct Cleanup(std::path::PathBuf, Option<std::ffi::OsString>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                match self.1.take() {
+                    Some(value) => std::env::set_var("CHARIOX_CLAUDE_BIN", value),
+                    None => std::env::remove_var("CHARIOX_CLAUDE_BIN"),
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone(), std::env::var_os("CHARIOX_CLAUDE_BIN"));
+        let executable = root.join("claude");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'private-fixture-marker launcher failed\\n' >&2\nexit 1\n",
+        )
+        .expect("synthetic launcher should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("synthetic launcher should be executable");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("fixture registry should open");
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .expect("fixture profiles should create");
+
+        let result = provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "claude-headless".to_string(),
+                account_profile: "default".to_string(),
+            },
+        );
+        let error = result.expect_err("launcher failure must not become a logged-out status");
+        let message = error.to_string();
+        assert!(message.contains("verification"), "{message}");
+        assert!(!message.contains("private-fixture-marker"));
+        assert!(!message.contains("Run `claude auth login`"));
+
+        for (stdout, code) in [
+            ("private-fixture-marker", 0),
+            (r#"{"error":"private-fixture-marker"}"#, 0),
+            (r#"{"loggedIn":"private-fixture-marker"}"#, 0),
+            (r#"{"loggedIn":true}"#, 1),
+            (r#"{"loggedIn":false}"#, 2),
+        ] {
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{stdout}'\nexit {code}\n"),
+            )
+            .expect("invalid status fixture should write");
+            let result = provider_auth_status_response(
+                &registry,
+                "local",
+                GetProviderAuthStatusRequest {
+                    provider: "claude-headless".to_string(),
+                    account_profile: "default".to_string(),
+                },
+            );
+            let message = result
+                .expect_err("invalid status must not assert the user's authentication state")
+                .to_string();
+            assert!(message.contains("verification"), "{message}");
+            assert!(!message.contains("private-fixture-marker"));
+            assert!(!message.contains("Run `claude auth login`"));
+        }
+
+        // Claude documents exit 1 with loggedIn:false for a genuine logout.
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":false}'\nexit 1\n",
+        )
+        .expect("logged-out fixture should write");
+        let response = provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "claude-headless".to_string(),
+                account_profile: "default".to_string(),
+            },
+        )
+        .expect("documented logout must remain a valid status");
+        let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
+            panic!("unexpected response: {response:?}");
+        };
+        assert_eq!(status.auth_state, "not_logged_in");
+        assert!(status.login_hint.is_some());
     }
 
     #[test]

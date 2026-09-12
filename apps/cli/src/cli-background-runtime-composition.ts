@@ -48,6 +48,9 @@ import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
 import { workflowsWithDesignOp } from "./workflow-design-op-state.js"
+import {
+  createRoomEnvironmentActivityController,
+} from "./room-environment-activity-controller.js"
 import { workflowRuntimeSignature } from "./workflow-runtime-signature.js"
 
 type AnyFn = (...args: any[]) => any
@@ -227,27 +230,37 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     updateSessionChrome: deps.updateSessionChrome,
   })
   const recordDaemonActivity = daemonActivityController.record
+  const roomEnvironmentActivityController = createRoomEnvironmentActivityController({
+    isAttached: deps.isAttached,
+    sessionId: () => deps.sessionState().id,
+    nowMs: Date.now,
+    send: (request) => deps.client.send(request),
+    appendNotice: (message, key) => deps.appendNotice(message, "muted", key),
+    recordDaemonActivity,
+  })
 
-  const refreshAssistantMessageHistory = (agentId: string) => {
+  const refreshAssistantMessageHistory = (agentId: string): Promise<boolean> => {
     if (!deps.isAttached()) {
-      return
+      return Promise.resolve(false)
     }
     const session = deps.sessionState()
-    void deps.refreshAgentHistories(session, [agentId]).then(() => {
+    return deps.refreshAgentHistories(session, [agentId]).then(() => {
       if (!deps.isAttached() || deps.sessionState().id !== session.id) {
-        return
+        return false
       }
       deps.syncVisibleTranscriptPreview()
       deps.appLogger?.debug?.("refreshed completed assistant history", {
         session_id: session.id,
         agent_id: agentId,
       })
+      return true
     }).catch((error: unknown) => {
       deps.appLogger?.warn?.("failed to refresh completed assistant history", {
         session_id: session.id,
         agent_id: agentId,
         error: deps.formatError(error),
       })
+      return false
     })
   }
 
@@ -590,6 +603,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     queueTerminalOutputRecords: deps.queueTerminalOutputRecords,
     pumpTerminalOutput: deps.pumpTerminalOutput,
     pollRuntimeNotices: deps.pollRuntimeNotices,
+    synchronizeRoomEnvironmentActivity: roomEnvironmentActivityController.synchronize,
     appendNotice: (message) => deps.appendNotice(message),
     getSessionState: deps.getSessionState,
     ...(deps.getWorkspaceLiveSyncStatus && deps.setWorkspaceLiveSyncStatus
@@ -610,6 +624,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const pollOutput = pollingController.pollOutput
   const pollNotices = pollingController.pollNotices
   const pollSessionState = pollingController.pollSessionState
+  const pollRoomEnvironmentActivity = pollingController.pollRoomEnvironmentActivity
 
   const backgroundPollerStartupController = createBackgroundPollerStartupController({
     logger: deps.appLogger,
@@ -637,6 +652,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     pollOutput,
     pollNotices,
     pollSessionState,
+    pollRoomEnvironmentActivity,
     startConnectionWatchdog,
     stopConnectionWatchdog: () => {
       connectionHealthWatchdogController.stop()
@@ -647,6 +663,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   onCleanup(() => {
     deps.closingStateController.markClosing()
+    roomEnvironmentActivityController.reset()
     backgroundPollerStartupController.stop()
   })
 

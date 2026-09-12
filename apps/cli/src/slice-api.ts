@@ -7,6 +7,7 @@ import type {
   SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { SliceDisplayBackend } from "@chariox/kernel-client/kernel-types"
 import {
   createSliceBackupRequest,
   createSliceRequest,
@@ -20,6 +21,7 @@ import {
   listSlicesRequest,
   removeSliceProviderAuthRequest,
   resetSliceStateRequest,
+  restoreSliceBackupRequest,
   saveSliceStateRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -39,6 +41,7 @@ export async function createSlice(
     backend?: "local_docker" | "ssh_docker"
     os?: string
     displayMode?: "headless" | "headed"
+    displayBackend?: SliceDisplayBackend
     workspaceId?: string | null
     worktreeId?: string | null
     workspaceMount?: string | null
@@ -159,4 +162,13 @@ export async function createSliceBackup(
 ): Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }> {
   const response = await client.send<Record<string, unknown>>(createSliceBackupRequest(sliceRef, name))
   return expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>(response, "SliceBackupCreated")
+}
+
+export async function restoreSliceBackup(
+  client: LocalIpcClient,
+  sliceRef: string,
+  backupRef: string,
+): Promise<{ slice: SliceRecord; backup: SliceBackupRecord }> {
+  const response = await client.send<Record<string, unknown>>(restoreSliceBackupRequest(sliceRef, backupRef))
+  return expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord }>(response, "SliceBackupRestored")
 }

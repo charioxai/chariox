@@ -400,6 +400,8 @@ async fn health_endpoint_reports_healthy_and_draining_status() {
     assert!(healthy.contains("\"backpressure\""));
     assert!(healthy.contains("\"target_queue_full_count\":0"));
     assert!(healthy.contains("\"slow_subscription_close_count\":0"));
+    assert!(healthy.contains("\"pressured_subscription_count\":0"));
+    assert!(healthy.contains("\"subscription_queue_max_depth\":0"));
     let _ = shutdown_tx.send(());
     server_task.await.expect("healthy server task should join");
 

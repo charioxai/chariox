@@ -47,6 +47,7 @@ runtime_source_revision() {
 }
 
 SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
+SLICE_HOSTNAME="${CHARIOX_SLICE_HOSTNAME:-$SLICE_NAME}"
 SLICE_ID="${CHARIOX_SLICE_ID:-slice-linux}"
 SLICE_OWNER_KERNEL_ID="${CHARIOX_SLICE_OWNER_KERNEL_ID:-}"
 SLICE_OWNER_MACHINE_ID="${CHARIOX_SLICE_OWNER_MACHINE_ID:-}"
@@ -54,9 +55,13 @@ SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
+SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
+SLICE_DOCKER_PIDS_LIMIT="${CHARIOX_SLICE_DOCKER_PIDS_LIMIT:-1024}"
+SLICE_DOCKER_NOFILE_LIMIT="${CHARIOX_SLICE_DOCKER_NOFILE_LIMIT:-8192}"
 SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
@@ -64,6 +69,7 @@ SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
 SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
+SLICE_APPARMOR_PROFILE="${CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
@@ -92,8 +98,6 @@ SLICE_OPENCODE_AUTH="${CHARIOX_SLICE_OPENCODE_AUTH:-$HOME/.local/share/opencode/
 SLICE_CLAUDE_JSON="${CHARIOX_SLICE_CLAUDE_JSON:-$HOME/.claude.json}"
 SLICE_CLAUDE_SETTINGS="${CHARIOX_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 SLICE_CLAUDE_STATS="${CHARIOX_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
-SLICE_CLAUDE_CREDENTIALS="${CHARIOX_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
-SLICE_CLAUDE_KEYCHAIN_SERVICE="${CHARIOX_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
 SLICE_GITHUB_HOST="${CHARIOX_SLICE_GITHUB_HOST:-github.com}"
 SLICE_GITHUB_TOKEN_FILE="${CHARIOX_SLICE_GITHUB_TOKEN_FILE:-}"
 SLICE_OPENCODE_PROVIDER="${CHARIOX_SLICE_OPENCODE_PROVIDER:-openai}"
@@ -103,7 +107,7 @@ SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
-SLICE_PROVIDER_HOME="/home/slice/provider-home"
+SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -121,6 +125,17 @@ if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" 
 fi
 if [[ ! "$SLICE_DEVELOPMENT_MOUNT_COUNT" =~ ^[0-9]+$ || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 128 ]]; then
   fail "slice development mount count is invalid"
+fi
+case "$SLICE_RUNTIME_BUILD_PROFILE" in
+  dev|release) ;;
+  *) fail "CHARIOX_SLICE_RUNTIME_BUILD_PROFILE must be dev or release" ;;
+esac
+case "$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" in
+  0|1|2|3|s|z) ;;
+  *) fail "CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL is invalid" ;;
+esac
+if [[ ! "$SLICE_APPARMOR_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]]; then
+  fail "CHARIOX_SLICE_APPARMOR_PROFILE is invalid"
 fi
 
 run_with_timeout() {
@@ -194,11 +209,21 @@ run_with_file_stdin_timeout() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
 the Lume Ubuntu prebuilt image is unavailable.
+
+CHARIOX_SLICE_DOCKER_PIDS_LIMIT caps container processes and threads (default:
+1024). Set a positive integer to tune it for the workload. Reused containers
+receive the current limit before startup. Stop and destroy remain available
+even if the configured value is invalid.
+
+CHARIOX_SLICE_DOCKER_NOFILE_LIMIT sets the inherited soft and hard open-file
+limit (default: 8192; allowed: 1024-1048576). Docker cannot update this limit
+on an existing container, so a mismatched container fails closed with recreate
+guidance before any service starts.
 EOF
 }
 
@@ -274,14 +299,68 @@ configure_slice_state_directory() {
 }
 
 refresh_slice_support_files() {
+  # Saved images retain their original packages. Prepare the desktop services
+  # before overlaying the current launcher.
+  run_with_timeout 180 docker exec -u root "$SLICE_NAME" bash -lc '
+    set -euo pipefail
+    if ! command -v tint2 >/dev/null 2>&1 || ! command -v dbus-run-session >/dev/null 2>&1 \
+      || [[ ! -r /usr/share/dbus-1/services/org.a11y.Bus.service ]]; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -qq update
+      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core
+      apt-get clean
+      find /var/lib/apt/lists -mindepth 1 -delete
+    fi
+  ' || fail "could not prepare desktop services in the existing slice image"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" \
     || log "runtime script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" \
     || log "provider server script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" \
     || log "screen script overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/tint2rc" "$SLICE_NAME:/opt/chariox-slice/tint2rc" \
+    || log "applications taskbar configuration refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-text-finder.py" "$SLICE_NAME:/opt/chariox-slice/slice-text-finder.py" \
+    || log "screen text finder overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies.py" \
+    || log "Selkies lifecycle overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies-stream.py" \
+    || log "Selkies stream overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/selkies_viewers.py" "$SLICE_NAME:/opt/chariox-slice/selkies_viewers.py" \
+    || log "Selkies private viewer module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" \
+    || log "browser controller actions module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" \
+    || log "browser controller CDP module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cookie-fence.mjs" \
+    || log "browser controller cookie fence module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-dialogs.mjs" \
+    || log "browser controller dialog module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
+    || log "browser controller compatibility module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
+    || log "browser controller events module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
+    || log "browser controller file-transfer module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-frames.mjs" \
+    || log "browser controller frame module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-history.mjs" \
+    || log "browser controller history module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-permissions.mjs" \
+    || log "browser controller permissions module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-snapshot.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-snapshot.mjs" \
+    || log "browser controller snapshot module overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller.mjs" \
+    || log "browser controller overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /opt/chariox-slice/browser-session-import \
+    || log "browser import runtime directory refresh unavailable; continuing"
+  local browser_import_module
+  for browser_import_module in chrome-cookie-batch.mjs controller-cookie-import.mjs cookie-import-completion.mjs cookie-import-journal.mjs cookie-import-transaction.mjs production-destination.mjs; do
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/browser-session-import/$browser_import_module" "$SLICE_NAME:/opt/chariox-slice/browser-session-import/$browser_import_module" \
+      || log "browser import runtime module refresh unavailable; continuing"
+  done
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" \
     || log "provider isolation probe overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh" \
@@ -290,7 +369,27 @@ refresh_slice_support_files() {
     || log "provider bridge overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/chariox-slice/validate-screen.sh" \
     || log "screen validator overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/validate-screen.sh \
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x \
+    /opt/chariox-slice/start-runtime.sh \
+    /opt/chariox-slice/start-providers.sh \
+    /opt/chariox-slice/slice-screen.sh \
+    /opt/chariox-slice/browser-cdp.mjs \
+    /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-cdp.mjs \
+    /opt/chariox-slice/browser-controller-cookie-fence.mjs \
+    /opt/chariox-slice/browser-controller-dialogs.mjs \
+    /opt/chariox-slice/browser-controller-compatibility.mjs \
+    /opt/chariox-slice/browser-controller-events.mjs \
+    /opt/chariox-slice/browser-controller-files.mjs \
+    /opt/chariox-slice/browser-controller-frames.mjs \
+    /opt/chariox-slice/browser-controller-history.mjs \
+    /opt/chariox-slice/browser-controller-permissions.mjs \
+    /opt/chariox-slice/browser-controller-snapshot.mjs \
+    /opt/chariox-slice/browser-controller.mjs \
+    /opt/chariox-slice/managed-provider-isolation-probe.mjs \
+    /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh \
+    /opt/chariox-slice/provider-port-bridge.mjs \
+    /opt/chariox-slice/validate-screen.sh \
     || log "script permission refresh unavailable; continuing"
 }
 
@@ -346,13 +445,40 @@ image_runtime_compatible() {
     && "$image_runtime_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]
 }
 
+docker_target_arch() {
+  local architecture
+  architecture="$(docker info --format '{{.Architecture}}' 2>/dev/null || true)"
+  case "$architecture" in
+    amd64|x86_64) printf 'amd64\n' ;;
+    arm64|aarch64) printf 'arm64\n' ;;
+    *) fail "unsupported Docker server architecture: ${architecture:-unknown}" ;;
+  esac
+}
+
+docker_build() {
+  if docker buildx version >/dev/null 2>&1; then
+    docker buildx build --load "$@"
+    return
+  fi
+  if command -v docker-buildx >/dev/null 2>&1; then
+    docker-buildx build --load "$@"
+    return
+  fi
+  fail "Docker Buildx is required to build the slice runtime image"
+}
+
 build_standard_runtime_image() {
   local image="$1"
-  local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
+  local target_arch
+  target_arch="$(docker_target_arch)"
   log "building $image"
+  local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
   if [[ -f "$prebuilt_marker" ]]; then
-    docker build \
+    docker_build \
+      --build-arg "TARGETARCH=$target_arch" \
       --build-arg "CHARIOX_PREBUILT_RUNTIME=1" \
+      --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
+      --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
       --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
       --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
       -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
@@ -360,7 +486,10 @@ build_standard_runtime_image() {
       "$REPO_ROOT"
     return
   fi
-  docker build \
+  docker_build \
+    --build-arg "TARGETARCH=$target_arch" \
+    --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
+    --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
@@ -416,9 +545,12 @@ build_image() {
 
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
     ensure_runtime_base_image
+    local target_arch
+    target_arch="$(docker_target_arch)"
     log "building $SLICE_IMAGE"
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
-    docker build \
+    docker_build \
+      --build-arg "TARGETARCH=$target_arch" \
       --build-arg "CHARIOX_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
       --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
       --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
@@ -461,6 +593,20 @@ refresh_saved_state_runtime() {
   log "refreshed saved slice worker runtime to $SLICE_RUNTIME_SOURCE_REVISION"
 }
 
+apply_container_process_limit() {
+  run_with_timeout 30 docker update --pids-limit "$SLICE_DOCKER_PIDS_LIMIT" "$SLICE_NAME" >/dev/null \
+    || fail "failed to apply slice process limit; refusing to start services"
+}
+
+verify_container_nofile_limit() {
+  local actual
+  actual="$(run_with_timeout 20 docker inspect --format '{{range .HostConfig.Ulimits}}{{if eq .Name "nofile"}}{{.Soft}}:{{.Hard}}{{end}}{{end}}' "$SLICE_NAME" 2>/dev/null)" \
+    || fail "failed to inspect the slice file-descriptor limit; refusing to start services"
+  if [[ "$actual" != "$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT" ]]; then
+    fail "slice file-descriptor limit is ${actual:-unset}, expected $SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT; recreate the container before startup"
+  fi
+}
+
 ensure_container() {
   local created_container=0
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
@@ -487,13 +633,24 @@ ensure_container() {
 
   if container_exists; then
     log "container $SLICE_NAME already exists"
+    apply_container_process_limit
+    verify_container_nofile_limit
   else
     log "creating container $SLICE_NAME"
     run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
     restore_saved_home_volume
     local docker_create_args=(
       --name "$SLICE_NAME"
+      --hostname "$SLICE_HOSTNAME"
       --ulimit core=0:0
+      --ulimit "nofile=$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT"
+      --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
+      --sysctl "net.ipv4.ip_local_reserved_ports=$SLICE_CODEX_PORT_RANGE,$SLICE_OPENCODE_PORT_RANGE"
+      -e "CHARIOX_SLICE_VIEWER_BACKEND=${CHARIOX_SLICE_VIEWER_BACKEND:-selkies}"
+      -e "CHARIOX_SLICE_DISPLAY_MODE=${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
+      -e "CHARIOX_SLICE_NOVNC_PORT=$SLICE_NOVNC_PORT"
+      -e "CHARIOX_SLICE_SCREEN_GEOMETRY=${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
+      -e "CHARIOX_SLICE_MIN_FREE_MB=$SLICE_MIN_FREE_MB"
       -p "127.0.0.1:$SLICE_CODEX_PORT:$SLICE_CODEX_PORT"
       -p "127.0.0.1:$SLICE_OPENCODE_PORT:$SLICE_OPENCODE_PORT"
       -p "127.0.0.1:$SLICE_CODEX_PORT_RANGE:$SLICE_CODEX_PORT_RANGE"
@@ -510,12 +667,22 @@ ensure_container() {
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
       # system-path masks block that setup before bubblewrap can install the
       # narrower provider boundary. Managed hosts run this container in the
-      # dedicated rootless daemon; ordinary local slices must opt in.
+      # dedicated rootless daemon; ordinary local slices must opt in. These
+      # are Bubblewrap's documented setup capabilities; the provider receives
+      # none of them because the inner sandbox uses --cap-drop ALL.
       docker_create_args+=(
+        --cap-add SYS_ADMIN
+        --cap-add NET_ADMIN
+        --cap-add SYS_PTRACE
         --security-opt seccomp=unconfined
-        --security-opt apparmor=unconfined
+        --security-opt apparmor="$SLICE_APPARMOR_PROFILE"
         --security-opt systempaths=unconfined
       )
+    else
+      # Chromium still installs its own renderer namespace and seccomp sandbox.
+      # Preserve Docker's default restrictions except the namespace syscalls
+      # needed by that sandbox. No extra container capabilities are required.
+      docker_create_args+=(--security-opt "seccomp=$SCRIPT_DIR/chromium-seccomp.json")
     fi
     if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
       docker_create_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
@@ -532,7 +699,10 @@ ensure_container() {
       docker_create_args+=(-v "$SLICE_WORKSPACE_SOURCE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")
     fi
     if [[ -n "$SLICE_DOCKER_MEMORY" ]]; then
-      docker_create_args+=(--memory "$SLICE_DOCKER_MEMORY")
+      docker_create_args+=(
+        --memory "$SLICE_DOCKER_MEMORY"
+        --memory-swap "$SLICE_DOCKER_MEMORY"
+      )
     fi
     if [[ -n "$SLICE_DOCKER_CPUS" ]]; then
       docker_create_args+=(--cpus "$SLICE_DOCKER_CPUS")
@@ -586,11 +756,91 @@ ensure_container() {
   refresh_saved_state_runtime
 }
 
+recover_existing_container() {
+  container_exists || fail "slice container $SLICE_NAME does not exist; cannot recover failed state save"
+  apply_container_process_limit
+  verify_container_nofile_limit
+  local paused
+  paused="$(run_with_timeout 20 docker inspect -f '{{.State.Paused}}' "$SLICE_NAME")" \
+    || fail "failed to inspect slice pause state before recovery"
+  case "$paused" in
+    true)
+      log "unpausing existing container $SLICE_NAME before recovery"
+      run_with_timeout 30 docker unpause "$SLICE_NAME" >/dev/null \
+        || fail "failed to unpause slice container $SLICE_NAME before recovery"
+      ;;
+    false) ;;
+    *) fail "invalid slice pause state before recovery" ;;
+  esac
+  if ! container_running; then
+    log "restarting existing container $SLICE_NAME after failed state save"
+    if ! run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null \
+      && ! wait_for_container_running 24 5; then
+      fail "failed to restart existing container $SLICE_NAME after failed state save"
+    fi
+  fi
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" rm -f \
+    /home/slice/.chariox/daemon/config.json \
+    /tmp/chariox-slice-state/cloud-relay-config.json \
+    || fail "failed to scrub legacy Cloud relay credentials from the slice"
+  configure_stable_machine_identity
+  configure_chromium_browser_policy
+  configure_slice_state_directory
+  refresh_slice_support_files
+}
+
+managed_provider_probe_unselected_path() {
+  if [[ "$MANAGED_PROVIDER_ISOLATION_PROBE" != "1" || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -eq 0 ]]; then
+    return 0
+  fi
+  local primary_mount="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_0:-}"
+  [[ -n "$primary_mount" ]] || fail "slice development mount 0 is missing"
+  printf '%s\n' "${primary_mount%/*}/.chariox-managed-isolation-unselected-repository"
+}
+
+prepare_managed_provider_probe_unselected_path() {
+  local provider_probe_unselected
+  provider_probe_unselected="$(managed_provider_probe_unselected_path)"
+  [[ -n "$provider_probe_unselected" ]] || return 0
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" \
+    install -d -m 0755 "$provider_probe_unselected" \
+    || fail "could not prepare the managed provider isolation probe sentinel"
+}
+
+cleanup_managed_provider_probe_unselected_path() {
+  local provider_probe_unselected
+  provider_probe_unselected="$(managed_provider_probe_unselected_path)"
+  [[ -n "$provider_probe_unselected" ]] || return 0
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" \
+    rmdir "$provider_probe_unselected" >/dev/null 2>&1 || true
+}
+
+start_slice_services() {
+  if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
+    import_provider_auth
+  fi
+  if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
+    require_slice_free_space "desktop" /home/slice /tmp
+    run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
+  fi
+  if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
+    require_slice_free_space "runtime" /home/slice /tmp
+    prepare_managed_provider_probe_unselected_path
+    run_required_phase runtime exec_slice /opt/chariox-slice/start-runtime.sh
+    cleanup_managed_provider_probe_unselected_path
+  fi
+  if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
+    run_required_phase provider-servers exec_slice /opt/chariox-slice/start-providers.sh
+  fi
+}
+
 ensure_auth_target_container() {
   require_docker
   if ! container_exists; then
     fail "container $SLICE_NAME does not exist"
   fi
+  apply_container_process_limit
+  verify_container_nofile_limit
   if ! container_running; then
     log "starting container $SLICE_NAME"
     run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null || fail "failed to start container $SLICE_NAME"
@@ -605,15 +855,26 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
-  local workspace_root_env_args=()
+  # Forward a provisioner-supplied binding, including partial values so kernel
+  # boot validation rejects incomplete identities rather than running unbound.
+  local binding_name
+  for binding_name in \
+    CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID \
+    CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY \
+    CHARIOX_ROOM_ENVIRONMENT_SESSION_ID \
+    CHARIOX_ROOM_ENVIRONMENT_SLICE_ID; do
+    if [[ -n "${!binding_name+x}" ]]; then
+      relay_env_args+=(-e "$binding_name=${!binding_name}")
+    fi
+  done
   if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
-    workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
+    relay_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
     local mount_index mount_variable development_mount
     for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
       mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
       development_mount="${!mount_variable:-}"
       [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
-      workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
+      relay_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
     done
   fi
   local relay_token_path="/tmp/chariox-slice-state/relay-token"
@@ -647,6 +908,7 @@ exec_slice_with_timeout() {
     relay_env_args+=(-e CHARIOX_SLICE_RELAY_URL="$SLICE_RELAY_URL")
   fi
   run_with_timeout "$seconds" docker exec \
+    -e CHARIOX_SLICE_MIN_FREE_MB="$SLICE_MIN_FREE_MB" \
     -e CHARIOX_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
     -e CHARIOX_SLICE_OPENCODE_PORT="$SLICE_OPENCODE_PORT" \
     -e CHARIOX_SLICE_CODEX_PORT_RANGE="$SLICE_CODEX_PORT_RANGE" \
@@ -656,8 +918,8 @@ exec_slice_with_timeout() {
     -e CHARIOX_SLICE_MCP_PORT="$SLICE_MCP_PORT" \
     -e CHARIOX_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
     -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
+    -e CHARIOX_SLICE_VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-selkies}" \
     "${relay_env_args[@]}" \
-    "${workspace_root_env_args[@]}" \
     -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e CHARIOX_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e CHARIOX_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \
@@ -848,24 +1110,6 @@ import_claude_auth() {
   local claude_root="$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude"
   copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "$claude_root/settings.json" "Claude settings"
   copy_provider_auth_file "$SLICE_CLAUDE_STATS" "$claude_root/stats-cache.json" "Claude stats"
-  local imported_credentials=0
-  if [[ "$SLICE_ACCOUNT_PROFILE" == "default" ]] && command -v security >/dev/null 2>&1; then
-    local credentials_tmp
-    credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/chariox-claude-credentials.XXXXXX")"
-    chmod 600 "$credentials_tmp"
-    if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
-      copy_provider_auth_file "$credentials_tmp" "$claude_root/.credentials.json" "Claude Keychain credentials"
-      imported_credentials=1
-    fi
-    rm -f "$credentials_tmp"
-  fi
-  if [[ "$imported_credentials" != "1" && -f "$SLICE_CLAUDE_CREDENTIALS" ]]; then
-    copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "$claude_root/.credentials.json" "Claude credentials"
-    imported_credentials=1
-  fi
-  if [[ "$imported_credentials" != "1" ]]; then
-    log "Claude credentials not found at $SLICE_CLAUDE_CREDENTIALS; skipping"
-  fi
 }
 
 remove_claude_auth() {
@@ -909,10 +1153,17 @@ import_github_auth() {
   local import_status=0
   run_with_file_stdin_timeout 90 "$token_tmp" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    install -d -m 0700 '$SLICE_PROVIDER_HOME'
     export HOME='$SLICE_PROVIDER_HOME'
+    install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config'
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
+    if [[ ! -e '/home/slice/.config/gh' ]]; then
+      ln -s \"$SLICE_PROVIDER_HOME/.config/gh\" '/home/slice/.config/gh'
+    fi
+    if ! HOME='/home/slice' git config --global --get-all include.path 2>/dev/null \
+      | grep -Fxq \"$SLICE_PROVIDER_HOME/.gitconfig\"; then
+      HOME='/home/slice' git config --global --add include.path \"$SLICE_PROVIDER_HOME/.gitconfig\"
+    fi
   " || import_status=$?
   rm -f "$token_tmp"
   trap - RETURN
@@ -929,6 +1180,11 @@ remove_github_auth() {
     gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    HOME='/home/slice' git config --global --unset-all include.path '$SLICE_PROVIDER_HOME/.gitconfig' >/dev/null 2>&1
+    if [[ -L '/home/slice/.config/gh' \
+      && \"\$(readlink '/home/slice/.config/gh')\" == '$SLICE_PROVIDER_HOME/.config/gh' ]]; then
+      rm -f '/home/slice/.config/gh'
+    fi
     exit 0
   "
   log "removed GitHub auth from slice"
@@ -972,7 +1228,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "install -d -m 0700 '$SLICE_PROVIDER_HOME' && export HOME='$SLICE_PROVIDER_HOME' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
+      printf '%s\n' "export HOME='$SLICE_PROVIDER_HOME' && install -d -m 0700 \"\$HOME/.config/gh\" '/home/slice/.config' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST' && { [[ -e '/home/slice/.config/gh' ]] || ln -s '$SLICE_PROVIDER_HOME/.config/gh' '/home/slice/.config/gh'; } && { HOME='/home/slice' git config --global --get-all include.path 2>/dev/null | grep -Fxq '$SLICE_PROVIDER_HOME/.gitconfig' || HOME='/home/slice' git config --global --add include.path '$SLICE_PROVIDER_HOME/.gitconfig'; }"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"
@@ -1034,7 +1290,7 @@ print_status() {
     probe chromium chromium --version || true
     probe tesseract tesseract --version | head -n 1 || true
     echo '--- browser smoke'
-    if probe chromium-headless chromium --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err; then
+    if probe chromium-headless chromium --headless=new --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err; then
       grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=headless-ok
     else
       cat /tmp/chromium-smoke.err 2>/dev/null || true
@@ -1089,6 +1345,18 @@ destroy_container() {
 main() {
   local action="${1:-provision}"
   case "$action" in
+    -h|--help|help|status|stop|destroy) ;;
+    *)
+      if [[ ! "$SLICE_DOCKER_PIDS_LIMIT" =~ ^[1-9][0-9]{0,9}$ ]] || (( SLICE_DOCKER_PIDS_LIMIT > 2147483647 )); then
+        fail "CHARIOX_SLICE_DOCKER_PIDS_LIMIT must be an integer from 1 to 2147483647"
+      fi
+      if [[ ! "$SLICE_DOCKER_NOFILE_LIMIT" =~ ^[1-9][0-9]{0,6}$ ]] \
+        || (( SLICE_DOCKER_NOFILE_LIMIT < 1024 || SLICE_DOCKER_NOFILE_LIMIT > 1048576 )); then
+        fail "CHARIOX_SLICE_DOCKER_NOFILE_LIMIT must be an integer from 1024 to 1048576"
+      fi
+      ;;
+  esac
+  case "$action" in
     -h|--help|help)
       usage
       ;;
@@ -1096,21 +1364,23 @@ main() {
       require_docker
       build_image
       ensure_container
-      if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
-        import_provider_auth
-      fi
-      if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
-        require_slice_free_space "desktop" /home/slice /tmp
-        run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
-      fi
-      if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
-        require_slice_free_space "runtime" /home/slice /tmp
-        run_required_phase runtime exec_slice /opt/chariox-slice/start-runtime.sh
-      fi
-      if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
-        run_required_phase provider-servers exec_slice /opt/chariox-slice/start-providers.sh
-      fi
+      start_slice_services
       log "provision completed; use status or logs actions for diagnostics"
+      ;;
+    restore-state)
+      require_docker
+      [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "restore-state requires a saved home archive"
+      build_image
+      destroy_container
+      ensure_container
+      stop_container
+      log "saved slice state restored; container remains stopped"
+      ;;
+    recover)
+      require_docker
+      recover_existing_container
+      start_slice_services
+      log "failed-save recovery completed; existing container and home state preserved"
       ;;
     status)
       require_docker

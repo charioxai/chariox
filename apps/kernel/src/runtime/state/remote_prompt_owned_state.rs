@@ -268,6 +268,23 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        self.complete_remote_prompt_owner_with_termination(
+            session_id,
+            agent_id,
+            remote_provider_run_id,
+            next_queued_prompt,
+            None,
+        )
+    }
+
+    pub(super) fn complete_remote_prompt_owner_with_termination(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        remote_provider_run_id: &str,
+        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -275,9 +292,6 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let _ = self
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let session = self.session_store.get_session(session_id)?;
         let completed = self
             .prompt_state_owner
@@ -294,6 +308,11 @@ impl KernelRuntimeOwnedState {
             .archive
             .mode
             == crate::config::HistoryArchiveMode::External;
+        let settlement_status = if provider_termination.is_some() {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        };
         self.operational_history_store.record_prompt_settlement(
             archive_enabled,
             session_id,
@@ -301,8 +320,24 @@ impl KernelRuntimeOwnedState {
             completed.id(),
             Some(remote_provider_run_id),
             settled_at_ms,
-            "completed",
+            settlement_status.as_str(),
         );
+        self.completed_git_turn_snapshots
+            .record_prompt_settlement_with_termination(
+                session_id,
+                agent_id,
+                remote_provider_run_id,
+                &completed,
+                settled_at_ms,
+                Some(completed.created_at_ms()),
+                settlement_status,
+                provider_termination.clone(),
+            );
+        if provider_termination.is_some() {
+            let _ = self
+                .agent_store
+                .mark_unexpected_provider_exit_error(agent_id, true);
+        }
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -336,6 +371,9 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        let _ = self
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(crate::session::PromptCompletion {
             completed,
@@ -646,6 +684,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_remote_completion_keeps_the_worker_run_binding() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-settlement-order",
+                "worktree-settlement-order",
+            ))
+            .expect("session should be created");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-2".to_string(),
+                    worker_machine_id: "worker-machine-2".to_string(),
+                    execution_lease_id: "lease-2".to_string(),
+                    leased_agent_id: "leased-agent-2".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-2".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        runtime
+            .owned
+            .session_store
+            .delete_session(&session_id)
+            .expect("test should remove the session before settlement");
+
+        runtime
+            .owned
+            .complete_remote_prompt_owner(&session_id, &agent_id, "provider-run-2", None)
+            .expect_err("completion without its session must fail");
+
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
+            Some("provider-run-2"),
+            "a failed settlement must not clear the last drainable worker run",
+        );
+    }
+
+    #[tokio::test]
     async fn stopped_slice_prompt_settles_with_one_visible_durable_error() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -689,6 +782,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headless,
+                    display_backend: Default::default(),
                     workspace_id: Some("workspace-stopped-slice".to_string()),
                     worktree_id: Some("worktree-stopped-slice".to_string()),
                     workspace_mount: None,

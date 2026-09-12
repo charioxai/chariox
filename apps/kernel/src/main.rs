@@ -4,6 +4,10 @@ use std::time::Instant;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(
             "--print-local-daemon-protocol-version",

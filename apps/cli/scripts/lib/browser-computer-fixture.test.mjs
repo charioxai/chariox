@@ -90,9 +90,15 @@ test("fixture provides authenticated mail without exposing its password", async 
         subject: "Fixture subject",
         body: "Fixture body",
       }),
+      redirect: "manual",
     })
-    assert.equal(sent.status, 200)
-    assert.match(await sent.text(), /CHARIOX_FIXTURE_MESSAGE_SENT/)
+    assert.equal(sent.status, 303)
+    assert.equal(sent.headers.get("location"), "/mail/sent/message-1")
+    const confirmation = await fetch(new URL(sent.headers.get("location"), fixture.origin), {
+      headers: { cookie },
+    })
+    assert.equal(confirmation.status, 200)
+    assert.match(await confirmation.text(), /CHARIOX_FIXTURE_MESSAGE_SENT/)
 
     const unauthenticatedMessages = await fetch(`${fixture.origin}/api/messages`)
     assert.equal(unauthenticatedMessages.status, 403)
@@ -119,6 +125,83 @@ test("fixture provides authenticated mail without exposing its password", async 
     assert.equal(upload.status, 200)
     assert.match(await upload.text(), /CHARIOX_FIXTURE_UPLOAD 14/)
     assert.deepEqual(fixture.uploads, [{ contentType: "text/plain", sizeBytes: 14 }])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test("fixture can invalidate an external service session without erasing the browser cookie", async () => {
+  const password = "fixture-test-password"
+  const fixture = await startBrowserComputerFixture({ password })
+  try {
+    const login = await fetch(`${fixture.origin}/mail/login`, {
+      method: "POST",
+      body: new URLSearchParams({ email: fixture.account, password }),
+      redirect: "manual",
+    })
+    const cookie = login.headers.get("set-cookie")
+    assert.equal(login.status, 303)
+    assert.match(cookie, /^chariox_fixture_session=/)
+    assert.equal(await fixture.invalidateSessions(), 1)
+
+    const invalidated = await fetch(`${fixture.origin}/mail/inbox`, {
+      headers: { cookie },
+      redirect: "manual",
+    })
+    assert.equal(invalidated.status, 303)
+    assert.equal(invalidated.headers.get("location"), "/mail/login")
+    assert.equal(invalidated.headers.get("set-cookie"), null)
+
+    const relogin = await fetch(`${fixture.origin}/mail/login`, {
+      method: "POST",
+      body: new URLSearchParams({ email: fixture.account, password }),
+      redirect: "manual",
+    })
+    assert.equal(relogin.status, 303)
+    assert.notEqual(relogin.headers.get("set-cookie"), cookie)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test("fixture provides a one-time OAuth popup redirect and callback", async () => {
+  const password = "fixture-test-password"
+  const fixture = await startBrowserComputerFixture({ password })
+  try {
+    const startPage = await fetch(`${fixture.origin}/oauth/start`).then((response) => response.text())
+    const authorizeHref = startPage.match(/href="(\/oauth\/authorize\?state=[^"]+)"/)?.[1]
+    assert.ok(authorizeHref)
+    assert.match(startPage, /target="_blank"/)
+
+    const authorizePage = await fetch(new URL(authorizeHref, fixture.origin)).then((response) => response.text())
+    assert.match(authorizePage, /Authorize Fixture account/)
+    const state = new URL(authorizeHref, fixture.origin).searchParams.get("state")
+    const authorization = await fetch(`${fixture.origin}/oauth/authorize`, {
+      method: "POST",
+      body: new URLSearchParams({ state }),
+      redirect: "manual",
+    })
+    assert.equal(authorization.status, 303)
+    const callbackLocation = authorization.headers.get("location")
+    const callbackUrl = new URL(callbackLocation, fixture.origin)
+    assert.equal(callbackUrl.pathname, "/oauth/callback")
+    assert.equal(callbackUrl.searchParams.get("state"), state)
+    assert.match(callbackUrl.searchParams.get("code"), /^fixture-code-/)
+
+    const callback = await fetch(callbackUrl)
+    assert.equal(callback.status, 200)
+    const cookie = callback.headers.get("set-cookie")
+    assert.match(cookie, /^chariox_fixture_session=/)
+    const callbackPage = await callback.text()
+    assert.match(callbackPage, /CHARIOX_FIXTURE_OAUTH_CALLBACK/)
+    assert.match(callbackPage, /postMessage/)
+    assert.match(callbackPage, new RegExp(state))
+    assert.doesNotMatch(callbackPage, new RegExp(password))
+
+    const inbox = await fetch(`${fixture.origin}/mail/inbox`, { headers: { cookie } })
+    assert.equal(inbox.status, 200)
+    const replayedCallback = await fetch(callbackUrl)
+    assert.equal(replayedCallback.status, 400)
   } finally {
     await fixture.close()
   }

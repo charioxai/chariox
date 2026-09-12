@@ -124,103 +124,113 @@ impl KernelRuntimeState {
                 )
             })
             .await;
-        let (remote_provider_run_id, provider_diagnostic) = match completion_response {
-            Ok(RelayPeerResponse::LeasedPromptCompleted {
-                provider_run_id,
-                provider_diagnostic,
-                git_observations,
-                workspace_live_sync_change,
-                ..
-            }) => {
-                if let Err(error) = crate::git_observer::append_observations(
-                    &owned.operational_history_store,
+        let (remote_provider_run_id, provider_diagnostic, provider_termination) =
+            match completion_response {
+                Ok(RelayPeerResponse::LeasedPromptCompleted {
+                    provider_run_id,
+                    provider_diagnostic,
+                    provider_termination,
                     git_observations,
-                ) {
+                    workspace_live_sync_change,
+                    ..
+                }) => {
+                    if let Err(error) = crate::git_observer::append_observations(
+                        &owned.operational_history_store,
+                        git_observations,
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.git_observer",
+                            "failed to append remote git observations",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": target_agent_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                    if let Some(change) = workspace_live_sync_change {
+                        self.record_and_fanout_workspace_live_sync_change(
+                            change,
+                            Some(&remote_execution.worker_kernel_id),
+                            Some(&remote_execution.worker_machine_id),
+                        )
+                        .await;
+                    }
+                    (
+                        provider_run_id
+                            .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                        provider_diagnostic,
+                        provider_termination,
+                    )
+                }
+                Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
                     crate::logging::warn_with_fields(
-                        "daemon.git_observer",
-                        "failed to append remote git observations",
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt completion already settled on worker",
                         serde_json::json!({
                             "session_id": session_id,
                             "agent_id": target_agent_id,
+                            "worker_kernel_id": remote_execution.worker_kernel_id,
+                            "leased_agent_id": remote_execution.leased_agent_id,
                             "error": error.to_string(),
                         }),
                     );
-                }
-                if let Some(change) = workspace_live_sync_change {
-                    self.record_and_fanout_workspace_live_sync_change(
-                        change,
-                        Some(&remote_execution.worker_kernel_id),
-                        Some(&remote_execution.worker_machine_id),
+                    (
+                        owned_provider_run_id
+                            .clone()
+                            .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                        None,
+                        None,
                     )
-                    .await;
                 }
-                (
-                    provider_run_id.unwrap_or_else(|| "remote-provider-run-completed".to_string()),
-                    provider_diagnostic,
-                )
-            }
-            Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.remote_prompt_dispatch",
-                    "remote prompt completion already settled on worker",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "agent_id": target_agent_id,
-                        "worker_kernel_id": remote_execution.worker_kernel_id,
-                        "leased_agent_id": remote_execution.leased_agent_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                (
-                    owned_provider_run_id
-                        .clone()
-                        .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
-                    None,
-                )
-            }
-            Err(error)
-                if remote_prompt_error_should_refresh_binding(&error)
-                    && remote_prompt_completion_should_wait_for_binding_repair(
-                        owned
-                            .agent_store
-                            .get_agent(target_agent_id)?
-                            .remote_execution(),
-                        &remote_execution,
-                    ) =>
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.remote_prompt_dispatch",
-                    "remote prompt completion waiting for stale binding repair",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "agent_id": target_agent_id,
-                        "worker_kernel_id": remote_execution.worker_kernel_id,
-                        "leased_agent_id": remote_execution.leased_agent_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return Err(DaemonError::LocalTransport {
-                    operation: "complete remote prompt",
-                    message: "remote prompt worker binding is being repaired; retry completion"
-                        .to_string(),
-                });
-            }
-            Err(error) => return Err(error),
-            Ok(other) => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "complete remote prompt",
-                    message: format!("unexpected remote prompt completion response: {other:?}"),
-                });
-            }
-        };
-        let completion = owned.complete_remote_prompt_owner(
+                Err(error)
+                    if remote_prompt_error_should_refresh_binding(&error)
+                        && remote_prompt_completion_should_wait_for_binding_repair(
+                            owned
+                                .agent_store
+                                .get_agent(target_agent_id)?
+                                .remote_execution(),
+                            &remote_execution,
+                        ) =>
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt completion waiting for stale binding repair",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": target_agent_id,
+                            "worker_kernel_id": remote_execution.worker_kernel_id,
+                            "leased_agent_id": remote_execution.leased_agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete remote prompt",
+                        message: "remote prompt worker binding is being repaired; retry completion"
+                            .to_string(),
+                    });
+                }
+                Err(error) => return Err(error),
+                Ok(other) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete remote prompt",
+                        message: format!("unexpected remote prompt completion response: {other:?}"),
+                    });
+                }
+            };
+        let completion = owned.complete_remote_prompt_owner_with_termination(
             session_id,
             target_agent_id,
             &remote_provider_run_id,
             next_queued_prompt,
+            provider_termination.clone(),
         )?;
         if completion.completed.workflow_run_id().is_some() {
-            if let Some(diagnostic) = provider_diagnostic.as_deref() {
+            if let Some(diagnostic) = provider_termination
+                .as_ref()
+                .map(|termination| termination.reason.as_str())
+                .or(provider_diagnostic.as_deref())
+            {
                 let dispatches = owned.workflow_fail_provider_prompt(
                     session_id,
                     &completion.completed,
@@ -266,67 +276,54 @@ impl KernelRuntimeState {
             } else {
                 None
             };
-            let submit_result = self
-                .with_app_side_effect(|app| {
-                    app.ensure_remote_agent_binding_protocol(&remote_execution)?;
-                    let relay_config = app.relay_config_for_remote_execution(&remote_execution);
-                    app.block_on_relay_future(
-                        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                            &relay_config,
-                            ClientTarget {
-                                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                                daemon_alias: None,
-                            },
-                            RelayPeerRequest::SubmitLeasedPrompt {
-                                leased_agent_id: remote_execution.leased_agent_id.clone(),
-                                expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile::from(&app.agents().get_agent(target_agent_id)?),
-                                prompt: remote_prompt,
-                                hidden_system_context: started_next.hidden_system_context().to_string(),
-                                attachments,
-                                workflow_context,
-                                git_context: Some(remote_git_turn_context_for_prompt(
-                                    app,
-                                    session_id,
-                                    target_agent_id,
-                                    started_next,
-                                )),
-                                required_mcps,
-                                required_skills,
-                                remote_extension_manifest,
-                            },
-                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-                        ),
-                    )
-                })
-                .await?;
-            if let RelayPeerResponse::LeasedPromptSubmitted {
-                provider_run_id, ..
-            } = submit_result
-            {
-                owned
-                    .agent_store
-                    .set_remote_execution_active_worker_provider_run_id(
-                        target_agent_id,
-                        Some(provider_run_id.clone()),
-                    )?;
-                owned.mark_active_prompt_delivery(
-                    session_id,
-                    target_agent_id,
-                    started_next.id(),
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(provider_run_id.clone()),
-                    None,
-                )?;
-                let _ = owned.session_snapshot(session_id)?;
-                owned.echo_promoted_queued_prompt_to_attachments(
-                    session_id,
-                    &provider_run_id,
-                    started_next.id(),
-                    started_next.source_attachment_id(),
-                    started_next.prompt(),
-                    started_next.attachments(),
-                );
-            }
+            let session = owned.session_store.get_session(session_id)?;
+            let mut dispatch = crate::app::KernelRemotePromptDispatch {
+                session_id: session_id.to_string(),
+                agent_id: target_agent_id.to_string(),
+                prompt_id: started_next.id().to_string(),
+                worker_kernel_id: remote_execution.worker_kernel_id.clone(),
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                relay_url: remote_execution.relay_url.clone(),
+                relay_token: remote_execution.relay_token.clone(),
+                source_attachment_id: started_next.source_attachment_id().to_string(),
+                prompt: remote_prompt.clone(),
+                hidden_system_context: started_next.hidden_system_context().to_string(),
+                attachments: started_next.attachments().to_vec(),
+                workspace_live_sync_mode: Some(
+                    crate::provider::provider_workspace_live_sync_mode_for_session(
+                        agent.provider(),
+                        &owned.config_projection.snapshot(),
+                        Some(&session),
+                    ),
+                ),
+                prompt_origin: started_next.prompt_origin(),
+                external_provider: started_next.external_provider().map(str::to_string),
+                external_provider_session_id: started_next
+                    .external_provider_session_id()
+                    .map(str::to_string),
+                external_provider_turn_id: started_next
+                    .external_provider_turn_id()
+                    .map(str::to_string),
+                workflow_context,
+            };
+            let provider_run_id = super::remote_prompt_worker_submission_runtime::submit_remote_prompt_to_worker_with_binding_refresh(
+                self,
+                &mut dispatch,
+                remote_prompt,
+                attachments,
+                required_mcps,
+                required_skills,
+                remote_extension_manifest,
+            )
+            .await?;
+            owned.echo_promoted_queued_prompt_to_attachments(
+                session_id,
+                &provider_run_id,
+                started_next.id(),
+                started_next.source_attachment_id(),
+                started_next.prompt(),
+                started_next.attachments(),
+            );
         }
         Ok(Some(completion))
     }
@@ -353,43 +350,6 @@ fn remote_prompt_completion_should_wait_for_binding_repair(
     };
     current_binding.leased_agent_id != attempted_binding.leased_agent_id
         || current_binding.active_worker_provider_run_id.is_none()
-}
-
-fn remote_git_turn_context_for_prompt(
-    app: &crate::app::DaemonApp,
-    session_id: &str,
-    agent_id: &str,
-    prompt: &crate::session::PromptQueueItem,
-) -> crate::transport::relay_peer::RemoteGitTurnContext {
-    let workspace_live_sync_mode =
-        app.sessions()
-            .get_session(session_id)
-            .ok()
-            .and_then(|session| {
-                app.agents().get_agent(agent_id).ok().map(|agent| {
-                    crate::provider::provider_workspace_live_sync_mode_for_session(
-                        agent.provider(),
-                        app.config(),
-                        Some(&session),
-                    )
-                })
-            });
-    crate::transport::relay_peer::RemoteGitTurnContext {
-        home_session_id: session_id.to_string(),
-        home_agent_id: agent_id.to_string(),
-        home_prompt_id: prompt.id().to_string(),
-        home_turn_id: prompt.id().to_string(),
-        source_attachment_id: Some(prompt.source_attachment_id().to_string()),
-        workspace_live_sync_mode,
-        prompt_origin: Some(prompt.prompt_origin()),
-        external_provider: prompt.external_provider().map(str::to_string),
-        external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
-        external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
-            prompt.prompt(),
-            prompt.attachments(),
-        ),
-    }
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::error::DaemonError;
 
 const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 2;
+const DIRECTORY_CONTEXT_SCHEMA_VERSION: u32 = 3;
 const MAX_REPOSITORIES: usize = 32;
 const MAX_OVERLAY_FILES_PER_REPOSITORY: usize = 20_000;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -44,6 +45,20 @@ const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
 pub enum DevelopmentRepositoryRole {
     Primary,
     Supporting,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DevelopmentWorkspaceKind {
+    #[default]
+    Git,
+    Directory,
+}
+
+impl DevelopmentWorkspaceKind {
+    pub(crate) fn is_git(&self) -> bool {
+        *self == Self::Git
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +94,10 @@ pub struct DevelopmentContextManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DevelopmentRepositoryManifest {
+    #[serde(default, skip_serializing_if = "DevelopmentWorkspaceKind::is_git")]
+    pub workspace_kind: DevelopmentWorkspaceKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<String>,
     pub repository_id: String,
     pub source_binding_sha256: String,
     pub logical_name: String,
@@ -149,6 +168,8 @@ pub struct DevelopmentContextImportRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DevelopmentImportedRepository {
+    #[serde(default, skip_serializing_if = "DevelopmentWorkspaceKind::is_git")]
+    pub workspace_kind: DevelopmentWorkspaceKind,
     pub repository_id: String,
     pub role: DevelopmentRepositoryRole,
     pub target_directory: String,
@@ -199,6 +220,7 @@ impl ManifestMemoryBudget {
 }
 
 mod archive;
+mod directory;
 mod export;
 mod git;
 mod import;

@@ -6,7 +6,9 @@ pub(super) fn attached_external_observer_targets(
 ) -> Vec<AttachedExternalObserverTarget> {
     let inputs = ExternalObserverRuntimeInputs::capture(app, responsive_targets_only);
     let session_store = app.session_state_store();
-    attached_external_observer_targets_from_inputs(&inputs, &session_store)
+    let mut targets = attached_external_observer_targets_from_inputs(&inputs, &session_store);
+    reserve_external_observation_generations(app, &mut targets);
+    targets
 }
 
 #[derive(Clone)]
@@ -414,6 +416,7 @@ pub(super) fn attached_external_observer_target_from_import(
         observed_cursor: import.observed_cursor.clone(),
         cursor_source: AttachedExternalObserverCursorSource::Imported(import),
         needs_responsive_refresh: true,
+        observation_generation: 0,
     }
 }
 
@@ -513,7 +516,22 @@ pub(super) fn attached_external_observer_target_from_provider_session(
         observed_cursor: cursor_store.get(&cursor_key),
         cursor_source: AttachedExternalObserverCursorSource::CharioxOwned(cursor_key),
         needs_responsive_refresh,
+        observation_generation: 0,
     })
+}
+
+pub(super) fn reserve_external_observation_generations(
+    app: &DaemonApp,
+    targets: &mut [AttachedExternalObserverTarget],
+) {
+    let projection = app.session_state_projection_store();
+    for target in targets {
+        target.observation_generation = projection.begin_external_observation(
+            &target.session_id,
+            &target.agent_id,
+            &target.external_session_id,
+        );
+    }
 }
 
 pub(super) fn attached_observer_target_key(target: &AttachedExternalObserverTarget) -> String {

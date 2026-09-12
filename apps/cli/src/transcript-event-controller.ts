@@ -111,8 +111,10 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
     deps.scrollTranscriptToBottom()
   }
 
-  const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
-    deps.appendEntry({ role: "notice", text, emphasis })
+  const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted", mergeKey?: string) => {
+    deps.appendEntry({ role: "notice", text, emphasis,
+      ...(mergeKey ? { mergeKey, turnTracking: "none" as const } : {}),
+    })
     deps.syncVisibleTranscriptPreview()
     deps.updateSessionChrome()
   }

@@ -16,6 +16,10 @@ const providerRuntimeBindUrl = new URL(
   "../deploy/managed-kernel/verify-provider-runtime-bind.sh",
   import.meta.url,
 )
+const publicationAccessDrillUrl = new URL(
+  "../deploy/managed-kernel/verify-slice-publication-access.sh",
+  import.meta.url,
+)
 const versionsUrl = new URL("../deploy/managed-kernel/provider-versions.env", import.meta.url)
 const publicationDockerfileUrl = new URL("../docker/publication/Dockerfile", import.meta.url)
 const sliceDockerfileUrl = new URL("../apps/kernel/slice-linux-docker/docker/Dockerfile", import.meta.url)
@@ -27,6 +31,14 @@ const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-do
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
 const installerUrl = new URL("../deploy/managed-kernel/install-image.sh", import.meta.url)
 const publicationAccessUrl = new URL("../apps/kernel/slice-linux-docker/managed-publication-access.sh", import.meta.url)
+const sliceDevelopmentRuntimeStateUrl = new URL(
+  "../apps/kernel/src/runtime/state/slice_development_runtime_state.rs",
+  import.meta.url,
+)
+const sliceEmptyDevelopmentUrl = new URL(
+  "../apps/kernel/src/runtime/state/slice_empty_development.rs",
+  import.meta.url,
+)
 const managedBrokerUrl = new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url)
 const rootlessNamespaceUrl = new URL(
   "../apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh",
@@ -78,6 +90,7 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /configure_subid_range \/etc\/subgid --add-subgids/)
   assert.match(script, /requested subordinate ID range overlaps/)
   assert.match(script, /systemctl start chariox-rootless-docker\.service/)
+  assert.match(script, /^  dbus-user-session \\$/m)
   assert.match(script, /runuser -u chariox-docker -- env DOCKER_HOST=unix:\/\/\/run\/chariox-docker\/docker\.sock docker info/)
   assert.match(script, /slice_base_image=node:22\.17\.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c/)
   assert.match(script, /docker pull "\$slice_base_image"/)
@@ -91,6 +104,16 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.doesNotMatch(script, /usermod .*--groups docker chariox/)
   assert.doesNotMatch(script, /enable --now docker\.service/)
   assert.match(script, /cloud-init clean --logs --machine-id --seed/)
+  assert.match(script, /passwd --lock root/)
+  assert.match(script, /chage -d "\$\(date -u \+%Y-%m-%d\)" -M 99999 -I -1 -E -1 root/)
+  assert.match(script, /PasswordAuthentication no/)
+  assert.match(script, /KbdInteractiveAuthentication no/)
+  assert.match(script, /PermitRootLogin prohibit-password/)
+  assert.match(script, /sshd -T/)
+  assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
+  assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
+  assert.doesNotMatch(script, /install[^\n]*\/dev\/stdin/)
+  assert.match(script, /managed_sshd_tmp=\$\(mktemp\)/)
   assert.match(
     script,
     /rm -rf \/var\/lib\/apt\/lists\/\* \/tmp\/chariox-managed-release \/root\/\.cache \/root\/\.npm \/root\/\.ssh/,
@@ -307,7 +330,7 @@ test("managed image and publication runtimes pin the same provider releases", as
   )
   const dockerfile = await readFile(publicationDockerfileUrl, "utf8")
   assert.deepEqual(versions, {
-    CHARIOX_CODEX_VERSION: "0.144.0",
+    CHARIOX_CODEX_VERSION: "0.144.5",
     CHARIOX_OPENCODE_VERSION: "1.18.23",
     CHARIOX_CLAUDE_VERSION: "2.1.212",
   })
@@ -333,11 +356,14 @@ test("managed slice image locks every network and compiler input", async () => {
   assert.match(dockerfile, /npm_config_cache=\/tmp\/chariox-npm-cache/)
   assert.match(dockerfile, /node_modules\/\.bin\/pnpm --version/)
   assert.match(dockerfile, /rm -rf \/tmp\/chariox-npm-cache \/root\/\.npm/)
-  assert.doesNotMatch(dockerfile, /^# syntax=/m)
+  assert.match(
+    dockerfile,
+    /^# syntax=docker\/dockerfile:1@sha256:[a-f0-9]{64}$/m,
+  )
   assert.doesNotMatch(dockerfile, /npm install|rustup\.rs|deb\.nodesource\.com/)
   assert.deepEqual(toolchainPackage.dependencies, {
     "@anthropic-ai/claude-code": "2.1.212",
-    "@openai/codex": "0.144.0",
+    "@openai/codex": "0.144.5",
     "opencode-ai": "1.18.23",
     pnpm: "11.22.0",
     ws: "8.21.3",
@@ -378,9 +404,16 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.doesNotMatch(rootless, /SupplementaryGroups=chariox-slice/)
   assert.match(rootless, /Environment=PATH=\/usr\/local\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin/)
   assert.match(rootless, /^ProtectKernelTunables=false$/m)
-  assert.match(rootless, /^RestrictSUIDSGID=false$/m)
-  assert.doesNotMatch(rootless, /^RestrictSUIDSGID=true$/m)
-  assert.match(rootless, /--exec-opt native\.cgroupdriver=cgroupfs/)
+  assert.match(rootless, /^RestrictSUIDSGID=true$/m)
+  assert.match(rootless, /ExecStart=.*managed-rootless-service\.sh start/)
+  assert.match(rootless, /ExecStopPost=.*managed-rootless-service\.sh stop/)
+  assert.match(rootless, /ExecStartPost=.*managed-rootless-service\.sh ready/)
+  const engine = await readFile(new URL("../apps/kernel/slice-linux-docker/chariox-rootless-engine.service", import.meta.url), "utf8")
+  assert.match(engine, /--exec-opt native\.cgroupdriver=systemd/)
+  assert.match(engine, /^Delegate=cpu cpuset io memory pids$/m)
+  assert.doesNotMatch(engine, /^User=/m)
+  assert.match(installer, /user@\$docker_uid\.service\.d/)
+  assert.match(installer, /loginctl enable-linger chariox-docker/)
   assert.match(rootless, /ReadWritePaths=.*\/var\/lib\/chariox-slice-share\/\.broker-private/)
   assert.match(rootless, /ReadWritePaths=.*\/var\/lib\/chariox-slice-share\/slices\/development/)
   assert.doesNotMatch(rootless, /ReadWritePaths=.*\/var\/lib\/chariox(?:\/home)?(?:\s|$)/)
@@ -390,7 +423,12 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(broker, /enter-rootless-docker-namespace\.sh \/usr\/bin\/node/)
   assert.match(broker, /CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock/)
   assert.match(rootlessNamespace, /nsenter --target "\$child_pid" --user --mount/)
-  assert.doesNotMatch(rootlessNamespace, /nsenter[^\n]*--net/)
+  assert.match(rootlessNamespace, /nsenter --target "\$child_pid" --user --mount --net -- "\$@"/)
+  assert.match(rootlessNamespace, /\[ -L "\/proc\/\$child_pid\/ns\/net" \]/)
+  const preparation = await readFile(scriptUrl, "utf8")
+  assert.match(preparation, /"\$broker_namespace" docker build --pull --tag chariox-broker-network-check:local -/)
+  assert.match(preparation, /DOCKER_BUILDKIT=1/)
+  assert.match(preparation, /# syntax=docker\/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32/)
   assert.doesNotMatch(installer, /usermod --append --groups chariox-slice chariox-docker/)
   assert.match(installer, /setfacl -P -m "u:chariox-docker:--x" -- "\$install_root\/var\/lib\/chariox-slice-share"/)
   assert.match(installer, /install -d -o chariox-docker -g chariox-slice -m 2710/)
@@ -410,12 +448,36 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.doesNotMatch(managedBroker, /CHARIOX_SLICE_CLOUD_RELAY_CONFIG/)
 })
 
+test("recovered managed development publications verify ACLs without rewriting content", async () => {
+  const accessHelper = await readFile(publicationAccessUrl, "utf8")
+  const runtimeState = await readFile(sliceDevelopmentRuntimeStateUrl, "utf8")
+  const emptyDevelopment = await readFile(sliceEmptyDevelopmentUrl, "utf8")
+  const accessDrill = await readFile(publicationAccessDrillUrl, "utf8")
+
+  assert.match(accessHelper, /\[ "\$action" = verify \]/)
+  assert.match(accessHelper, /verify_publication_access/)
+  assert.match(runtimeState, /expected_publication\.is_some\(\).*"verify"/s)
+  assert.match(emptyDevelopment, /expected\.is_some\(\).*"verify"/s)
+  assert.doesNotMatch(
+    accessHelper.match(/elif \[ "\$action" = verify \]; then(?<branch>.*?)\n  else/s)?.groups?.branch ?? "",
+    /setfacl/,
+  )
+  assert.match(accessDrill, /"\$helper" verify/)
+  assert.match(accessDrill, /\[ "\$before_verify" = "\$after_verify" \]/)
+  assert.match(
+    accessDrill,
+    /runuser -u chariox -- sh -c 'umask 077; test "\$\(cat "\$1\/mapped-created"\)" = mapped; mkdir "\$1\/host-directory"'/,
+  )
+})
+
 test("managed slice provider namespaces receive the required outer Docker compatibility policy", async () => {
   const provisioner = await readFile(sliceProvisionerUrl, "utf8")
 
   assert.match(provisioner, /--security-opt seccomp=unconfined/)
-  assert.match(provisioner, /--security-opt apparmor=unconfined/)
+  assert.match(provisioner, /SLICE_APPARMOR_PROFILE="\$\{CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined\}"/)
+  assert.match(provisioner, /--security-opt apparmor="\$SLICE_APPARMOR_PROFILE"/)
   assert.match(provisioner, /--security-opt systempaths=unconfined/)
+  assert.match(provisioner, /SLICE_APPARMOR_PROFILE.*\^\[A-Za-z0-9\]/)
   assert.match(provisioner, /CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1/)
 })
 

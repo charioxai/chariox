@@ -74,10 +74,17 @@ export type CompletedGitTurnActionProjection = {
   external_provider_turn_id?: string | null
   completed_at_ms: number
   settlement_status: "completed" | "cancelled" | "failed"
+  provider_termination?: ProviderRunTermination | null
   duration_ms?: number | null
   changed_paths: string[]
   undo_available: boolean
   undo_unavailable_reason?: string | null
+}
+
+export type ProviderRunTermination = {
+  category: "process_exit" | "runtime_failure" | "transport_failure" | "unknown"
+  reason: string
+  timestamp_ms: number
 }
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"

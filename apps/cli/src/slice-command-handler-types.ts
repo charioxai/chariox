@@ -1,4 +1,6 @@
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
+import type { SliceDisplayBackend } from "@chariox/kernel-client/kernel-types"
+import type { RoomViewerOpenResult, RoomViewerTarget } from "./room-command-handler.js"
 import type {
   SliceBackupRecord,
   SliceDisplayEndpoint,
@@ -14,6 +16,7 @@ export type SliceCreateOptions = {
   backend?: "local_docker" | "ssh_docker"
   os?: string
   displayMode?: "headless" | "headed"
+  displayBackend?: SliceDisplayBackend
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
@@ -37,6 +40,11 @@ export type SliceCommandHandlerDeps = {
   currentWorkspaceTarget: () => string
   currentWorktreeTarget: () => string
   focusedAgentId: () => string | null
+  isAttached?: () => boolean
+  sessionId?: () => string
+  attachmentId?: () => string | null
+  sendRoomEnvironmentRequest?: <TResponse>(request: unknown) => Promise<TResponse>
+  openRoomViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
@@ -57,4 +65,5 @@ export type SliceCommandHandlerDeps = {
   getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
   resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
   createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
+  restoreSliceBackup?: (sliceRef: string, backupRef: string) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord }>
 }

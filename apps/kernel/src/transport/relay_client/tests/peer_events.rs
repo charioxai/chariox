@@ -29,9 +29,19 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn incoming_peer_events_project_runtime_to_the_home_session() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _env_guard = crate::env_lock::lock();
+    let temp_home = std::env::temp_dir().join(format!(
+        "chariox-relay-peer-event-test-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms(),
+    ));
+    let old_chariox_home = std::env::var_os("CHARIOX_HOME");
+    unsafe {
+        std::env::set_var("CHARIOX_HOME", &temp_home);
+    }
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap"),
     ));
@@ -72,6 +82,8 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         )
     };
     let sender_private_key = relay_crypto::generate_private_key_base64();
+    let sender_public_key = relay_crypto::public_key_from_private_key_base64(&sender_private_key)
+        .expect("sender public key should derive");
     let plaintext = serde_json::to_vec(&RelayPeerEvent::LeasedRuntimeProjection {
         home_session_id: session_id.clone(),
         home_agent_id: agent_id.clone(),
@@ -88,6 +100,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
             home_prompt_id: Some(prompt_id),
+            provider_termination: None,
         }],
     })
     .expect("peer event should serialize");
@@ -104,9 +117,33 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         INTERACTIVE_COMMAND_QUEUE_LIMIT,
         provider_runtime_lanes,
     ));
-    handle_daemon_peer_event(&router, encrypted_event)
-        .await
-        .expect("peer event should project");
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let caller_identity = chariox_relay::protocol::RelayCallerIdentity {
+        realm_id: "realm-1".to_string(),
+        subject: "worker-1".to_string(),
+        subject_kind: chariox_relay::auth::RelaySubjectKind::Kernel,
+        expires_at_ms: u64::MAX,
+        token_id: Some("worker-token-1".to_string()),
+        user_id: Some("user-1".to_string()),
+        public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+            &sender_public_key,
+        )),
+    };
+    handle_daemon_peer_event(
+        &router,
+        &state,
+        "worker-1",
+        Some(caller_identity),
+        encrypted_event,
+    )
+    .await
+    .expect("peer event should project");
+    state.write().await.forget_peer_public_key("worker-1");
+    assert_eq!(
+        state.read().await.peer_public_key("worker-1").as_deref(),
+        Some(sender_public_key.as_str()),
+        "an authenticated projection must retain the worker key after ephemeral cache loss"
+    );
 
     let mut app = app.lock().await;
     let outputs = app
@@ -126,6 +163,14 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         .drain_completion_records(&session_id, &attachment_id);
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
+
+    unsafe {
+        match old_chariox_home {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+    let _ = std::fs::remove_dir_all(temp_home);
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_connection() {

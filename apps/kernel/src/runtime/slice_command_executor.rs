@@ -8,6 +8,7 @@ use crate::local::{
     ImportSliceProviderAuthRequest, LocalDaemonRequest, LocalDaemonResponse,
     RemoveSliceProviderAuthRequest, StartSliceProviderLoginRequest,
 };
+use crate::runtime::command::KernelCaller;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
@@ -15,12 +16,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use display_endpoint::execute_get_slice_display_endpoint_request;
+pub(crate) use display_endpoint::register_room_selkies_display_endpoint;
 use lifecycle::{
     execute_create_slice_backup_request, execute_create_slice_request,
     execute_delete_slice_request, execute_get_slice_logs_request, execute_get_slice_request,
     execute_get_slice_state_status_request, execute_list_slice_audit_request,
     execute_list_slices_request, execute_reset_slice_state_request,
-    execute_save_slice_state_request, execute_start_slice_request, execute_stop_slice_request,
+    execute_restore_slice_backup_request, execute_save_slice_state_request,
+    execute_start_slice_request, execute_stop_slice_request,
 };
 use provider_auth::{
     merge_profile_scoped_provider_auth, normalized_slice_provider, scoped_provider_auth_summaries,
@@ -31,22 +34,50 @@ pub(crate) async fn execute_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
-    owner_user_id: &str,
+    caller: &KernelCaller,
+    managed_kernel_registration: Option<
+        &crate::managed_bootstrap::ConfirmedManagedKernelRegistration,
+    >,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner_user_id = caller
+        .user_id
+        .as_deref()
+        .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
     match request {
         LocalDaemonRequest::ListSlices(request) => {
             execute_list_slices_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateSlice(request) => {
-            execute_create_slice_request(runtime_state, request).await
+            execute_create_slice_request(
+                runtime_state,
+                managed_slice_create_request(request, managed_kernel_registration),
+            )
+            .await
         }
         LocalDaemonRequest::GetSlice(request) => {
             execute_get_slice_request(runtime_state, request).await
         }
         LocalDaemonRequest::StartSlice(request) => {
-            execute_start_slice_request(runtime_state, config_projection, relay_state, request)
-                .await
+            let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+            let target_git_available = managed_kernel_registration.is_some()
+                && crate::managed_context::scm::GitCredentialCommandContext::source_from_process()
+                    .is_ok_and(|context| {
+                        crate::managed_context::scm::github_credential_is_available(&context)
+                    });
+            let inherit_git = managed_slice_should_inherit_git_credentials(
+                &slice.provider_auth,
+                managed_kernel_registration,
+                target_git_available,
+            );
+            execute_start_slice_request(
+                runtime_state,
+                config_projection,
+                relay_state,
+                request,
+                inherit_git,
+            )
+            .await
         }
         LocalDaemonRequest::StopSlice(request) => {
             execute_stop_slice_request(runtime_state, config_projection, relay_state, request).await
@@ -87,6 +118,7 @@ pub(crate) async fn execute_slice_request(
                 runtime_state,
                 config_projection,
                 relay_state,
+                caller,
                 request,
             )
             .await
@@ -110,11 +142,45 @@ pub(crate) async fn execute_slice_request(
         LocalDaemonRequest::CreateSliceBackup(request) => {
             execute_create_slice_backup_request(runtime_state, config_projection, request).await
         }
+        LocalDaemonRequest::RestoreSliceBackup(request) => {
+            execute_restore_slice_backup_request(runtime_state, config_projection, request).await
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "slice request",
             message: "unsupported slice request".to_string(),
         }),
     }
+}
+
+fn managed_slice_create_request(
+    mut request: crate::local::CreateSliceRequest,
+    registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+) -> crate::local::CreateSliceRequest {
+    if request.backend == crate::slice::SliceBackendKind::LocalDocker
+        && request.development.is_none()
+    {
+        request.development = registration
+            .and_then(|registration| registration.context_plan.as_ref())
+            .map(|plan| plan.package_binding().development);
+    }
+    request
+}
+
+fn managed_slice_should_inherit_git_credentials(
+    provider_auth: &[crate::slice_provider_auth::SliceProviderAuthSummary],
+    registration: Option<&crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+    target_git_available: bool,
+) -> bool {
+    registration.is_some()
+        && target_git_available
+        && !provider_auth.iter().any(|summary| {
+            summary.provider == "github"
+                && matches!(
+                    summary.state,
+                    crate::slice_provider_auth::SliceProviderAuthState::Configured
+                        | crate::slice_provider_auth::SliceProviderAuthState::Authenticated
+                )
+        })
 }
 
 pub(crate) async fn execute_import_slice_provider_auth_request(
@@ -440,6 +506,87 @@ fn resolve_local_docker_provider_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
+    use crate::managed_context::package::ManagedContextDevelopmentSelection;
+
+    fn create_request() -> crate::local::CreateSliceRequest {
+        crate::local::CreateSliceRequest {
+            name: "browser-work".to_string(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headed,
+            display_backend: Default::default(),
+            workspace_id: Some("/home/chariox".to_string()),
+            worktree_id: Some("/home/chariox".to_string()),
+            workspace_mount: Some("/home/chariox".to_string()),
+            development: None,
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: Vec::new(),
+            from_saved_state: None,
+            base: Some(crate::local::SliceCreateBase::Clean),
+        }
+    }
+
+    fn empty_registration() -> ConfirmedManagedKernelRegistration {
+        ConfirmedManagedKernelRegistration {
+            environment_id: "environment-1".to_string(),
+            machine_id: "machine-1".to_string(),
+            kernel_id: "kernel-1".to_string(),
+            context_plan: Some(ManagedKernelContextPlan::empty_for_tests("context-1")),
+        }
+    }
+
+    #[test]
+    fn client_slice_create_inherits_the_managed_development_plan() {
+        let request = managed_slice_create_request(create_request(), Some(&empty_registration()));
+
+        assert_eq!(
+            request.development,
+            Some(ManagedContextDevelopmentSelection::Empty)
+        );
+    }
+
+    #[test]
+    fn ordinary_and_explicit_slice_development_are_not_rewritten() {
+        let ordinary = managed_slice_create_request(create_request(), None);
+        assert_eq!(ordinary.development, None);
+
+        let mut explicit = create_request();
+        explicit.development = Some(ManagedContextDevelopmentSelection::Empty);
+        let explicit = managed_slice_create_request(explicit, Some(&empty_registration()));
+        assert_eq!(
+            explicit.development,
+            Some(ManagedContextDevelopmentSelection::Empty)
+        );
+    }
+
+    #[test]
+    fn managed_slice_inherits_target_owned_git_credentials_once() {
+        let registration = empty_registration();
+        assert!(managed_slice_should_inherit_git_credentials(
+            &[],
+            Some(&registration),
+            true,
+        ));
+
+        let configured = vec![auth("github", "github.com")];
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &configured,
+            Some(&registration),
+            true,
+        ));
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &[],
+            None,
+            true,
+        ));
+        assert!(!managed_slice_should_inherit_git_credentials(
+            &[],
+            Some(&registration),
+            false,
+        ));
+    }
 
     fn auth(provider: &str, account: &str) -> crate::slice_provider_auth::SliceProviderAuthSummary {
         crate::slice_provider_auth::SliceProviderAuthSummary {

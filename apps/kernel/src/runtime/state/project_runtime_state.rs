@@ -529,6 +529,8 @@ mod tests {
                 primary_repository_id: "repository-primary".to_string(),
                 repositories: vec![
                     crate::local::ManagedContextRepositoryLaunchTarget {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-supporting".to_string(),
                         role: crate::managed_context::development::DevelopmentRepositoryRole::Supporting,
                         target_directory: "supporting".to_string(),
@@ -536,6 +538,8 @@ mod tests {
                         head_sha: "b".repeat(40),
                     },
                     crate::local::ManagedContextRepositoryLaunchTarget {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-primary".to_string(),
                         role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                         target_directory: "primary".to_string(),

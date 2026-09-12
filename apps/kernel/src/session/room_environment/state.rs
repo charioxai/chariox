@@ -1,19 +1,27 @@
 use std::collections::BTreeMap;
 
 use super::action::{
-    ActionAdmission, EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentActionHistoryPage,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode,
     InputTarget,
 };
-use super::action_ledger::EnvironmentActionLedger;
+use super::action_ledger::{
+    ActionCancellationEffect, ActionRecoveryEffect, ActionTakeoverEffect, EnvironmentActionLedger,
+};
+use super::elements::{ElementReferenceRegistry, EnvironmentElementTarget};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
 use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, RoomEnvironmentSnapshot,
+    EnvironmentLifecycle, EnvironmentPointer, EnvironmentPointerPosition,
+    EnvironmentTabObservation, EnvironmentTabRuntimeBinding, RoomEnvironmentSnapshot,
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
+
+const DEFAULT_ACTION_QUEUE_CAPACITY: usize = 128;
+const MAX_ACTION_HISTORY_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomEnvironment {
@@ -25,8 +33,11 @@ pub struct RoomEnvironment {
     viewport: CanonicalViewport,
     health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
     actors: BTreeMap<String, EnvironmentActor>,
+    pointers: BTreeMap<String, EnvironmentPointer>,
     tabs: TabRegistry,
+    element_references: ElementReferenceRegistry,
     action_ledger: EnvironmentActionLedger,
+    browser_controller_recovering: bool,
     event_log: EnvironmentEventLog,
 }
 
@@ -45,6 +56,22 @@ impl RoomEnvironment {
         viewport: CanonicalViewport,
         event_capacity: usize,
     ) -> Result<Self, EnvironmentError> {
+        Self::new_with_capacities(
+            session_id,
+            environment_id,
+            viewport,
+            event_capacity,
+            DEFAULT_ACTION_QUEUE_CAPACITY,
+        )
+    }
+
+    pub(crate) fn new_with_capacities(
+        session_id: impl Into<String>,
+        environment_id: impl Into<String>,
+        viewport: CanonicalViewport,
+        event_capacity: usize,
+        action_queue_capacity: usize,
+    ) -> Result<Self, EnvironmentError> {
         Ok(Self {
             session_id: session_id.into(),
             environment_id: environment_id.into(),
@@ -54,8 +81,11 @@ impl RoomEnvironment {
             viewport,
             health: default_component_health(),
             actors: BTreeMap::new(),
+            pointers: BTreeMap::new(),
             tabs: TabRegistry::new(),
-            action_ledger: EnvironmentActionLedger::new(event_capacity),
+            element_references: ElementReferenceRegistry::new(),
+            action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
+            browser_controller_recovering: false,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -70,12 +100,25 @@ impl RoomEnvironment {
             health: self.health.values().cloned().collect(),
             viewport: self.viewport.clone(),
             actors: self.actors.values().cloned().collect(),
+            pointers: self.pointers.values().cloned().collect(),
             tabs,
             focused_tab_id,
             actions: self.action_ledger.actions(),
             input_ownership: self.action_ledger.ownership(),
+            pending_input_takeovers: self.action_ledger.pending_takeovers(),
             event_cursor: self.event_log.cursor(),
         }
+    }
+
+    pub fn action_history(
+        &self,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> EnvironmentActionHistoryPage {
+        self.action_ledger.action_history(
+            before_sequence,
+            limit.clamp(1, MAX_ACTION_HISTORY_PAGE_SIZE),
+        )
     }
 
     pub fn transition_to(&mut self, next: EnvironmentLifecycle) -> Result<(), EnvironmentError> {
@@ -89,9 +132,11 @@ impl RoomEnvironment {
         if matches!(
             next,
             EnvironmentLifecycle::Stopped | EnvironmentLifecycle::Failed
-        ) && self.action_ledger.clear_ownership()
-        {
-            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        ) {
+            if self.action_ledger.clear_ownership() {
+                self.emit(EnvironmentEventKind::InputOwnershipChanged);
+            }
+            self.clear_pointers();
         }
         self.emit(EnvironmentEventKind::LifecycleChanged { lifecycle: next });
         Ok(())
@@ -155,19 +200,127 @@ impl RoomEnvironment {
         Ok(tab_id)
     }
 
+    pub(crate) fn reconcile_controller_tabs(
+        &mut self,
+        observations: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) {
+        let changed = self
+            .tabs
+            .reconcile_controller_tabs(observations, focused_runtime_target_id);
+        let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
+        if changed {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+        if input_ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+    }
+
+    pub(crate) fn controller_tab_binding(
+        &self,
+        tab_id: &str,
+    ) -> Result<EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.tabs.controller_binding(tab_id)
+    }
+
+    pub(crate) fn tab_id_for_controller_target(
+        &self,
+        controller_target_id: &str,
+    ) -> Option<String> {
+        self.tabs.tab_id_for_controller_target(controller_target_id)
+    }
+
+    pub(crate) fn register_element_references(
+        &mut self,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, String>, EnvironmentError> {
+        self.element_references.register(
+            &self.tabs,
+            self.runtime_generation,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_element_reference(
+        &self,
+        reference_id: &str,
+    ) -> Result<EnvironmentElementTarget, EnvironmentError> {
+        self.element_references
+            .resolve(&self.tabs, self.runtime_generation, reference_id)
+    }
+
     pub fn register_actor(&mut self, actor: EnvironmentActor) -> Result<(), EnvironmentError> {
-        if let Some(existing) = self.actors.get_mut(&actor.actor_id) {
+        let changed = if let Some(existing) = self.actors.get_mut(&actor.actor_id) {
             if existing.kind != actor.kind {
                 return Err(EnvironmentError::ActorKindConflict {
                     actor_id: actor.actor_id,
                 });
             }
-            existing.display_label = actor.display_label;
-            existing.presence = EnvironmentActorPresence::Present;
+            if existing.display_label == actor.display_label
+                && existing.presence == EnvironmentActorPresence::Present
+            {
+                false
+            } else {
+                existing.display_label = actor.display_label;
+                existing.presence = EnvironmentActorPresence::Present;
+                true
+            }
         } else {
             self.actors.insert(actor.actor_id.clone(), actor);
+            true
+        };
+        if changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
         }
-        self.emit(EnvironmentEventKind::ActorsChanged);
+        Ok(())
+    }
+
+    pub fn reconcile_actors(
+        &mut self,
+        actors: Vec<EnvironmentActor>,
+    ) -> Result<(), EnvironmentError> {
+        let mut reconciled = self.actors.clone();
+        for actor in reconciled.values_mut() {
+            actor.presence = EnvironmentActorPresence::Disconnected;
+        }
+        for mut actor in actors {
+            if let Some(existing) = reconciled.get(&actor.actor_id) {
+                if existing.kind != actor.kind {
+                    return Err(EnvironmentError::ActorKindConflict {
+                        actor_id: actor.actor_id,
+                    });
+                }
+            }
+            actor.presence = EnvironmentActorPresence::Present;
+            reconciled.insert(actor.actor_id.clone(), actor);
+        }
+        if reconciled != self.actors {
+            self.actors = reconciled;
+            self.emit(EnvironmentEventKind::ActorsChanged);
+            let present_actor_ids = self
+                .actors
+                .iter()
+                .filter_map(|(actor_id, actor)| {
+                    (actor.presence == EnvironmentActorPresence::Present)
+                        .then_some(actor_id.clone())
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let pointer_count = self.pointers.len();
+            self.pointers
+                .retain(|actor_id, _| present_actor_ids.contains(actor_id));
+            if self.pointers.len() != pointer_count {
+                self.emit(EnvironmentEventKind::PointersChanged);
+            }
+        }
         Ok(())
     }
 
@@ -183,7 +336,126 @@ impl RoomEnvironment {
             })?
             .presence = presence;
         self.emit(EnvironmentEventKind::ActorsChanged);
+        if presence != EnvironmentActorPresence::Present {
+            self.remove_pointer(actor_id);
+        }
         Ok(())
+    }
+
+    pub fn update_pointer(
+        &mut self,
+        actor_id: &str,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<(), EnvironmentError> {
+        let actor = self
+            .actors
+            .get(actor_id)
+            .ok_or_else(|| EnvironmentError::UnknownActor {
+                actor_id: actor_id.to_string(),
+            })?;
+        if actor.presence != EnvironmentActorPresence::Present {
+            return Err(EnvironmentError::UnknownActor {
+                actor_id: actor_id.to_string(),
+            });
+        }
+        self.validate_pointer_update(runtime_generation, viewport_revision, position)?;
+        self.apply_pointer(actor_id, viewport_revision, position);
+        Ok(())
+    }
+
+    pub fn update_pointer_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<(), EnvironmentError> {
+        if let Some(existing) = self.actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        self.validate_pointer_update(runtime_generation, viewport_revision, position)?;
+        let actor_id = actor.actor_id.clone();
+        if position.is_none() && !self.pointers.contains_key(&actor_id) {
+            return Ok(());
+        }
+        self.register_actor(actor)?;
+        self.apply_pointer(&actor_id, viewport_revision, position);
+        Ok(())
+    }
+
+    fn validate_pointer_update(
+        &self,
+        runtime_generation: u64,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+        if runtime_generation != self.runtime_generation {
+            return Err(EnvironmentError::StaleRuntimeGeneration {
+                expected: self.runtime_generation,
+                actual: runtime_generation,
+            });
+        }
+        if viewport_revision != self.viewport.revision {
+            return Err(EnvironmentError::StaleViewportRevision {
+                expected: self.viewport.revision,
+                actual: viewport_revision,
+            });
+        }
+        if let Some(position) = position {
+            if position.x >= self.viewport.desktop_pixel_width
+                || position.y >= self.viewport.desktop_pixel_height
+            {
+                return Err(EnvironmentError::PointerOutOfBounds {
+                    x: position.x,
+                    y: position.y,
+                    width: self.viewport.desktop_pixel_width,
+                    height: self.viewport.desktop_pixel_height,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_pointer(
+        &mut self,
+        actor_id: &str,
+        viewport_revision: u64,
+        position: Option<EnvironmentPointerPosition>,
+    ) {
+        let changed = match position {
+            Some(position) => {
+                let pointer = EnvironmentPointer {
+                    actor_id: actor_id.to_string(),
+                    x: position.x,
+                    y: position.y,
+                    viewport_revision,
+                };
+                if self.pointers.get(actor_id) == Some(&pointer) {
+                    false
+                } else {
+                    self.pointers.insert(actor_id.to_string(), pointer);
+                    true
+                }
+            }
+            None => self.pointers.remove(actor_id).is_some(),
+        };
+        if changed {
+            self.emit(EnvironmentEventKind::PointersChanged);
+        }
     }
 
     pub fn update_component_health(
@@ -207,11 +479,42 @@ impl RoomEnvironment {
         &mut self,
         actor_id: &str,
         expected_revision: u64,
-        mut replacement: CanonicalViewport,
+        replacement: CanonicalViewport,
     ) -> Result<(), EnvironmentError> {
         if !self.actors.contains_key(actor_id) {
             return Err(EnvironmentError::UnknownActor {
                 actor_id: actor_id.to_string(),
+            });
+        }
+        self.validate_viewport_update(actor_id, expected_revision)?;
+        self.apply_viewport(actor_id, replacement);
+        Ok(())
+    }
+
+    pub fn update_viewport_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        replacement: CanonicalViewport,
+    ) -> Result<(), EnvironmentError> {
+        self.validate_viewport_update(&actor.actor_id, expected_revision)?;
+        let actor_id = actor.actor_id.clone();
+        self.register_actor(actor)?;
+        self.apply_viewport(&actor_id, replacement);
+        Ok(())
+    }
+
+    fn validate_viewport_update(
+        &self,
+        actor_id: &str,
+        expected_revision: u64,
+    ) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
             });
         }
         if let Some(owner_actor_id) = self.action_ledger.owner(&InputTarget::Desktop) {
@@ -228,33 +531,90 @@ impl RoomEnvironment {
                 actual: expected_revision,
             });
         }
+        Ok(())
+    }
+
+    fn apply_viewport(&mut self, actor_id: &str, mut replacement: CanonicalViewport) {
         replacement.revision = self.viewport.revision + 1;
         replacement.last_actor_id = Some(actor_id.to_string());
         self.viewport = replacement;
+        self.clear_pointers();
         self.emit(EnvironmentEventKind::ViewportChanged {
             revision: self.viewport.revision,
         });
-        Ok(())
     }
 
     pub fn submit_action(
         &mut self,
         request: EnvironmentActionRequest,
     ) -> Result<ActionAdmission, EnvironmentError> {
+        let admission_lifecycle = self.input_lifecycle(request.mode);
         let admission = self.action_ledger.submit(
             request,
-            self.lifecycle,
+            admission_lifecycle,
             self.runtime_generation,
             &self.actors,
             &self.tabs,
         )?;
-        if let ActionAdmission::Accepted { action_id } = &admission {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id: action_id.clone(),
-                state: EnvironmentActionState::Running,
-            });
+        match &admission {
+            ActionAdmission::Accepted { action_id } => {
+                self.emit_action_changed(action_id, EnvironmentActionState::Running);
+            }
+            ActionAdmission::Queued { action_id, .. } => {
+                self.emit_action_changed(action_id, EnvironmentActionState::Queued);
+            }
+            _ => {}
         }
         Ok(admission)
+    }
+
+    pub(crate) fn existing_action(
+        &self,
+        request: &EnvironmentActionRequest,
+    ) -> Result<Option<ActionAdmission>, EnvironmentError> {
+        self.action_ledger.existing(request)
+    }
+
+    pub(crate) fn begin_browser_controller_recovery(&mut self) {
+        self.browser_controller_recovering = true;
+        self.element_references.clear();
+        let effect = self.action_ledger.begin_controller_recovery();
+        self.emit_action_recovery_effect(effect);
+    }
+
+    pub(crate) fn complete_browser_controller_recovery(&mut self) {
+        let effect = self
+            .action_ledger
+            .complete_controller_recovery(self.runtime_generation, &self.tabs);
+        self.browser_controller_recovering = false;
+        self.emit_action_recovery_effect(effect);
+    }
+
+    fn input_lifecycle(&self, mode: EnvironmentMode) -> EnvironmentLifecycle {
+        if self.browser_controller_recovering {
+            return EnvironmentLifecycle::Starting;
+        }
+        if self.lifecycle == EnvironmentLifecycle::Starting
+            && mode == EnvironmentMode::Browser
+            && self.browser_components_ready()
+        {
+            EnvironmentLifecycle::Ready
+        } else {
+            self.lifecycle
+        }
+    }
+
+    fn browser_components_ready(&self) -> bool {
+        [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ]
+        .into_iter()
+        .all(|component| {
+            self.health
+                .get(&component)
+                .is_some_and(|health| health.state == EnvironmentComponentHealthState::Ready)
+        })
     }
 
     pub fn finish_action(
@@ -263,14 +623,94 @@ impl RoomEnvironment {
         terminal: EnvironmentActionTerminal,
     ) -> Result<(), EnvironmentError> {
         let effect = self.action_ledger.finish(action_id, terminal)?;
-        self.emit(EnvironmentEventKind::ActionChanged {
-            action_id: action_id.to_string(),
-            state: effect.state,
-        });
+        self.emit_action_changed(action_id, effect.state);
         if effect.ownership_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        for started_action_id in effect.started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
         Ok(())
+    }
+
+    pub fn cancel_action(
+        &mut self,
+        actor_id: &str,
+        action_id: &str,
+    ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        let ActionCancellationEffect {
+            outcome,
+            action_changed,
+            started_action_ids,
+        } = self
+            .action_ledger
+            .cancel_as_actor(actor_id, action_id, &self.actors)?;
+        if action_changed {
+            let state = match outcome {
+                ActionCancellationOutcome::Cancelled => EnvironmentActionState::Cancelled,
+                ActionCancellationOutcome::CancellationRequested => EnvironmentActionState::Running,
+                ActionCancellationOutcome::AlreadyTerminal { action_state } => action_state,
+            };
+            self.emit_action_changed(action_id, state);
+        }
+        for started_action_id in started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
+        Ok(outcome)
+    }
+
+    pub fn cancel_action_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        action_id: &str,
+    ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        let lifecycle = self
+            .action_ledger
+            .action(action_id)
+            .map(|action| self.input_lifecycle(action.mode))
+            .unwrap_or(self.lifecycle);
+        if !matches!(
+            lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady { lifecycle });
+        }
+        let mut actors = self.actors.clone();
+        if let Some(existing) = actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        actors.insert(actor.actor_id.clone(), actor.clone());
+        let mut action_ledger = self.action_ledger.clone();
+        let ActionCancellationEffect {
+            outcome,
+            action_changed,
+            started_action_ids,
+        } = action_ledger.cancel_as_actor(&actor.actor_id, action_id, &actors)?;
+        let actors_changed = actors != self.actors;
+        self.actors = actors;
+        self.action_ledger = action_ledger;
+        if actors_changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        if action_changed {
+            let state = match outcome {
+                ActionCancellationOutcome::Cancelled => EnvironmentActionState::Cancelled,
+                ActionCancellationOutcome::CancellationRequested => EnvironmentActionState::Running,
+                ActionCancellationOutcome::AlreadyTerminal { action_state } => action_state,
+            };
+            self.emit_action_changed(action_id, state);
+        }
+        for started_action_id in started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
+        Ok(outcome)
     }
 
     pub fn request_takeover(
@@ -278,12 +718,86 @@ impl RoomEnvironment {
         actor_id: &str,
         target: InputTarget,
     ) -> Result<TakeoverOutcome, EnvironmentError> {
-        let (outcome, ownership_changed) =
-            self.action_ledger
-                .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
-        if ownership_changed {
+        let ActionTakeoverEffect {
+            outcome,
+            input_state_changed,
+            cancelled_action_ids,
+            started_action_ids,
+            cancellation_requested_action_ids,
+        } = self
+            .action_ledger
+            .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
+        for action_id in cancelled_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Cancelled);
+        }
+        for action_id in started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        for action_id in cancellation_requested_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        self.action_ledger.compact_terminal_actions();
+        Ok(outcome)
+    }
+
+    pub fn request_takeover_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        target: InputTarget,
+    ) -> Result<TakeoverOutcome, EnvironmentError> {
+        let mode = match &target {
+            InputTarget::BrowserTab(_) => EnvironmentMode::Browser,
+            InputTarget::Desktop => EnvironmentMode::Computer,
+        };
+        let lifecycle = self.input_lifecycle(mode);
+        if !matches!(
+            lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady { lifecycle });
+        }
+
+        let mut actors = self.actors.clone();
+        if let Some(existing) = actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        actors.insert(actor.actor_id.clone(), actor.clone());
+
+        let mut action_ledger = self.action_ledger.clone();
+        let ActionTakeoverEffect {
+            outcome,
+            cancelled_action_ids,
+            started_action_ids,
+            cancellation_requested_action_ids,
+            ..
+        } = action_ledger.request_takeover(&actor.actor_id, target, &actors, &self.tabs)?;
+        let actors_changed = actors != self.actors;
+        let input_state_changed = action_ledger != self.action_ledger;
+        self.actors = actors;
+        self.action_ledger = action_ledger;
+        if actors_changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        for action_id in cancelled_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Cancelled);
+        }
+        for action_id in started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        for action_id in cancellation_requested_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        if input_state_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+        self.action_ledger.compact_terminal_actions();
         Ok(outcome)
     }
 
@@ -305,13 +819,21 @@ impl RoomEnvironment {
     ) -> Result<(), EnvironmentError> {
         self.tabs
             .record_navigation(tab_id, url.into(), title.into())?;
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
         Ok(())
     }
 
     pub fn close_tab(&mut self, tab_id: &str) -> Result<(), EnvironmentError> {
         self.tabs.close(tab_id)?;
+        let input_ownership_changed = self.action_ledger.retain_input_targets(&self.tabs);
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
+        if input_ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
         Ok(())
     }
 
@@ -346,26 +868,75 @@ impl RoomEnvironment {
 
     fn invalidate_runtime(&mut self) {
         self.has_started = true;
+        self.browser_controller_recovering = false;
         self.runtime_generation += 1;
         self.lifecycle = EnvironmentLifecycle::Starting;
         self.tabs.clear();
+        self.clear_pointers();
+        self.element_references.clear();
         self.health = default_component_health();
         let failed_action_ids = self.action_ledger.invalidate_runtime();
         for action_id in failed_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Failed,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }
+        self.action_ledger.compact_terminal_actions();
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
         });
     }
 
+    fn emit_action_recovery_effect(&mut self, effect: ActionRecoveryEffect) {
+        for action_id in effect.failed_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
+        }
+        if effect.ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+        for action_id in effect.started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
+    }
+
+    fn clear_pointers(&mut self) {
+        if !self.pointers.is_empty() {
+            self.pointers.clear();
+            self.emit(EnvironmentEventKind::PointersChanged);
+        }
+    }
+
+    fn remove_pointer(&mut self, actor_id: &str) {
+        if self.pointers.remove(actor_id).is_some() {
+            self.emit(EnvironmentEventKind::PointersChanged);
+        }
+    }
+
     fn emit(&mut self, kind: EnvironmentEventKind) {
         self.event_log
             .push(&self.environment_id, self.runtime_generation, kind);
+    }
+
+    fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
+        let action = self
+            .action_ledger
+            .action(action_id)
+            .expect("Action change must reference an Action in the ledger");
+        debug_assert_eq!(action.state, state);
+        let cancellation_requested = action.cancellation_requested;
+        let submitted_at_ms = action.submitted_at_ms;
+        let started_at_ms = action.started_at_ms;
+        let finished_at_ms = action.finished_at_ms;
+        let outcome = action.outcome;
+        self.emit(EnvironmentEventKind::ActionChanged {
+            action_id: action_id.to_string(),
+            state,
+            cancellation_requested,
+            submitted_at_ms,
+            started_at_ms,
+            finished_at_ms,
+            outcome,
+        });
     }
 }
 

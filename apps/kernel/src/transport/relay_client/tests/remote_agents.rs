@@ -70,6 +70,7 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
     config_worker.accept_remote_leases = true;
+    config_worker.provider_runtime_init_delay_ms = 1_000;
     let app_worker = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
     ));
@@ -290,6 +291,18 @@ async fn assert_remote_native_terminal_resize(
             .and_then(|binding| binding.active_worker_provider_run_id.clone())
             .expect("worker provider run should be projected")
     };
+    {
+        let app = app_worker.lock().await;
+        let worker_run = app
+            .providers()
+            .get_run(&worker_provider_run_id)
+            .expect("worker provider run should exist");
+        assert_eq!(
+            worker_run.state(),
+            crate::provider::ProviderRunState::Starting,
+            "remote native launch must return before slow provider initialization completes"
+        );
+    }
     let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: session_id.to_string(),
         provider_run_id: Some(home_provider_run.id().to_string()),
@@ -853,6 +866,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async() 
             message_id: "promoted-worker-completion".into(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some(promoted.id().to_string()),
+            provider_termination: None,
         }],
     };
     let encrypted = relay_crypto::encrypt_payload_for_peer(
@@ -861,9 +875,15 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async() 
         &serde_json::to_vec(&event).unwrap(),
     )
     .unwrap();
-    handle_daemon_peer_event(&router, encrypted)
-        .await
-        .expect("acknowledged managed worker output must project to the home");
+    handle_daemon_peer_event(
+        &router,
+        &state_home,
+        &config_worker.daemon_id,
+        None,
+        encrypted,
+    )
+    .await
+    .expect("acknowledged managed worker output must project to the home");
     let mut home = app_home.lock().await;
     let output = home
         .terminal_mut()

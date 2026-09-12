@@ -90,6 +90,21 @@ pub struct ManagedContextPlanBinding {
     pub git_credentials: ManagedContextGitCredentialSelection,
 }
 
+impl ManagedContextPlanBinding {
+    pub(crate) fn is_git_credential_enrollment(&self) -> bool {
+        self.kernel_context == ManagedContextKernelSelection::Empty
+            && matches!(self.development, ManagedContextDevelopmentSelection::Empty)
+            && matches!(
+                self.provider_accounts,
+                ManagedContextProviderAccountSelection::None
+            )
+            && matches!(
+                self.git_credentials,
+                ManagedContextGitCredentialSelection::Selected { .. }
+            )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContextKernelSelection {

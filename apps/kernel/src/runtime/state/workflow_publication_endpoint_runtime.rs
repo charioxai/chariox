@@ -9,7 +9,9 @@ use tokio::sync::RwLock;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonResponse, RegisterWorkflowPublicationEndpointRequest};
 use crate::runtime::projection::DaemonConfigProjectionStore;
-use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget};
+use crate::transport::relay_client::{
+    RelayClientState, RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind,
+};
 use chariox_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 use super::KernelRuntimeState;
@@ -64,7 +66,7 @@ fn durable_publication_tunnel_target(
             publication.session_id(),
             publication.id()
         ),
-        local_base_url,
+        kind: RelayDisplayTunnelTargetKind::HttpProxy { local_base_url },
         expires_at_ms,
         capabilities: publication_tunnel_capabilities(),
     })
@@ -201,7 +203,7 @@ async fn tunneled_publication_endpoint(
                 "publication:{}:{}",
                 request.session_id, request.publication_ref
             ),
-            local_base_url,
+            kind: RelayDisplayTunnelTargetKind::HttpProxy { local_base_url },
             expires_at_ms,
             capabilities: publication_tunnel_capabilities(),
         });

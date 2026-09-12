@@ -193,6 +193,7 @@ impl KernelRuntimeState {
                             started.run.session_id(),
                             agent_id,
                             started.run.id(),
+                            None,
                         )
                         .await
                     {

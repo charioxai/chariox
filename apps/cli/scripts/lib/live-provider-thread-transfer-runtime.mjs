@@ -22,15 +22,16 @@ import {
 import {
   makeAvailablePorts,
   portIsAvailable,
+  resolveBuiltBinarySync,
   terminateChild,
 } from "./drill-runtime-helpers.mjs"
+import { sanitizeDrillMetadata } from "./drill-secrets.mjs"
 
 export const scriptDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 export const cliRoot = path.resolve(scriptDir, "..")
 export const repoRoot = path.resolve(cliRoot, "..", "..")
 export const kernelBinary = resolveBinaryPath("kernel", "chariox-kernel")
 export const relayBinary = resolveBinaryPath("relay", "chariox-relay")
-export const artifactsRoot = path.join(repoRoot, ".artifacts", "provider-thread-transfer")
 export const defaultLocalDockerSliceImage = process.env.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"
 
 export const DEFAULT_PROVIDERS = ["opencode", "codex"]
@@ -45,10 +46,11 @@ export const RELAY_REALM = "provider-thread-transfer-drill"
 
 function resolveBinaryPath(crateName, binName) {
   const appLocalBinary = path.join(repoRoot, "apps", crateName, "target", "debug", binName)
-  if (existsSync(appLocalBinary)) return appLocalBinary
-  const workspaceBinary = path.join(repoRoot, "target", "debug", binName)
-  if (existsSync(workspaceBinary)) return workspaceBinary
-  return appLocalBinary
+  return resolveBuiltBinarySync(
+    appLocalBinary,
+    path.join(repoRoot, "apps", crateName, "Cargo.toml"),
+    binName,
+  )
 }
 
 export function parseArgs(argv) {
@@ -104,8 +106,8 @@ export function parseArgs(argv) {
     }
   }
   if (options.providers.length === 0) throw new Error("at least one provider is required")
-  if (!["local-reload", "worker-resume", "slice-restart", "live-migrate-to-slice", "live-migrate-roundtrip-slice"].includes(options.drill)) {
-    throw new Error(`unsupported --drill ${options.drill}; implemented drills: local-reload, worker-resume, slice-restart, live-migrate-to-slice, live-migrate-roundtrip-slice`)
+  if (!["local-reload", "worker-resume", "slice-restart", "slice-shutdown", "slice-save-failure", "live-migrate-to-slice", "live-migrate-roundtrip-slice"].includes(options.drill)) {
+    throw new Error(`unsupported --drill ${options.drill}; implemented drills: local-reload, worker-resume, slice-restart, slice-shutdown, slice-save-failure, live-migrate-to-slice, live-migrate-roundtrip-slice`)
   }
   if (!["shared", "isolated"].includes(options.workerState)) {
     throw new Error(`unsupported --worker-state ${options.workerState}; expected shared or isolated`)
@@ -126,6 +128,8 @@ export function printHelp() {
     "  local-reload  Drill 1: baseline local reload preserves provider thread",
     "  worker-resume  Drill 3 precursor: resume a captured provider thread on a same-host worker",
     "  slice-restart  Drill 4 precursor: save/restart a local Docker slice and relaunch the same agent",
+    "  slice-shutdown  Save/shut down a local Docker slice, then explicitly start it and relaunch the same agent",
+    "  slice-save-failure  Preserve the running slice, agent thread, and prior saved generation after injected capture failure",
     "  live-migrate-to-slice  Drill 4: start locally, move the same agent to a slice, and resume the same provider thread",
     "  live-migrate-roundtrip-slice  Drill 5: move local -> slice -> local and resume the same provider thread both ways",
     "",
@@ -142,8 +146,49 @@ export function printHelp() {
     "  --worker-state shared|isolated",
     `  --slice-build-image always|auto|never (default ${DEFAULT_SLICE_BUILD_IMAGE_POLICY})`,
     "  --keep-slice-on-failure",
-    "  --cleanup-on-success",
+    "  --cleanup-on-success (accepted for compatibility; disposable runtime is always cleaned)",
   ].join("\n"))
+}
+
+export function providerThreadSliceOptLevel(env = process.env) {
+  const level = env.CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL ?? "1"
+  if (!["0", "1", "2", "3", "s", "z"].includes(level)) {
+    throw new Error(
+      "CHARIOX_PROVIDER_THREAD_SLICE_OPT_LEVEL must be a Cargo optimization level: 0, 1, 2, 3, s, or z",
+    )
+  }
+  return level
+}
+
+export function providerThreadSliceBuildProfile(env = process.env) {
+  const profile = env.CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE ?? "dev"
+  if (!["dev", "release"].includes(profile)) {
+    throw new Error(
+      "CHARIOX_PROVIDER_THREAD_SLICE_BUILD_PROFILE must be a supported Cargo build profile: dev or release",
+    )
+  }
+  return profile
+}
+
+export function providerThreadSliceBuildEnv(env = process.env) {
+  return {
+    CHARIOX_SLICE_RUNTIME_BUILD_PROFILE: providerThreadSliceBuildProfile(env),
+    CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: providerThreadSliceOptLevel(env),
+  }
+}
+
+export function providerThreadSliceConfigLines({ sliceRoot, image, buildImage }) {
+  return [
+    "[slices]",
+    `root = ${JSON.stringify(sliceRoot)}`,
+    "",
+    "[slices.linux]",
+    `docker_image = ${JSON.stringify(image)}`,
+    `build_image = ${JSON.stringify(buildImage)}`,
+    "memory_mb = 2048",
+    `cpus = ${JSON.stringify("1.0")}`,
+    "allow_unconfined_seccomp = true",
+  ]
 }
 
 export function variant(response, name) {
@@ -205,7 +250,7 @@ export function relayClaims({ subject, subjectKind, actions, userId = "local", t
     device_id: subject,
     machine_id: subjectKind === "kernel" || subjectKind === "machine" ? subject : null,
     client_id: subjectKind === "client" ? subject : null,
-    public_key_thumbprint: `${subject}-thumbprint`,
+    public_key_thumbprint: null,
     entitlements_version: "drill",
   }
 }
@@ -245,6 +290,7 @@ export function providerRunSnapshot(run) {
     id: run?.id ?? null,
     provider: run?.provider ?? null,
     adapter_key: run?.adapter_key ?? null,
+    account_profile: run?.account_profile ?? null,
     state: run?.state ?? null,
     provider_session_id: run?.provider_session_id ?? null,
     resume_state: run?.resume_state ?? null,
@@ -255,6 +301,82 @@ export function providerRunSnapshot(run) {
     working_directory: run?.working_directory ?? null,
     started_at_ms: run?.started_at_ms ?? null,
     last_activity_at_ms: run?.last_activity_at_ms ?? null,
+  }
+}
+
+export function providerThreadKernelEventSnapshot(event, observedAtMs = Date.now()) {
+  return sanitizeDrillMetadata({
+    observed_at_ms: observedAtMs,
+    ...event,
+  })
+}
+
+export function sliceRestartContinuityChecks({
+  beforeRun,
+  afterRun,
+  beforeBinding,
+  afterBinding,
+  sliceBeforeRestart,
+  restartedSlice,
+  savedState,
+}) {
+  const agentBindingRepaired = Boolean(
+    beforeBinding
+    && afterBinding
+    && afterBinding.worker_kernel_id === restartedSlice?.worker_kernel_id
+    && afterBinding.worker_machine_id === restartedSlice?.worker_machine_id
+    && afterBinding.execution_lease_id !== beforeBinding.execution_lease_id
+    && afterBinding.leased_agent_id !== beforeBinding.leased_agent_id,
+  )
+  const sliceWorkerIdentityPreserved = Boolean(
+    sliceBeforeRestart?.worker_kernel_id
+    && sliceBeforeRestart?.worker_machine_id
+    && sliceBeforeRestart.worker_kernel_id === restartedSlice?.worker_kernel_id
+    && sliceBeforeRestart.worker_machine_id === restartedSlice?.worker_machine_id,
+  )
+  const beforeStartedAtMs = beforeRun?.started_at_ms
+  const savedAtMs = savedState?.created_at_ms
+  const afterStartedAtMs = afterRun?.started_at_ms
+  const sliceRestartTimelineValid = (
+    Number.isFinite(beforeStartedAtMs)
+    && Number.isFinite(savedAtMs)
+    && Number.isFinite(afterStartedAtMs)
+    && beforeStartedAtMs <= savedAtMs
+    && savedAtMs <= afterStartedAtMs
+  )
+  const sliceRestartCompleted = Boolean(
+    restartedSlice?.status === "running"
+    && savedState?.image_ref
+    && beforeRun?.id
+    && afterRun?.id
+    && beforeRun.id !== afterRun.id
+    && agentBindingRepaired
+    && sliceWorkerIdentityPreserved
+    && sliceRestartTimelineValid,
+  )
+
+  return {
+    agent_binding_repaired: agentBindingRepaired,
+    slice_worker_identity_preserved: sliceWorkerIdentityPreserved,
+    slice_restart_timeline_valid: sliceRestartTimelineValid,
+    slice_restart_completed: sliceRestartCompleted,
+  }
+}
+
+export function sliceShutdownCheckpointChecks({ savedSlice, parkedRun, stoppedSession }) {
+  const sliceShutdownLeftStopped = String(savedSlice?.status ?? "").toLowerCase() === "stopped"
+  const sliceShutdownParkedProviderRun = String(parkedRun?.state ?? "").toLowerCase() === "ended"
+  const sliceShutdownClearedActiveProviderRun = !stoppedSession?.active_provider_run_id
+
+  return {
+    slice_shutdown_left_stopped: sliceShutdownLeftStopped,
+    slice_shutdown_parked_provider_run: sliceShutdownParkedProviderRun,
+    slice_shutdown_cleared_active_provider_run: sliceShutdownClearedActiveProviderRun,
+    slice_shutdown_checkpoint_valid: (
+      sliceShutdownLeftStopped
+      && sliceShutdownParkedProviderRun
+      && sliceShutdownClearedActiveProviderRun
+    ),
   }
 }
 
@@ -271,7 +393,10 @@ export function sliceRecordSnapshot(slice) {
     providers: slice?.providers ?? [],
     session_ids: slice?.session_ids ?? [],
     agent_ids: slice?.agent_ids ?? [],
-    saved_state_id: slice?.active_saved_state_id ?? slice?.saved_state_id ?? null,
+    saved_state_id: slice?.active_saved_state_id ?? slice?.saved_state_id ?? slice?.saved_state_ref ?? null,
+    saved_state_ref: slice?.saved_state_ref ?? null,
+    saved_state_status: slice?.saved_state_status ?? null,
+    saved_state_updated_at_ms: slice?.saved_state_updated_at_ms ?? null,
     operation: slice?.operation ?? null,
   }
 }
@@ -433,67 +558,13 @@ export async function writeClaudeCredentialsPayload(destination, payload) {
   return destination
 }
 
-async function commandOutput(command, args, env = process.env, timeoutMs = 30_000) {
-  const child = spawn(command, args, {
-    env,
-    stdio: ["ignore", "pipe", "ignore"],
-  })
-  const chunks = []
-  child.stdout?.on("data", (chunk) => chunks.push(chunk))
-  let timedOut = false
-  const timeout = setTimeout(() => {
-    timedOut = true
-    child.kill("SIGTERM")
-  }, timeoutMs)
-  timeout.unref()
-  const status = await new Promise((resolve) => {
-    child.on("error", () => resolve(1))
-    child.on("close", (code) => resolve(code ?? 1))
-  })
-  clearTimeout(timeout)
-  return { status: timedOut ? 124 : status, output: Buffer.concat(chunks) }
-}
-
-export async function exportClaudeCredentials(destination, home = process.env.HOME ?? os.homedir()) {
-  if (process.platform === "darwin") {
-    const keychain = await commandOutput("security", [
-      "find-generic-password",
-      "-s",
-      "Claude Code-credentials",
-      "-w",
-    ])
-    if (keychain.status === 0 && keychain.output.length > 0) {
-      return await writeClaudeCredentialsPayload(destination, keychain.output)
-    }
-  }
-
-  const source = path.join(home, ".claude", ".credentials.json")
-  try {
-    return await writeClaudeCredentialsPayload(destination, await readFile(source))
-  } catch (error) {
-    if (error?.code === "ENOENT") return null
-    throw error
-  }
-}
-
-export async function verifyClaudeAuthHome(home) {
-  const result = await commandOutput("claude", ["auth", "status"], {
-    ...process.env,
-    HOME: home,
-  })
-  if (result.status !== 0) return false
-  const text = result.output.toString("utf8")
-  const start = text.indexOf("{")
-  const end = text.lastIndexOf("}")
-  if (start < 0 || end < start) return false
-  try {
-    return JSON.parse(text.slice(start, end + 1)).loggedIn === true
-  } catch {
-    return false
-  }
-}
+export const CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE =
+  "Claude credential materialization for this legacy direct-worker drill is unavailable until it uses the managed Chariox-vault setup-token path. Chariox will not read macOS Keychain or copy refreshable credentials into worker profiles."
 
 export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROVIDERS) {
+  if (providersNeedClaudeCredentials(providers)) {
+    throw new Error(CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE)
+  }
   const real = realProviderEnv()
   const codexHome = path.join(root, "codex-home")
   const xdgConfigHome = path.join(root, "xdg-config")
@@ -520,24 +591,6 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
       )
     : false
 
-  let claudeSecretRoot = null
-  let claudeCredentialsPath = null
-  if (providersNeedClaudeCredentials(providers)) {
-    claudeSecretRoot = path.join(os.tmpdir(), `chariox-provider-transfer-slice-secrets-${process.pid}-${Date.now()}`)
-    try {
-      claudeCredentialsPath = await exportClaudeCredentials(
-        path.join(claudeSecretRoot, "claude-credentials.json"),
-        real.HOME,
-      )
-      if (!claudeCredentialsPath) {
-        throw new Error("Claude credentials are unavailable for the isolated slice runner")
-      }
-    } catch (error) {
-      await rm(claudeSecretRoot, { recursive: true, force: true })
-      throw error
-    }
-  }
-
   return {
     HOME: real.HOME,
     CODEX_HOME: codexHome,
@@ -547,12 +600,9 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
     XDG_DATA_HOME: xdgDataHome,
     XDG_STATE_HOME: xdgStateHome,
     XDG_CACHE_HOME: xdgCacheHome,
+    ...providerThreadSliceBuildEnv(),
     CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
     CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
-    ...(claudeCredentialsPath ? {
-      CHARIOX_SLICE_CLAUDE_CREDENTIALS: claudeCredentialsPath,
-      CHARIOX_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
-    } : {}),
   }
 }
 
@@ -583,6 +633,9 @@ export async function cleanupSliceModeProviderCredentials(providerEnv) {
 }
 
 export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVIDERS, role = "worker") {
+  if (providersNeedClaudeCredentials(providers)) {
+    throw new Error(CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE)
+  }
   const real = realProviderEnv()
   const secretRoot = path.join(
     os.tmpdir(),
@@ -624,45 +677,6 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
       )
     : false
 
-  let claudeAuthCopied = false
-  let claudeAuthVerified = false
-  let claudeConfigCopied = false
-  let claudeSettingsCopied = false
-  if (providersNeedClaudeCredentials(providers)) {
-    claudeConfigCopied = await copySecretIfPresent(
-      path.join(real.HOME, ".claude.json"),
-      path.join(isolatedHome, ".claude.json"),
-    )
-    if (!claudeConfigCopied) {
-      await rm(secretRoot, { recursive: true, force: true })
-      throw new Error("Claude home config is unavailable for the isolated worker")
-    }
-    claudeSettingsCopied = await copySecretIfPresent(
-      path.join(real.HOME, ".claude", "settings.json"),
-      path.join(isolatedHome, ".claude", "settings.json"),
-    )
-    const exportedPath = path.join(secretRoot, "claude-credentials-export.json")
-    const destination = path.join(isolatedHome, ".claude", ".credentials.json")
-    const exported = await exportClaudeCredentials(exportedPath, real.HOME)
-    if (!exported) {
-      await rm(secretRoot, { recursive: true, force: true })
-      throw new Error("Claude credentials are unavailable for the isolated worker")
-    }
-    try {
-      await mkdir(path.dirname(destination), { recursive: true })
-      await copyFile(exported, destination)
-      await chmod(destination, 0o600)
-      claudeAuthCopied = true
-    } finally {
-      await rm(exportedPath, { force: true })
-    }
-    claudeAuthVerified = await verifyClaudeAuthHome(isolatedHome)
-    if (!claudeAuthVerified) {
-      await rm(secretRoot, { recursive: true, force: true })
-      throw new Error("Claude credentials copied to the isolated worker but failed `claude auth status`")
-    }
-  }
-
   return {
     secretRoot,
     providerEnv: {
@@ -679,10 +693,10 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
       mode: "isolated",
       codex_auth_copied: codexAuthCopied,
       opencode_auth_copied: opencodeDataAuthCopied || opencodeXdgAuthCopied,
-      claude_auth_copied: claudeAuthCopied,
-      claude_auth_verified: claudeAuthVerified,
-      claude_config_copied: claudeConfigCopied,
-      claude_settings_copied: claudeSettingsCopied,
+      claude_auth_copied: false,
+      claude_auth_verified: false,
+      claude_config_copied: false,
+      claude_settings_copied: false,
       opencode_config_shared: true,
       provider_data_shared: false,
       provider_cache_shared: false,
@@ -707,10 +721,12 @@ export function workerResumeDaemonEnv({
   codexPort,
   providerEnv = realProviderEnv(),
 }) {
+  const xdgConfigHome = path.join(root, `${daemonId}-xdg-config`)
   return {
     ...process.env,
     ...providerEnv,
-    XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
+    CHARIOX_HOME: path.join(xdgConfigHome, "chariox"),
+    XDG_CONFIG_HOME: xdgConfigHome,
     XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(mcpPort),
@@ -776,27 +792,6 @@ async function readLogTail(filePath) {
   } catch {
     return ""
   }
-}
-
-export async function prebuildLocalDockerSliceImageIfNeeded(root, policy, timeoutMs) {
-  if (policy !== "always") return null
-  const stdoutPath = path.join(root, "slice-image-build.stdout.log")
-  const stderrPath = path.join(root, "slice-image-build.stderr.log")
-  await runLoggedCommand("docker", [
-    "build",
-    "-f",
-    path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
-    "-t",
-    defaultLocalDockerSliceImage,
-    repoRoot,
-  ], {
-    cwd: repoRoot,
-    env: process.env,
-    stdoutPath,
-    stderrPath,
-    timeoutMs,
-  })
-  return { image: defaultLocalDockerSliceImage, stdoutPath, stderrPath }
 }
 
 export async function waitForProviderRun({ client, providerRunId, timeoutMs, pollMs, requireThreadId = true }) {
@@ -910,11 +905,6 @@ export async function waitForPromptIdle({ client, sessionId, attachmentId, agent
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for agent ${agentId} to become idle; last=${JSON.stringify(last)}`)
-}
-
-export function providerAuthName(provider) {
-  if (provider === "claude-p" || provider === "claude-headless") return "claude"
-  return provider
 }
 
 export async function waitForSliceWorkerProvider({ client, sliceRef, provider, timeoutMs, pollMs }) {
@@ -1053,6 +1043,33 @@ export async function loadRawHistoryOutputText({ historyDir, sessionId, agentId 
       if (entry?.agent_id != null && entry.agent_id !== agentId) continue
       const text = historyEntryText(entry)
       if (text) fragments.push(text)
+    }
+  }
+  const operationalDatabases = [
+    path.join(historyDir, "operational.db"),
+    path.join(path.dirname(historyDir), "home-kernel-storage", "operational-history.db"),
+  ]
+  for (const operationalDatabase of operationalDatabases) {
+    if (!existsSync(operationalDatabase)) continue
+    let database
+    try {
+      const { DatabaseSync } = await import("node:sqlite")
+      database = new DatabaseSync(operationalDatabase, { readOnly: true })
+      const rows = database.prepare(`
+        SELECT content
+        FROM history_events
+        WHERE session_id = ?
+          AND kind <> 'user_prompt'
+          AND (agent_id IS NULL OR agent_id = ?)
+          AND content IS NOT NULL
+        ORDER BY sequence
+      `).all(sessionId, agentId)
+      fragments.push(...rows.map((row) => row.content).filter(Boolean))
+    } catch {
+      // The history API and legacy JSONL remain authoritative when SQLite is
+      // unavailable or an older operational schema is present.
+    } finally {
+      database?.close()
     }
   }
   return fragments.join("")

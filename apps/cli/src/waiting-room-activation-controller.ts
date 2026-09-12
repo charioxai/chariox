@@ -79,6 +79,7 @@ export type WaitingRoomActivationControllerDeps = {
     workerKernelRef?: string | null
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
+  deleteSlice?: (sliceRef: string) => Promise<unknown>
   updateSlices?: (slice: SliceRecord) => void
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
   prepareManagedSessionLaunch?: (
@@ -274,6 +275,7 @@ export function createWaitingRoomActivationController(
       throw new Error("managed session launch orchestration is unavailable in this build")
     }
     let session: (Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) | null = null
+    let createdSliceRef: string | null = null
     let workspacePath = ""
     try {
       const preparedLaunch = prepared.launch
@@ -282,7 +284,9 @@ export function createWaitingRoomActivationController(
         await deps.prepareSessionOwnerClient?.(preparedLaunch)
         prepared.assertActive()
       }
-      const sliceRef = await prepareSliceForLaunch(preparedLaunch)
+      const sliceRef = await prepareSliceForLaunch(preparedLaunch, (sliceRef) => {
+        createdSliceRef = sliceRef
+      })
       prepared.assertActive()
       workspacePath = deps.getWorkspaceTarget()
       const worktreePath = deps.getWorktreeTarget()
@@ -325,6 +329,15 @@ export function createWaitingRoomActivationController(
           )
         }
       }
+      if (!session && createdSliceRef && deps.deleteSlice) {
+        try {
+          await deps.deleteSlice(createdSliceRef)
+        } catch (cleanupError) {
+          cleanupErrors.push(
+            `failed to remove orphaned slice ${createdSliceRef}: ${deps.formatError(cleanupError)}`,
+          )
+        }
+      }
       try {
         await prepared.rollback()
       } catch (rollbackError) {
@@ -337,7 +350,10 @@ export function createWaitingRoomActivationController(
     }
   }
 
-  const prepareSliceForLaunch = async (launch: WaitingRoomLaunchConfig): Promise<string | null> => {
+  const prepareSliceForLaunch = async (
+    launch: WaitingRoomLaunchConfig,
+    created: (sliceRef: string) => void,
+  ): Promise<string | null> => {
     if (launch.sliceRef) {
       if (deps.startSlice) {
         const slice = await deps.startSlice(launch.sliceRef)
@@ -374,6 +390,7 @@ export function createWaitingRoomActivationController(
       ...(developmentSetup ? { developmentSetup } : {}),
       ...(launch.workerKernelRef && launch.workerKernelRef !== "local" ? { workerKernelRef: launch.workerKernelRef } : {}),
     })
+    created(slice.id)
     deps.updateSlices?.(slice)
     const started = await deps.startSlice(slice.id)
     deps.updateSlices?.(started)

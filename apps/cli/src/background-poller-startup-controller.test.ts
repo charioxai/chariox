@@ -29,6 +29,7 @@ test("background poller startup uses the event stream without the polling watchd
     "focus",
     "last-scroll:42",
     "add-resize",
+    "poll-room-environment",
     "info:starting kernel event stream",
     "sync-events",
     "debug:ensure pollers:already started",
@@ -51,6 +52,7 @@ test("background poller startup starts polling mode when event streams are unava
     "blur",
     "last-scroll:15",
     "add-resize",
+    "poll-room-environment",
     "info:starting background pollers",
     "poll-output",
     "poll-notices",
@@ -123,6 +125,9 @@ function createHarness(options: {
     },
     pollSessionState: () => {
       calls.push("poll-session")
+    },
+    pollRoomEnvironmentActivity: () => {
+      calls.push("poll-room-environment")
     },
     startConnectionWatchdog: () => {
       calls.push("watchdog-start")

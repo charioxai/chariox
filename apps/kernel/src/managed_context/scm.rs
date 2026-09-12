@@ -107,16 +107,16 @@ impl std::fmt::Debug for GitCredentialCommandContext {
 
 impl GitCredentialCommandContext {
     pub(crate) fn inventory_from_process() -> Result<Self, DaemonError> {
+        Self::source_from_process()
+    }
+
+    pub(crate) fn source_from_process() -> Result<Self, DaemonError> {
         if let Some(home) = std::env::var_os("CHARIOX_MANAGED_PROVIDER_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
         {
             return Self::managed_target(home);
         }
-        Self::source_from_process()
-    }
-
-    pub(crate) fn source_from_process() -> Result<Self, DaemonError> {
         let home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -160,6 +160,10 @@ impl GitCredentialCommandContext {
             xdg_config_home: Some(xdg_config_home.clone()),
             gh_config_dir: Some(xdg_config_home.join("gh")),
         })
+    }
+
+    pub(crate) fn configure_command(&self, command: &mut Command) {
+        configure_command_environment(command, self);
     }
 
     #[cfg(test)]
@@ -1027,7 +1031,7 @@ fn run_command_with_timeout(
         .unwrap_or_else(Instant::now);
     let mut command = Command::new(program);
     command.args(arguments);
-    configure_command_environment(&mut command, context);
+    context.configure_command(&mut command);
     command
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -1258,7 +1262,10 @@ case "$1 $2" in
     /usr/bin/printf 'github.com:\n  user: test\n' > "$GH_CONFIG_DIR/hosts.yml"
     test ! -f "$HOME/fail-token-probe-after-login" || /usr/bin/touch "$HOME/token-error"
     ;;
-  "auth setup-git") /usr/bin/touch "$HOME/git-helper" ;;
+  "auth setup-git")
+    /usr/bin/touch "$HOME/git-helper"
+    test ! -f "$HOME/setup-git-error" || exit 2
+    ;;
   "auth logout")
     /bin/rm -f "$HOME/token"
     if test -f "$HOME/partial-logout"; then
@@ -1344,12 +1351,23 @@ esac
             .expect("resolve managed Git credential inventory context");
         assert_eq!(context.home, target_home);
         assert_eq!(context.gh_config_dir, Some(target_home.join(".config/gh")));
+        let export_context = GitCredentialCommandContext::source_from_process()
+            .expect("resolve managed Git credential export context");
 
         restore_env("CHARIOX_MANAGED_PROVIDER_HOME", previous_provider_home);
         restore_env("HOME", previous_home);
         restore_env("PATH", previous_path);
         restore_env("XDG_CONFIG_HOME", previous_xdg_config_home);
         restore_env("GH_CONFIG_DIR", previous_gh_config_dir);
+        assert_eq!(
+            export_context, context,
+            "inventory and export must use the same credential home"
+        );
+        assert_eq!(
+            export_selected_git_credentials(&github_selection(), &export_context)
+                .expect("export credential from managed provider home"),
+            vec![github_materialization("github-secret-canary")]
+        );
         fs::remove_dir_all(root).expect("remove managed inventory fixture");
     }
 
@@ -1358,6 +1376,55 @@ esac
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_materialization_cleans_up_when_git_helper_setup_fails() {
+        let (root, target_home, target) = fake_target("setup-git-failure", None);
+        fs::write(target_home.join("setup-git-error"), "").expect("inject setup failure");
+        materialize_git_credentials(
+            &target,
+            "context-github",
+            &"a".repeat(64),
+            &github_selection(),
+            &[github_materialization("github-secret-canary")],
+        )
+        .expect_err("Git helper setup must fail");
+        assert!(!target_home.join("token").exists());
+        assert!(!github_hosts_path(&target).exists());
+        assert!(!target_home.join("git-helper").exists());
+        assert!(!binding_path(&target).exists());
+        fs::remove_dir_all(root).expect("remove setup-failure fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_opt_out_never_invokes_credential_commands() {
+        let (root, target_home, target) = fake_target("opt-out", None);
+        for executable in ["gh", "git"] {
+            fs::write(
+                root.join("bin").join(executable),
+                "#!/bin/sh\n/usr/bin/touch \"$HOME/unexpected-credential-command\"\nexit 2\n",
+            )
+            .expect("install credential-command spy");
+        }
+        let selection = ManagedContextGitCredentialSelection::None;
+        assert!(export_selected_git_credentials(&selection, &target)
+            .expect("export without Git credentials")
+            .is_empty());
+        assert!(materialize_git_credentials(
+            &target,
+            "context-none",
+            &"a".repeat(64),
+            &selection,
+            &[]
+        )
+        .expect("materialize without Git credentials")
+        .is_empty());
+        assert!(!target_home.join("unexpected-credential-command").exists());
+        assert!(!binding_path(&target).exists());
+        fs::remove_dir_all(root).expect("remove opt-out fixture");
     }
 
     #[cfg(unix)]
