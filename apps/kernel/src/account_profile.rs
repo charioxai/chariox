@@ -915,11 +915,26 @@ impl Drop for ProviderAccountUsageRefreshLease {
 impl ProviderAccountProfileRegistry {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DaemonError> {
         let path = path.into();
-        let mut document = if path.exists() {
+        let (mut document, migrated_legacy_failed_replicas) = if path.exists() {
             let bytes = fs::read(&path).map_err(registry_io("read account profile registry"))?;
-            let document: RegistryDocument = serde_json::from_slice(&bytes).map_err(|error| {
-                registry_error("read account profile registry", error.to_string())
-            })?;
+            let raw_document: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    registry_error("read account profile registry", error.to_string())
+                })?;
+            let missing_validation_markers = raw_document
+                .get("profiles")
+                .and_then(serde_json::Value::as_array)
+                .map(|profiles| {
+                    profiles
+                        .iter()
+                        .map(|profile| profile.get("pending_native_validation").is_none())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut document: RegistryDocument =
+                serde_json::from_value(raw_document).map_err(|error| {
+                    registry_error("read account profile registry", error.to_string())
+                })?;
             if document.version != REGISTRY_VERSION {
                 return Err(registry_error(
                     "read account profile registry",
@@ -929,11 +944,16 @@ impl ProviderAccountProfileRegistry {
                     ),
                 ));
             }
-            document
+            let migrated = migrate_legacy_failed_replica_validation(
+                &mut document,
+                &missing_validation_markers,
+            );
+            (document, migrated)
         } else {
-            RegistryDocument::default()
+            (RegistryDocument::default(), false)
         };
-        let changed = migrate_legacy_default_profile_ids(&mut document)
+        let changed = migrated_legacy_failed_replicas
+            | migrate_legacy_default_profile_ids(&mut document)
             | migrate_legacy_default_profile_labels(&mut document)
             | migrate_legacy_managed_claude_scope(&mut document);
         let registry = Self {
@@ -3490,6 +3510,32 @@ fn unique_profile_id(
     }
 }
 
+fn migrate_legacy_failed_replica_validation(
+    document: &mut RegistryDocument,
+    missing_validation_markers: &[bool],
+) -> bool {
+    let mut changed = false;
+    for (index, profile) in document.profiles.iter_mut().enumerate() {
+        if missing_validation_markers.get(index) != Some(&true)
+            || !profile.materialized_replica
+            || profile.managed_context_replica.is_some()
+            || profile.public.origin != ProviderAccountProfileOrigin::CharioxCreated
+            || !matches!(profile.public.provider.as_str(), "codex" | "opencode")
+            || !matches!(
+                profile.public.auth_state,
+                ProviderAccountAuthState::Unknown
+                    | ProviderAccountAuthState::NotConfigured
+                    | ProviderAccountAuthState::Error
+            )
+        {
+            continue;
+        }
+        profile.pending_native_validation = true;
+        changed = true;
+    }
+    changed
+}
+
 fn migrate_legacy_default_profile_ids(document: &mut RegistryDocument) -> bool {
     let legacy_profiles = document
         .profiles
@@ -4470,6 +4516,16 @@ mod tests {
         }
     }
 
+    fn remove_native_validation_marker(registry_path: &Path) {
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(registry_path).unwrap()).unwrap();
+        document["profiles"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_native_validation");
+        fs::write(registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn replica_pending_native_validation_rolls_back_after_reopen() {
@@ -4490,6 +4546,124 @@ mod tests {
         reopened
             .materialize_replica_with_rollback_state("owner-a", &original)
             .expect("corrected materialization must be able to retry");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_failed_codex_replica_is_retryable_after_reopen() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        let original = codex_replica_materialization("legacy-failed", false);
+        registry
+            .materialize_replica_with_rollback_state("owner-a", &original)
+            .expect("old materialization should commit");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "legacy-failed",
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("old native validation should record failure");
+        drop(registry);
+
+        remove_native_validation_marker(&registry_path);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("legacy failed replica should reconcile");
+        assert!(
+            reopened.get("owner-a", "codex", "legacy-failed").is_err(),
+            "a failed base-format replica must not block corrected materialization"
+        );
+        reopened
+            .materialize_replica_with_rollback_state("owner-a", &original)
+            .expect("corrected materialization should retry");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_failed_opencode_replica_is_retryable_after_reopen() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        let mut original = codex_replica_materialization("legacy-opencode", false);
+        original.profile.provider = "opencode".to_string();
+        original.files[0].relative_path = "data/opencode/auth.json".to_string();
+        registry
+            .materialize_replica_with_rollback_state("owner-a", &original)
+            .expect("old OpenCode materialization should commit");
+        registry
+            .update_observation(
+                "owner-a",
+                "opencode",
+                "legacy-opencode",
+                ProviderAccountAuthState::Error,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("old native validation should record failure");
+        drop(registry);
+        remove_native_validation_marker(&registry_path);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("legacy failed OpenCode replica should reconcile");
+        assert!(reopened
+            .get("owner-a", "opencode", "legacy-opencode")
+            .is_err());
+        reopened
+            .materialize_replica_with_rollback_state("owner-a", &original)
+            .expect("corrected OpenCode materialization should retry");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_authenticated_replica_preserves_worker_credentials() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("legacy-valid", false),
+            )
+            .expect("old materialization should commit");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "legacy-valid",
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("old native validation should succeed");
+        registry
+            .mark_materialized_replica_validated("owner-a", "codex", "legacy-valid")
+            .expect("commit validation phase");
+        let credential = root.join("provider-accounts/owner-a/codex/legacy-valid/codex/auth.json");
+        fs::write(&credential, br#"{"token":"worker-owned"}"#)
+            .expect("worker may rotate credentials");
+        drop(registry);
+        remove_native_validation_marker(&registry_path);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("legacy authenticated profile should survive reopen");
+        reopened
+            .get("owner-a", "codex", "legacy-valid")
+            .expect("worker profile should remain registered");
+        assert_eq!(
+            fs::read(&credential).unwrap(),
+            br#"{"token":"worker-owned"}"#
+        );
         let _ = fs::remove_dir_all(root);
     }
 
