@@ -614,6 +614,21 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         context_file: &str,
         transcript_path: &str,
     ) -> Result<(), DaemonError> {
+        let provider_run = self.app.providers.get_run(provider_run_id)?;
+        let Some(transcript_path) =
+            crate::provider::provider_reported_path_on_kernel(&provider_run, transcript_path)
+        else {
+            crate::logging::warn_with_fields(
+                "daemon.claude_headless",
+                "rejected provider transcript path outside managed bindings",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                }),
+            );
+            return Ok(());
+        };
+        let transcript_path = transcript_path.to_string_lossy();
         let minimum_timestamp_ms = self
             .app
             .providers
@@ -635,8 +650,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .map(|run| run.started_at_ms())
             });
         let mut cursor = load_claude_transcript_cursor(context_file);
-        let drain =
-            drain_claude_transcript_file_since(transcript_path, &mut cursor, minimum_timestamp_ms);
+        let drain = drain_claude_transcript_file_since(
+            transcript_path.as_ref(),
+            &mut cursor,
+            minimum_timestamp_ms,
+        );
         save_claude_transcript_cursor(context_file, &cursor);
         let active_prompt_id = self
             .app

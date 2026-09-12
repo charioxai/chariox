@@ -77,12 +77,14 @@ pub use launch_contract::{
     LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
     RuntimeMcpBinding,
 };
-#[cfg(test)]
-pub(crate) use managed_isolation::MANAGED_PROVIDER_ISOLATION_ENV;
 pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,
     managed_isolated_utility_command, managed_provider_control_env_remove,
-    managed_provider_isolation_required,
+    managed_provider_isolation_required, provider_reported_path_on_kernel,
+};
+#[cfg(test)]
+pub(crate) use managed_isolation::{
+    MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
