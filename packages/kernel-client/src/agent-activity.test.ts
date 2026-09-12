@@ -804,6 +804,7 @@ function completedTurnAction(
     durationMs: 50,
     changedPaths: [],
     settlementStatus: "completed",
+    providerTermination: null,
     undoAvailable: false,
     undoUnavailableReason: null,
     ...overrides,
