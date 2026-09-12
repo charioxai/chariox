@@ -79,25 +79,61 @@ impl RemoteLeaseRuntime<'_> {
             });
         }
 
-        if let Some(profile) = self
-            .app
+        self.app
             .provider_account_profile_registry()
-            .list(
+            .reconcile_materialized_replica_rollback(
                 &lease.owner_user_id,
-                Some(&materialization.profile.provider),
-            )?
-            .into_iter()
+                &materialization.profile.provider,
+                &materialization.profile.profile_id,
+            )?;
+
+        let existing_profiles = self.app.provider_account_profile_registry().list(
+            &lease.owner_user_id,
+            Some(&materialization.profile.provider),
+        )?;
+        if let Some(profile) = existing_profiles
+            .iter()
             .find(|profile| profile.profile_id == materialization.profile.profile_id)
+            .cloned()
         {
             return self.validate_remote_provider_account(profile);
         }
-
         materialization.profile.origin =
             crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;
-        let profile = self
-            .app
+        let (profile, previous_default_profile_id) =
+            self.app
+                .provider_account_profile_registry()
+                .materialize_replica_with_rollback_state(&lease.owner_user_id, &materialization)?;
+        let profile = match self.validate_remote_provider_account(profile) {
+            Ok(profile) => profile,
+            Err(error) => {
+                if let Err(rollback_error) = self
+                    .app
+                    .provider_account_profile_registry()
+                    .rollback_materialized_replica_restoring_default(
+                        &lease.owner_user_id,
+                        &materialization.profile.provider,
+                        &materialization.profile.profile_id,
+                        previous_default_profile_id.as_deref(),
+                    )
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "ensure remote provider account",
+                        message: format!(
+                            "{error}; additionally failed to roll back the new provider-account replica: {rollback_error}"
+                        ),
+                    });
+                }
+                return Err(error);
+            }
+        };
+        self.app
             .provider_account_profile_registry()
-            .materialize_replica(&lease.owner_user_id, &materialization)?;
+            .mark_materialized_replica_validated(
+                &lease.owner_user_id,
+                &materialization.profile.provider,
+                &materialization.profile.profile_id,
+            )?;
         self.app.durable_state_store().append_event(
             "provider_account.materialized",
             Some(lease.id),
@@ -108,7 +144,7 @@ impl RemoteLeaseRuntime<'_> {
                 "source_home_kernel_id": context.home_kernel_id,
             }),
         )?;
-        self.validate_remote_provider_account(profile)
+        Ok(profile)
     }
 
     fn validate_remote_provider_account(
@@ -408,6 +444,71 @@ exit 2
 
     #[cfg(unix)]
     #[test]
+    fn failed_default_materialization_restores_the_exact_previous_default() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-opencode-default-rollback-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_opencode_auth_fixture(&root);
+        let (mut app, context) = remote_account_fixture(&root);
+        let registry = app.provider_account_profile_registry();
+        let profile_a = registry
+            .create_managed("owner-a", "opencode", "A")
+            .expect("create A");
+        let profile_b = registry
+            .create_managed("owner-a", "opencode", "B")
+            .expect("create B");
+        registry
+            .set_default("owner-a", "opencode", &profile_b.profile_id)
+            .expect("select B");
+        let failed_c = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "opencode".to_string(),
+                profile_id: "failed-c".to_string(),
+                label: "C".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+                is_default: true,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".to_string(),
+                contents_base64: "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiIn19".to_string(),
+            }],
+            generated_at_ms: 1,
+        };
+
+        RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, failed_c)
+            .expect_err("invalid default C must fail closed");
+
+        let profiles = app
+            .provider_account_profile_registry()
+            .list("owner-a", Some("opencode"))
+            .expect("list profiles after rollback");
+        assert!(
+            !profiles
+                .iter()
+                .find(|profile| profile.profile_id == profile_a.profile_id)
+                .expect("A survives")
+                .is_default
+        );
+        assert!(
+            profiles
+                .iter()
+                .find(|profile| profile.profile_id == profile_b.profile_id)
+                .expect("B survives")
+                .is_default
+        );
+        assert!(profiles
+            .iter()
+            .all(|profile| profile.profile_id != "failed-c"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn opencode_materialization_requires_native_authentication_before_acknowledgement() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
@@ -452,7 +553,7 @@ exit 2
 
         let error = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(
-                context,
+                context.clone(),
                 materialization(
                     "opencode-invalid",
                     "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiIn19",
@@ -463,14 +564,47 @@ exit 2
         assert!(message.contains("OpenCode Zen"), "{message}");
         assert!(message.contains("not authenticated"), "{message}");
         assert!(!message.contains("eyJvcGVuY29kZSI"), "{message}");
-        let stored = app
-            .provider_account_profile_registry()
-            .get("owner-a", "opencode", "opencode-invalid")
-            .expect("failed validation should still persist the observed state");
+        let corrected = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context.clone(),
+                materialization(
+                    "opencode-invalid",
+                    "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiemVuLXNlY3JldCJ9fQ==",
+                ),
+            )
+            .expect("corrected materialization should replace the failed fresh replica");
         assert_eq!(
-            stored.auth_state,
-            crate::account_profile::ProviderAccountAuthState::NotConfigured
+            corrected.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
         );
-        assert!(stored.last_validated_at_ms.is_some());
+
+        let environment = app
+            .provider_account_profile_registry()
+            .resolve_environment("owner-a", "opencode", "opencode-invalid")
+            .expect("corrected profile should resolve on the worker");
+        let auth_path = std::path::Path::new(&environment["XDG_DATA_HOME"])
+            .join("opencode")
+            .join("auth.json");
+        let worker_owned_auth = br#"{"opencode":{"type":"api","key":"worker-secret"}}"#;
+        std::fs::write(&auth_path, worker_owned_auth)
+            .expect("test should simulate provider-owned credential rotation");
+
+        let repeated = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context,
+                materialization(
+                    "opencode-invalid",
+                    "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiaG9tZS1yZWZyZXNoIn19",
+                ),
+            )
+            .expect("repeated ensure should preserve the authenticated worker profile");
+        assert_eq!(
+            repeated.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
+        assert_eq!(
+            std::fs::read(&auth_path).expect("worker auth should remain readable"),
+            worker_owned_auth,
+        );
     }
 }
