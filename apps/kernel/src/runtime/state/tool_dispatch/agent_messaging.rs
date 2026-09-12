@@ -173,6 +173,11 @@ impl KernelRuntimeState {
         if let Some(dispatch) =
             self.prepare_local_active_agent_message_dispatch(session.id(), &prompt)?
         {
+            let _permit = self
+                .provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            self.enqueue_prompt_dispatch(&dispatch).await?;
             let result = crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({
@@ -191,7 +196,6 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
-            self.spawn_queued_prompt_steer_dispatch(dispatch, self.provider_runtime_lanes.clone());
             return Ok(result);
         }
         if let Some(provider_run_id) = self

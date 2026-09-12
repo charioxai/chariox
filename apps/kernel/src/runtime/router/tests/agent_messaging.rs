@@ -1,7 +1,35 @@
 use super::*;
 
-#[tokio::test]
-async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias() {
+fn run_agent_message_test_with_large_stack<F, Fut>(name: &'static str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+                .enable_all()
+                .build()
+                .expect("agent message test runtime should build")
+                .block_on(test());
+        })
+        .expect("agent message test thread should spawn")
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+#[test]
+fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias() {
+    run_agent_message_test_with_large_stack("agent-message-alias", || {
+        runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inner()
+    });
+}
+
+async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, sender) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -233,8 +261,14 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias() {
     );
 }
 
-#[tokio::test]
-async fn agent_message_to_busy_provider_does_not_queue_a_user_prompt() {
+#[test]
+fn agent_message_to_busy_provider_does_not_queue_a_user_prompt() {
+    run_agent_message_test_with_large_stack("agent-message-busy", || {
+        agent_message_to_busy_provider_does_not_queue_a_user_prompt_inner()
+    });
+}
+
+async fn agent_message_to_busy_provider_does_not_queue_a_user_prompt_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, sender) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -386,6 +420,173 @@ async fn agent_message_during_provider_startup_does_not_enter_the_user_queue() {
         "agent messages must never become queued user prompts"
     );
     assert!(result.is_err(), "provider startup must not claim delivery");
+}
+
+#[test]
+fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key() {
+    run_agent_message_test_with_large_stack("agent-message-retry", || {
+        failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_inner()
+    });
+}
+
+async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_inner() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("message-retry", "message-retry"))
+        .expect("session should be created");
+    let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
+    let sender_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        sender.id(),
+        "dev-stub",
+        "dev-stub",
+        "sender-model",
+    );
+    let target_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        target.id(),
+        "dev-stub",
+        "dev-stub",
+        "target-model",
+    );
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-message-retry",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("test client should attach");
+    let first_active = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        target.id(),
+        "first task",
+        crate::session::PromptStatus::Queued,
+    );
+    assert!(matches!(
+        app.prompt_owner_submit_prepared_prompt(session.id(), first_active, false)
+            .expect("first task should start"),
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let sender_token = sender_run
+        .runtime_mcp_auth_token()
+        .expect("sender needs runtime MCP auth")
+        .to_string();
+    let session_id = session.id().to_string();
+    let target_id = target.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let lane = router.provider_runtime_lanes.acquire(target_run.id()).await;
+    let args = serde_json::json!({
+        "agent": target_id,
+        "message": "MESSAGE_RETRY_PROOF",
+        "idempotency_key": "retry-after-superseded-turn",
+    });
+    let runtime = router.runtime_state.clone();
+    let first_args = args.clone();
+    let first_send = tokio::spawn(async move {
+        runtime
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                first_args,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let prepared = router
+                .operational_history_store
+                .load_session_events(&session_id, Some(&target_id))
+                .expect("recipient history should remain readable")
+                .iter()
+                .any(|event| {
+                    event
+                        .content
+                        .as_deref()
+                        .is_some_and(|content| content.contains("MESSAGE_RETRY_PROOF"))
+                });
+            if prepared {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("sender should prepare the steer before the turn settles");
+    assert!(
+        !first_send.is_finished(),
+        "sender must not receive success before provider delivery"
+    );
+    let completed = app
+        .lock()
+        .await
+        .prompt_owner_complete_active_prompt_only(&session_id, &target_id)
+        .expect("first turn should settle while the provider lane is held");
+    assert_eq!(completed.prompt(), "first task");
+    {
+        let guard = app.lock().await;
+        let session = guard.sessions().get_session(&session_id).unwrap();
+        assert!(guard
+            .prompt_state_owner()
+            .active_prompt_for_agent(&session, &target_id)
+            .is_none());
+    }
+    drop(lane);
+    let first_result = first_send.await.expect("send task should join");
+    assert!(
+        first_result.is_err(),
+        "superseded delivery must fail: {first_result:?}"
+    );
+
+    let second_active = crate::session::PromptQueueItem::new(
+        app.lock().await.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &target_id,
+        "second task",
+        crate::session::PromptStatus::Queued,
+    );
+    assert!(matches!(
+        app.lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(&session_id, second_active, false)
+            .expect("second task should start"),
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let token = app
+        .lock()
+        .await
+        .providers()
+        .get_run(sender_run.id())
+        .expect("sender provider should remain")
+        .runtime_mcp_auth_token()
+        .expect("sender runtime auth should remain")
+        .to_string();
+    let retried = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+            args,
+        )
+        .await
+        .expect("same idempotency key should retry after failure");
+    assert!(retried.ok, "{:?}", retried.payload);
+    assert_eq!(retried.payload["status"], "steered");
+    assert_eq!(
+        app.lock()
+            .await
+            .terminal()
+            .input_records()
+            .iter()
+            .filter(|record| String::from_utf8_lossy(&record.bytes).contains("MESSAGE_RETRY_PROOF"))
+            .count(),
+        1,
+        "the provider should receive the retried message exactly once"
+    );
 }
 
 #[tokio::test]
