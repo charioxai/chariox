@@ -79,6 +79,14 @@ impl RemoteLeaseRuntime<'_> {
             });
         }
 
+        self.app
+            .provider_account_profile_registry()
+            .reconcile_materialized_replica_rollback(
+                &lease.owner_user_id,
+                &materialization.profile.provider,
+                &materialization.profile.profile_id,
+            )?;
+
         let existing_profiles = self.app.provider_account_profile_registry().list(
             &lease.owner_user_id,
             Some(&materialization.profile.provider),

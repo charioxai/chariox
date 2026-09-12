@@ -38,6 +38,12 @@ mod replica_refresh;
 pub(crate) const MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
+    static FAIL_REPLICA_ROLLBACK_STAGING_SYNC_ONCE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+    static FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
     static FAIL_MANAGED_CONTEXT_ROLLBACK_CLEANUP_ONCE: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
@@ -813,6 +819,8 @@ struct StoredProviderAccountProfile {
     #[serde(default)]
     materialized_replica: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    replica_previous_default_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_context_replica: Option<ManagedContextReplicaBinding>,
 }
 
@@ -921,6 +929,24 @@ impl ProviderAccountProfileRegistry {
             let document = registry.read_document()?;
             registry.persist_locked(&document)?;
         }
+        let interrupted_replicas = registry
+            .read_document()?
+            .profiles
+            .iter()
+            .filter(|profile| {
+                profile.materialized_replica && profile.managed_context_replica.is_none()
+            })
+            .map(|profile| {
+                (
+                    profile.public.owner_user_id.clone(),
+                    profile.public.provider.clone(),
+                    profile.public.profile_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (owner, provider, profile_id) in interrupted_replicas {
+            registry.reconcile_materialized_replica_rollback(&owner, &provider, &profile_id)?;
+        }
         Ok(registry)
     }
 
@@ -974,6 +1000,7 @@ impl ProviderAccountProfileRegistry {
                 public: profile,
                 locator,
                 materialized_replica: false,
+                replica_previous_default_profile_id: None,
                 managed_context_replica: None,
             });
             changed = true;
@@ -1470,6 +1497,7 @@ impl ProviderAccountProfileRegistry {
             public: profile.clone(),
             locator,
             materialized_replica: false,
+            replica_previous_default_profile_id: None,
             managed_context_replica: None,
         });
         self.persist_locked(&document)?;
@@ -1511,6 +1539,7 @@ impl ProviderAccountProfileRegistry {
             public: profile.clone(),
             locator,
             materialized_replica: false,
+            replica_previous_default_profile_id: None,
             managed_context_replica: None,
         });
         self.persist_locked(&document)?;
@@ -1564,6 +1593,7 @@ impl ProviderAccountProfileRegistry {
             public: profile.clone(),
             locator,
             materialized_replica: false,
+            replica_previous_default_profile_id: None,
             managed_context_replica: None,
         });
         self.persist_locked(&document)?;
@@ -1692,6 +1722,67 @@ impl ProviderAccountProfileRegistry {
         )
     }
 
+    pub(crate) fn reconcile_materialized_replica_rollback(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        let managed_root = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts")
+            .join(safe_path_component(owner_user_id))
+            .join(provider)
+            .join(profile_id);
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        if !path_entry_exists(&rollback_root)? {
+            return Ok(());
+        }
+        let stored = self
+            .read_document()?
+            .profiles
+            .iter()
+            .find(|stored| {
+                stored.public.owner_user_id == owner_user_id
+                    && stored.public.provider == provider
+                    && stored.public.profile_id == profile_id
+            })
+            .cloned();
+        if let Some(stored) = stored {
+            if !stored.materialized_replica
+                || stored.managed_context_replica.is_some()
+                || stored.public.auth_state == ProviderAccountAuthState::Authenticated
+            {
+                return Err(registry_error(
+                    "recover materialized account rollback",
+                    "rollback state conflicts with an authoritative provider account",
+                ));
+            }
+            self.rollback_materialized_replica_restoring_default(
+                owner_user_id,
+                provider,
+                profile_id,
+                None,
+            )?;
+        } else {
+            if path_entry_exists(&managed_root)? {
+                return Err(registry_error(
+                    "recover materialized account rollback",
+                    "materialized account profile and rollback state both exist",
+                ));
+            }
+            remove_managed_root(&rollback_root, &self.path)?;
+            if let Some(parent) = rollback_root.parent() {
+                sync_directory(parent)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn rollback_materialized_replica_restoring_default(
         &self,
         owner_user_id: &str,
@@ -1726,10 +1817,12 @@ impl ProviderAccountProfileRegistry {
             ));
         }
         let previous_default_profile_id = previous_default_profile_id
+            .or(stored.replica_previous_default_profile_id.as_deref())
             .map(validate_profile_id)
-            .transpose()?;
+            .transpose()?
+            .map(str::to_string);
         if stored.public.is_default {
-            if let Some(previous_default_profile_id) = previous_default_profile_id {
+            if let Some(previous_default_profile_id) = previous_default_profile_id.as_deref() {
                 if previous_default_profile_id == profile_id
                     || !document.profiles.iter().any(|profile| {
                         profile.public.owner_user_id == owner_user_id
@@ -1794,6 +1887,13 @@ impl ProviderAccountProfileRegistry {
             {
                 managed_parent.require_directory(profile_id)?;
                 managed_parent.rename(profile_id, rollback_name)?;
+                #[cfg(test)]
+                if FAIL_REPLICA_ROLLBACK_STAGING_SYNC_ONCE.with(|fail| fail.replace(false)) {
+                    return Err(registry_error(
+                        "sync materialized account rollback directory",
+                        "injected staging sync failure",
+                    ));
+                }
                 managed_parent.sync()?;
             }
             #[cfg(not(unix))]
@@ -1811,7 +1911,7 @@ impl ProviderAccountProfileRegistry {
         let original_document = document.clone();
         let removed = document.profiles.remove(index);
         if removed.public.is_default {
-            if let Some(previous_default_profile_id) = previous_default_profile_id {
+            if let Some(previous_default_profile_id) = previous_default_profile_id.as_deref() {
                 let previous_default = document
                     .profiles
                     .iter_mut()
@@ -1856,6 +1956,13 @@ impl ProviderAccountProfileRegistry {
                 ));
             }
             return Err(error);
+        }
+        #[cfg(test)]
+        if FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.replace(false)) {
+            return Err(registry_error(
+                "clean materialized account rollback directory",
+                "injected cleanup failure",
+            ));
         }
         #[cfg(unix)]
         {
@@ -2104,6 +2211,9 @@ impl ProviderAccountProfileRegistry {
         })?;
         fs::create_dir_all(managed_parent).map_err(registry_io("materialize account profile"))?;
         set_private_dir_permissions(managed_parent)?;
+        if managed_context.is_none() {
+            self.reconcile_materialized_replica_rollback(owner_user_id, provider, profile_id)?;
+        }
         let staging_root = managed_context
             .map(|intent| managed_context_staging_root(&managed_root, intent))
             .unwrap_or_else(|| unique_sibling_path(&managed_root, "stage"));
@@ -2369,6 +2479,7 @@ impl ProviderAccountProfileRegistry {
             existing.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
             existing.locator = locator;
             existing.materialized_replica = true;
+            existing.replica_previous_default_profile_id = previous_default_profile_id.clone();
             existing.managed_context_replica = managed_context_binding;
             existing.public.clone()
         } else {
@@ -2384,6 +2495,7 @@ impl ProviderAccountProfileRegistry {
                 public: public.clone(),
                 locator,
                 materialized_replica: true,
+                replica_previous_default_profile_id: previous_default_profile_id.clone(),
                 managed_context_replica: managed_context_binding,
             });
             public
@@ -2500,6 +2612,7 @@ impl ProviderAccountProfileRegistry {
                 public: replaced.public,
                 locator: replaced.locator,
                 materialized_replica: false,
+                replica_previous_default_profile_id: None,
                 managed_context_replica: None,
             };
         } else {
@@ -4038,7 +4151,7 @@ mod tests {
             .rollback_materialized_replica("owner-a", "codex", "failed")
             .expect_err("rollback must reject a symlink-swapped root");
 
-        assert!(error.to_string().contains("roll back"), "{error}");
+        assert!(error.to_string().contains("managed account"), "{error}");
         assert!(fs::symlink_metadata(&failed_root)
             .expect("swapped symlink should survive")
             .file_type()
@@ -4160,28 +4273,74 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn replica_rollback_recovers_after_staging_sync_failure() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("previous", true))
+            .expect("materialize prior default");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", true))
+            .expect("materialize failed default");
+        FAIL_REPLICA_ROLLBACK_STAGING_SYNC_ONCE.with(|fail| fail.set(true));
+        let error = registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("injected staging sync failure must interrupt rollback");
+        assert!(error.to_string().contains("injected staging sync failure"));
+        let managed_root = root.join("provider-accounts/owner-a/codex/failed");
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        assert!(
+            rollback_root.is_dir(),
+            "staged root must remain recoverable"
+        );
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("recover rollback when registry reopens");
+        assert!(reopened.get("owner-a", "codex", "failed").is_err());
+        assert_eq!(
+            reopened
+                .get("owner-a", "codex", "default")
+                .expect("restore exact prior default")
+                .profile_id,
+            "previous"
+        );
+        assert!(!rollback_root.exists(), "staged root must be cleaned");
+        reopened
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", true))
+            .expect("corrected materialization may retry after reopen");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn replica_materialization_cleans_committed_rollback_residue_before_retry() {
         let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
         registry
             .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
             .expect("materialize failed replica");
-        registry
+        FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
+        let error = registry
             .rollback_materialized_replica("owner-a", "codex", "failed")
-            .expect("commit replica rollback");
+            .expect_err("injected cleanup failure must leave staged residue");
+        assert!(error.to_string().contains("injected cleanup failure"));
         let managed_root = root.join("provider-accounts/owner-a/codex/failed");
         let rollback_root = materialized_replica_rollback_root(&managed_root);
-        fs::create_dir_all(rollback_root.join("codex"))
-            .expect("simulate interruption before staged-root cleanup");
+        assert!(rollback_root.is_dir(), "rollback residue must remain");
+        drop(registry);
 
-        registry
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reopen registry with committed rollback residue");
+        reopened
             .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
             .expect("retry corrected materialization");
         assert!(
             !rollback_root.exists(),
             "committed rollback residue must be cleaned"
         );
-        registry
+        reopened
             .rollback_materialized_replica("owner-a", "codex", "failed")
             .expect("later failed validation can roll back without a collision");
         let _ = fs::remove_dir_all(root);
