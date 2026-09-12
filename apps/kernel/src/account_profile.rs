@@ -27,6 +27,9 @@ const OPENCODE_CONFIG_FILES: [&str; 6] = [
     "tui.json",
     "tui.jsonc",
 ];
+#[cfg(unix)]
+#[path = "account_profile_managed_fs.rs"]
+mod managed_fs;
 #[cfg(test)]
 #[path = "account_profile_materialization_tests.rs"]
 mod materialization_tests;
@@ -1742,7 +1745,29 @@ impl ProviderAccountProfileRegistry {
             }
         }
 
+        #[cfg(unix)]
+        let managed_parent = managed_fs::ManagedProviderParent::open(
+            &self.path,
+            &safe_path_component(owner_user_id),
+            provider,
+        )?;
+        #[cfg(unix)]
+        let rollback_name = rollback_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                registry_error(
+                    "roll back materialized account profile",
+                    "invalid rollback path",
+                )
+            })?;
+        #[cfg(unix)]
+        let managed_root_exists = managed_parent.exists(profile_id)?;
+        #[cfg(not(unix))]
         let managed_root_exists = path_entry_exists(&managed_root)?;
+        #[cfg(unix)]
+        let rollback_root_exists = managed_parent.exists(rollback_name)?;
+        #[cfg(not(unix))]
         let rollback_root_exists = path_entry_exists(&rollback_root)?;
         if managed_root_exists && rollback_root_exists {
             return Err(registry_error(
@@ -1757,15 +1782,30 @@ impl ProviderAccountProfileRegistry {
             ));
         }
         if rollback_root_exists {
+            #[cfg(unix)]
+            managed_parent.require_directory(rollback_name)?;
+            #[cfg(not(unix))]
             validate_managed_directory(
                 &rollback_root,
                 "inspect materialized account profile rollback",
             )?;
         } else {
-            validate_managed_directory(&managed_root, "roll back materialized account profile")?;
-            fs::rename(&managed_root, &rollback_root)
-                .map_err(registry_io("roll back materialized account profile"))?;
-            sync_directory(managed_root.parent().unwrap_or_else(|| Path::new(".")))?;
+            #[cfg(unix)]
+            {
+                managed_parent.require_directory(profile_id)?;
+                managed_parent.rename(profile_id, rollback_name)?;
+                managed_parent.sync()?;
+            }
+            #[cfg(not(unix))]
+            {
+                validate_managed_directory(
+                    &managed_root,
+                    "roll back materialized account profile",
+                )?;
+                fs::rename(&managed_root, &rollback_root)
+                    .map_err(registry_io("roll back materialized account profile"))?;
+                sync_directory(managed_root.parent().unwrap_or_else(|| Path::new(".")))?;
+            }
         }
 
         let original_document = document.clone();
@@ -1787,6 +1827,12 @@ impl ProviderAccountProfileRegistry {
         if let Err(error) = self.persist_locked(&document) {
             *document = original_document;
             let registry_restore_error = self.persist_locked(&document).err();
+            #[cfg(unix)]
+            let root_restore_error = managed_parent
+                .rename(rollback_name, profile_id)
+                .and_then(|_| managed_parent.sync())
+                .err();
+            #[cfg(not(unix))]
             let root_restore_error = fs::rename(&rollback_root, &managed_root)
                 .map_err(registry_io(
                     "restore materialized account profile after registry failure",
@@ -1811,9 +1857,17 @@ impl ProviderAccountProfileRegistry {
             }
             return Err(error);
         }
-        remove_managed_root(&rollback_root, &self.path)?;
-        if let Some(parent) = rollback_root.parent() {
-            sync_directory(parent)?;
+        #[cfg(unix)]
+        {
+            managed_parent.remove(rollback_name)?;
+            managed_parent.sync()?;
+        }
+        #[cfg(not(unix))]
+        {
+            remove_managed_root(&rollback_root, &self.path)?;
+            if let Some(parent) = rollback_root.parent() {
+                sync_directory(parent)?;
+            }
         }
         Ok(project_usage_freshness(removed.public))
     }
@@ -3685,22 +3739,53 @@ fn sync_directory(path: &Path) -> Result<(), DaemonError> {
 }
 
 fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonError> {
-    validate_managed_directory(root, "delete managed account profile")?;
-    let managed_base = registry_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("provider-accounts");
-    let canonical_base =
-        fs::canonicalize(&managed_base).map_err(registry_io("delete managed account profile"))?;
-    let canonical_root =
-        fs::canonicalize(root).map_err(registry_io("delete managed account profile"))?;
-    if !canonical_root.starts_with(&canonical_base) || canonical_root == canonical_base {
-        return Err(registry_error(
-            "delete managed account profile",
-            "refusing to delete a path outside the managed account root",
-        ));
+    #[cfg(unix)]
+    {
+        let managed_base = registry_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts");
+        let relative = root.strip_prefix(&managed_base).map_err(|_| {
+            registry_error(
+                "delete managed account profile",
+                "path is outside managed accounts",
+            )
+        })?;
+        let components = relative
+            .components()
+            .map(|component| component.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                registry_error("delete managed account profile", "invalid account path")
+            })?;
+        let [owner, provider, name] = components.as_slice() else {
+            return Err(registry_error(
+                "delete managed account profile",
+                "invalid account path",
+            ));
+        };
+        let parent = managed_fs::ManagedProviderParent::open(registry_path, owner, provider)?;
+        return parent.remove(name);
     }
-    fs::remove_dir_all(root).map_err(registry_io("delete managed account profile"))
+    #[cfg(not(unix))]
+    {
+        validate_managed_directory(root, "delete managed account profile")?;
+        let managed_base = registry_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts");
+        let canonical_base = fs::canonicalize(&managed_base)
+            .map_err(registry_io("delete managed account profile"))?;
+        let canonical_root =
+            fs::canonicalize(root).map_err(registry_io("delete managed account profile"))?;
+        if !canonical_root.starts_with(&canonical_base) || canonical_root == canonical_base {
+            return Err(registry_error(
+                "delete managed account profile",
+                "refusing to delete a path outside the managed account root",
+            ));
+        }
+        fs::remove_dir_all(root).map_err(registry_io("delete managed account profile"))
+    }
 }
 
 fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
