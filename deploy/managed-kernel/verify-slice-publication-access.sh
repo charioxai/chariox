@@ -41,7 +41,7 @@ setpriv --reuid=232072 --regid=232072 --clear-groups -- \
   sh -c 'test "$(cat "$1")" = host' _ "$mount_root/legitimate-link"
 setpriv --reuid=232072 --regid=232072 --clear-groups -- \
   sh -c 'umask 077; printf mapped > "$1/mapped-created"' _ "$mount_root"
-runuser -u chariox -- sh -c 'test "$(cat "$1/mapped-created")" = mapped; mkdir "$1/host-directory"' _ "$repository"
+runuser -u chariox -- sh -c 'umask 077; test "$(cat "$1/mapped-created")" = mapped; mkdir "$1/host-directory"' _ "$repository"
 setpriv --reuid=232072 --regid=232072 --clear-groups -- \
   sh -c 'cd "$1"' _ "$mount_root/host-directory"
 if setpriv --reuid=232072 --regid=232072 --clear-groups -- cat "$destination/receipt.json" >/dev/null 2>&1; then

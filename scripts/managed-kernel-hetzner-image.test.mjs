@@ -460,6 +460,10 @@ test("recovered managed development publications verify ACLs without rewriting c
   )
   assert.match(accessDrill, /"\$helper" verify/)
   assert.match(accessDrill, /\[ "\$before_verify" = "\$after_verify" \]/)
+  assert.match(
+    accessDrill,
+    /runuser -u chariox -- sh -c 'umask 077; test "\$\(cat "\$1\/mapped-created"\)" = mapped; mkdir "\$1\/host-directory"'/,
+  )
 })
 
 test("managed slice provider namespaces receive the required outer Docker compatibility policy", async () => {
