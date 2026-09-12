@@ -2,28 +2,32 @@ name: CI
 
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
+    branches: [main]
   push:
     branches:
       - main
-  pull_request:
-    # Opening a non-draft PR or marking a draft ready starts the final CI run.
-    # A later push has no CI run. Return the PR to draft, complete review, then
-    # mark the exact head ready again, or dispatch this workflow for that head.
-    types: [opened, ready_for_review]
+
+permissions:
+  contents: read
 
 jobs:
   node:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.label.name == 'program-final-ci'
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Verify source revision
-        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -55,18 +59,21 @@ jobs:
         run: pnpm test
 
   rust:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.label.name == 'program-final-ci'
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify source revision
-        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
