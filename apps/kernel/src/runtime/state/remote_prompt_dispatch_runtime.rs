@@ -23,7 +23,6 @@ struct RemotePromptAgentClaim {
 #[derive(Debug, PartialEq, Eq)]
 enum RemotePromptRunBindingRecovery {
     Recovered,
-    PendingCompletion,
     Rejected,
 }
 
@@ -287,9 +286,6 @@ impl KernelRuntimeState {
         {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         }
-        if completions.is_empty() {
-            return Ok(RemotePromptRunBindingRecovery::PendingCompletion);
-        }
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .owned
@@ -301,9 +297,10 @@ impl KernelRuntimeState {
         if active_prompt.durable_delivery_phase()
             != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
             || active_prompt.durable_delivery_provider_run_id() != Some(provider_run_id)
-            || !completions
-                .iter()
-                .any(|completion| completion.home_prompt_id.as_deref() == Some(active_prompt.id()))
+            || (!completions.is_empty()
+                && !completions.iter().any(|completion| {
+                    completion.home_prompt_id.as_deref() == Some(active_prompt.id())
+                }))
         {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         }
@@ -422,7 +419,6 @@ impl KernelRuntimeState {
                             &event,
                         )? {
                             RemotePromptRunBindingRecovery::Recovered => {}
-                            RemotePromptRunBindingRecovery::PendingCompletion => return Ok(true),
                             RemotePromptRunBindingRecovery::Rejected => return Ok(false),
                         }
                     }
@@ -1735,9 +1731,9 @@ mod tests {
         );
         assert!(runtime
             .owned
-            .provider_store
-            .get_run(&projected_provider_run_id)
-            .is_ok());
+            .provider_run_projection
+            .get(&projected_provider_run_id)
+            .is_some());
         assert!(runtime
             .owned
             .prompt_state_owner
