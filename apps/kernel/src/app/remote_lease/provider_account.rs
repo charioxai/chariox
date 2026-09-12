@@ -272,8 +272,11 @@ mod tests {
             r#"#!/bin/sh
 set -eu
 if [ "$#" -ge 2 ] && [ "$1" = "auth" ] && [ "$2" = "list" ]; then
-  test -f "$XDG_DATA_HOME/opencode/auth.json"
-  printf '%s\n' '1 credential'
+  if [ -f "$XDG_DATA_HOME/opencode/auth.json" ]; then
+    printf '%s\n' '1 credential'
+  else
+    printf '%s\n' 'No credentials'
+  fi
   exit 0
 fi
 if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
@@ -732,6 +735,26 @@ exit 2
         let worker_owned_auth = br#"{"opencode":{"type":"api","key":"worker-secret"}}"#;
         std::fs::write(&worker_auth, worker_owned_auth)
             .expect("worker should be able to repair credentials locally");
+        let mut transient = fixed.clone();
+        transient.profile.profile_id = "transient-worker".to_string();
+        registry
+            .materialize_replica_with_rollback_state("owner-a", &transient)
+            .expect("third old account should materialize");
+        registry
+            .update_observation(
+                "owner-a",
+                "opencode",
+                "transient-worker",
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("transient old failure should persist");
+        let transient_auth = parent.join("transient-worker/data/opencode/auth.json");
+        std::fs::create_dir_all(transient_auth.parent().unwrap()).unwrap();
+        std::fs::write(&transient_auth, worker_owned_auth).unwrap();
         drop(registry);
         let mut old_document: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
@@ -791,9 +814,19 @@ exit 2
         );
         assert!(parent.join("old-worker/data/opencode/auth.json").is_file());
         let repaired = RemoteLeaseRuntime::new(&mut app)
-            .ensure_remote_provider_account(context, fixed)
+            .ensure_remote_provider_account(context.clone(), fixed)
             .expect("worker-repaired credentials must win over another home transfer");
         assert_eq!(repaired.auth_state, ProviderAccountAuthState::Authenticated);
         assert_eq!(std::fs::read(&worker_auth).unwrap(), worker_owned_auth);
+
+        std::fs::write(root.join("opencode"), b"#!/bin/sh\nexit 2\n").unwrap();
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, transient)
+            .is_err());
+        assert!(app
+            .provider_account_profile_registry()
+            .get("owner-a", "opencode", "transient-worker")
+            .is_ok());
+        assert_eq!(std::fs::read(&transient_auth).unwrap(), worker_owned_auth);
     }
 }
