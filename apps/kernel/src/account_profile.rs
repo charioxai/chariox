@@ -1828,6 +1828,8 @@ impl ProviderAccountProfileRegistry {
                 }
                 #[cfg(not(unix))]
                 if path_entry_exists(&managed_root)? {
+                    // Remote replica rollback requires a pinned no-follow parent. Non-Unix
+                    // managed hosts are not supported, so keep the cleanup record and fail closed.
                     return Err(registry_error(
                         "recover materialized account rollback",
                         "pending cleanup has an unresolved managed account root",
@@ -4631,6 +4633,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn replica_cleanup_reconciles_identity_matching_root_restored_after_registry_commit() {
         let (root, registry) = fixture();
