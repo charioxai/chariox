@@ -1674,11 +1674,27 @@ impl ProviderAccountProfileRegistry {
         Ok(project_usage_freshness(removed.public))
     }
 
-    pub(crate) fn rollback_materialized_replica(
+    #[cfg(test)]
+    fn rollback_materialized_replica(
         &self,
         owner_user_id: &str,
         provider: &str,
         profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        self.rollback_materialized_replica_restoring_default(
+            owner_user_id,
+            provider,
+            profile_id,
+            None,
+        )
+    }
+
+    pub(crate) fn rollback_materialized_replica_restoring_default(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        previous_default_profile_id: Option<&str>,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
@@ -1690,6 +1706,7 @@ impl ProviderAccountProfileRegistry {
             .join(safe_path_component(owner_user_id))
             .join(provider)
             .join(profile_id);
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
         let expected_locator = ProviderAccountLocator::managed(provider, &managed_root)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
@@ -1697,25 +1714,107 @@ impl ProviderAccountProfileRegistry {
         if !stored.materialized_replica
             || stored.managed_context_replica.is_some()
             || stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated
+            || stored.public.auth_state == ProviderAccountAuthState::Authenticated
             || stored.locator != expected_locator
         {
             return Err(registry_error(
-                "rollback materialized account profile",
-                "refusing to roll back an authoritative or managed-context provider account",
+                "roll back materialized account profile",
+                "refusing to roll back an authoritative, authenticated, or managed-context provider account",
             ));
         }
-        if path_entry_exists(&managed_root)? {
-            remove_managed_root(&managed_root, &self.path)?;
-        }
-        let removed = document.profiles.remove(index);
-        if removed.public.is_default {
-            if let Some(next) = document.profiles.iter_mut().find(|profile| {
-                profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
-            }) {
-                next.public.is_default = true;
+        let previous_default_profile_id = previous_default_profile_id
+            .map(validate_profile_id)
+            .transpose()?;
+        if stored.public.is_default {
+            if let Some(previous_default_profile_id) = previous_default_profile_id {
+                if previous_default_profile_id == profile_id
+                    || !document.profiles.iter().any(|profile| {
+                        profile.public.owner_user_id == owner_user_id
+                            && profile.public.provider == provider
+                            && profile.public.profile_id == previous_default_profile_id
+                    })
+                {
+                    return Err(registry_error(
+                        "roll back materialized account profile",
+                        "previous default provider account is unavailable",
+                    ));
+                }
             }
         }
-        self.persist_locked(&document)?;
+
+        let managed_root_exists = path_entry_exists(&managed_root)?;
+        let rollback_root_exists = path_entry_exists(&rollback_root)?;
+        if managed_root_exists && rollback_root_exists {
+            return Err(registry_error(
+                "roll back materialized account profile",
+                "materialized account profile and rollback state both exist",
+            ));
+        }
+        if !managed_root_exists && !rollback_root_exists {
+            return Err(registry_error(
+                "roll back materialized account profile",
+                "materialized account profile data is missing",
+            ));
+        }
+        if rollback_root_exists {
+            validate_managed_directory(
+                &rollback_root,
+                "inspect materialized account profile rollback",
+            )?;
+        } else {
+            validate_managed_directory(&managed_root, "roll back materialized account profile")?;
+            fs::rename(&managed_root, &rollback_root)
+                .map_err(registry_io("roll back materialized account profile"))?;
+            sync_directory(managed_root.parent().unwrap_or_else(|| Path::new(".")))?;
+        }
+
+        let original_document = document.clone();
+        let removed = document.profiles.remove(index);
+        if removed.public.is_default {
+            if let Some(previous_default_profile_id) = previous_default_profile_id {
+                let previous_default = document
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| {
+                        profile.public.owner_user_id == owner_user_id
+                            && profile.public.provider == provider
+                            && profile.public.profile_id == previous_default_profile_id
+                    })
+                    .expect("previous default was validated while the registry lock was held");
+                previous_default.public.is_default = true;
+            }
+        }
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original_document;
+            let registry_restore_error = self.persist_locked(&document).err();
+            let root_restore_error = fs::rename(&rollback_root, &managed_root)
+                .map_err(registry_io(
+                    "restore materialized account profile after registry failure",
+                ))
+                .and_then(|_| {
+                    sync_directory(managed_root.parent().unwrap_or_else(|| Path::new(".")))
+                })
+                .err();
+            if registry_restore_error.is_some() || root_restore_error.is_some() {
+                return Err(registry_error(
+                    "roll back materialized account profile",
+                    format!(
+                        "{error}; registry restore: {}; account root restore: {}",
+                        registry_restore_error
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "ok".to_string()),
+                        root_restore_error
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "ok".to_string()),
+                    ),
+                ));
+            }
+            return Err(error);
+        }
+        remove_managed_root(&rollback_root, &self.path)?;
+        if let Some(parent) = rollback_root.parent() {
+            sync_directory(parent)?;
+        }
         Ok(project_usage_freshness(removed.public))
     }
 
@@ -1875,6 +1974,15 @@ impl ProviderAccountProfileRegistry {
         materialization: &ProviderAccountMaterialization,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         self.materialize_replica_internal(owner_user_id, materialization, None)
+            .map(|(profile, _)| profile)
+    }
+
+    pub(crate) fn materialize_replica_with_rollback_state(
+        &self,
+        owner_user_id: &str,
+        materialization: &ProviderAccountMaterialization,
+    ) -> Result<(ProviderAccountProfile, Option<String>), DaemonError> {
+        self.materialize_replica_internal(owner_user_id, materialization, None)
     }
 
     pub(crate) fn materialize_managed_context_replica(
@@ -1891,7 +1999,7 @@ impl ProviderAccountProfileRegistry {
                 .get(owner_user_id, &materialization.profile.provider, "default")?
                 .profile_id;
         }
-        let profile = self.materialize_replica_internal(
+        let (profile, _) = self.materialize_replica_internal(
             owner_user_id,
             &target_materialization,
             Some(ManagedContextReplicaIntent {
@@ -1914,7 +2022,7 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         materialization: &ProviderAccountMaterialization,
         managed_context: Option<ManagedContextReplicaIntent<'_>>,
-    ) -> Result<ProviderAccountProfile, DaemonError> {
+    ) -> Result<(ProviderAccountProfile, Option<String>), DaemonError> {
         if materialization.profile.owner_user_id != owner_user_id {
             return Err(registry_error(
                 "materialize account profile",
@@ -2019,7 +2127,7 @@ impl ProviderAccountProfileRegistry {
                 .is_some_and(|binding| binding.matches(intent))
             {
                 let _ = fs::remove_dir_all(&staging_root);
-                return Ok(stored.public.clone());
+                return Ok((stored.public.clone(), None));
             }
         }
         let replace_existing_replica = match existing_profile {
@@ -2263,7 +2371,7 @@ impl ProviderAccountProfileRegistry {
             let _ = fs::remove_dir_all(backup_root);
             let _ = sync_directory(managed_parent);
         }
-        Ok(result)
+        Ok((result, previous_default_profile_id))
     }
 
     pub(crate) fn rollback_managed_context_replica(
@@ -2528,6 +2636,15 @@ fn managed_context_rollback_root(
     )
 }
 
+fn materialized_replica_rollback_root(managed_root: &Path) -> PathBuf {
+    let parent = managed_root.parent().unwrap_or_else(|| Path::new("."));
+    let name = managed_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("profile");
+    parent.join(format!(".{name}.materialized-replica-rollback"))
+}
+
 fn managed_context_staging_root(
     managed_root: &Path,
     intent: ManagedContextReplicaIntent<'_>,
@@ -2709,12 +2826,15 @@ fn collect_managed_context_private_tree(
 }
 
 fn validate_managed_context_rollback_root(root: &Path) -> Result<(), DaemonError> {
-    let metadata = fs::symlink_metadata(root)
-        .map_err(registry_io("inspect managed account profile rollback"))?;
+    validate_managed_directory(root, "inspect managed account profile rollback")
+}
+
+fn validate_managed_directory(root: &Path, operation: &'static str) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(root).map_err(registry_io(operation))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(registry_error(
-            "inspect managed account profile rollback",
-            "managed account profile rollback state must be a regular directory",
+            operation,
+            "managed account profile path must be a regular directory",
         ));
     }
     Ok(())
@@ -3565,6 +3685,7 @@ fn sync_directory(path: &Path) -> Result<(), DaemonError> {
 }
 
 fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonError> {
+    validate_managed_directory(root, "delete managed account profile")?;
     let managed_base = registry_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -3579,7 +3700,7 @@ fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonEr
             "refusing to delete a path outside the managed account root",
         ));
     }
-    fs::remove_dir_all(canonical_root).map_err(registry_io("delete managed account profile"))
+    fs::remove_dir_all(root).map_err(registry_io("delete managed account profile"))
 }
 
 fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {

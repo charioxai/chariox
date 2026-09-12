@@ -79,35 +79,34 @@ impl RemoteLeaseRuntime<'_> {
             });
         }
 
-        if let Some(profile) = self
-            .app
-            .provider_account_profile_registry()
-            .list(
-                &lease.owner_user_id,
-                Some(&materialization.profile.provider),
-            )?
-            .into_iter()
+        let existing_profiles = self.app.provider_account_profile_registry().list(
+            &lease.owner_user_id,
+            Some(&materialization.profile.provider),
+        )?;
+        if let Some(profile) = existing_profiles
+            .iter()
             .find(|profile| profile.profile_id == materialization.profile.profile_id)
+            .cloned()
         {
             return self.validate_remote_provider_account(profile);
         }
-
         materialization.profile.origin =
             crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;
-        let profile = self
-            .app
-            .provider_account_profile_registry()
-            .materialize_replica(&lease.owner_user_id, &materialization)?;
+        let (profile, previous_default_profile_id) =
+            self.app
+                .provider_account_profile_registry()
+                .materialize_replica_with_rollback_state(&lease.owner_user_id, &materialization)?;
         let profile = match self.validate_remote_provider_account(profile) {
             Ok(profile) => profile,
             Err(error) => {
                 if let Err(rollback_error) = self
                     .app
                     .provider_account_profile_registry()
-                    .rollback_materialized_replica(
+                    .rollback_materialized_replica_restoring_default(
                         &lease.owner_user_id,
                         &materialization.profile.provider,
                         &materialization.profile.profile_id,
+                        previous_default_profile_id.as_deref(),
                     )
                 {
                     return Err(DaemonError::LocalTransport {
