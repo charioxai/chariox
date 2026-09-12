@@ -1540,6 +1540,24 @@ fn validate_linux_docker_slice_script(script: PathBuf) -> Result<PathBuf, Daemon
 }
 
 pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
+    if broker::configured() {
+        let status = docker_command()
+            .arg("info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.local_docker.broker",
+                message: format!("managed slice Docker broker is unavailable: {error}"),
+            })?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.local_docker.broker",
+            message: "managed slice Docker daemon is not ready".to_string(),
+        });
+    }
     if !command_exists("docker") {
         return Err(DaemonError::LocalTransport {
             operation: "slice.local_docker.docker",
