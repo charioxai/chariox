@@ -316,9 +316,28 @@ impl KernelRuntimeState {
                 remote_extension_manifest,
             )
             .await?;
+            owned
+                .agent_store
+                .set_remote_execution_active_worker_provider_run_id(
+                    target_agent_id,
+                    Some(provider_run_id.clone()),
+                )?;
+            owned.mark_active_prompt_delivery(
+                session_id,
+                target_agent_id,
+                started_next.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.clone()),
+                None,
+            )?;
+            let _ = owned.session_snapshot(session_id)?;
+            let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+                &dispatch.leased_agent_id,
+                &provider_run_id,
+            );
             owned.echo_promoted_queued_prompt_to_attachments(
                 session_id,
-                &provider_run_id,
+                &projected_provider_run_id,
                 started_next.id(),
                 started_next.source_attachment_id(),
                 started_next.prompt(),

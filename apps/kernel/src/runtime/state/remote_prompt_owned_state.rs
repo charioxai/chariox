@@ -123,6 +123,14 @@ impl KernelRuntimeOwnedState {
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        self.submit_remote_prepared_prompt_with_queue_policy(prepared, true)
+    }
+
+    pub(super) fn submit_remote_prepared_prompt_with_queue_policy(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+        allow_queue: bool,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let source_attachment =
@@ -171,11 +179,14 @@ impl KernelRuntimeOwnedState {
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
-        let outcome = self.prompt_state_owner.submit_prepared_prompt(
-            &session,
-            prompt,
-            prepared.force_queue,
-        )?;
+        let outcome = self
+            .prompt_state_owner
+            .submit_prepared_prompt_with_queue_policy(
+                &session,
+                prompt,
+                prepared.force_queue,
+                allow_queue,
+            )?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {
