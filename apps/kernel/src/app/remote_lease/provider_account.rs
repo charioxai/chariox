@@ -66,16 +66,23 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
+        let claude_portable_materialization =
+            crate::provider::canonical_provider_family(&materialization.profile.provider)
+                == Some("claude")
+                && crate::account_profile::materialization_has_portable_claude_credentials(
+                    &materialization,
+                );
         if crate::provider::canonical_provider_family(&materialization.profile.provider)
             == Some("claude")
             && materialization
                 .files
                 .iter()
                 .any(|file| file.relative_path == ".credentials.json")
+            && !claude_portable_materialization
         {
             return Err(DaemonError::LocalTransport {
                 operation: "ensure remote provider account",
-                message: "Claude provider credentials cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path".to_string(),
+                message: "Claude provider credentials are empty or not refreshable and cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path instead".to_string(),
             });
         }
 
@@ -89,7 +96,7 @@ impl RemoteLeaseRuntime<'_> {
             .into_iter()
             .find(|profile| profile.profile_id == materialization.profile.profile_id)
         {
-            return self.validate_remote_provider_account(profile);
+            return self.validate_remote_provider_account(profile, claude_portable_materialization);
         }
 
         materialization.profile.origin =
@@ -108,15 +115,19 @@ impl RemoteLeaseRuntime<'_> {
                 "source_home_kernel_id": context.home_kernel_id,
             }),
         )?;
-        self.validate_remote_provider_account(profile)
+        self.validate_remote_provider_account(profile, claude_portable_materialization)
     }
 
     fn validate_remote_provider_account(
         &self,
         profile: ProviderAccountProfile,
+        claude_portable_materialization: bool,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        if !remote_provider_account_requires_auth_validation(&profile.provider, profile.auth_state)
-        {
+        if !remote_provider_account_requires_auth_validation(
+            &profile.provider,
+            profile.auth_state,
+            claude_portable_materialization,
+        ) {
             return Ok(profile);
         }
         let registry = self.app.provider_account_profile_registry();
@@ -139,11 +150,14 @@ impl RemoteLeaseRuntime<'_> {
 fn remote_provider_account_requires_auth_validation(
     provider: &str,
     auth_state: ProviderAccountAuthState,
+    claude_portable_materialization: bool,
 ) -> bool {
-    // Claude refresh credentials never cross this boundary. Its official CLI
-    // is authenticated at launch through the existing vaulted setup-token
-    // path, so preserve that separate handoff contract.
-    crate::provider::canonical_provider_family(provider) != Some("claude")
+    // Portable Claude refresh credentials cross this boundary and must be
+    // provider-native status-validated before acknowledgement. Accounts
+    // without portable credentials keep the separate launch-scoped vaulted
+    // setup-token handoff, so they never run auth-status validation here.
+    let claude = crate::provider::canonical_provider_family(provider) == Some("claude");
+    (claude && claude_portable_materialization || !claude)
         && auth_state != ProviderAccountAuthState::Authenticated
 }
 
@@ -451,14 +465,27 @@ exit 2
         assert!(remote_provider_account_requires_auth_validation(
             "codex",
             ProviderAccountAuthState::Unknown,
+            false,
         ));
         assert!(!remote_provider_account_requires_auth_validation(
             "codex",
             ProviderAccountAuthState::Authenticated,
+            false,
         ));
         assert!(!remote_provider_account_requires_auth_validation(
             "claude",
             ProviderAccountAuthState::Unknown,
+            false,
+        ));
+        assert!(remote_provider_account_requires_auth_validation(
+            "claude",
+            ProviderAccountAuthState::Unknown,
+            true,
+        ));
+        assert!(!remote_provider_account_requires_auth_validation(
+            "claude",
+            ProviderAccountAuthState::Authenticated,
+            true,
         ));
     }
 
@@ -521,7 +548,11 @@ exit 2
             br#"{"claudeAiOauth":{"refreshToken":"portable-refresh"}}"#
         );
         assert_eq!(
-            std::fs::metadata(&credentials_path).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&credentials_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600
         );
 

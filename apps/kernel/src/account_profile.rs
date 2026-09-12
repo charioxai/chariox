@@ -3258,6 +3258,25 @@ fn materialization_has_file(
     files.iter().any(|file| file.relative_path == relative_path)
 }
 
+/// A Claude materialization is portable only when it actually carries a
+/// refreshable `.credentials.json`. Empty or non-refreshable payloads are
+/// never provisioned to a worker.
+pub(crate) fn materialization_has_portable_claude_credentials(
+    materialization: &ProviderAccountMaterialization,
+) -> bool {
+    materialization
+        .files
+        .iter()
+        .find(|file| file.relative_path == ".credentials.json")
+        .and_then(|file| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&file.contents_base64)
+                .ok()
+        })
+        .as_deref()
+        .is_some_and(claude_credentials_are_portable)
+}
+
 fn discard_nonportable_claude_credentials(files: &mut Vec<ProviderAccountMaterializationFile>) {
     files.retain(|file| {
         file.relative_path != ".credentials.json"
