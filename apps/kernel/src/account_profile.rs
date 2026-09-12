@@ -932,7 +932,8 @@ impl ProviderAccountProfileRegistry {
             RegistryDocument::default()
         };
         let changed = migrate_legacy_default_profile_ids(&mut document)
-            | migrate_legacy_default_profile_labels(&mut document);
+            | migrate_legacy_default_profile_labels(&mut document)
+            | migrate_legacy_managed_claude_scope(&mut document);
         let registry = Self {
             path,
             document: Arc::new(RwLock::new(document)),
@@ -1800,7 +1801,38 @@ impl ProviderAccountProfileRegistry {
             )
         };
         if !path_entry_exists(&rollback_root)? {
-            if pending_cleanup.is_some() {
+            if let Some(pending_cleanup) = pending_cleanup {
+                #[cfg(unix)]
+                {
+                    let parent = managed_fs::ManagedProviderParent::open(
+                        &self.path,
+                        &safe_path_component(owner_user_id),
+                        provider,
+                    )?;
+                    if parent.exists(profile_id)? {
+                        if stored.is_some() {
+                            return Err(registry_error(
+                                "recover materialized account rollback",
+                                "pending cleanup conflicts with an authoritative provider account",
+                            ));
+                        }
+                        let expected_identity = pending_cleanup.root_identity.ok_or_else(|| {
+                            registry_error(
+                                "recover materialized account rollback",
+                                "rollback cleanup identity is unavailable",
+                            )
+                        })?;
+                        parent.remove_matching(profile_id, expected_identity)?;
+                        parent.sync()?;
+                    }
+                }
+                #[cfg(not(unix))]
+                if path_entry_exists(&managed_root)? {
+                    return Err(registry_error(
+                        "recover materialized account rollback",
+                        "pending cleanup has an unresolved managed account root",
+                    ));
+                }
                 self.clear_pending_replica_cleanup(owner_user_id, provider, profile_id)?;
             }
             return Ok(());
@@ -3412,6 +3444,25 @@ fn migrate_legacy_default_profile_labels(document: &mut RegistryDocument) -> boo
     !legacy_profiles.is_empty()
 }
 
+fn migrate_legacy_managed_claude_scope(document: &mut RegistryDocument) -> bool {
+    let mut changed = false;
+    for profile in &mut document.profiles {
+        if profile.public.origin != ProviderAccountProfileOrigin::CharioxCreated {
+            continue;
+        }
+        if let ProviderAccountLocator::Claude {
+            ambient_default, ..
+        } = &mut profile.locator
+        {
+            if ambient_default.is_none() {
+                *ambient_default = Some(false);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 fn safe_path_component(value: &str) -> String {
     let mut result = String::new();
     let mut separator = false;
@@ -4580,6 +4631,66 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn replica_cleanup_reconciles_identity_matching_root_restored_after_registry_commit() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+        FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("leave durable cleanup pending");
+        let managed_root = root.join("provider-accounts/owner-a/codex/failed");
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        fs::rename(&rollback_root, &managed_root)
+            .expect("simulate root restoration after a failed registry restore");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reconcile the pending cleanup at its restored name");
+        reopened
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("corrected materialization must not be blocked by an orphaned root");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replica_cleanup_refuses_a_sibling_swapped_into_the_restored_root() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("sibling", false))
+            .expect("materialize sibling replica");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+        FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("leave durable cleanup pending");
+        let provider_root = root.join("provider-accounts/owner-a/codex");
+        let managed_root = provider_root.join("failed");
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        let sibling_root = provider_root.join("sibling");
+        fs::rename(&rollback_root, provider_root.join("spare")).unwrap();
+        fs::rename(&sibling_root, &managed_root).unwrap();
+        drop(registry);
+
+        assert!(
+            ProviderAccountProfileRegistry::open(&registry_path).is_err(),
+            "cleanup must reject a different real directory at the restored name"
+        );
+        assert_eq!(
+            fs::read_to_string(managed_root.join("codex/auth.json")).unwrap(),
+            r#"{"token":"fixture"}"#,
+            "sibling credentials must survive identity mismatch"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn replica_cleanup_rejects_a_real_directory_swapped_into_committed_residue() {
@@ -5364,6 +5475,29 @@ mod tests {
             .unwrap()
             .remove("ambient_default");
         fs::write(path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn legacy_created_claude_profile_remains_deletable() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "claude", "legacy")
+            .expect("create managed Claude profile");
+        drop(registry);
+        let registry_path = root.join("accounts.json");
+        strip_persisted_claude_scope_for_legacy_fixture(&registry_path);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("load legacy managed Claude profile");
+        reopened
+            .delete_managed_profile_data(
+                "owner-a",
+                "claude",
+                &profile.profile_id,
+                &profile.profile_id,
+            )
+            .expect("legacy managed Claude profile should remain deletable");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
