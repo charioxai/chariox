@@ -273,11 +273,14 @@ fi
 apt-get clean
 managed_sshd_config=/etc/ssh/sshd_config.d/00-chariox-managed.conf
 install -d -o root -g root -m 0755 /etc/ssh/sshd_config.d
+managed_sshd_tmp=$(mktemp)
 {
   printf '%s\n' 'PasswordAuthentication no'
   printf '%s\n' 'KbdInteractiveAuthentication no'
   printf '%s\n' 'PermitRootLogin prohibit-password'
-} | install -o root -g root -m 0644 /dev/stdin "$managed_sshd_config"
+} >"$managed_sshd_tmp"
+install -o root -g root -m 0644 "$managed_sshd_tmp" "$managed_sshd_config"
+rm -f "$managed_sshd_tmp"
 passwd --lock root
 chage -d "$(date -u +%Y-%m-%d)" -M 99999 -I -1 -E -1 root
 sshd_effective=$(sshd -T)

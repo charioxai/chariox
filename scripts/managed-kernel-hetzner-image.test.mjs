@@ -112,6 +112,8 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /sshd -T/)
   assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
   assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
+  assert.doesNotMatch(script, /install[^\n]*\/dev\/stdin/)
+  assert.match(script, /managed_sshd_tmp=\$\(mktemp\)/)
   assert.match(
     script,
     /rm -rf \/var\/lib\/apt\/lists\/\* \/tmp\/chariox-managed-release \/root\/\.cache \/root\/\.npm \/root\/\.ssh/,
