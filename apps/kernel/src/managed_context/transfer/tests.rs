@@ -89,6 +89,7 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
     request.destination_parent = root.join("destinations");
     let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
     let armed = store.arm(request.clone(), now).expect("arm transfer");
+    assert!(store.has_incomplete_import());
     let replayed = store.arm(request, now + 1).expect("replay identical arm");
     assert_eq!(replayed, armed);
     assert!(!String::from_utf8(

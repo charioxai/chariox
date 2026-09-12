@@ -41,6 +41,7 @@ pub(crate) mod history_requests;
 pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
 pub(crate) mod kernel_lifecycle_executor;
+pub(crate) mod kernel_runtime_role_policy;
 pub(crate) mod managed_context_outbound_control;
 pub(crate) mod managed_context_target_control;
 pub(crate) mod managed_environment_control;

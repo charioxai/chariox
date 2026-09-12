@@ -17,6 +17,13 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("kernel runtime role `{role}` does not allow `{operation}`")]
+    KernelRuntimeRoleDenied {
+        role: &'static str,
+        operation: &'static str,
+    },
+    #[error("authenticated relay caller does not own `{resource_id}`")]
+    LeaseCallerUnauthorized { resource_id: String },
     #[error("browser controller action was cancelled (controller fenced: {controller_fenced})")]
     BrowserControllerActionCancelled { controller_fenced: bool },
     #[error(

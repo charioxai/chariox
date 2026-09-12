@@ -152,6 +152,7 @@ fn scoped_daemon_registration_binds_subject_and_public_key() {
         expires_at_ms: u64::MAX,
         token_id: Some("token-1".to_string()),
         user_id: Some("user-1".to_string()),
+        machine_id: Some(registration.machine_id.clone()),
         public_key_thumbprint: Some(thumbprint),
     };
 
@@ -162,6 +163,13 @@ fn scoped_daemon_registration_binds_subject_and_public_key() {
     assert_eq!(
         validate_daemon_registration_identity(&identity, &wrong_key),
         Err("relay token key does not match daemon registration")
+    );
+
+    let mut wrong_machine = registration.clone();
+    wrong_machine.machine_id = "machine-attacker".to_string();
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &wrong_machine),
+        Err("relay token machine does not match daemon registration")
     );
 
     let mut wrong_subject = registration;

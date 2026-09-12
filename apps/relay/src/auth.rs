@@ -91,6 +91,7 @@ pub struct VerifiedRelayIdentity {
     pub expires_at_ms: u64,
     pub token_id: Option<String>,
     pub user_id: Option<String>,
+    pub machine_id: Option<String>,
     pub public_key_thumbprint: Option<String>,
 }
 
@@ -106,6 +107,7 @@ impl VerifiedRelayIdentity {
             expires_at_ms: u64::MAX,
             token_id: None,
             user_id: (subject_kind == RelaySubjectKind::Client).then(|| "local".to_string()),
+            machine_id: None,
             public_key_thumbprint: None,
         }
     }
@@ -617,6 +619,7 @@ fn identity_from_claims(claims: RelayTokenClaims) -> VerifiedRelayIdentity {
         expires_at_ms: claims.expires_at_ms,
         token_id: Some(claims.token_id),
         user_id: claims.user_id,
+        machine_id: claims.machine_id,
         public_key_thumbprint: claims.public_key_thumbprint,
     }
 }

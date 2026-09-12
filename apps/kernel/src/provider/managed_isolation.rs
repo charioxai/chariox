@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::error::DaemonError;
 
-use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
 pub(crate) const MANAGED_PROVIDER_ISOLATION_ENV: &str = "CHARIOX_MANAGED_PROVIDER_ISOLATION";
 #[cfg(any(target_os = "linux", test))]
@@ -87,6 +87,51 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+pub(crate) fn provider_reported_path_on_kernel(
+    run: &RuntimeProviderRun,
+    reported_path: &str,
+) -> Option<PathBuf> {
+    let reported_path = Path::new(reported_path);
+    let managed = run
+        .pty_args()
+        .windows(3)
+        .any(|args| args == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
+    if !managed {
+        return Some(reported_path.to_path_buf());
+    }
+
+    let (source, destination) = run
+        .pty_args()
+        .windows(3)
+        .filter(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind"))
+        .filter_map(|args| {
+            let source = PathBuf::from(&args[1]);
+            let destination = PathBuf::from(&args[2]);
+            if reported_path.starts_with(&destination) {
+                Some((source, destination))
+            } else if reported_path.starts_with(&source) {
+                Some((source.clone(), source))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(_, destination)| destination.components().count())?;
+    let relative = reported_path.strip_prefix(&destination).ok()?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    let source = source.canonicalize().ok()?;
+    let resolved = source.join(relative).canonicalize().ok()?;
+    resolved.starts_with(&source).then_some(resolved)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -803,6 +848,110 @@ fn isolation_error(message: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_provider_reported_path_resolves_through_its_account_bind() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-reported-path-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let host_account = root.join("account");
+        let host_transcript = host_account.join("projects/session.jsonl");
+        std::fs::create_dir_all(
+            host_transcript
+                .parent()
+                .expect("transcript should have a parent"),
+        )
+        .expect("account transcript root should exist");
+        std::fs::write(&host_transcript, "{}\n").expect("transcript should exist");
+        let sandbox_account = Path::new("/home/chariox/.provider-account").join("root-1");
+        let sandbox_transcript = sandbox_account.join("projects/session.jsonl");
+        let request = LaunchProviderRequest::new(
+            "session-managed-path",
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-opus",
+        );
+        let run = RuntimeProviderRun::new(
+            "provider-run-managed-path",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude:headless:managed-isolated".to_string(),
+                pty_target: None,
+                pty_program: Some("/usr/bin/bwrap".to_string()),
+                pty_args: vec![
+                    "--bind".to_string(),
+                    host_account.display().to_string(),
+                    sandbox_account.display().to_string(),
+                    "--setenv".to_string(),
+                    MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                    "1".to_string(),
+                    "--".to_string(),
+                    "/usr/local/bin/claude".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                sandbox_transcript
+                    .to_str()
+                    .expect("sandbox transcript should be utf8"),
+            ),
+            Some(
+                host_transcript
+                    .canonicalize()
+                    .expect("host path should resolve")
+            ),
+        );
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                host_transcript
+                    .to_str()
+                    .expect("host transcript should be utf8"),
+            ),
+            Some(
+                host_transcript
+                    .canonicalize()
+                    .expect("host path should resolve")
+            ),
+            "persisted transcript cursors must remain resolvable",
+        );
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                "/home/chariox/.provider-account/root-1/../root-2/session.jsonl",
+            ),
+            None,
+            "provider paths must not escape their kernel-owned bind",
+        );
+        #[cfg(unix)]
+        {
+            let outside = root.join("outside.jsonl");
+            let escape = host_account.join("projects/escape.jsonl");
+            std::fs::write(&outside, "secret\n").expect("outside fixture should exist");
+            std::os::unix::fs::symlink(&outside, &escape)
+                .expect("escape symlink should be created");
+            assert_eq!(
+                provider_reported_path_on_kernel(
+                    &run,
+                    "/home/chariox/.provider-account/root-1/projects/escape.jsonl",
+                ),
+                None,
+                "provider transcript symlinks must not escape their account bind",
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn namespace_args_restore_the_resolver_after_masking_run() {

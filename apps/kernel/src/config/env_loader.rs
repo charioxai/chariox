@@ -6,11 +6,12 @@ use std::process::Command;
 
 use super::identity::{load_or_create_runtime_identity, persist_runtime_display_aliases};
 use super::{
-    default_os_name, load_user_config_from_path,
+    default_os_name, load_user_config_from_path, parse_kernel_runtime_role,
+    parse_remote_lease_capacity,
     persisted_daemon::{
         load_cli_cloud_relay_profile, load_persisted_relay_config, PersistedCloudRelayProfile,
     },
-    DaemonConfig, DEFAULT_RELAY_HEARTBEAT_MS,
+    DaemonConfig, KernelRuntimeRole, DEFAULT_RELAY_HEARTBEAT_MS,
 };
 
 impl DaemonConfig {
@@ -82,9 +83,18 @@ impl DaemonConfig {
             })
             .or(user_config.relay.accept_remote_leases)
             .unwrap_or(true);
-        let remote_lease_capacity = env::var("CHARIOX_REMOTE_LEASE_CAPACITY")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok());
+        let role_value = env::var("CHARIOX_KERNEL_RUNTIME_ROLE").ok();
+        let (kernel_runtime_role, kernel_runtime_role_parse_error) =
+            match parse_kernel_runtime_role(role_value.as_deref()) {
+                Ok(role) => (role, None),
+                Err(error) => (KernelRuntimeRole::General, Some(error)),
+            };
+        let capacity_value = env::var("CHARIOX_REMOTE_LEASE_CAPACITY").ok();
+        let (remote_lease_capacity, remote_lease_capacity_parse_error) =
+            match parse_remote_lease_capacity(capacity_value.as_deref()) {
+                Ok(capacity) => (capacity, None),
+                Err(error) => (None, Some(error)),
+            };
         Self {
             room_environment_worker_binding: super::RoomEnvironmentWorkerBinding::from_environment(
             ),
@@ -212,7 +222,10 @@ impl DaemonConfig {
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
             accept_remote_leases,
+            kernel_runtime_role,
             remote_lease_capacity,
+            kernel_runtime_role_parse_error,
+            remote_lease_capacity_parse_error,
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
