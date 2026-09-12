@@ -98,6 +98,28 @@ impl RemoteLeaseRuntime<'_> {
             .app
             .provider_account_profile_registry()
             .materialize_replica(&lease.owner_user_id, &materialization)?;
+        let profile = match self.validate_remote_provider_account(profile) {
+            Ok(profile) => profile,
+            Err(error) => {
+                if let Err(rollback_error) = self
+                    .app
+                    .provider_account_profile_registry()
+                    .rollback_materialized_replica(
+                        &lease.owner_user_id,
+                        &materialization.profile.provider,
+                        &materialization.profile.profile_id,
+                    )
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "ensure remote provider account",
+                        message: format!(
+                            "{error}; additionally failed to roll back the new provider-account replica: {rollback_error}"
+                        ),
+                    });
+                }
+                return Err(error);
+            }
+        };
         self.app.durable_state_store().append_event(
             "provider_account.materialized",
             Some(lease.id),
@@ -108,7 +130,7 @@ impl RemoteLeaseRuntime<'_> {
                 "source_home_kernel_id": context.home_kernel_id,
             }),
         )?;
-        self.validate_remote_provider_account(profile)
+        Ok(profile)
     }
 
     fn validate_remote_provider_account(

@@ -1674,6 +1674,51 @@ impl ProviderAccountProfileRegistry {
         Ok(project_usage_freshness(removed.public))
     }
 
+    pub(crate) fn rollback_materialized_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        let managed_root = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts")
+            .join(safe_path_component(owner_user_id))
+            .join(provider)
+            .join(profile_id);
+        let expected_locator = ProviderAccountLocator::managed(provider, &managed_root)?;
+        let mut document = self.write_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        let stored = &document.profiles[index];
+        if !stored.materialized_replica
+            || stored.managed_context_replica.is_some()
+            || stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated
+            || stored.locator != expected_locator
+        {
+            return Err(registry_error(
+                "rollback materialized account profile",
+                "refusing to roll back an authoritative or managed-context provider account",
+            ));
+        }
+        if path_entry_exists(&managed_root)? {
+            remove_managed_root(&managed_root, &self.path)?;
+        }
+        let removed = document.profiles.remove(index);
+        if removed.public.is_default {
+            if let Some(next) = document.profiles.iter_mut().find(|profile| {
+                profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+            }) {
+                next.public.is_default = true;
+            }
+        }
+        self.persist_locked(&document)?;
+        Ok(project_usage_freshness(removed.public))
+    }
+
     pub(crate) fn export_materialization(
         &self,
         owner_user_id: &str,
