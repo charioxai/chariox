@@ -51,7 +51,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         home_agent_metaagent: bool,
         owner_user_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
-        if !self.app.config.accept_remote_leases {
+        if !self.app.accepting_remote_leases() {
             return Err(DaemonError::RemoteLeasesDisabled {
                 machine_id: self.app.config.host_machine_id.clone(),
             });

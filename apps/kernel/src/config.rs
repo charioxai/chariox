@@ -33,7 +33,10 @@ pub use credentials::{
 };
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
-pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
+pub(crate) use identity::{
+    load_or_create_managed_runtime_identity, load_or_initialize_disposable_worker_identity,
+    ManagedRuntimeIdentity,
+};
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
@@ -114,6 +117,9 @@ pub struct DaemonConfig {
     pub relay_heartbeat_ms: u64,
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
+    /// Maximum concurrent remote execution leases accepted by this kernel.
+    /// `None` preserves the ordinary remote-worker behavior of no fixed limit.
+    pub remote_lease_capacity: Option<usize>,
     pub room_environment_worker_binding: Option<RoomEnvironmentWorkerBinding>,
     pub event_delivery_url: Option<String>,
     pub event_delivery_token: Option<String>,
@@ -218,6 +224,7 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: true,
+            remote_lease_capacity: None,
             room_environment_worker_binding: None,
             event_delivery_url: None,
             event_delivery_token: None,

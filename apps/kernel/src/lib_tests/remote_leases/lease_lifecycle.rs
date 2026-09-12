@@ -30,6 +30,35 @@ fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
 }
 
 #[test]
+fn execution_lease_capacity_rejects_concurrent_lease_and_reopens_after_destroy() {
+    let mut config = DaemonConfig::for_tests();
+    config.remote_lease_capacity = Some(1);
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+
+    assert!(app.relay_registration().accepting_remote_leases);
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
+        .expect("first execution lease should fit capacity");
+    assert!(!app.relay_registration().accepting_remote_leases);
+
+    let error = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-2", "agent-2", false, "user-home")
+        .expect_err("second concurrent execution lease should exceed capacity");
+    assert!(matches!(error, DaemonError::RemoteLeasesDisabled { .. }));
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_execution_lease(&first.id)
+        .expect("first execution lease should be removed");
+    assert!(app.relay_registration().accepting_remote_leases);
+
+    RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-2", "agent-2", false, "user-home")
+        .expect("capacity should reopen after lease destruction");
+    assert!(!app.relay_registration().accepting_remote_leases);
+}
+
+#[test]
 fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

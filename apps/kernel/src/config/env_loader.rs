@@ -82,6 +82,9 @@ impl DaemonConfig {
             })
             .or(user_config.relay.accept_remote_leases)
             .unwrap_or(true);
+        let remote_lease_capacity = env::var("CHARIOX_REMOTE_LEASE_CAPACITY")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok());
         Self {
             room_environment_worker_binding: super::RoomEnvironmentWorkerBinding::from_environment(
             ),
@@ -209,6 +212,7 @@ impl DaemonConfig {
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
             accept_remote_leases,
+            remote_lease_capacity,
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
