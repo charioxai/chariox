@@ -231,6 +231,12 @@ reviewer-clean integration head is ready to merge into `main`. If CI finds a
 defect, fix it, repeat exact-head review, and rerun the final CI gate. A run
 for an older SHA does not validate a changed head.
 
+For a PR head, a maintainer applies the `program-final-ci` label only at that
+point. This labeled event runs the suite on the exact head SHA, including heads
+in contributor forks. If the head changes, remove and reapply the label after
+review. The final head commit and squash-merge title must not contain a CI-skip
+directive. A same-repository head may also use explicit workflow dispatch.
+
 Repository workflow triggers must enforce this policy: ordinary PR updates
 and intermediate ready-for-review transitions must not start expensive CI
 jobs. Only the explicit program-final gate may do so. Reviewer automation
