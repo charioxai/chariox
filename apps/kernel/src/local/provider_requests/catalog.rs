@@ -232,10 +232,24 @@ pub(crate) fn provider_auth_status_response(
     owner_user_id: &str,
     request: GetProviderAuthStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let profile = registry.get(owner_user_id, &request.provider, &request.account_profile)?;
-    let environment =
-        registry.resolve_environment(owner_user_id, &request.provider, &profile.profile_id)?;
-    match crate::provider::canonical_provider_family(&request.provider) {
+    let status = observe_provider_auth_status(
+        registry,
+        owner_user_id,
+        &request.provider,
+        &request.account_profile,
+    )?;
+    Ok(LocalDaemonResponse::ProviderAuthStatus { status })
+}
+
+pub(crate) fn observe_provider_auth_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
+    match crate::provider::canonical_provider_family(provider) {
         Some("codex") => {
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
@@ -245,32 +259,27 @@ pub(crate) fn provider_auth_status_response(
             let client = CodexClient::new("provider-auth", &endpoint)?;
             let status = client.auth_status(&profile.profile_id)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
-            Ok(LocalDaemonResponse::ProviderAuthStatus { status })
+            Ok(status)
         }
-        Some("claude") => Ok(LocalDaemonResponse::ProviderAuthStatus {
-            status: {
-                let status =
-                    claude_auth_status(&request.provider, &profile.profile_id, &environment)?;
-                update_profile_auth_observation(registry, owner_user_id, &status)?;
-                status
-            },
-        }),
-        Some("opencode") => Ok(LocalDaemonResponse::ProviderAuthStatus {
-            status: {
-                let status = opencode_auth_status(&profile.profile_id, &environment)?;
-                update_profile_auth_observation(registry, owner_user_id, &status)?;
-                registry.update_services(
-                    owner_user_id,
-                    "opencode",
-                    &profile.profile_id,
-                    inspect_opencode_services(&environment),
-                )?;
-                status
-            },
-        }),
+        Some("claude") => {
+            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            update_profile_auth_observation(registry, owner_user_id, &status)?;
+            Ok(status)
+        }
+        Some("opencode") => {
+            let status = opencode_auth_status(&profile.profile_id, &environment)?;
+            update_profile_auth_observation(registry, owner_user_id, &status)?;
+            registry.update_services(
+                owner_user_id,
+                "opencode",
+                &profile.profile_id,
+                inspect_opencode_services(&environment),
+            )?;
+            Ok(status)
+        }
         _ => Err(unsupported_auth_provider(
             "get_provider_auth_status",
-            &request.provider,
+            provider,
         )),
     }
 }

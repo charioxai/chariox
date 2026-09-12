@@ -1,4 +1,6 @@
-use crate::account_profile::{ProviderAccountMaterialization, ProviderAccountProfile};
+use crate::account_profile::{
+    ProviderAccountAuthState, ProviderAccountMaterialization, ProviderAccountProfile,
+};
 use crate::error::DaemonError;
 use crate::transport::relay_peer::RemoteProviderAccountSyncContext;
 
@@ -87,7 +89,7 @@ impl RemoteLeaseRuntime<'_> {
             .into_iter()
             .find(|profile| profile.profile_id == materialization.profile.profile_id)
         {
-            return Ok(profile);
+            return self.validate_remote_provider_account(profile);
         }
 
         materialization.profile.origin =
@@ -106,8 +108,43 @@ impl RemoteLeaseRuntime<'_> {
                 "source_home_kernel_id": context.home_kernel_id,
             }),
         )?;
-        Ok(profile)
+        self.validate_remote_provider_account(profile)
     }
+
+    fn validate_remote_provider_account(
+        &self,
+        profile: ProviderAccountProfile,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        if !remote_provider_account_requires_auth_validation(&profile.provider, profile.auth_state)
+        {
+            return Ok(profile);
+        }
+        let registry = self.app.provider_account_profile_registry();
+        crate::local::provider_requests::observe_provider_auth_status(
+            &registry,
+            &profile.owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+        )?;
+        registry.require_authenticated(
+            &profile.owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+            None,
+            "ensure remote provider account",
+        )
+    }
+}
+
+fn remote_provider_account_requires_auth_validation(
+    provider: &str,
+    auth_state: ProviderAccountAuthState,
+) -> bool {
+    // Claude refresh credentials never cross this boundary. Its official CLI
+    // is authenticated at launch through the existing vaulted setup-token
+    // path, so preserve that separate handoff contract.
+    crate::provider::canonical_provider_family(provider) != Some("claude")
+        && auth_state != ProviderAccountAuthState::Authenticated
 }
 
 #[cfg(test)]
@@ -121,6 +158,7 @@ mod tests {
         struct Cleanup {
             root: std::path::PathBuf,
             previous_bin: Option<std::ffi::OsString>,
+            previous_isolation: Option<std::ffi::OsString>,
         }
 
         impl Drop for Cleanup {
@@ -128,6 +166,12 @@ mod tests {
                 match self.previous_bin.take() {
                     Some(value) => std::env::set_var("CHARIOX_OPENCODE_BIN", value),
                     None => std::env::remove_var("CHARIOX_OPENCODE_BIN"),
+                }
+                match self.previous_isolation.take() {
+                    Some(value) => {
+                        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value)
+                    }
+                    None => std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV),
                 }
                 let _ = std::fs::remove_dir_all(&self.root);
             }
@@ -154,19 +198,19 @@ exit 2
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
             .expect("OpenCode fixture should be executable");
         let previous_bin = std::env::var_os("CHARIOX_OPENCODE_BIN");
+        let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
         std::env::set_var("CHARIOX_OPENCODE_BIN", executable);
+        std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
         Cleanup {
             root: root.to_path_buf(),
             previous_bin,
+            previous_isolation,
         }
     }
 
     fn remote_account_fixture(
         root: &std::path::Path,
-    ) -> (
-        crate::DaemonApp,
-        RemoteProviderAccountSyncContext,
-    ) {
+    ) -> (crate::DaemonApp, RemoteProviderAccountSyncContext) {
         std::fs::create_dir_all(root).unwrap();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
@@ -220,7 +264,7 @@ exit 2
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
-                provider: "codex".to_string(),
+                provider: "claude".to_string(),
                 profile_id: "work".to_string(),
                 label: "Work".to_string(),
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
@@ -236,11 +280,9 @@ exit 2
         assert_eq!(profile.profile_id, "work");
         let environment = app
             .provider_account_profile_registry()
-            .resolve_environment("owner-a", "codex", "work")
+            .resolve_environment("owner-a", "claude", "work")
             .unwrap();
-        assert!(std::path::Path::new(&environment["CODEX_HOME"])
-            .join("config.toml")
-            .exists());
+        assert!(std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]).is_dir());
 
         let claude_with_refresh_credential = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -301,14 +343,14 @@ exit 2
         let materialization = |contents_base64: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
-                provider: "codex".to_string(),
+                provider: "claude".to_string(),
                 profile_id: "work".to_string(),
                 label: "Work".to_string(),
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
                 is_default: false,
             },
             files: vec![crate::account_profile::ProviderAccountMaterializationFile {
-                relative_path: "auth.json".to_string(),
+                relative_path: "settings.json".to_string(),
                 contents_base64: contents_base64.to_string(),
             }],
             generated_at_ms: 1,
@@ -322,12 +364,12 @@ exit 2
             .unwrap();
         let environment = app
             .provider_account_profile_registry()
-            .resolve_environment("owner-a", "codex", "work")
+            .resolve_environment("owner-a", "claude", "work")
             .unwrap();
-        let codex_home = std::path::Path::new(&environment["CODEX_HOME"]);
-        let auth_path = codex_home.join("auth.json");
-        let provider_state_path = codex_home.join("provider-owned-state.json");
-        std::fs::write(&auth_path, br#"{"source":"worker"}"#).unwrap();
+        let claude_config_dir = std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]);
+        let settings_path = claude_config_dir.join("settings.json");
+        let provider_state_path = claude_config_dir.join("provider-owned-state.json");
+        std::fs::write(&settings_path, br#"{"source":"worker"}"#).unwrap();
         std::fs::write(&provider_state_path, b"worker-state").unwrap();
 
         RemoteLeaseRuntime::new(&mut app)
@@ -338,7 +380,7 @@ exit 2
             .unwrap();
 
         assert_eq!(
-            std::fs::read(&auth_path).unwrap(),
+            std::fs::read(&settings_path).unwrap(),
             br#"{"source":"worker"}"#
         );
         assert_eq!(
@@ -346,6 +388,22 @@ exit 2
             b"worker-state"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_auth_validation_policy_preserves_codex_and_claude_handoffs() {
+        assert!(remote_provider_account_requires_auth_validation(
+            "codex",
+            ProviderAccountAuthState::Unknown,
+        ));
+        assert!(!remote_provider_account_requires_auth_validation(
+            "codex",
+            ProviderAccountAuthState::Authenticated,
+        ));
+        assert!(!remote_provider_account_requires_auth_validation(
+            "claude",
+            ProviderAccountAuthState::Unknown,
+        ));
     }
 
     #[cfg(unix)]
@@ -360,8 +418,8 @@ exit 2
         std::fs::create_dir_all(&root).unwrap();
         let _cleanup = install_opencode_auth_fixture(&root);
         let (mut app, context) = remote_account_fixture(&root);
-        let materialization = |profile_id: &str, contents_base64: &str| {
-            ProviderAccountMaterialization {
+        let materialization =
+            |profile_id: &str, contents_base64: &str| ProviderAccountMaterialization {
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
                     owner_user_id: "owner-a".to_string(),
                     provider: "opencode".to_string(),
@@ -375,8 +433,7 @@ exit 2
                     contents_base64: contents_base64.to_string(),
                 }],
                 generated_at_ms: 1,
-            }
-        };
+            };
 
         let profile = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(
