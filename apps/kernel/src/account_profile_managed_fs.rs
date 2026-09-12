@@ -15,6 +15,26 @@ pub(super) struct ManagedProviderParent {
 }
 
 impl ManagedProviderParent {
+    pub(super) fn open_if_exists(
+        registry_path: &Path,
+        owner_component: &str,
+        provider: &str,
+    ) -> Result<Option<Self>, DaemonError> {
+        let registry_parent = File::open(registry_path.parent().unwrap_or_else(|| Path::new(".")))
+            .map_err(registry_io("open managed account parent"))?;
+        let Some(base) = open_child_directory_if_exists(&registry_parent, "provider-accounts")?
+        else {
+            return Ok(None);
+        };
+        let Some(owner) = open_child_directory_if_exists(&base, owner_component)? else {
+            return Ok(None);
+        };
+        let Some(directory) = open_child_directory_if_exists(&owner, provider)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self { directory }))
+    }
+
     pub(super) fn open(
         registry_path: &Path,
         owner_component: &str,
@@ -84,7 +104,20 @@ fn open_child_directory(parent: &File, name: &str) -> Result<File, DaemonError> 
     open_child_directory_cstr(parent, &name)
 }
 
+fn open_child_directory_if_exists(parent: &File, name: &str) -> Result<Option<File>, DaemonError> {
+    let name = component(name)?;
+    match open_child_directory_raw(parent, &name) {
+        Ok(directory) => Ok(Some(directory)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(registry_io("open managed account parent")(error)),
+    }
+}
+
 fn open_child_directory_cstr(parent: &File, name: &CStr) -> Result<File, DaemonError> {
+    open_child_directory_raw(parent, name).map_err(registry_io("open managed account parent"))
+}
+
+fn open_child_directory_raw(parent: &File, name: &CStr) -> std::io::Result<File> {
     // O_NOFOLLOW rejects a swapped symlink at each untrusted path component.
     let fd = unsafe {
         libc::openat(
@@ -94,9 +127,7 @@ fn open_child_directory_cstr(parent: &File, name: &CStr) -> Result<File, DaemonE
         )
     };
     if fd < 0 {
-        return Err(registry_io("open managed account parent")(
-            std::io::Error::last_os_error(),
-        ));
+        return Err(std::io::Error::last_os_error());
     }
     Ok(unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(fd) })
 }

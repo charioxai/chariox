@@ -1837,26 +1837,29 @@ impl ProviderAccountProfileRegistry {
             if let Some(pending_cleanup) = pending_cleanup {
                 #[cfg(unix)]
                 {
-                    let parent = managed_fs::ManagedProviderParent::open(
+                    let parent = managed_fs::ManagedProviderParent::open_if_exists(
                         &self.path,
                         &safe_path_component(owner_user_id),
                         provider,
                     )?;
-                    if parent.exists(profile_id)? {
-                        if stored.is_some() {
-                            return Err(registry_error(
-                                "recover materialized account rollback",
-                                "pending cleanup conflicts with an authoritative provider account",
-                            ));
+                    if let Some(parent) = parent {
+                        if parent.exists(profile_id)? {
+                            if stored.is_some() {
+                                return Err(registry_error(
+                                    "recover materialized account rollback",
+                                    "pending cleanup conflicts with an authoritative provider account",
+                                ));
+                            }
+                            let expected_identity =
+                                pending_cleanup.root_identity.ok_or_else(|| {
+                                    registry_error(
+                                        "recover materialized account rollback",
+                                        "rollback cleanup identity is unavailable",
+                                    )
+                                })?;
+                            parent.remove_matching(profile_id, expected_identity)?;
+                            parent.sync()?;
                         }
-                        let expected_identity = pending_cleanup.root_identity.ok_or_else(|| {
-                            registry_error(
-                                "recover materialized account rollback",
-                                "rollback cleanup identity is unavailable",
-                            )
-                        })?;
-                        parent.remove_matching(profile_id, expected_identity)?;
-                        parent.sync()?;
                     }
                 }
                 #[cfg(not(unix))]
@@ -2053,7 +2056,7 @@ impl ProviderAccountProfileRegistry {
         }
 
         #[cfg(unix)]
-        let managed_parent = managed_fs::ManagedProviderParent::open(
+        let managed_parent = managed_fs::ManagedProviderParent::open_if_exists(
             &self.path,
             &safe_path_component(owner_user_id),
             provider,
@@ -2069,11 +2072,19 @@ impl ProviderAccountProfileRegistry {
                 )
             })?;
         #[cfg(unix)]
-        let managed_root_exists = managed_parent.exists(profile_id)?;
+        let managed_root_exists = managed_parent
+            .as_ref()
+            .map(|parent| parent.exists(profile_id))
+            .transpose()?
+            .unwrap_or(false);
         #[cfg(not(unix))]
         let managed_root_exists = path_entry_exists(&managed_root)?;
         #[cfg(unix)]
-        let rollback_root_exists = managed_parent.exists(rollback_name)?;
+        let rollback_root_exists = managed_parent
+            .as_ref()
+            .map(|parent| parent.exists(rollback_name))
+            .transpose()?
+            .unwrap_or(false);
         #[cfg(not(unix))]
         let rollback_root_exists = path_entry_exists(&rollback_root)?;
         if managed_root_exists && rollback_root_exists {
@@ -2091,7 +2102,13 @@ impl ProviderAccountProfileRegistry {
         }
         if rollback_root_exists {
             #[cfg(unix)]
-            require_replica_root_identity(&managed_parent, rollback_name, expected_root_identity)?;
+            require_replica_root_identity(
+                managed_parent
+                    .as_ref()
+                    .expect("existing rollback root has a parent"),
+                rollback_name,
+                expected_root_identity,
+            )?;
             #[cfg(not(unix))]
             validate_managed_directory(
                 &rollback_root,
@@ -2100,7 +2117,10 @@ impl ProviderAccountProfileRegistry {
         } else if managed_root_exists {
             #[cfg(unix)]
             {
-                require_replica_root_identity(&managed_parent, profile_id, expected_root_identity)?;
+                let managed_parent = managed_parent
+                    .as_ref()
+                    .expect("existing materialized root has a parent");
+                require_replica_root_identity(managed_parent, profile_id, expected_root_identity)?;
                 managed_parent.rename(profile_id, rollback_name)?;
                 require_replica_root_identity(
                     &managed_parent,
@@ -2151,8 +2171,11 @@ impl ProviderAccountProfileRegistry {
             #[cfg(unix)]
             let root_restore_error = (!root_missing)
                 .then(|| {
+                    let managed_parent = managed_parent
+                        .as_ref()
+                        .expect("staged materialized root has a parent");
                     require_replica_root_identity(
-                        &managed_parent,
+                        managed_parent,
                         rollback_name,
                         expected_root_identity,
                     )
@@ -2199,6 +2222,9 @@ impl ProviderAccountProfileRegistry {
         }
         #[cfg(unix)]
         if !root_missing {
+            let managed_parent = managed_parent
+                .as_ref()
+                .expect("staged materialized root has a parent");
             managed_parent.remove_matching(rollback_name, expected_root_identity)?;
             managed_parent.sync()?;
         }
@@ -5008,6 +5034,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn missing_unvalidated_replica_parent_does_not_block_corrected_retry() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        let replica = codex_replica_materialization("interrupted", false);
+        registry
+            .materialize_replica_with_rollback_state("owner-a", &replica)
+            .expect("materialize replica before native validation");
+        let provider_parent = root.join("provider-accounts/owner-a/codex");
+        fs::remove_dir_all(&provider_parent)
+            .expect("simulate loss of the unvalidated provider directory");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("missing provider directory must not make the registry unusable");
+        assert!(reopened.get("owner-a", "codex", "interrupted").is_err());
+        reopened
+            .materialize_replica_with_rollback_state("owner-a", &replica)
+            .expect("corrected transfer must recreate the provider directory");
+        assert!(provider_parent
+            .join("interrupted/codex/auth.json")
+            .is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn replica_rollback_rejects_a_symlink_swapped_managed_root() {
         use std::os::unix::fs::symlink;
 
@@ -5257,6 +5309,33 @@ mod tests {
         reopened
             .rollback_materialized_replica("owner-a", "codex", "failed")
             .expect("later failed validation can roll back without a collision");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_provider_parent_does_not_block_pending_cleanup_recovery() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        let replica = codex_replica_materialization("failed", false);
+        registry
+            .materialize_replica("owner-a", &replica)
+            .expect("materialize replica before rollback");
+        FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("leave durable cleanup pending");
+        let provider_parent = root.join("provider-accounts/owner-a/codex");
+        fs::remove_dir_all(&provider_parent)
+            .expect("simulate loss of the provider directory during cleanup");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("missing cleanup directory must not block registry reopen");
+        reopened
+            .materialize_replica("owner-a", &replica)
+            .expect("corrected transfer must recreate the provider directory");
+        assert!(provider_parent.join("failed/codex/auth.json").is_file());
         let _ = fs::remove_dir_all(root);
     }
 
