@@ -6,9 +6,162 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(in crate::runtime::state) async fn steer_remote_agent_message(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<Option<String>, DaemonError> {
+        let owned = &self.owned;
+        let agent_id = prompt.target_agent_id();
+        let agent = owned.agent_store.get_agent(agent_id)?;
+        let Some(remote_execution) = agent.remote_execution() else {
+            return Ok(None);
+        };
+        let session = owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        if active_prompt.is_external() {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer agent message",
+                message: "agent messages cannot steer an externally started provider turn"
+                    .to_string(),
+            });
+        }
+        if let Some(projected) = owned
+            .provider_run_projection
+            .get_for_agent(session_id, agent_id)
+        {
+            if projected.state() != crate::provider::ProviderRunState::Running {
+                return Err(DaemonError::InvalidProviderRunState {
+                    provider_run_id: projected.id().to_string(),
+                    state: projected.state(),
+                    operation: "steer agent message",
+                });
+            }
+        }
+        let worker_provider_run_id = remote_execution
+            .active_worker_provider_run_id
+            .clone()
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        let (remote_prompt, required_skills) = self
+            .prepare_remote_prompt_skill_context(&agent, prompt.prompt())
+            .await?;
+        let prompt_attachments = prompt.attachments().to_vec();
+        let attachments = tokio::task::spawn_blocking(move || {
+            crate::app::serialize_remote_prompt_attachments(&prompt_attachments)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize remote agent message attachments",
+            message: error.to_string(),
+        })??;
+        let payload = RemoteQueuedPromptSteerPayload {
+            steer_id: prompt.id().to_string(),
+            target_home_prompt_id: active_prompt.id().to_string(),
+            prompt: remote_prompt,
+            hidden_system_context: prompt.hidden_system_context().to_string(),
+            attachments,
+            required_skills,
+        };
+        self.with_app_side_effect(|app| {
+            let current_agent = owned.agent_store.get_agent(agent_id)?;
+            let mut remote_execution = current_agent
+                .remote_execution()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "steer agent message",
+                    message: format!("agent `{agent_id}` is no longer remote"),
+                })?;
+            let current_session = owned.session_store.get_session(session_id)?;
+            let current_active = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&current_session, agent_id)
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+            if current_active.id() != payload.target_home_prompt_id
+                || remote_execution.active_worker_provider_run_id.as_deref()
+                    != Some(worker_provider_run_id.as_str())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "steer agent message",
+                    message: "active remote provider turn changed before delivery".to_string(),
+                });
+            }
+            let mut response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
+            if response.as_ref().is_err_and(
+                super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
+            ) {
+                remote_execution = app
+                    .refresh_remote_agent_binding(agent_id)?
+                    .remote_execution()
+                    .cloned()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "refresh remote agent message binding",
+                        message: format!("agent `{agent_id}` did not retain remote execution"),
+                    })?;
+                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
+            }
+            let provider_run_id = match response? {
+                RelayPeerResponse::LeasedPromptSteered {
+                    provider_run_id,
+                    steer_id,
+                    ..
+                } if steer_id == payload.steer_id => provider_run_id,
+                other => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "steer agent message",
+                        message: format!("unexpected remote message response: {other:?}"),
+                    });
+                }
+            };
+            owned.append_steering_prompt_history(
+                session_id,
+                &provider_run_id,
+                &payload.target_home_prompt_id,
+                prompt.source_attachment_id(),
+                agent_id,
+                prompt.id(),
+                prompt.prompt(),
+                prompt.attachments(),
+            )?;
+            owned.echo_steering_prompt_to_other_attachments(
+                session_id,
+                &provider_run_id,
+                agent_id,
+                prompt.id(),
+                prompt.source_attachment_id(),
+                prompt.source_attachment_id(),
+                prompt.prompt(),
+                prompt.attachments(),
+                prompt.prompt_origin(),
+            );
+            Ok(Some(crate::provider::projected_leased_provider_run_id(
+                &remote_execution.leased_agent_id,
+                &provider_run_id,
+            )))
+        })
+        .await
+    }
+
     pub(crate) async fn submit_prepared_prompt(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.submit_prepared_prompt_with_queue_policy(prepared, true)
+            .await
+    }
+
+    pub(crate) async fn submit_prepared_prompt_with_queue_policy(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+        allow_queue: bool,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
         self.owned.require_publication_activation()?;
         {
@@ -25,12 +178,16 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
-            if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
+            if let Some(mut submission) =
+                owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+            {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;
                 return Ok(submission);
             }
-            if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {
+            if let Some(mut submission) =
+                owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+            {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;
                 self.spawn_remote_prompt_projection_drain_if_needed(&submission);
@@ -74,7 +231,9 @@ impl KernelRuntimeState {
                         prepared.prompt.workflow_node_run_id(),
                     )?;
                 } else if is_remote_agent {
-                    if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {
+                    if let Some(mut submission) = owned
+                        .submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                    {
                         self.finish_owned_prompt_submission_workflow_start(&mut submission)
                             .await?;
                         self.spawn_remote_prompt_projection_drain_if_needed(&submission);
@@ -86,7 +245,9 @@ impl KernelRuntimeState {
                     })
                     .await?;
                 };
-                if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
+                if let Some(mut submission) =
+                    owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                {
                     self.finish_owned_prompt_submission_workflow_start(&mut submission)
                         .await?;
                     return Ok(submission);

@@ -139,7 +139,10 @@ impl KernelRuntimeState {
             .filter(|alias| !alias.is_empty())
             .unwrap_or_else(|| target.agent_ref());
         let source_attachment_id = self.ensure_agent_message_attachment(session.id(), sender)?;
-        let prompt_id = self.owned.session_store.reserve_prompt_id();
+        let prompt_id = durable_identity
+            .as_ref()
+            .map(|(operation_id, _)| operation_id.clone())
+            .unwrap_or_else(|| self.owned.session_store.reserve_prompt_id());
         let visible_prompt = if message.is_empty() {
             format!("agent {sender_label} message:")
         } else {
@@ -167,13 +170,64 @@ impl KernelRuntimeState {
         if let Some((operation_id, fingerprint)) = durable_identity.as_ref() {
             prompt = prompt.with_durable_operation(operation_id, fingerprint);
         }
+        if let Some(dispatch) =
+            self.prepare_local_active_agent_message_dispatch(session.id(), &prompt)?
+        {
+            let result = crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "status": "steered",
+                    "prompt_id": prompt_id,
+                    "source_agent_id": sender.id(),
+                    "source_agent_alias": sender_label,
+                    "target_agent_id": target.id(),
+                    "target_agent_alias": target_label,
+                    "attachment_count": attachment_count,
+                    "provider_run_id": dispatch.provider_run_id.clone(),
+                }),
+            };
+            if let (Some(store), Some((operation_id, fingerprint))) =
+                (idempotency_store.as_mut(), durable_identity)
+            {
+                store.record(operation_id, fingerprint, result.clone());
+            }
+            self.spawn_queued_prompt_steer_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            return Ok(result);
+        }
+        if let Some(provider_run_id) = self
+            .steer_remote_agent_message(session.id(), &prompt)
+            .await?
+        {
+            let result = crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "status": "steered",
+                    "prompt_id": prompt_id,
+                    "source_agent_id": sender.id(),
+                    "source_agent_alias": sender_label,
+                    "target_agent_id": target.id(),
+                    "target_agent_alias": target_label,
+                    "attachment_count": attachment_count,
+                    "provider_run_id": provider_run_id,
+                }),
+            };
+            if let (Some(store), Some((operation_id, fingerprint))) =
+                (idempotency_store.as_mut(), durable_identity)
+            {
+                store.record(operation_id, fingerprint, result.clone());
+            }
+            return Ok(result);
+        }
         let mut submission = self
-            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
-                session_id: session.id().to_string(),
-                prompt,
-                force_queue: false,
-                refresh_projection: true,
-            })
+            .submit_prepared_prompt_with_queue_policy(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session.id().to_string(),
+                    prompt,
+                    force_queue: false,
+                    refresh_projection: true,
+                },
+                false,
+            )
             .await?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
@@ -219,6 +273,89 @@ impl KernelRuntimeState {
             store.record(operation_id, fingerprint, result.clone());
         }
         Ok(result)
+    }
+
+    fn prepare_local_active_agent_message_dispatch(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        let agent_id = prompt.target_agent_id();
+        if self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        if active_prompt.is_external() {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer agent message",
+                message: "agent messages cannot steer an externally started provider turn"
+                    .to_string(),
+            });
+        }
+        let provider_run = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run.id().to_string(),
+                state: provider_run.state(),
+                operation: "steer agent message",
+            });
+        }
+        self.owned.append_steering_prompt_history(
+            session_id,
+            provider_run.id(),
+            active_prompt.id(),
+            prompt.source_attachment_id(),
+            agent_id,
+            prompt.id(),
+            prompt.prompt(),
+            prompt.attachments(),
+        )?;
+        self.owned.echo_steering_prompt_to_other_attachments(
+            session_id,
+            provider_run.id(),
+            agent_id,
+            prompt.id(),
+            prompt.source_attachment_id(),
+            prompt.source_attachment_id(),
+            prompt.prompt(),
+            prompt.attachments(),
+            prompt.prompt_origin(),
+        );
+        Ok(Some(crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            agent_id: agent_id.to_string(),
+            prompt_id: prompt.id().to_string(),
+            target_active_prompt_id: Some(active_prompt.id().to_string()),
+            source_attachment_id: prompt.source_attachment_id().to_string(),
+            prompt: prompt.prompt().to_string(),
+            hidden_system_context: prompt.hidden_system_context().to_string(),
+            attachments: prompt.attachments().to_vec(),
+            prompt_origin: prompt.prompt_origin(),
+            external_provider: prompt.external_provider().map(str::to_string),
+            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+            steering: true,
+        }))
     }
 
     fn ensure_agent_message_attachment(
