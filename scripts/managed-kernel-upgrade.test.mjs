@@ -1080,7 +1080,6 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.doesNotMatch(contents, /\.arroba/)
   assert.match(contents, /CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000/)
   assert.match(serviceContents, /ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)
-  assert.doesNotMatch(serviceContents, /systemctl restart/)
 
   const publishRelease = contents.indexOf('mv "$pending_release" "$published_release"')
   const publishTransaction = contents.indexOf('publish-transaction \\', publishRelease)
