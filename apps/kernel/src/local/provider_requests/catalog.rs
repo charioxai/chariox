@@ -431,9 +431,17 @@ fn opencode_auth_status(
             operation: "get_provider_auth_status",
             message: format!("failed to run OpenCode auth list: {error}"),
         })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: format!(
+                "OpenCode auth list failed ({}); authentication state is inconclusive",
+                output.status
+            ),
+        });
+    }
     let credential_inspection = inspect_opencode_credentials(environment);
-    let has_credentials =
-        output.status.success() && credential_inspection == OpenCodeCredentialInspection::Valid;
+    let has_credentials = credential_inspection == OpenCodeCredentialInspection::Valid;
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
         auth_state: if has_credentials {
