@@ -32,9 +32,12 @@ impl ManagedProviderParent {
         metadata_at(&self.directory, &component(name)?).map(|metadata| metadata.is_some())
     }
 
-    pub(super) fn require_directory(&self, name: &str) -> Result<(), DaemonError> {
-        open_child_directory(&self.directory, name)?;
-        Ok(())
+    pub(super) fn identity(&self, name: &str) -> Result<(u64, u64), DaemonError> {
+        let directory = open_child_directory(&self.directory, name)?;
+        let metadata = directory
+            .metadata()
+            .map_err(registry_io("inspect managed account profile"))?;
+        Ok((metadata.dev(), metadata.ino()))
     }
 
     pub(super) fn rename(&self, from: &str, to: &str) -> Result<(), DaemonError> {
@@ -58,7 +61,15 @@ impl ManagedProviderParent {
     }
 
     pub(super) fn remove(&self, name: &str) -> Result<(), DaemonError> {
-        remove_tree_at(&self.directory, &component(name)?)
+        remove_tree_at(&self.directory, &component(name)?, None)
+    }
+
+    pub(super) fn remove_matching(
+        &self,
+        name: &str,
+        expected_identity: (u64, u64),
+    ) -> Result<(), DaemonError> {
+        remove_tree_at(&self.directory, &component(name)?, Some(expected_identity))
     }
 
     pub(super) fn sync(&self) -> Result<(), DaemonError> {
@@ -111,11 +122,21 @@ fn metadata_at(parent: &File, name: &CStr) -> Result<Option<libc::stat>, DaemonE
     }
 }
 
-fn remove_tree_at(parent: &File, name: &CStr) -> Result<(), DaemonError> {
+fn remove_tree_at(
+    parent: &File,
+    name: &CStr,
+    expected_identity: Option<(u64, u64)>,
+) -> Result<(), DaemonError> {
     let directory = open_child_directory_cstr(parent, name)?;
     let pinned = directory
         .metadata()
         .map_err(registry_io("inspect managed account profile"))?;
+    if expected_identity.is_some_and(|expected| expected != (pinned.dev(), pinned.ino())) {
+        return Err(registry_error(
+            "delete managed account profile",
+            "managed account root identity changed",
+        ));
+    }
     let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
     if duplicate < 0 {
         return Err(registry_io("delete managed account profile")(
@@ -143,7 +164,7 @@ fn remove_tree_at(parent: &File, name: &CStr) -> Result<(), DaemonError> {
             continue;
         };
         if child.st_mode & libc::S_IFMT == libc::S_IFDIR {
-            remove_tree_at(&directory, child_name)?;
+            remove_tree_at(&directory, child_name, None)?;
         } else if unsafe { libc::unlinkat(directory.as_raw_fd(), child_name.as_ptr(), 0) } != 0 {
             return Err(registry_io("delete managed account profile")(
                 std::io::Error::last_os_error(),
