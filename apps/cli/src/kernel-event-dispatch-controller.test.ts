@@ -265,6 +265,39 @@ test("kernel event dispatch applies agent activity deltas without resyncing", as
   ])
 })
 
+test("kernel event dispatch backfills durable history from a completed activity projection", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "agent_activity_changed",
+    session_id: "session-1",
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        last_completed_turn: {
+          turn_id: "turn-1",
+          prompt_id: "prompt-1",
+          provider_run_id: "run-1",
+          agent_id: "agent-1",
+          completed_at_ms: 1,
+          settlement_status: "completed",
+          changed_paths: [],
+          undo_available: false,
+        },
+      },
+    },
+    agent_activity_revision: 10,
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_agent_activity_changed",
+    "apply-agent-activity:session-1:agent-1:10",
+    "refresh-assistant-history:agent-1",
+  ])
+})
+
 test("kernel event dispatch applies provider run deltas without resyncing", async () => {
   const harness = createHarness()
 
@@ -280,7 +313,7 @@ test("kernel event dispatch applies provider run deltas without resyncing", asyn
   ])
 })
 
-test("kernel event dispatch applies session metadata deltas without resyncing", async () => {
+test("kernel event dispatch reconciles pane ownership after a focused-agent delta", async () => {
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
@@ -292,6 +325,22 @@ test("kernel event dispatch applies session metadata deltas without resyncing", 
   assert.deepEqual(harness.calls, [
     "activity:kernel_session_metadata_changed",
     "apply-session-metadata:session-1:alias,focused_agent_id",
+    "resync:focused_agent_changed",
+  ])
+})
+
+test("kernel event dispatch applies non-focus session metadata without resyncing", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "session_metadata_changed",
+    session_id: "session-1",
+    metadata: { alias: "ops" },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_session_metadata_changed",
+    "apply-session-metadata:session-1:alias",
   ])
 })
 
@@ -392,7 +441,7 @@ test("kernel event dispatch ignores an unknown future event and keeps handling k
   assert.deepEqual(harness.calls, ["activity:kernel_heartbeat"])
 })
 
-test("kernel event dispatch treats successful transport resume as local liveness state", async () => {
+test("kernel event dispatch reconciles snapshots and shared history after transport resume", async () => {
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
@@ -403,6 +452,8 @@ test("kernel event dispatch treats successful transport resume as local liveness
 
   assert.deepEqual(harness.calls, [
     "transport-resumed",
+    "refresh-prompt-input-history",
+    "resync:transport_resumed",
   ])
 })
 
