@@ -90,7 +90,10 @@ export function createKernelEventDispatchController(
   deps: KernelEventDispatchControllerDeps,
 ) {
   const lastBackfilledTurnByAgent = new Map<string, string>()
-  const backfillInFlightTurnByAgent = new Map<string, string>()
+  const backfillInFlightByAgent = new Map<string, {
+    turnId: string
+    result: Promise<boolean>
+  }>()
 
   const applySessionSnapshot = async (event: KernelEventSessionSnapshot) => {
     deps.recordDaemonActivity("kernel_session_snapshot")
@@ -224,25 +227,39 @@ export function createKernelEventDispatchController(
       if (!isRecord(completedTurn) || typeof completedTurn.turn_id !== "string") {
         continue
       }
-      const turnId = completedTurn.turn_id
-      if (
-        lastBackfilledTurnByAgent.get(agentId) === turnId
-        || backfillInFlightTurnByAgent.get(agentId) === turnId
-      ) {
-        continue
-      }
-      backfillInFlightTurnByAgent.set(agentId, turnId)
-      backfills.push(deps.refreshAssistantMessageHistory(agentId).then((refreshed) => {
-        if (refreshed && backfillInFlightTurnByAgent.get(agentId) === turnId) {
-          lastBackfilledTurnByAgent.set(agentId, turnId)
-        }
-      }).finally(() => {
-        if (backfillInFlightTurnByAgent.get(agentId) === turnId) {
-          backfillInFlightTurnByAgent.delete(agentId)
-        }
-      }))
+      backfills.push(backfillAssistantMessageHistory(agentId, completedTurn.turn_id))
     }
     await Promise.all(backfills)
+  }
+
+  async function backfillAssistantMessageHistory(agentId: string, turnId: string) {
+    if (lastBackfilledTurnByAgent.get(agentId) === turnId) {
+      return
+    }
+    const inFlight = backfillInFlightByAgent.get(agentId)
+    if (inFlight?.turnId === turnId) {
+      if (!await inFlight.result) {
+        await backfillAssistantMessageHistory(agentId, turnId)
+      }
+      return
+    }
+
+    const entry = {
+      turnId,
+      result: Promise.resolve(false),
+    }
+    entry.result = deps.refreshAssistantMessageHistory(agentId).then((refreshed) => {
+      if (refreshed && backfillInFlightByAgent.get(agentId) === entry) {
+        lastBackfilledTurnByAgent.set(agentId, turnId)
+      }
+      return refreshed
+    }).finally(() => {
+      if (backfillInFlightByAgent.get(agentId) === entry) {
+        backfillInFlightByAgent.delete(agentId)
+      }
+    })
+    backfillInFlightByAgent.set(agentId, entry)
+    await entry.result
   }
 
   async function applyProviderRunChanged(event: KernelEventProviderRunChanged) {
