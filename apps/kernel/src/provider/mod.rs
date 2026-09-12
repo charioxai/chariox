@@ -79,8 +79,9 @@ pub use launch_contract::{
 };
 pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,
-    managed_isolated_utility_command, managed_provider_control_env_remove,
-    managed_provider_isolation_required, provider_reported_path_on_kernel,
+    managed_isolated_utility_command, managed_isolated_utility_launch,
+    managed_provider_control_env_remove, managed_provider_isolation_required,
+    provider_reported_path_on_kernel,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
