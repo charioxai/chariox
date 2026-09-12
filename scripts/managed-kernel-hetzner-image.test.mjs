@@ -110,6 +110,8 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /KbdInteractiveAuthentication no/)
   assert.match(script, /PermitRootLogin prohibit-password/)
   assert.match(script, /sshd -T/)
+  assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
+  assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
   assert.match(
     script,
     /rm -rf \/var\/lib\/apt\/lists\/\* \/tmp\/chariox-managed-release \/root\/\.cache \/root\/\.npm \/root\/\.ssh/,

@@ -285,7 +285,7 @@ printf '%s\n' "$sshd_effective" | grep -Fxq 'passwordauthentication no' \
   || fail "managed image must disable SSH password authentication"
 printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
   || fail "managed image must disable interactive SSH authentication"
-printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin without-password' \
+printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' \
   || fail "managed image must restrict root SSH to public keys"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
