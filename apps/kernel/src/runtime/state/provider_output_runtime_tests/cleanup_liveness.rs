@@ -162,7 +162,12 @@ async fn assert_owned_provider_exit_state(cancelling: bool) {
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let outcome = runtime
-        .settle_unexpected_provider_run_exit(session.id(), run.id(), agent.id())
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(17, 42),
+        )
         .await
         .expect("unexpected provider exit should settle");
 
@@ -179,15 +184,150 @@ async fn assert_owned_provider_exit_state(cancelling: bool) {
         .get_agent(agent.id())
         .expect("agent should remain available")
         .state();
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("settled turn should remain projected");
     if cancelling {
         assert_ne!(
             agent_state,
             crate::agent::AgentState::Error,
             "a deliberate cancellation must not become an unexpected provider failure"
         );
+        assert_eq!(
+            completed.provider_termination, None,
+            "a deliberate cancellation must not record a provider failure termination"
+        );
     } else {
         assert_eq!(agent_state, crate::agent::AgentState::Error);
+        assert_eq!(
+            completed.settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        );
+        assert_eq!(
+            completed.provider_termination,
+            Some(crate::provider::ProviderRunTermination::process_exit(
+                17, 42
+            )),
+        );
     }
+}
+
+#[tokio::test]
+async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replacement_run() {
+    let mut app =
+        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-unexpected-exit-queue",
+            "worktree-unexpected-exit-queue",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-unexpected-exit-queue",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "first prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    match app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "queued prompt\n",
+            Vec::new(),
+        )
+        .expect("second prompt should queue")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    };
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let outcome = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(1, 43),
+        )
+        .await
+        .expect("unexpected provider exit should settle and replace");
+
+    assert!(outcome.had_active_prompt);
+    assert!(outcome.started_next_prompt);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("queued prompt should be active on the replacement run");
+    assert_eq!(active_prompt.prompt(), "queued prompt\n");
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("replacement agent should remain available")
+            .state(),
+        crate::agent::AgentState::Working,
+    );
+    let active_prompt_id = active_prompt.id().to_string();
+    assert!(session_state
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(std::collections::VecDeque::is_empty));
+
+    let repeated = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(1, 43),
+        )
+        .await
+        .expect("repeated exit reconciliation should be idempotent");
+    assert!(!repeated.had_active_prompt);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should still exist");
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(agent.id())
+            .map(crate::session::PromptQueueItem::id),
+        Some(active_prompt_id.as_str()),
+        "the queued prompt must be promoted exactly once",
+    );
 }
 
 #[tokio::test]
@@ -214,21 +354,18 @@ async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_st
         )
         .expect("provider should launch");
     let state_before = agent.state();
-    let ended = app
-        .providers_mut()
-        .mark_run_ended_provider_only(session.id(), run.id())
-        .expect("provider run should end")
-        .into_run();
-    app.update_provider_run_projection(ended);
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .remove_run(run.id())
+        .expect("idle provider process should stop");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    let outcome = runtime
-        .settle_unexpected_provider_run_exit(session.id(), run.id(), agent.id())
+    let ended = runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
         .await
-        .expect("idle provider exit should settle");
+        .expect("idle provider exit should reconcile");
 
-    assert!(!outcome.had_active_prompt);
+    assert!(ended);
     assert_eq!(
         runtime
             .owned
@@ -238,6 +375,18 @@ async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_st
             .state(),
         state_before,
     );
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("idle agent history should load");
+    assert!(!history.iter().any(|event| {
+        event.kind == crate::history::HistoryEventKind::Notice
+            && event
+                .content
+                .as_deref()
+                .is_some_and(|content| content.contains("ended unexpectedly"))
+    }));
 }
 
 #[tokio::test]
@@ -345,6 +494,19 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
         Vec::new(),
     )
     .expect("prompt should start");
+    match app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "queued work\n",
+            Vec::new(),
+        )
+        .expect("queued prompt should submit")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    }
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
     let ended = app
         .providers_mut()
@@ -365,9 +527,25 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("already-ended reconciliation should advance one queued prompt");
+    assert_eq!(active_prompt.prompt(), "queued work\n");
+    assert!(session_state
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(std::collections::VecDeque::is_empty));
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("dead-run settlement should remain projected");
+    let termination = completed
+        .provider_termination
+        .expect("dead-run settlement should expose provider termination");
+    assert!(termination.reason.contains("already ended"));
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "already-ended provider reconciliation should close the active prompt"
+        !runtime.owned.provider_output_deadlines.contains(run.id()),
+        "the prior provider output timer must be cleared"
     );
     let app = app.lock().await;
     assert!(
@@ -377,14 +555,6 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
     assert!(
         !app.active_turn_store().snapshot().contains_key(run.id()),
         "already-ended provider reconciliation should clear active turn state"
-    );
-    assert_ne!(
-        app.agents()
-            .get_agent(agent.id())
-            .expect("agent should remain available")
-            .state(),
-        crate::agent::AgentState::Error,
-        "already-ended reconciliation must not classify the agent as a new failure",
     );
 }
 

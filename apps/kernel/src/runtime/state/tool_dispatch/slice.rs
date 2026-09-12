@@ -1,13 +1,21 @@
 use base64::Engine;
+use std::io::Read;
 use wait_timeout::ChildExt;
 
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
+mod controller_browser;
+mod controller_browser_compatibility;
+mod controller_browser_projection;
+mod controller_browser_runtime;
+mod controller_computer;
+mod controller_computer_observation;
 mod slice_browser;
 use slice_browser::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
+const ROOM_COMPUTER_INPUT_TIMEOUT_MS: u64 = 5_000;
 const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 
 impl KernelRuntimeState {
@@ -17,7 +25,10 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let Some(slice_id) = self.slice_kernel_id() else {
+        let Some(slice_id) = self
+            .room_browser_slice_for_tool(provider_run.session_id(), tool_name)
+            .or_else(|| self.slice_kernel_id())
+        else {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch_slice_runtime_tool_call",
                 message: "slice runtime tools are only available inside Chariox slices".to_string(),
@@ -30,6 +41,19 @@ impl KernelRuntimeState {
                     operation: "dispatch_slice_runtime_tool_call",
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
+        if self.browser_controller_enabled_for_room(provider_run.session_id())
+            && super::is_room_browser_controller_runtime_tool(tool_name)
+        {
+            return self
+                .dispatch_room_browser_controller_runtime_tool_call(
+                    provider_run.session_id(),
+                    &slice_id,
+                    agent_id,
+                    tool_name,
+                    arguments,
+                )
+                .await;
+        }
         let output = match tool_name {
             crate::transport::runtime_tools::SLICE_SCREEN_STATUS_TOOL => {
                 run_slice_screen_command(vec!["status".to_string()]).await?
@@ -53,15 +77,7 @@ impl KernelRuntimeState {
                 payload["mime_type"] = serde_json::Value::String("image/png".to_string());
                 if output.success && args.return_image_base64 {
                     let image_path = std::path::PathBuf::from(&image_path);
-                    let image_bytes = std::fs::read(&image_path).map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_slice_screenshot",
-                            message: format!(
-                                "failed to read screenshot `{}`: {error}",
-                                image_path.display()
-                            ),
-                        }
-                    })?;
+                    let image_bytes = read_slice_screenshot_for_mcp(&image_path)?;
                     payload["image_base64"] = serde_json::Value::String(
                         base64::engine::general_purpose::STANDARD.encode(image_bytes),
                     );
@@ -79,13 +95,17 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_ocr",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                reject_room_artifact_for_local_slice(
+                    args.artifact_id.as_deref(),
+                    "runtime_tool_slice_ocr",
+                )?;
                 let mut command_args = vec!["ocr".to_string()];
                 if let Some(image_path) = args.image_path {
                     command_args.push(image_path);
                 }
                 let output = run_slice_screen_command(command_args).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["text"] = serde_json::Value::String(output.stdout.clone());
+                payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
                     payload,
@@ -99,20 +119,19 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_find_text",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let mut command_args = vec!["find-text".to_string(), args.query];
+                reject_room_artifact_for_local_slice(
+                    args.artifact_id.as_deref(),
+                    "runtime_tool_slice_find_text",
+                )?;
+                let query = validated_slice_find_text_query(&args.query)?;
+                let mut command_args = vec!["find-text".to_string(), query];
                 if let Some(image_path) = args.image_path {
                     command_args.push(image_path);
                 }
                 let output = run_slice_screen_command(command_args).await?;
-                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["match"] = output
-                    .stdout
-                    .lines()
-                    .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                    .unwrap_or(serde_json::Value::Null);
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
-                    payload,
+                    payload: slice_find_text_payload(&slice_id, agent_id, &output),
                 });
             }
             crate::transport::runtime_tools::SLICE_MOUSE_TOOL => {
@@ -136,6 +155,33 @@ impl KernelRuntimeState {
                 })?;
                 run_slice_screen_command(slice_keyboard_command_args(args)?).await?
             }
+            crate::transport::runtime_tools::SLICE_CLIPBOARD_WRITE_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceClipboardWriteArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_clipboard_write",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let text =
+                    crate::transport::room_browser_controller::RoomComputerClipboardText::from_zeroizing(
+                        args.into_zeroizing(),
+                    );
+                let utf8_byte_count = text.as_str().len();
+                let character_count = text.as_str().chars().count();
+                run_room_clipboard_write_inner(text, None).await?;
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "source": "slice_computer",
+                        "slice_id": slice_id,
+                        "agent_id": agent_id,
+                        "action_kind": "clipboard_write",
+                        "utf8_byte_count": utf8_byte_count,
+                        "character_count": character_count,
+                    }),
+                });
+            }
             crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::PasteSecretToSliceArgs,
@@ -144,6 +190,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_paste_secret_to_slice",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
+                    return self
+                        .controller_paste_secret_to_slice_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args,
+                        )
+                        .await;
+                }
                 let status_output =
                     run_slice_screen_command(vec!["browser-status".to_string()]).await?;
                 let browser_status = slice_browser_json(&status_output)?;
@@ -151,6 +207,7 @@ impl KernelRuntimeState {
                 ensure_browser_target_matches_expectations(&browser_status, &args)?;
                 let selector = browser_selector(args.selector.as_deref(), args.field_id.as_deref());
                 ensure_browser_fill_target(&browser_status, selector.as_deref())?;
+                ensure_browser_secret_target_is_masked(&browser_status, selector.as_deref())?;
                 let secret = match self
                     .resolve_remote_home_credential_secret(
                         provider_run,
@@ -175,10 +232,10 @@ impl KernelRuntimeState {
                             credentials,
                             &user_config.credential_vault,
                         )?;
-                        service.browser_secret_input_for_target_url(
+                        zeroize::Zeroizing::new(service.browser_secret_input_for_target_url(
                             &args.credential_id,
                             &browser_url,
-                        )?
+                        )?)
                     }
                 };
                 let mut command_args = vec![if args.submit {
@@ -201,6 +258,16 @@ impl KernelRuntimeState {
                     ),
                 });
             }
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL => {
+                // Keep the infrequent approval and vault flow off the shared dispatch future's
+                // stack; this router is also used by latency-sensitive non-secret commands.
+                return Box::pin(self.dispatch_computer_secret_input_tool(
+                    provider_run,
+                    agent_id,
+                    arguments,
+                ))
+                .await;
+            }
             crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::SliceOpenUrlArgs,
@@ -214,6 +281,35 @@ impl KernelRuntimeState {
             crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
                 let output = run_slice_screen_command(vec!["browser-status".to_string()]).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_TAB_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserTabArgs>(
+                    arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_tab",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_tab",
+                    message:
+                        "browser tab lifecycle requires the long-running Room browser controller"
+                            .to_string(),
+                });
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_HISTORY_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserHistoryArgs>(
+                    arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_history",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_history",
+                    message: "browser history requires the long-running Room browser controller"
+                        .to_string(),
+                });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL => {
                 let args = serde_json::from_value::<
@@ -298,10 +394,66 @@ impl KernelRuntimeState {
                 let output = run_slice_screen_command(command_args).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
+            crate::transport::runtime_tools::SLICE_BROWSER_EVENTS_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserEventsArgs>(
+                    arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_events",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_events",
+                    message: "browser events require the long-running Room browser controller"
+                        .to_string(),
+                });
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_DOWNLOADS_TOOL => {
+                serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserDownloadsArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_downloads",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_downloads",
+                    message: "browser downloads require the long-running Room browser controller"
+                        .to_string(),
+                });
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_UPLOAD_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserUploadArgs>(
+                    arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_upload",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_upload",
+                    message: "browser uploads require the long-running Room browser controller"
+                        .to_string(),
+                });
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_PERMISSION_TOOL => {
+                serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserPermissionArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_permission",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_permission",
+                    message: "browser permissions require the long-running Room browser controller"
+                        .to_string(),
+                });
+            }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
                 let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["text"] = serde_json::Value::String(output.stdout.clone());
+                payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
                     payload,
@@ -368,35 +520,249 @@ impl KernelRuntimeState {
     }
 }
 
-#[derive(Debug)]
+fn reject_room_artifact_for_local_slice(
+    artifact_id: Option<&str>,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    if artifact_id.is_some() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message:
+                "artifact_id is only valid for an opaque Room screenshot; local slices use image_path"
+                    .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validated_slice_find_text_query(query: &str) -> Result<String, DaemonError> {
+    let query = query.trim();
+    if query.is_empty() || query.len() > 4096 {
+        return Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_find_text",
+            message: "query must contain between 1 and 4096 UTF-8 bytes".to_string(),
+        });
+    }
+    Ok(query.to_string())
+}
+
+fn read_slice_screenshot_for_mcp(path: &std::path::Path) -> Result<Vec<u8>, DaemonError> {
+    let file = std::fs::File::open(path).map_err(|error| DaemonError::LocalTransport {
+        operation: "runtime_tool_slice_screenshot",
+        message: format!("failed to open screenshot `{}`: {error}", path.display()),
+    })?;
+    read_bounded_png(
+        file,
+        super::super::room_screenshot::ROOM_SCREENSHOT_INLINE_MAX_BYTES as usize,
+    )
+    .map_err(|message| DaemonError::LocalTransport {
+        operation: "runtime_tool_slice_screenshot",
+        message: format!("screenshot `{}` {message}", path.display()),
+    })
+}
+
+fn read_bounded_png(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((max_bytes + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not be read: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("exceeds the {max_bytes} byte runtime MCP limit"));
+    }
+    if !bytes.starts_with(super::super::room_screenshot::ROOM_SCREENSHOT_PNG_SIGNATURE) {
+        return Err("is empty or is not a PNG image".to_string());
+    }
+    Ok(bytes)
+}
+
 struct SliceScreenCommandOutput {
     success: bool,
     status_code: Option<i32>,
-    stdout: String,
-    stderr: String,
+    stdout: zeroize::Zeroizing<String>,
+    stderr: zeroize::Zeroizing<String>,
     stdout_truncated: bool,
     stderr_truncated: bool,
+    sensitive_output: bool,
+}
+
+impl std::fmt::Debug for SliceScreenCommandOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("SliceScreenCommandOutput");
+        debug
+            .field("success", &self.success)
+            .field("status_code", &self.status_code);
+        if self.sensitive_output {
+            debug
+                .field("stdout", &"[redacted sensitive helper output]")
+                .field("stderr", &"[redacted sensitive helper output]");
+        } else {
+            debug
+                .field("stdout", &self.stdout.as_str())
+                .field("stderr", &self.stderr.as_str());
+        }
+        debug
+            .field("stdout_truncated", &self.stdout_truncated)
+            .field("stderr_truncated", &self.stderr_truncated)
+            .finish()
+    }
 }
 
 async fn run_slice_screen_command(
     args: Vec<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner(args, None).await
+    run_slice_screen_command_inner(args, None, None).await
+}
+
+pub(in crate::runtime::state) async fn execute_room_computer_observation(
+    call: crate::transport::relay_peer::RemoteRoomComputerObservationCall,
+    artifact_path: Option<std::path::PathBuf>,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let output = match &call {
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
+            run_slice_screen_command(vec!["status".to_string()]).await?
+        }
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. } => {
+            let mut args = vec!["ocr".to_string()];
+            if let Some(path) = artifact_path.as_ref() {
+                args.push(room_computer_artifact_path(path)?);
+            }
+            run_slice_screen_command(args).await?
+        }
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText {
+            query, ..
+        } => {
+            let query = validated_slice_find_text_query(query)?;
+            let mut args = vec!["find-text".to_string(), query];
+            if let Some(path) = artifact_path.as_ref() {
+                args.push(room_computer_artifact_path(path)?);
+            }
+            run_slice_screen_command(args).await?
+        }
+    };
+    let is_find_text = matches!(
+        &call,
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::FindText { .. }
+    );
+    let mut payload = if is_find_text {
+        slice_find_text_payload("", "", &output)
+    } else {
+        slice_tool_payload("", "", &output)
+    };
+    if matches!(
+        &call,
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::Ocr { .. }
+    ) {
+        payload["text"] = serde_json::Value::String(output.stdout.as_str().to_string());
+    }
+    if let Some(payload) = payload.as_object_mut() {
+        for field in [
+            "slice_id", "agent_id", "display", "viewer", "stdout", "stderr",
+        ] {
+            payload.remove(field);
+        }
+    }
+    Ok(crate::transport::runtime_tools::RuntimeToolResult {
+        ok: output.success,
+        payload,
+    })
+}
+
+fn room_computer_artifact_path(path: &std::path::Path) -> Result<String, DaemonError> {
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "environment.computer.observe",
+            message: "Room screenshot artifact path is not valid UTF-8".to_string(),
+        })
+}
+
+pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
+    destination: &std::path::Path,
+) -> Result<(), DaemonError> {
+    let destination = destination
+        .to_str()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: "screenshot destination is not valid UTF-8".to_string(),
+        })?;
+    let output =
+        run_slice_screen_command(vec!["screenshot".to_string(), destination.to_string()]).await?;
+    if !output.success {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: format!(
+                "slice screenshot helper exited with status {}",
+                output
+                    .status_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ),
+        });
+    }
+    let metadata = std::fs::metadata(destination).map_err(|error| DaemonError::LocalTransport {
+        operation: "environment.screenshot.capture",
+        message: format!("slice screenshot helper did not create the capture: {error}"),
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: "slice screenshot helper produced an empty capture".to_string(),
+        });
+    }
+    Ok(())
 }
 
 async fn run_slice_screen_command_with_stdin(
     args: Vec<String>,
-    stdin: String,
+    stdin: zeroize::Zeroizing<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner(args, Some(stdin)).await
+    run_slice_screen_command_inner(args, Some(stdin), None).await
 }
 
 async fn run_slice_screen_command_inner(
     args: Vec<String>,
-    stdin: Option<String>,
+    stdin: Option<zeroize::Zeroizing<String>>,
+    timeout_override_ms: Option<u64>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_output_policy(args, stdin, timeout_override_ms, None, false)
+        .await
+}
+
+async fn run_slice_screen_command_inner_exact_stdout(
+    args: Vec<String>,
+    timeout_override_ms: Option<u64>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_output_policy(args, None, timeout_override_ms, None, true)
+        .await
+}
+
+async fn run_slice_screen_command_inner_with_cancellation(
+    args: Vec<String>,
+    stdin: Option<zeroize::Zeroizing<String>>,
+    timeout_override_ms: Option<u64>,
+    cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner_with_output_policy(
+        args,
+        stdin,
+        timeout_override_ms,
+        cancellation,
+        false,
+    )
+    .await
+}
+
+async fn run_slice_screen_command_inner_with_output_policy(
+    args: Vec<String>,
+    stdin: Option<zeroize::Zeroizing<String>>,
+    timeout_override_ms: Option<u64>,
+    cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
+    preserve_stdout: bool,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
+    let sensitive_output = preserve_stdout || stdin.is_some();
     tokio::task::spawn_blocking(move || {
         let mut command = std::process::Command::new(&tool_path);
         command
@@ -406,23 +772,45 @@ async fn run_slice_screen_command_inner(
         if stdin.is_some() {
             command.stdin(std::process::Stdio::piped());
         }
+        #[cfg(unix)]
+        if cancellation.is_some() {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to run `{tool_path}`: {error}"),
             })?;
+        let process_group = child.id();
+        if let Some(cancellation) = cancellation.as_ref() {
+            cancellation.register_process_group(process_group);
+        }
         if let Some(stdin) = stdin {
             use std::io::Write;
             let Some(mut child_stdin) = child.stdin.take() else {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: "slice screen command did not expose stdin".to_string(),
                 });
             };
             if let Err(error) = child_stdin.write_all(stdin.as_bytes()) {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
+                if cancellation.as_ref().is_some_and(|value| value.requested()) {
+                    return Err(computer_input_cancelled());
+                }
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: format!("failed to write slice screen stdin: {error}"),
@@ -430,42 +818,79 @@ async fn run_slice_screen_command_inner(
             }
         }
         drop(child.stdin.take());
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| DaemonError::LocalTransport {
+        let Some(stdout) = child.stdout.take() else {
+            if let Some(cancellation) = cancellation.as_ref() {
+                cancellation.terminate_process_group();
+                cancellation.clear_process_group(process_group);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: "slice screen command did not expose stdout".to_string(),
-            })?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| DaemonError::LocalTransport {
+            });
+        };
+        let Some(stderr) = child.stderr.take() else {
+            if let Some(cancellation) = cancellation.as_ref() {
+                cancellation.terminate_process_group();
+                cancellation.clear_process_group(process_group);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            drop(stdout);
+            return Err(DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: "slice screen command did not expose stderr".to_string(),
-            })?;
-        let stdout_reader = std::thread::spawn(move || read_child_output(stdout));
+            });
+        };
+        let stdout_reader = std::thread::spawn(move || {
+            if preserve_stdout {
+                read_child_output_exact_utf8(stdout)
+            } else {
+                read_child_output(stdout)
+            }
+        });
         let stderr_reader = std::thread::spawn(move || read_child_output(stderr));
-        let status = match child
-            .wait_timeout(std::time::Duration::from_millis(
-                slice_screen_command_timeout_ms(),
-            ))
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "run_slice_screen_command",
-                message: format!("failed to wait for `{tool_path}`: {error}"),
-            })? {
-            Some(status) => status,
-            None => {
+        let timeout_ms = timeout_override_ms.unwrap_or_else(slice_screen_command_timeout_ms);
+        let status = match child.wait_timeout(std::time::Duration::from_millis(timeout_ms)) {
+            Ok(Some(status)) => {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.clear_process_group(process_group);
+                }
+                status
+            }
+            Ok(None) => {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
+                if cancellation.as_ref().is_some_and(|value| value.requested()) {
+                    return Err(computer_input_cancelled());
+                }
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
-                    message: format!(
-                        "slice screen command timed out after {}ms",
-                        slice_screen_command_timeout_ms()
-                    ),
+                    message: format!("slice screen command timed out after {timeout_ms}ms"),
+                });
+            }
+            Err(error) => {
+                if let Some(cancellation) = cancellation.as_ref() {
+                    cancellation.terminate_process_group();
+                    cancellation.clear_process_group(process_group);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                if cancellation.as_ref().is_some_and(|value| value.requested()) {
+                    return Err(computer_input_cancelled());
+                }
+                return Err(DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: format!("failed to wait for `{tool_path}`: {error}"),
                 });
             }
         };
@@ -483,6 +908,9 @@ async fn run_slice_screen_command_inner(
                     operation: "run_slice_screen_command",
                     message: "slice screen stderr reader panicked".to_string(),
                 })??;
+        if !status.success() && cancellation.as_ref().is_some_and(|value| value.requested()) {
+            return Err(computer_input_cancelled());
+        }
         Ok(SliceScreenCommandOutput {
             success: status.success(),
             status_code: status.code(),
@@ -490,6 +918,7 @@ async fn run_slice_screen_command_inner(
             stderr,
             stdout_truncated,
             stderr_truncated,
+            sensitive_output,
         })
     })
     .await
@@ -497,6 +926,408 @@ async fn run_slice_screen_command_inner(
         operation: "run_slice_screen_command",
         message: error.to_string(),
     })?
+}
+
+pub(crate) async fn run_room_pointer_click(
+    x: u32,
+    y: u32,
+    button: crate::transport::room_browser_controller::RoomComputerPointerButton,
+    click_count: u8,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || x >= desktop_pixel_width
+        || y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    if !matches!(click_count, 1 | 2) {
+        return Err(room_computer_input_error("environment_invalid_click_count"));
+    }
+    let button = room_computer_pointer_button_arg(button);
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec![
+            "pointer-click".to_string(),
+            x.to_string(),
+            y.to_string(),
+            button.to_string(),
+            click_count.to_string(),
+        ],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_pointer_move(
+    x: u32,
+    y: u32,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || x >= desktop_pixel_width
+        || y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec!["move".to_string(), x.to_string(), y.to_string()],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_pointer_drag(
+    from_x: u32,
+    from_y: u32,
+    to_x: u32,
+    to_y: u32,
+    button: crate::transport::room_browser_controller::RoomComputerPointerButton,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || from_x >= desktop_pixel_width
+        || from_y >= desktop_pixel_height
+        || to_x >= desktop_pixel_width
+        || to_y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    let button = room_computer_pointer_button_arg(button);
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec![
+            "pointer-drag".to_string(),
+            from_x.to_string(),
+            from_y.to_string(),
+            to_x.to_string(),
+            to_y.to_string(),
+            button.to_string(),
+        ],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_pointer_scroll(
+    x: u32,
+    y: u32,
+    horizontal_steps: i16,
+    vertical_steps: i16,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    if desktop_pixel_width == 0
+        || desktop_pixel_height == 0
+        || x >= desktop_pixel_width
+        || y >= desktop_pixel_height
+    {
+        return Err(room_computer_input_error(
+            "environment_pointer_out_of_bounds",
+        ));
+    }
+    if (horizontal_steps == 0 && vertical_steps == 0)
+        || horizontal_steps.unsigned_abs()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_SCROLL_MAX_STEPS
+        || vertical_steps.unsigned_abs()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_SCROLL_MAX_STEPS
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_scroll_steps",
+        ));
+    }
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec![
+            "pointer-scroll".to_string(),
+            x.to_string(),
+            y.to_string(),
+            horizontal_steps.to_string(),
+            vertical_steps.to_string(),
+        ],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice pointer helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_keyboard_text(
+    input: crate::transport::room_browser_controller::RoomComputerKeyboardInput,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    if input.as_str().is_empty()
+        || input.as_str().len()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_keyboard_text",
+        ));
+    }
+    let timeout_ms =
+        crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str());
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec!["computer-type-stdin".to_string()],
+        Some(input.into_zeroizing()),
+        Some(timeout_ms),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer keyboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_keyboard_key(
+    input: crate::transport::room_browser_controller::RoomComputerKeyboardInput,
+    repeat: u16,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    let key = input.as_str();
+    if key.is_empty()
+        || key.len()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES
+        || key.starts_with('-')
+        || !key.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_keyboard_key",
+        ));
+    }
+    if repeat == 0
+        || repeat > crate::transport::room_browser_controller::ROOM_COMPUTER_KEYBOARD_KEY_MAX_REPEAT
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_keyboard_repeat",
+        ));
+    }
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec!["computer-key-stdin".to_string(), repeat.to_string()],
+        Some(input.into_zeroizing()),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer keyboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_clipboard_write(
+    text: crate::transport::room_browser_controller::RoomComputerClipboardText,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    run_room_clipboard_write_inner(text, Some(cancellation)).await
+}
+
+async fn run_room_clipboard_write_inner(
+    text: crate::transport::room_browser_controller::RoomComputerClipboardText,
+    cancellation: Option<crate::runtime::computer_input_execution::ComputerInputCancellation>,
+) -> Result<(), DaemonError> {
+    if text.as_str().len()
+        > crate::transport::room_browser_controller::ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES
+    {
+        return Err(room_computer_input_error(
+            "environment_invalid_clipboard_text",
+        ));
+    }
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec!["computer-clipboard-write-stdin".to_string()],
+        Some(text.into_zeroizing()),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        cancellation,
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer clipboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn run_room_clipboard_read(
+) -> Result<crate::transport::room_browser_controller::RoomComputerClipboardText, DaemonError> {
+    let mut output = run_slice_screen_command_inner_exact_stdout(
+        vec!["computer-clipboard-read".to_string()],
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if !output.success {
+        zeroize::Zeroize::zeroize(&mut output.stdout);
+        return Err(room_computer_input_error(&format!(
+            "slice computer clipboard helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )));
+    }
+    if output.stdout_truncated
+        || output.stdout.len()
+            > crate::transport::room_browser_controller::ROOM_COMPUTER_CLIPBOARD_MAX_UTF8_BYTES
+    {
+        zeroize::Zeroize::zeroize(&mut output.stdout);
+        return Err(room_computer_input_error(
+            "environment_invalid_clipboard_text",
+        ));
+    }
+    Ok(
+        crate::transport::room_browser_controller::RoomComputerClipboardText::new(std::mem::take(
+            &mut *output.stdout,
+        )),
+    )
+}
+
+pub(crate) async fn run_room_secret_text_input(
+    input: crate::transport::room_browser_controller::RoomComputerSecretInput,
+    cancellation: crate::runtime::computer_input_execution::ComputerInputCancellation,
+) -> Result<(), DaemonError> {
+    let output = run_slice_screen_command_inner_with_cancellation(
+        vec!["computer-secret-paste-stdin".to_string()],
+        Some(input.into_zeroizing()),
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+        Some(cancellation),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer secret helper exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+pub(crate) async fn reset_room_computer_input() -> Result<(), DaemonError> {
+    let output = run_slice_screen_command_inner(
+        vec!["computer-input-reset".to_string()],
+        None,
+        Some(ROOM_COMPUTER_INPUT_TIMEOUT_MS),
+    )
+    .await?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(room_computer_input_error(&format!(
+            "slice computer input reset exited with status {}",
+            output
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+fn computer_input_cancelled() -> DaemonError {
+    DaemonError::BrowserControllerActionCancelled {
+        controller_fenced: false,
+    }
+}
+
+fn room_computer_input_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "environment.action.execute",
+        message: message.to_string(),
+    }
+}
+
+fn room_computer_pointer_button_arg(
+    button: crate::transport::room_browser_controller::RoomComputerPointerButton,
+) -> &'static str {
+    match button {
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Left => "left",
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Middle => "middle",
+        crate::transport::room_browser_controller::RoomComputerPointerButton::Right => "right",
+    }
 }
 
 fn slice_screen_command_timeout_ms() -> u64 {
@@ -507,13 +1338,43 @@ fn slice_screen_command_timeout_ms() -> u64 {
         .unwrap_or(DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS)
 }
 
-fn read_child_output<R: std::io::Read>(mut reader: R) -> Result<(String, bool), DaemonError> {
-    let mut stored = Vec::new();
-    let mut buffer = [0_u8; 8192];
+fn read_child_output<R: std::io::Read>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<String>, bool), DaemonError> {
+    let (stored, truncated) = read_child_output_bytes(&mut reader)?;
+    Ok((
+        zeroize::Zeroizing::new(String::from_utf8_lossy(&stored).trim().to_string()),
+        truncated,
+    ))
+}
+
+fn read_child_output_exact_utf8<R: std::io::Read>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<String>, bool), DaemonError> {
+    let (mut stored, truncated) = read_child_output_bytes(&mut reader)?;
+    let output = match String::from_utf8(std::mem::take(&mut *stored)) {
+        Ok(output) => output,
+        Err(error) => {
+            let mut invalid = error.into_bytes();
+            zeroize::Zeroize::zeroize(&mut invalid);
+            return Err(DaemonError::LocalTransport {
+                operation: "run_slice_screen_command",
+                message: "slice screen stdout is not valid UTF-8".to_string(),
+            });
+        }
+    };
+    Ok((zeroize::Zeroizing::new(output), truncated))
+}
+
+fn read_child_output_bytes<R: std::io::Read>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<Vec<u8>>, bool), DaemonError> {
+    let mut stored = zeroize::Zeroizing::new(Vec::new());
+    let mut buffer = zeroize::Zeroizing::new([0_u8; 8192]);
     let mut truncated = false;
     loop {
         let read = reader
-            .read(&mut buffer)
+            .read(&mut buffer[..])
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to read slice screen output: {error}"),
@@ -529,10 +1390,7 @@ fn read_child_output<R: std::io::Read>(mut reader: R) -> Result<(String, bool), 
             truncated = true;
         }
     }
-    Ok((
-        String::from_utf8_lossy(&stored).trim().to_string(),
-        truncated,
-    ))
+    Ok((stored, truncated))
 }
 
 fn slice_tool_payload(
@@ -556,14 +1414,16 @@ fn slice_tool_payload(
             .map(serde_json::Value::from)
             .unwrap_or(serde_json::Value::Null),
     );
-    payload.insert(
-        "stdout".to_string(),
-        serde_json::Value::String(output.stdout.clone()),
-    );
-    payload.insert(
-        "stderr".to_string(),
-        serde_json::Value::String(output.stderr.clone()),
-    );
+    if !output.sensitive_output {
+        payload.insert(
+            "stdout".to_string(),
+            serde_json::Value::String(output.stdout.as_str().to_string()),
+        );
+        payload.insert(
+            "stderr".to_string(),
+            serde_json::Value::String(output.stderr.as_str().to_string()),
+        );
+    }
     if output.stdout_truncated {
         payload.insert(
             "stdout_truncated".to_string(),
@@ -594,6 +1454,24 @@ fn slice_tool_payload(
         }
     }
     serde_json::Value::Object(payload)
+}
+
+fn slice_find_text_payload(
+    slice_id: &str,
+    agent_id: &str,
+    output: &SliceScreenCommandOutput,
+) -> serde_json::Value {
+    let matches = output
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(serde_json::Value::is_object)
+        .collect::<Vec<_>>();
+    let mut payload = slice_tool_payload(slice_id, agent_id, output);
+    payload["match"] = matches.first().cloned().unwrap_or(serde_json::Value::Null);
+    payload["match_count"] = serde_json::Value::from(matches.len());
+    payload["matches"] = serde_json::Value::Array(matches);
+    payload
 }
 
 fn secret_paste_payload(
@@ -736,6 +1614,8 @@ mod tests {
             to_x: Some(30),
             to_y: Some(40),
             amount: None,
+            horizontal_steps: None,
+            button: None,
         };
 
         assert_eq!(
@@ -756,9 +1636,26 @@ mod tests {
             action: "type".to_string(),
             text: None,
             key: None,
+            repeat: None,
         };
 
         assert!(slice_keyboard_command_args(args).is_err());
+    }
+
+    #[test]
+    fn runtime_mcp_screenshot_reader_requires_a_bounded_png() {
+        let mut png = super::super::super::room_screenshot::ROOM_SCREENSHOT_PNG_SIGNATURE.to_vec();
+        png.extend_from_slice(b"image");
+        assert_eq!(
+            read_bounded_png(std::io::Cursor::new(&png), png.len()).expect("bounded PNG"),
+            png
+        );
+        assert!(read_bounded_png(std::io::Cursor::new(&png), png.len() - 1)
+            .expect_err("oversized PNG should fail")
+            .contains("runtime MCP limit"));
+        assert!(read_bounded_png(std::io::Cursor::new(b"not-a-png"), 32)
+            .expect_err("non-PNG should fail")
+            .contains("not a PNG"));
     }
 
     #[test]
@@ -766,18 +1663,21 @@ mod tests {
         let output = SliceScreenCommandOutput {
             success: false,
             status_code: Some(1),
-            stdout: [
-                "display=:99",
-                "screen=1280x800",
-                "mode=headless",
-                "available=false",
-                "missing=xvfb,novnc",
-                "message=slice screen is unavailable; missing xvfb,novnc",
-            ]
-            .join("\n"),
-            stderr: String::new(),
+            stdout: zeroize::Zeroizing::new(
+                [
+                    "display=:99",
+                    "screen=1280x800",
+                    "mode=headless",
+                    "available=false",
+                    "missing=xvfb,novnc",
+                    "message=slice screen is unavailable; missing xvfb,novnc",
+                ]
+                .join("\n"),
+            ),
+            stderr: zeroize::Zeroizing::new(String::new()),
             stdout_truncated: false,
             stderr_truncated: false,
+            sensitive_output: false,
         };
 
         let payload = slice_tool_payload("slice-1", "agent-1", &output);
@@ -797,10 +1697,11 @@ mod tests {
         let output = SliceScreenCommandOutput {
             success: true,
             status_code: Some(0),
-            stdout: "typed super-secret-value".to_string(),
-            stderr: "debug super-secret-value".to_string(),
+            stdout: zeroize::Zeroizing::new("typed super-secret-value".to_string()),
+            stderr: zeroize::Zeroizing::new("debug super-secret-value".to_string()),
             stdout_truncated: false,
             stderr_truncated: false,
+            sensitive_output: true,
         };
 
         let payload = secret_paste_payload("slice-1", "agent-1", "gmail-password", true, &output);
@@ -810,6 +1711,7 @@ mod tests {
         assert!(serialized.contains("\"submitted\":true"));
         assert!(!serialized.contains("super-secret-value"));
         assert!(payload.get("stdout").is_none());
+        assert!(!format!("{output:?}").contains("super-secret-value"));
         assert!(payload.get("stderr").is_none());
     }
 
@@ -822,6 +1724,26 @@ mod tests {
 
         assert!(truncated);
         assert_eq!(output.len(), SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES);
+    }
+
+    #[test]
+    fn exact_child_output_preserves_whitespace_and_rejects_invalid_utf8() {
+        let (output, truncated) = read_child_output_exact_utf8(std::io::Cursor::new(
+            b"Clipboard Gr\xc3\xbc\xc3\x9fe \xe4\xb8\x96\xe7\x95\x8c\n\n".to_vec(),
+        ))
+        .expect("valid clipboard text should decode exactly");
+        assert_eq!(
+            output.as_str(),
+            "Clipboard Gr\u{fc}\u{df}e \u{4e16}\u{754c}\n\n"
+        );
+        assert!(!truncated);
+
+        let error = read_child_output_exact_utf8(std::io::Cursor::new(vec![0xff, 0xfe]))
+            .expect_err("invalid clipboard UTF-8 should fail closed");
+        assert_eq!(
+            error.to_string(),
+            "local transport `run_slice_screen_command` failed: slice screen stdout is not valid UTF-8"
+        );
     }
 
     #[tokio::test]

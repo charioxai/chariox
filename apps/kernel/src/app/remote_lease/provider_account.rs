@@ -35,7 +35,7 @@ impl RemoteLeaseRuntime<'_> {
     pub(crate) fn ensure_remote_provider_account(
         &mut self,
         context: RemoteProviderAccountSyncContext,
-        materialization: ProviderAccountMaterialization,
+        mut materialization: ProviderAccountMaterialization,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let lease = self
             .app
@@ -64,7 +64,34 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
+        if crate::provider::canonical_provider_family(&materialization.profile.provider)
+            == Some("claude")
+            && materialization
+                .files
+                .iter()
+                .any(|file| file.relative_path == ".credentials.json")
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "ensure remote provider account",
+                message: "Claude provider credentials cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path".to_string(),
+            });
+        }
 
+        if let Some(profile) = self
+            .app
+            .provider_account_profile_registry()
+            .list(
+                &lease.owner_user_id,
+                Some(&materialization.profile.provider),
+            )?
+            .into_iter()
+            .find(|profile| profile.profile_id == materialization.profile.profile_id)
+        {
+            return Ok(profile);
+        }
+
+        materialization.profile.origin =
+            crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;
         let profile = self
             .app
             .provider_account_profile_registry()
@@ -139,11 +166,109 @@ mod tests {
             .join("config.toml")
             .exists());
 
+        let claude_with_refresh_credential = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "claude".to_string(),
+                profile_id: "work".to_string(),
+                label: "Work".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: ".credentials.json".to_string(),
+                contents_base64: "bmV2ZXItbG9nLXRoaXM=".to_string(),
+            }],
+            generated_at_ms: 1,
+        };
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context.clone(), claude_with_refresh_credential)
+            .expect_err("remote Claude refresh credentials must be rejected");
+        assert!(error.to_string().contains("setup-token launch path"));
+        assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
+
         let mut wrong_owner = materialization;
         wrong_owner.profile.owner_user_id = "owner-b".to_string();
         assert!(RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(context, wrong_owner)
             .is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_ensure_preserves_the_worker_owned_provider_profile() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-account-handoff-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "owner-a",
+            )
+            .unwrap();
+        let context = RemoteProviderAccountSyncContext {
+            home_kernel_id: "home-kernel".to_string(),
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            execution_lease_id: lease.id,
+        };
+        let materialization = |contents_base64: &str| ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "codex".to_string(),
+                profile_id: "work".to_string(),
+                label: "Work".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "auth.json".to_string(),
+                contents_base64: contents_base64.to_string(),
+            }],
+            generated_at_ms: 1,
+        };
+
+        RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context.clone(),
+                materialization("eyJzb3VyY2UiOiJpbml0aWFsIn0="),
+            )
+            .unwrap();
+        let environment = app
+            .provider_account_profile_registry()
+            .resolve_environment("owner-a", "codex", "work")
+            .unwrap();
+        let codex_home = std::path::Path::new(&environment["CODEX_HOME"]);
+        let auth_path = codex_home.join("auth.json");
+        let provider_state_path = codex_home.join("provider-owned-state.json");
+        std::fs::write(&auth_path, br#"{"source":"worker"}"#).unwrap();
+        std::fs::write(&provider_state_path, b"worker-state").unwrap();
+
+        RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context,
+                materialization("eyJzb3VyY2UiOiJyZWZyZXNoIn0="),
+            )
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(&auth_path).unwrap(),
+            br#"{"source":"worker"}"#
+        );
+        assert_eq!(
+            std::fs::read(&provider_state_path).unwrap(),
+            b"worker-state"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -31,11 +31,14 @@ pub struct RelayClientState {
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
+    pinned_peer_public_keys: BTreeMap<String, String>,
     peer_public_keys: BTreeMap<String, String>,
     pub(super) display_tunnels: BTreeMap<String, RelayDisplayTunnelTarget>,
     pub(super) pending_display_tunnel_registrations:
         BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
+    #[cfg(test)]
+    lose_next_peer_response_payload: Option<bool>,
     managed_slice_activation_expectations: BTreeMap<String, ManagedSliceRelayActivationExpectation>,
     pending_managed_slice_activation_confirmation:
         Option<PendingManagedSliceActivationConfirmation>,
@@ -83,6 +86,15 @@ impl PendingManagedSliceActivationConfirmation {
 }
 
 impl RelayClientState {
+    pub(crate) fn with_pinned_peer_public_keys(
+        pinned_peer_public_keys: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            pinned_peer_public_keys,
+            ..Self::default()
+        }
+    }
+
     pub fn connected(&self) -> bool {
         self.connected
     }
@@ -96,7 +108,23 @@ impl RelayClientState {
     }
 
     pub(crate) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
-        self.peer_public_keys.get(target_ref).cloned()
+        self.pinned_peer_public_keys
+            .get(target_ref)
+            .or_else(|| self.peer_public_keys.get(target_ref))
+            .cloned()
+    }
+
+    pub(crate) fn pinned_peer_public_key(&self, target_ref: &str) -> Option<String> {
+        self.pinned_peer_public_keys.get(target_ref).cloned()
+    }
+
+    pub(crate) fn pin_peer_public_key(
+        &mut self,
+        target_ref: impl Into<String>,
+        public_key: impl Into<String>,
+    ) {
+        self.pinned_peer_public_keys
+            .insert(target_ref.into(), public_key.into());
     }
 
     pub(crate) fn remember_peer_public_key(
@@ -109,11 +137,14 @@ impl RelayClientState {
     }
 
     pub(crate) fn claim_peer_public_key(&mut self, target_ref: &str, public_key: &str) -> bool {
-        match self.peer_public_keys.get(target_ref) {
-            Some(existing) => existing == public_key,
+        match self.peer_public_key(target_ref) {
+            Some(existing) if existing == public_key => {
+                self.pin_peer_public_key(target_ref, public_key);
+                true
+            }
+            Some(_) => false,
             None => {
-                self.peer_public_keys
-                    .insert(target_ref.to_string(), public_key.to_string());
+                self.pin_peer_public_key(target_ref, public_key);
                 true
             }
         }
@@ -325,6 +356,22 @@ impl RelayClientState {
             .cloned()
     }
 
+    pub(crate) fn claim_display_tunnel_for_open(
+        &mut self,
+        tunnel_id: &str,
+        now_ms: u64,
+    ) -> Option<RelayDisplayTunnelTarget> {
+        let target = self
+            .display_tunnels
+            .get(tunnel_id)
+            .filter(|target| target.expires_at_ms > now_ms)?;
+        if matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. }) {
+            self.display_tunnels.remove(tunnel_id)
+        } else {
+            Some(target.clone())
+        }
+    }
+
     pub(crate) fn display_tunnel_for_slice(
         &self,
         slice_id: &str,
@@ -332,7 +379,9 @@ impl RelayClientState {
     ) -> Option<RelayDisplayTunnelTarget> {
         self.display_tunnels
             .values()
-            .find(|target| target.slice_id == slice_id && target.local_base_url == local_base_url)
+            .find(|target| {
+                target.slice_id == slice_id && target.kind.local_base_url() == Some(local_base_url)
+            })
             .cloned()
     }
 
@@ -365,6 +414,24 @@ impl RelayClientState {
         self.display_streams.get(stream_id).cloned()
     }
 
+    pub(crate) fn try_send_display_stream_event(
+        &mut self,
+        stream_id: &str,
+        event: RelayDisplayTunnelClientEvent,
+    ) -> bool {
+        let Some(sender) = self.display_streams.get(stream_id) else {
+            return false;
+        };
+        if sender.try_send(event).is_ok() {
+            return true;
+        }
+        // Never drop an encrypted fragment and leave the channel alive: the
+        // next packet would be out of sequence. Removing the only state-owned
+        // sender closes the bounded ingress after already-queued work drains.
+        self.display_streams.remove(stream_id);
+        false
+    }
+
     #[cfg(test)]
     pub(crate) fn test_set_connected_sender(
         &mut self,
@@ -375,15 +442,51 @@ impl RelayClientState {
         self.connected_relay_url = Some(relay_url.into());
         self.outgoing_tx = Some(outgoing_tx);
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_peer_response_payload(&mut self) {
+        self.lose_next_peer_response_payload = Some(false);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_peer_response_payload_and_forget_action_receipts(&mut self) {
+        self.lose_next_peer_response_payload = Some(true);
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_take_lost_peer_response_payload(&mut self) -> Option<bool> {
+        self.lose_next_peer_response_payload.take()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RelayDisplayTunnelTarget {
     pub(crate) tunnel_id: String,
     pub(crate) slice_id: String,
-    pub(crate) local_base_url: String,
+    pub(crate) kind: RelayDisplayTunnelTargetKind,
     pub(crate) expires_at_ms: u64,
     pub(crate) capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelayDisplayTunnelTargetKind {
+    HttpProxy {
+        local_base_url: String,
+    },
+    Selkies {
+        viewer_public_key: String,
+        command_program: String,
+        command_args: Vec<String>,
+    },
+}
+
+impl RelayDisplayTunnelTargetKind {
+    pub(crate) fn local_base_url(&self) -> Option<&str> {
+        match self {
+            Self::HttpProxy { local_base_url } => Some(local_base_url),
+            Self::Selkies { .. } => None,
+        }
+    }
 }
 
 impl RelayDisplayTunnelTarget {
@@ -410,10 +513,13 @@ impl Default for RelayClientState {
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
+            pinned_peer_public_keys: BTreeMap::new(),
             peer_public_keys: BTreeMap::new(),
             display_tunnels: BTreeMap::new(),
             pending_display_tunnel_registrations: BTreeMap::new(),
             display_streams: BTreeMap::new(),
+            #[cfg(test)]
+            lose_next_peer_response_payload: None,
             managed_slice_activation_expectations: BTreeMap::new(),
             pending_managed_slice_activation_confirmation: None,
         }
@@ -583,16 +689,48 @@ mod tests {
         assert!(state.read().await.peer_public_key("worker-1").is_none());
     }
 
+    #[tokio::test]
+    async fn disconnect_and_transport_failure_preserve_bound_worker_key() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        state
+            .write()
+            .await
+            .pin_peer_public_key("worker-1", "public-key-1");
+
+        set_disconnected(&state).await;
+        state.write().await.forget_peer_public_key("worker-1");
+
+        assert_eq!(
+            state.read().await.peer_public_key("worker-1").as_deref(),
+            Some("public-key-1")
+        );
+    }
+
     #[test]
     fn peer_key_claim_is_idempotent_but_rejects_rebinding() {
         let mut state = RelayClientState::default();
         assert!(state.claim_peer_public_key("worker-1", "public-key-1"));
         assert!(state.claim_peer_public_key("worker-1", "public-key-1"));
         assert!(!state.claim_peer_public_key("worker-1", "public-key-2"));
+        state.forget_peer_public_key("worker-1");
         assert_eq!(
             state.peer_public_key("worker-1").as_deref(),
             Some("public-key-1")
         );
+    }
+
+    #[test]
+    fn relay_state_restores_durable_peer_key_pins() {
+        let state = RelayClientState::with_pinned_peer_public_keys(BTreeMap::from([(
+            "worker-1".to_string(),
+            "public-key-1".to_string(),
+        )]));
+
+        assert_eq!(
+            state.peer_public_key("worker-1").as_deref(),
+            Some("public-key-1")
+        );
+        assert!(state.peer_public_key("worker-2").is_none());
     }
 
     #[test]
@@ -743,7 +881,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: "publication-live".to_string(),
                 slice_id: "publication:session-1:public-api".to_string(),
-                local_base_url: "http://127.0.0.1:43100/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:43100/".to_string(),
+                },
                 expires_at_ms: u64::MAX,
                 capabilities: vec!["http".to_string(), "publication".to_string()],
             });
@@ -755,9 +895,32 @@ mod tests {
                 .read()
                 .await
                 .display_tunnel("publication-live", 1)
-                .map(|target| target.local_base_url),
+                .and_then(|target| target.kind.local_base_url().map(str::to_string)),
             Some("http://127.0.0.1:43100/".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn saturated_display_ingress_closes_instead_of_dropping_a_fragment() {
+        let mut state = RelayClientState::default();
+        let (sender, mut receiver) = mpsc::channel(1);
+        state.insert_display_stream("stream-1".to_string(), sender);
+        let chunk = |data: &str| {
+            RelayDisplayTunnelClientEvent::Chunk(RelayDisplayTunnelStreamChunk {
+                stream_id: "stream-1".to_string(),
+                data: data.to_string(),
+                message_kind: Some("binary".to_string()),
+            })
+        };
+
+        assert!(state.try_send_display_stream_event("stream-1", chunk("first")));
+        assert!(!state.try_send_display_stream_event("stream-1", chunk("second")));
+        assert!(state.display_stream_sender("stream-1").is_none());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RelayDisplayTunnelClientEvent::Chunk(chunk)) if chunk.data == "first"
+        ));
+        assert!(receiver.recv().await.is_none());
     }
 
     #[tokio::test]
@@ -769,7 +932,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: "publication-live".to_string(),
                 slice_id: "publication:session-1:public-api".to_string(),
-                local_base_url: "http://127.0.0.1:43100/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:43100/".to_string(),
+                },
                 expires_at_ms: u64::MAX,
                 capabilities: vec!["http".to_string(), "publication".to_string()],
             });
@@ -779,7 +944,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: "publication-expired".to_string(),
                 slice_id: "publication:session-1:expired".to_string(),
-                local_base_url: "http://127.0.0.1:43101/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:43101/".to_string(),
+                },
                 expires_at_ms: 1,
                 capabilities: vec!["http".to_string(), "publication".to_string()],
             });

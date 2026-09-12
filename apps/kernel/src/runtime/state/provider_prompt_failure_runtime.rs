@@ -10,6 +10,24 @@ impl KernelRuntimeState {
         message: &str,
         project_failure_output: bool,
     ) -> Result<(), DaemonError> {
+        self.fail_owned_provider_prompt_with_termination(
+            session_id,
+            provider_run_id,
+            message,
+            project_failure_output,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn fail_owned_provider_prompt_with_termination(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+        project_failure_output: bool,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let agent_id = provider_run
@@ -22,7 +40,12 @@ impl KernelRuntimeState {
         self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
         if self
-            .settle_leased_workflow_provider_failure(session_id, &agent_id, provider_run_id)
+            .settle_leased_workflow_provider_failure(
+                session_id,
+                &agent_id,
+                provider_run_id,
+                provider_termination.clone(),
+            )
             .await?
         {
             self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
@@ -64,30 +87,29 @@ impl KernelRuntimeState {
                 message,
             )?;
         }
-        let completion = owned.fail_local_prompt_without_advance(
+        let completion = owned.fail_local_prompt_without_advance_with_termination(
             session_id,
             &agent_id,
             Some(provider_run_id),
+            provider_termination,
         )?;
         // Settle the failed turn first, then choose its successor provider before
         // preparing any queued work. Otherwise admission retries the exhausted
         // account and can return before automatic substitution is reached.
-        let substituted = if let Some(reason) =
-            crate::provider::classify_provider_substitutable_failure_text(
-                provider_run.adapter_key(),
-                message,
-            ) {
-            self.activate_substitute_after_provider_failure(
-                session_id,
-                &agent_id,
-                provider_run_id,
-                &reason,
-                None,
-            )
-            .await
-        } else {
-            false
-        };
+        if let Some(reason) = crate::provider::classify_provider_substitutable_failure_text(
+            provider_run.adapter_key(),
+            message,
+        ) {
+            let _ = self
+                .activate_substitute_after_provider_failure(
+                    session_id,
+                    &agent_id,
+                    provider_run_id,
+                    &reason,
+                    None,
+                )
+                .await;
+        }
         if workflow_failed {
             let dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
             owned
@@ -105,11 +127,20 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
             .is_some();
-        if queued_prompt_pending && !substituted {
-            self.with_app_side_effect(|app| {
-                app.ensure_prompt_provider_run_for_agent(session_id, &agent_id)
-            })
-            .await?;
+        if queued_prompt_pending {
+            let started_next = self
+                .with_app_side_effect(|app| {
+                    app.ensure_prompt_provider_run_for_agent(session_id, &agent_id)?;
+                    app.advance_next_queued_prompt(session_id, &agent_id)
+                })
+                .await?;
+            if started_next.is_some() {
+                owned.agent_store.clear_local_prompt_error(&agent_id)?;
+                owned
+                    .agent_store
+                    .set_agent_state(&agent_id, crate::agent::AgentState::Working)?;
+                let _ = owned.session_snapshot(session_id)?;
+            }
         }
         Ok(())
     }
@@ -248,6 +279,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -261,11 +293,13 @@ impl KernelRuntimeState {
         // The home learns failure through the same correlated, replayable runtime
         // projection as completion. Worker settlement must not wait for the home
         // to be reachable or admit another turn on this failed provider.
-        self.owned.fail_local_prompt_without_advance(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        self.owned
+            .fail_local_prompt_without_advance_with_termination(
+                session_id,
+                agent_id,
+                Some(provider_run_id),
+                provider_termination,
+            )?;
         Ok(true)
     }
 

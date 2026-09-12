@@ -57,6 +57,11 @@ if setpriv --reuid=232072 --regid=232072 --clear-groups -- cat "$repository/host
   exit 1
 fi
 umount "$mount_root"
+before_verify=$(getfacl -cpEnRP --one-file-system -- "$root" | sha256sum)
+runuser -u chariox -- "$helper" verify "$root" "$destination" "$repository"
+after_verify=$(getfacl -cpEnRP --one-file-system -- "$root" | sha256sum)
+[ "$before_verify" = "$after_verify" ] \
+  || { echo "publication ACL verification mutated recovered content" >&2; exit 1; }
 runuser -u chariox -- "$helper" revoke "$root" "$destination" "$repository"
 if getfacl -cp "$repository" | grep -Eq '^user:232072:'; then
   echo "mapped slice ACL survived revocation" >&2

@@ -59,15 +59,31 @@ pub(crate) struct ProviderRunExitSessionSummary {
 
 struct ProviderRunLivenessProcesses;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderProcessExit {
+    pub(crate) exit_code: Option<u32>,
+}
+
 impl ProviderRunLivenessProcesses {
     fn poll_process_running(
         app: &mut DaemonApp,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
+        Ok(Self::poll_process_exit(app, provider_run_id)?.is_none())
+    }
+
+    fn poll_process_exit(
+        app: &mut DaemonApp,
+        provider_run_id: &str,
+    ) -> Result<Option<ProviderProcessExit>, DaemonError> {
         match app.pty.poll_process_state(provider_run_id) {
-            Ok(PtyProcessState::Running) => Ok(true),
-            Ok(PtyProcessState::Exited) => Ok(false),
-            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(false),
+            Ok(PtyProcessState::Running) => Ok(None),
+            Ok(PtyProcessState::Exited { exit_code }) => Ok(Some(ProviderProcessExit {
+                exit_code: Some(exit_code),
+            })),
+            Err(DaemonError::PtyProcessNotFound { .. }) => {
+                Ok(Some(ProviderProcessExit { exit_code: None }))
+            }
             Err(error) => Err(error),
         }
     }
@@ -120,11 +136,11 @@ impl ProviderRunLivenessState {
     }
 }
 
-pub(super) fn poll_provider_run_process_running(
+pub(super) fn poll_provider_run_process_exit(
     app: &mut DaemonApp,
     provider_run_id: &str,
-) -> Result<bool, DaemonError> {
-    ProviderRunLivenessProcesses::poll_process_running(app, provider_run_id)
+) -> Result<Option<ProviderProcessExit>, DaemonError> {
+    ProviderRunLivenessProcesses::poll_process_exit(app, provider_run_id)
 }
 
 pub(super) fn clear_active_provider_run_session_pointer(
@@ -231,7 +247,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
 
         let session_outcome =
             ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
-        if session_outcome.cancelled_prompt {
+        if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
             return Ok(true);
         }
         ProviderRunLivenessNotices::record_provider_exit(
@@ -242,14 +258,10 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                 "Provider run `{}` for `{}` ended unexpectedly. {}",
                 outcome.provider_run_id,
                 outcome.ended_run.provider(),
-                if session_outcome.had_active_prompt {
-                    if session_outcome.started_next_prompt {
-                        "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
-                    } else {
-                        "The active prompt was closed without starting the queued backlog."
-                    }
+                if session_outcome.started_next_prompt {
+                    "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
-                    "No active prompt was running."
+                    "The active prompt was closed without starting the queued backlog."
                 }
             ),
         );

@@ -58,6 +58,16 @@ fn disable_pty_input_echo(
     Ok(())
 }
 
+#[cfg(unix)]
+fn terminate_pty_process_group(master: &dyn MasterPty) {
+    if let Some(process_group) = master.process_group_leader() {
+        let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_pty_process_group(_master: &dyn MasterPty) {}
+
 #[derive(Clone)]
 pub(crate) struct PtyInputWriter {
     provider_run_id: String,
@@ -65,6 +75,7 @@ pub(crate) struct PtyInputWriter {
 }
 
 struct PtyInputRequest {
+    provider_run_id: String,
     bytes: Vec<u8>,
     completion_tx: Option<SyncSender<Result<(), String>>>,
 }
@@ -110,7 +121,13 @@ struct PtyOutputSignalState {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PtyProcessState {
     Running,
-    Exited,
+    Exited { exit_code: u32 },
+}
+
+impl PtyProcessState {
+    pub fn is_exited(self) -> bool {
+        matches!(self, Self::Exited { .. })
+    }
 }
 
 struct PtyProcess {
@@ -118,7 +135,7 @@ struct PtyProcess {
     master: Box<dyn MasterPty + Send>,
     input_writer: PtyInputWriter,
     output_rx: Receiver<Vec<u8>>,
-    exited: bool,
+    exit_code: Option<u32>,
     reference_count: usize,
 }
 
@@ -136,6 +153,17 @@ impl PtyManager {
     }
 
     pub fn spawn_for_run(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        self.spawn_for_run_with_credentials(
+            run,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+        )
+    }
+
+    pub(crate) fn spawn_for_run_with_credentials(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(run.id()) {
             self.output_signal.prefer_alias(process_key, run.id());
             return Ok(());
@@ -179,10 +207,21 @@ impl PtyManager {
             rows: 40,
         };
 
-        self.spawn(request)
+        self.spawn_with_credentials(request, credentials)
     }
 
     pub fn spawn(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
+        self.spawn_with_credentials(
+            request,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+        )
+    }
+
+    fn spawn_with_credentials(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
                 .prefer_alias(process_key, &request.provider_run_id);
@@ -226,6 +265,9 @@ impl PtyManager {
         for (key, value) in request.env {
             command.env(key, value);
         }
+        for (key, value) in credentials.iter() {
+            command.env(key, value);
+        }
         if let Some(working_directory) = request.working_directory {
             command.cwd(working_directory);
         }
@@ -254,10 +296,14 @@ impl PtyManager {
             })?;
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let writer_provider_run_id = request.provider_run_id.clone();
+        let writer_process_key = request.process_key.clone();
+        let writer_output_signal = self.output_signal.clone();
         let writer_thread = thread::Builder::new()
             .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
-            .spawn(move || run_pty_writer(writer, input_rx));
+            .spawn(move || {
+                run_pty_writer(writer, input_rx, writer_process_key, writer_output_signal)
+            });
         if let Err(error) = writer_thread {
             let _ = child.kill();
             let _ = child.wait();
@@ -311,7 +357,7 @@ impl PtyManager {
                 master: pair.master,
                 input_writer,
                 output_rx,
-                exited: false,
+                exit_code: None,
                 reference_count: 1,
             },
         );
@@ -354,6 +400,7 @@ impl PtyInputWriter {
     pub(crate) fn write_input(&self, input: &[u8]) -> Result<(), DaemonError> {
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
         self.send_request(PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
             completion_tx: Some(completion_tx),
         })?;
@@ -371,6 +418,7 @@ impl PtyInputWriter {
 
     pub(crate) fn enqueue_input(&self, input: &[u8]) -> Result<(), DaemonError> {
         self.send_request(PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
             completion_tx: None,
         })
@@ -392,12 +440,18 @@ impl PtyInputWriter {
     }
 }
 
-fn run_pty_writer(mut writer: Box<dyn Write + Send>, input_rx: Receiver<PtyInputRequest>) {
+fn run_pty_writer(
+    mut writer: Box<dyn Write + Send>,
+    input_rx: Receiver<PtyInputRequest>,
+    process_key: String,
+    output_signal: PtyOutputSignal,
+) {
     while let Ok(request) = input_rx.recv() {
+        output_signal.prefer_alias(&process_key, &request.provider_run_id);
         let result = writer
             .write_all(&request.bytes)
-            .and_then(|_| writer.flush())
-            .map_err(|error| error.to_string());
+            .and_then(|_| writer.flush());
+        let result = result.map_err(|error| error.to_string());
         let failed = result.is_err();
         if let Some(completion_tx) = request.completion_tx {
             let _ = completion_tx.send(result);
@@ -466,7 +520,7 @@ impl PtyManager {
             });
         }
 
-        if !process.exited {
+        if process.exit_code.is_none() {
             let status = process
                 .child
                 .try_wait()
@@ -474,9 +528,9 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                     message: error.to_string(),
                 })?;
-            process.exited = status.is_some();
+            process.exit_code = status.map(|status| status.exit_code());
         }
-        if process.exited {
+        if process.exit_code.is_some() {
             if let Ok(bytes) = process
                 .output_rx
                 .recv_timeout(std::time::Duration::from_millis(50))
@@ -508,8 +562,8 @@ impl PtyManager {
             }
         })?;
 
-        if process.exited {
-            return Ok(PtyProcessState::Exited);
+        if let Some(exit_code) = process.exit_code {
+            return Ok(PtyProcessState::Exited { exit_code });
         }
 
         let status = process
@@ -520,9 +574,10 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
 
-        if status.is_some() {
-            process.exited = true;
-            Ok(PtyProcessState::Exited)
+        if let Some(status) = status {
+            let exit_code = status.exit_code();
+            process.exit_code = Some(exit_code);
+            Ok(PtyProcessState::Exited { exit_code })
         } else {
             Ok(PtyProcessState::Running)
         }
@@ -593,6 +648,7 @@ impl PtyManager {
             })?;
 
         if status.is_none() {
+            terminate_pty_process_group(process.master.as_ref());
             process
                 .child
                 .kill()
@@ -757,7 +813,30 @@ mod tests {
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
 
-    use super::{mpsc, PtyInputWriter, PtyManager, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT};
+    use super::{
+        mpsc, run_pty_writer, PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal,
+        PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
+    };
+
+    struct AttributionProbeWriter {
+        process_key: String,
+        output_signal: PtyOutputSignal,
+        observed_tx: mpsc::SyncSender<std::collections::BTreeSet<String>>,
+    }
+
+    impl std::io::Write for AttributionProbeWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.output_signal.record_output(&self.process_key);
+            self.observed_tx
+                .send(self.output_signal.take_ready_provider_run_ids())
+                .expect("probe observation receiver should remain connected");
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn test_run() -> RuntimeProviderRun {
         RuntimeProviderRun::new(
@@ -836,6 +915,56 @@ mod tests {
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
         assert!(!manager.has_process(run.id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_pty_process_terminates_its_descendants() {
+        let provider_run_id = "provider-run-with-descendant";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:with-descendant".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "trap '' HUP TERM; sleep 30 & printf 'CHILD_PID=%s\\n' \"$!\"; wait"
+                        .to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("PTY process with a descendant should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id)
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+        let child_pid = String::from_utf8_lossy(&output)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("CHILD_PID="))
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .expect("descendant PID should be reported");
+        struct DescendantGuard(u32);
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                let _ = crate::runtime::process_health::terminate_process_tree(self.0);
+            }
+        }
+        let _guard = DescendantGuard(child_pid);
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("PTY process tree cleanup should succeed");
+
+        assert!(
+            !crate::runtime::process_health::process_running(child_pid),
+            "removing the provider PTY left descendant PID {child_pid} running"
+        );
     }
 
     #[test]
@@ -988,6 +1117,97 @@ mod tests {
     }
 
     #[test]
+    fn shared_pty_selects_the_input_alias_before_the_child_can_emit_output() {
+        let process_key = "stub-pty:shared";
+        let first_run = "provider-run-1";
+        let second_run = "provider-run-2";
+        let output_signal = PtyOutputSignal::default();
+        output_signal.register_alias(process_key, first_run.to_string());
+        output_signal.register_alias(process_key, second_run.to_string());
+        let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+        let probe = AttributionProbeWriter {
+            process_key: process_key.to_string(),
+            output_signal: output_signal.clone(),
+            observed_tx,
+        };
+        let (input_tx, input_rx) = mpsc::sync_channel(1);
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        let writer_thread = thread::spawn({
+            let output_signal = output_signal.clone();
+            move || {
+                run_pty_writer(
+                    Box::new(probe),
+                    input_rx,
+                    process_key.to_string(),
+                    output_signal,
+                )
+            }
+        });
+
+        input_tx
+            .send(PtyInputRequest {
+                provider_run_id: first_run.to_string(),
+                bytes: b"first input".to_vec(),
+                completion_tx: Some(completion_tx),
+            })
+            .expect("probe input should queue");
+        completion_rx
+            .recv()
+            .expect("probe completion should arrive")
+            .expect("probe input should write");
+        assert_eq!(
+            observed_rx.recv().expect("probe observation should arrive"),
+            [first_run.to_string()].into_iter().collect()
+        );
+
+        drop(input_tx);
+        writer_thread.join().expect("probe writer should stop");
+    }
+
+    #[test]
+    fn retained_shared_pty_writer_attributes_output_when_input_is_dispatched() {
+        let first_run = shared_target_run("provider-run-1");
+        let second_run = shared_target_run("provider-run-2");
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&first_run)
+            .expect("first shared PTY run should spawn");
+        manager
+            .spawn_for_run(&second_run)
+            .expect("second shared PTY run should reuse the existing process");
+        let first_writer = manager
+            .input_writer_for_test(first_run.id())
+            .expect("first retained writer should clone");
+        let _second_writer = manager
+            .input_writer_for_test(second_run.id())
+            .expect("second retained writer should clone");
+
+        first_writer
+            .write_input(b"first retained writer\n")
+            .expect("first retained writer should dispatch after the second is acquired");
+        let output = wait_for_output(&mut manager, first_run.id());
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("first retained writer"));
+        assert_eq!(
+            manager.output_signal().take_ready_provider_run_ids(),
+            [first_run.id().to_string()].into_iter().collect()
+        );
+
+        manager
+            .remove_process(first_run.id())
+            .expect("first alias cleanup should succeed");
+        manager
+            .remove_process(second_run.id())
+            .expect("second alias cleanup should succeed");
+    }
+
+    #[test]
     fn reuses_shared_pty_targets_until_last_provider_run_is_removed() {
         let first_run = shared_target_run("provider-run-1");
         let second_run = shared_target_run("provider-run-2");
@@ -1004,9 +1224,9 @@ mod tests {
         assert_eq!(manager.process_aliases.len(), 2);
 
         manager
-            .write_input(second_run.id(), b"shared pty\n")
-            .expect("shared PTY should accept input from the second run alias");
-        let output = wait_for_output(&mut manager, second_run.id());
+            .write_input(first_run.id(), b"shared pty\n")
+            .expect("shared PTY should accept input from the first run alias");
+        let output = wait_for_output(&mut manager, first_run.id());
         let combined = output
             .into_iter()
             .flat_map(|chunk| chunk.bytes)
@@ -1014,7 +1234,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&combined).contains("shared pty"));
         assert_eq!(
             manager.output_signal().take_ready_provider_run_ids(),
-            [second_run.id().to_string()].into_iter().collect()
+            [first_run.id().to_string()].into_iter().collect()
         );
 
         manager

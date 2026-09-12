@@ -268,6 +268,23 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        self.complete_remote_prompt_owner_with_termination(
+            session_id,
+            agent_id,
+            remote_provider_run_id,
+            next_queued_prompt,
+            None,
+        )
+    }
+
+    pub(super) fn complete_remote_prompt_owner_with_termination(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        remote_provider_run_id: &str,
+        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -294,6 +311,11 @@ impl KernelRuntimeOwnedState {
             .archive
             .mode
             == crate::config::HistoryArchiveMode::External;
+        let settlement_status = if provider_termination.is_some() {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        };
         self.operational_history_store.record_prompt_settlement(
             archive_enabled,
             session_id,
@@ -301,8 +323,24 @@ impl KernelRuntimeOwnedState {
             completed.id(),
             Some(remote_provider_run_id),
             settled_at_ms,
-            "completed",
+            settlement_status.as_str(),
         );
+        self.completed_git_turn_snapshots
+            .record_prompt_settlement_with_termination(
+                session_id,
+                agent_id,
+                remote_provider_run_id,
+                &completed,
+                settled_at_ms,
+                Some(completed.created_at_ms()),
+                settlement_status,
+                provider_termination.clone(),
+            );
+        if provider_termination.is_some() {
+            let _ = self
+                .agent_store
+                .mark_unexpected_provider_exit_error(agent_id, true);
+        }
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -689,6 +727,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headless,
+                    display_backend: Default::default(),
                     workspace_id: Some("workspace-stopped-slice".to_string()),
                     worktree_id: Some("worktree-stopped-slice".to_string()),
                     workspace_mount: None,

@@ -316,6 +316,7 @@ fn apply_result_message(
     });
     batch.prompt_completed = true;
     state.active_turn_id = None;
+    state.tool_transcript.clear();
 }
 
 fn record_claude_session_id(

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -39,6 +39,7 @@ mod relay_runtime;
 mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
+mod remote_prompt_peer;
 mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
@@ -179,6 +180,8 @@ pub struct DaemonApp {
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    completed_leased_agent_deletions: VecDeque<String>,
+    completed_execution_lease_deletions: VecDeque<String>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -338,6 +341,8 @@ impl DaemonApp {
                 provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            completed_leased_agent_deletions: VecDeque::new(),
+            completed_execution_lease_deletions: VecDeque::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
@@ -346,7 +351,11 @@ impl DaemonApp {
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             started_at_ms: crate::session::unix_epoch_ms(),
-            relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
+            relay_client_state: Arc::new(tokio::sync::RwLock::new(
+                RelayClientState::with_pinned_peer_public_keys(
+                    DaemonConfig::relay_peer_public_key_entries(),
+                ),
+            )),
             config,
         };
         let restore_started = Instant::now();
@@ -745,6 +754,7 @@ mod tests {
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),
                         display_mode: crate::slice::SliceDisplayMode::Headed,
+                        display_backend: Default::default(),
                         workspace_id: None,
                         worktree_id: None,
                         workspace_mount: Some("/repo".to_string()),

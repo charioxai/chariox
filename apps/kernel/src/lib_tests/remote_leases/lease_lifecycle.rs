@@ -11,10 +11,9 @@ fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
     assert_eq!(lease.machine_id, config.host_machine_id);
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
 
-    let removed = RemoteLeaseRuntime::new(&mut app)
+    RemoteLeaseRuntime::new(&mut app)
         .destroy_execution_lease(&lease.id)
         .expect("execution lease should be removed");
-    assert_eq!(removed.id, lease.id);
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
 
     let mut disabled_config = DaemonConfig::for_tests();
@@ -76,10 +75,13 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     );
     assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
 
-    let removed = RemoteLeaseRuntime::new(&mut app)
+    RemoteLeaseRuntime::new(&mut app)
         .destroy_leased_agent(&leased_agent.id)
         .expect("leased agent should be removed");
-    assert_eq!(removed.id, leased_agent.id);
+    assert!(app
+        .agents
+        .get_agent(&leased_agent.backing_agent_id)
+        .is_err());
     assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
 }
 
@@ -202,10 +204,10 @@ fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
         .expect("second leased agent should reuse backing session");
     assert_eq!(first.backing_session_id, second.backing_session_id);
 
-    let removed = RemoteLeaseRuntime::new(&mut app)
+    RemoteLeaseRuntime::new(&mut app)
         .destroy_leased_agent(&first.id)
         .expect("first leased agent should be destroyed");
-    assert_eq!(removed.id, first.id);
+    assert!(app.agents.get_agent(&first.backing_agent_id).is_err());
     assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
     app.sessions()
         .get_session(&second.backing_session_id)

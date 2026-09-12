@@ -18,6 +18,19 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::PrepareBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClaimBrowserImportSource(request)
+        | LocalDaemonRequest::AuthorizeBrowserImportSource(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::ApproveBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
         LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
             session_ref: request.session_ref.clone(),
@@ -140,6 +153,60 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentSlice(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::BindRoomEnvironmentSlice(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentEvents(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::StartRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::StopRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RetryRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelRoomEnvironmentAction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::UpdateMetaagentTask(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

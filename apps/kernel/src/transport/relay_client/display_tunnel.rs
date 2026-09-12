@@ -6,6 +6,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
@@ -13,20 +14,30 @@ use tokio_tungstenite::tungstenite::Message;
 
 const DISPLAY_PROXY_CHUNK_BYTES: usize = 8 * 1024;
 const DISPLAY_PROXY_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+const SELKIES_ACTIVE_LEASE: Duration = Duration::from_secs(60);
+const SELKIES_ACTIVE_LEASE_RENEWAL: Duration = Duration::from_secs(20);
 
 pub(super) async fn handle_display_tunnel_open(
     state: Arc<RwLock<RelayClientState>>,
     outgoing_tx: RelayOutgoingSender,
     request: RelayDisplayTunnelOpenRequest,
+    daemon_private_key: String,
 ) {
     let stream_id = request.stream_id.clone();
     let target = {
-        let guard = state.read().await;
-        guard.display_tunnel(&request.tunnel_id, crate::session::unix_epoch_ms())
+        let mut guard = state.write().await;
+        guard.claim_display_tunnel_for_open(&request.tunnel_id, crate::session::unix_epoch_ms())
     };
     if display_request_is_websocket(&request) {
         if let Some(target) = target {
-            handle_display_tunnel_websocket(state, outgoing_tx, request, target).await;
+            handle_display_tunnel_websocket(
+                state,
+                outgoing_tx,
+                request,
+                target,
+                daemon_private_key,
+            )
+            .await;
         } else {
             close_display_tunnel_stream(
                 &outgoing_tx,
@@ -91,15 +102,38 @@ async fn handle_display_tunnel_websocket(
     outgoing_tx: RelayOutgoingSender,
     request: RelayDisplayTunnelOpenRequest,
     target: RelayDisplayTunnelTarget,
+    daemon_private_key: String,
 ) {
     let stream_id = request.stream_id.clone();
-    let (client_tx, client_rx) = mpsc::channel(128);
+    let queue_capacity = if matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. }) {
+        16
+    } else {
+        128
+    };
+    let (client_tx, client_rx) = mpsc::channel(queue_capacity);
     state
         .write()
         .await
         .insert_display_stream(stream_id.clone(), client_tx);
-    let result = proxy_display_websocket(&outgoing_tx, &target, &request, client_rx).await;
+    let selkies = matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. });
+    let result = if selkies {
+        proxy_selkies_websocket(
+            &outgoing_tx,
+            &target,
+            &request,
+            client_rx,
+            daemon_private_key,
+        )
+        .await
+    } else {
+        proxy_display_websocket(&outgoing_tx, &target, &request, client_rx).await
+    };
     state.write().await.remove_display_stream(&stream_id);
+    if selkies {
+        let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke {
+            tunnel_id: target.tunnel_id.clone(),
+        });
+    }
     match result {
         Ok(()) => {
             let _ = send_outgoing_envelope(
@@ -119,6 +153,165 @@ async fn handle_display_tunnel_websocket(
                 },
             );
         }
+    }
+}
+
+async fn proxy_selkies_websocket(
+    outgoing_tx: &RelayOutgoingSender,
+    target: &RelayDisplayTunnelTarget,
+    request: &RelayDisplayTunnelOpenRequest,
+    mut client_rx: mpsc::Receiver<RelayDisplayTunnelClientEvent>,
+    daemon_private_key: String,
+) -> Result<(), RelayError> {
+    let expected_path = format!("/display/{}/stream", target.tunnel_id);
+    if !request.method.eq_ignore_ascii_case("GET") || request.path != expected_path {
+        return Err(relay_error(
+            "display_stream_path_invalid",
+            "Selkies display stream path is invalid",
+            false,
+        ));
+    }
+    let RelayDisplayTunnelTargetKind::Selkies {
+        viewer_public_key,
+        command_program,
+        command_args,
+    } = &target.kind
+    else {
+        return Err(relay_error(
+            "display_target_invalid",
+            "display target is not a Selkies stream",
+            false,
+        ));
+    };
+    let now_ms = crate::session::unix_epoch_ms();
+    // The target expiry bounds the one-time opening grant. Once claimed, the
+    // live socket owns a separate short kernel lease that is renewed only
+    // while this handler remains attached to the admitted viewer.
+    target
+        .expires_at_ms
+        .checked_sub(now_ms)
+        .filter(|remaining| *remaining > 0 && *remaining <= 60_000)
+        .ok_or_else(|| {
+            relay_error(
+                "display_admission_expired",
+                "Selkies display admission is expired or invalid",
+                false,
+            )
+        })?;
+    let cipher = crate::transport::secure_display::SecureDisplayChannel::new(
+        daemon_private_key,
+        viewer_public_key.clone(),
+        &target.tunnel_id,
+        crate::transport::secure_display::DisplayPeer::Kernel,
+    )
+    .map_err(|_| {
+        relay_error(
+            "display_viewer_key_invalid",
+            "Selkies viewer key is invalid",
+            false,
+        )
+    })?;
+    let mut command = Command::new(command_program);
+    command.args(command_args);
+    let (input_tx, input_rx) = mpsc::channel(16);
+    let (output_tx, mut output_rx) = mpsc::channel(16);
+    let (lease_tx, lease_rx) =
+        tokio::sync::watch::channel(Some(tokio::time::Instant::now() + SELKIES_ACTIVE_LEASE));
+    let mut lease_renewal = tokio::time::interval(SELKIES_ACTIVE_LEASE_RENEWAL);
+    lease_renewal.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut forward = tokio::spawn(crate::transport::selkies_stream::forward_selkies_stream(
+        command, cipher, input_rx, output_tx, lease_rx,
+    ));
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonDisplayTunnelResponseStart {
+            response: RelayDisplayTunnelResponseStart {
+                stream_id: request.stream_id.clone(),
+                status: 101,
+                headers: Vec::new(),
+            },
+        },
+    )
+    .map_err(|error| relay_error("display_websocket_start_failed", &error.to_string(), true))?;
+    loop {
+        tokio::select! {
+            _ = lease_renewal.tick() => {
+                lease_tx.send_replace(Some(
+                    tokio::time::Instant::now() + SELKIES_ACTIVE_LEASE,
+                ));
+            }
+            result = &mut forward => {
+                return match result {
+                    Ok(Ok(())) => Ok(()),
+                    _ => Err(relay_error(
+                        "display_stream_closed",
+                        "Selkies display stream closed",
+                        true,
+                    )),
+                };
+            }
+            packet = output_rx.recv() => {
+                let Some(packet) = packet else { break; };
+                let bytes = serde_json::to_vec(&packet).map_err(|_| {
+                    relay_error(
+                        "display_stream_encode_failed",
+                        "Selkies display packet could not be encoded",
+                        false,
+                    )
+                })?;
+                send_display_chunk(outgoing_tx, &request.stream_id, &bytes, Some("binary"))?;
+            }
+            event = client_rx.recv() => {
+                match event {
+                    Some(RelayDisplayTunnelClientEvent::Chunk(chunk)) => {
+                        if chunk.message_kind.as_deref() != Some("binary") {
+                            return Err(relay_error(
+                                "display_stream_packet_invalid",
+                                "Selkies display packets must be binary",
+                                false,
+                            ));
+                        }
+                        let bytes = BASE64_STANDARD.decode(chunk.data.as_bytes()).map_err(|_| {
+                            relay_error(
+                                "display_stream_packet_invalid",
+                                "Selkies display packet encoding is invalid",
+                                false,
+                            )
+                        })?;
+                        let packet = serde_json::from_slice(&bytes).map_err(|_| {
+                            relay_error(
+                                "display_stream_packet_invalid",
+                                "Selkies display packet is invalid",
+                                false,
+                            )
+                        })?;
+                        timeout(Duration::from_secs(2), input_tx.send(packet))
+                            .await
+                            .map_err(|_| relay_error(
+                                "display_stream_backpressure",
+                                "Selkies display input queue is full",
+                                true,
+                            ))?
+                            .map_err(|_| relay_error(
+                                "display_stream_closed",
+                                "Selkies display stream closed",
+                                true,
+                            ))?;
+                    }
+                    Some(RelayDisplayTunnelClientEvent::Close) | None => break,
+                }
+            }
+        }
+    }
+    drop(input_tx);
+    drop(lease_tx);
+    match timeout(Duration::from_secs(8), forward).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        _ => Err(relay_error(
+            "display_stream_closed",
+            "Selkies display stream did not stop cleanly",
+            true,
+        )),
     }
 }
 
@@ -332,7 +525,14 @@ fn local_display_url(
     target: &RelayDisplayTunnelTarget,
     display_path: &str,
 ) -> Result<url::Url, RelayError> {
-    let mut base = url::Url::parse(&target.local_base_url)
+    let local_base_url = target.kind.local_base_url().ok_or_else(|| {
+        relay_error(
+            "display_target_invalid",
+            "display target is not an HTTP proxy",
+            false,
+        )
+    })?;
+    let mut base = url::Url::parse(local_base_url)
         .map_err(|error| relay_error("display_target_invalid", &error.to_string(), false))?;
     let prefix = format!("/display/{}", target.tunnel_id);
     let path_and_query = display_path
@@ -495,12 +695,206 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::time::{timeout, Duration};
 
+    #[tokio::test]
+    async fn admitted_selkies_target_uses_encrypted_single_use_relay_stream() {
+        let kernel_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let kernel_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&kernel_private)
+                .expect("kernel public key should derive");
+        let viewer_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private)
+                .expect("viewer public key should derive");
+        let frame = [4_u8, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0];
+        let script = format!(
+            "printf '%s\\n' '{{\"kind\":\"ready\",\"protocol\":\"selkies-stdio-v1\",\"read_only\":true}}' '{{\"kind\":\"binary\",\"data_base64\":\"{}\"}}'; while IFS= read -r line; do :; done",
+            BASE64_STANDARD.encode(frame)
+        );
+        let mut state = RelayClientState::default();
+        state.upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: "display-secure".to_string(),
+            slice_id: "slice-1".to_string(),
+            kind: RelayDisplayTunnelTargetKind::Selkies {
+                viewer_public_key: viewer_public,
+                command_program: "/bin/sh".to_string(),
+                command_args: vec!["-c".to_string(), script],
+            },
+            expires_at_ms: crate::session::unix_epoch_ms().saturating_add(30_000),
+            capabilities: vec!["view".to_string(), "encrypted".to_string()],
+        });
+        let state = Arc::new(RwLock::new(state));
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
+        let request = RelayDisplayTunnelOpenRequest {
+            stream_id: "relay-stream-1".to_string(),
+            tunnel_id: "display-secure".to_string(),
+            method: "GET".to_string(),
+            path: "/display/display-secure/stream".to_string(),
+            headers: vec![
+                RelayDisplayTunnelHeader {
+                    name: "connection".to_string(),
+                    value: "Upgrade".to_string(),
+                },
+                RelayDisplayTunnelHeader {
+                    name: "upgrade".to_string(),
+                    value: "websocket".to_string(),
+                },
+            ],
+            body_base64: None,
+        };
+        let handle = tokio::spawn(handle_display_tunnel_open(
+            Arc::clone(&state),
+            outgoing_tx,
+            request,
+            kernel_private,
+        ));
+        assert!(matches!(
+            timeout(Duration::from_secs(2), priority_rx.recv())
+                .await
+                .expect("Selkies response start should arrive"),
+            Some(RelayEnvelope::DaemonDisplayTunnelResponseStart { response })
+                if response.status == 101 && response.stream_id == "relay-stream-1"
+        ));
+        let mut viewer = crate::transport::secure_display::SecureDisplayChannel::new(
+            viewer_private,
+            kernel_public,
+            "display-secure",
+            crate::transport::secure_display::DisplayPeer::Viewer,
+        )
+        .expect("viewer cipher should initialize");
+        let received = timeout(Duration::from_secs(2), async {
+            loop {
+                let envelope = event_rx
+                    .recv()
+                    .await
+                    .expect("encrypted Selkies frame should arrive");
+                let RelayEnvelope::DaemonDisplayTunnelChunk { chunk } = envelope else {
+                    continue;
+                };
+                assert_eq!(chunk.message_kind.as_deref(), Some("binary"));
+                let wire = BASE64_STANDARD
+                    .decode(chunk.data)
+                    .expect("relay chunk should decode");
+                assert!(!wire.windows(frame.len()).any(|window| window == frame));
+                let packet =
+                    serde_json::from_slice(&wire).expect("encrypted display payload should decode");
+                if let Some(message) = viewer.decode(&packet).expect("frame should decrypt") {
+                    break message.data;
+                }
+            }
+        })
+        .await
+        .expect("encrypted Selkies frame should not stall");
+        assert_eq!(received, frame);
+        let sender = state
+            .read()
+            .await
+            .display_stream_sender("relay-stream-1")
+            .expect("active display stream should be registered");
+        sender
+            .send(RelayDisplayTunnelClientEvent::Close)
+            .await
+            .expect("viewer close should be delivered");
+        timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("Selkies handler cleanup should be bounded")
+            .expect("Selkies handler should finish");
+        assert!(state
+            .read()
+            .await
+            .display_tunnel("display-secure", crate::session::unix_epoch_ms())
+            .is_none());
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonDisplayTunnelRevoke { tunnel_id })
+                if tunnel_id == "display-secure"
+        ));
+    }
+
+    #[tokio::test]
+    async fn admitted_selkies_stream_outlives_the_one_time_opening_grant() {
+        let kernel_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private)
+                .expect("viewer public key should derive");
+        let frame = [4_u8, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0];
+        let script = format!(
+            "printf '%s\\n' '{{\"kind\":\"ready\",\"protocol\":\"selkies-stdio-v1\",\"read_only\":true}}'; sleep 1.2; printf '%s\\n' '{{\"kind\":\"binary\",\"data_base64\":\"{}\"}}'; while IFS= read -r line; do :; done",
+            BASE64_STANDARD.encode(frame)
+        );
+        let mut state = RelayClientState::default();
+        state.upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: "display-short-grant".to_string(),
+            slice_id: "slice-1".to_string(),
+            kind: RelayDisplayTunnelTargetKind::Selkies {
+                viewer_public_key: viewer_public,
+                command_program: "/bin/sh".to_string(),
+                command_args: vec!["-c".to_string(), script],
+            },
+            expires_at_ms: crate::session::unix_epoch_ms().saturating_add(1_000),
+            capabilities: vec!["view".to_string(), "encrypted".to_string()],
+        });
+        let state = Arc::new(RwLock::new(state));
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
+        let handle = tokio::spawn(handle_display_tunnel_open(
+            Arc::clone(&state),
+            outgoing_tx,
+            RelayDisplayTunnelOpenRequest {
+                stream_id: "relay-stream-short-grant".to_string(),
+                tunnel_id: "display-short-grant".to_string(),
+                method: "GET".to_string(),
+                path: "/display/display-short-grant/stream".to_string(),
+                headers: vec![
+                    RelayDisplayTunnelHeader {
+                        name: "connection".to_string(),
+                        value: "Upgrade".to_string(),
+                    },
+                    RelayDisplayTunnelHeader {
+                        name: "upgrade".to_string(),
+                        value: "websocket".to_string(),
+                    },
+                ],
+                body_base64: None,
+            },
+            kernel_private,
+        ));
+        assert!(matches!(
+            timeout(Duration::from_secs(2), priority_rx.recv())
+                .await
+                .expect("Selkies response start should arrive"),
+            Some(RelayEnvelope::DaemonDisplayTunnelResponseStart { response })
+                if response.status == 101
+        ));
+        assert!(matches!(
+            timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .expect("the admitted stream should remain live after its opening grant expires"),
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
+                if chunk.stream_id == "relay-stream-short-grant"
+        ));
+        let sender = state
+            .read()
+            .await
+            .display_stream_sender("relay-stream-short-grant")
+            .expect("active display stream should be registered");
+        sender
+            .send(RelayDisplayTunnelClientEvent::Close)
+            .await
+            .expect("viewer close should be delivered");
+        timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("Selkies handler cleanup should be bounded")
+            .expect("Selkies handler should finish");
+    }
+
     #[test]
     fn local_display_url_rewrites_relay_display_path_to_local_origin() {
         let target = RelayDisplayTunnelTarget {
             tunnel_id: "display-1".to_string(),
             slice_id: "slice-1".to_string(),
-            local_base_url: "http://127.0.0.1:5901".to_string(),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: "http://127.0.0.1:5901".to_string(),
+            },
             expires_at_ms: u64::MAX,
             capabilities: vec!["view".to_string()],
         };
@@ -520,7 +914,9 @@ mod tests {
         let target = RelayDisplayTunnelTarget {
             tunnel_id: "display-1".to_string(),
             slice_id: "slice-1".to_string(),
-            local_base_url: "http://127.0.0.1:5901".to_string(),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: "http://127.0.0.1:5901".to_string(),
+            },
             expires_at_ms: u64::MAX,
             capabilities: vec!["view".to_string(), "websocket".to_string()],
         };
@@ -604,7 +1000,9 @@ mod tests {
         state.upsert_display_tunnel(RelayDisplayTunnelTarget {
             tunnel_id: "display-1".to_string(),
             slice_id: "slice-1".to_string(),
-            local_base_url: format!("http://{addr}"),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: format!("http://{addr}"),
+            },
             expires_at_ms: u64::MAX,
             capabilities: vec!["http".to_string()],
         });
@@ -639,6 +1037,7 @@ mod tests {
             Arc::clone(&state),
             outgoing_tx,
             request,
+            crate::transport::relay_crypto::generate_private_key_base64(),
         ));
 
         match timeout(Duration::from_secs(2), priority_rx.recv())
@@ -733,7 +1132,9 @@ mod tests {
         state.upsert_display_tunnel(RelayDisplayTunnelTarget {
             tunnel_id: "display-1".to_string(),
             slice_id: "publication-1".to_string(),
-            local_base_url: format!("http://{addr}"),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: format!("http://{addr}"),
+            },
             expires_at_ms: u64::MAX,
             capabilities: vec!["http".to_string(), "publication".to_string()],
         });
@@ -754,6 +1155,7 @@ mod tests {
             Arc::clone(&state),
             outgoing_tx,
             request,
+            crate::transport::relay_crypto::generate_private_key_base64(),
         ));
 
         match timeout(Duration::from_secs(2), priority_rx.recv())
@@ -812,7 +1214,9 @@ mod tests {
         state.upsert_display_tunnel(RelayDisplayTunnelTarget {
             tunnel_id: "display-1".to_string(),
             slice_id: "slice-1".to_string(),
-            local_base_url: "http://127.0.0.1:1".to_string(),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: "http://127.0.0.1:1".to_string(),
+            },
             expires_at_ms: u64::MAX,
             capabilities: vec!["http".to_string()],
         });
@@ -830,6 +1234,7 @@ mod tests {
             Arc::clone(&state),
             outgoing_tx,
             request,
+            crate::transport::relay_crypto::generate_private_key_base64(),
         ));
 
         match timeout(Duration::from_secs(2), priority_rx.recv())

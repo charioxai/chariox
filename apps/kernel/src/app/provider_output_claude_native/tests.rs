@@ -540,12 +540,15 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         "claude-headless",
         false,
+        false,
     );
 }
 
 #[test]
 fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
-    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude", false);
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude", false, false,
+    );
 }
 
 #[test]
@@ -553,12 +556,23 @@ fn late_claude_transcript_drain_does_not_complete_the_next_prompt() {
     assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         "claude-headless",
         true,
+        false,
+    );
+}
+
+#[test]
+fn managed_headless_stop_projects_transcript_from_sandbox_account_path() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude-headless",
+        false,
+        true,
     );
 }
 
 fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     provider: &str,
     advance_next_prompt_before_late_drain: bool,
+    managed_account_binding: bool,
 ) {
     use std::io::Write as _;
 
@@ -578,9 +592,10 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-stop-test-{}-{}-{}-{}",
+        "chariox-claude-headless-stop-test-{}-{}-{}-{}-{}",
         provider,
         advance_next_prompt_before_late_drain,
+        managed_account_binding,
         std::process::id(),
         timestamp_millis()
     ));
@@ -606,7 +621,11 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         &events_file,
         serde_json::json!({
             "hook_event_name": "Stop",
-            "transcript_path": transcript_file.display().to_string(),
+            "transcript_path": if managed_account_binding {
+                "/home/chariox/.provider-account/root-1/session.jsonl".to_string()
+            } else {
+                transcript_file.display().to_string()
+            },
         })
         .to_string(),
     )
@@ -630,7 +649,21 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
             process_label: "test-claude-headless-stop".to_string(),
             pty_target: None,
             pty_program: None,
-            pty_args: Vec::new(),
+            pty_args: managed_account_binding
+                .then(|| {
+                    vec![
+                        "--bind".to_string(),
+                        root.canonicalize()
+                            .expect("account fixture should resolve")
+                            .display()
+                            .to_string(),
+                        "/home/chariox/.provider-account/root-1".to_string(),
+                        "--setenv".to_string(),
+                        crate::provider::MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                        "1".to_string(),
+                    ]
+                })
+                .unwrap_or_default(),
             pty_env: std::collections::BTreeMap::from([
                 (
                     "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),

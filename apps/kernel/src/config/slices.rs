@@ -4,6 +4,7 @@ use super::{validate_non_empty, validate_optional_nonzero};
 use crate::error::DaemonError;
 
 pub const DEFAULT_LINUX_SLICE_DOCKER_IMAGE: &str = "chariox-slice-linux:0.1.0";
+pub const DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB: u32 = 2_048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserSlicesConfig {
@@ -60,7 +61,7 @@ impl Default for UserLinuxSliceConfig {
             build_image: Some(SliceImageBuildPolicy::Auto),
             extension_dockerfile: None,
             allow_unconfined_seccomp: Some(false),
-            memory_mb: None,
+            memory_mb: Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             cpus: None,
             idle_timeout_minutes: Some(30),
             screen_width: Some(1280),

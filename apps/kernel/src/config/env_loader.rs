@@ -83,6 +83,8 @@ impl DaemonConfig {
             .or(user_config.relay.accept_remote_leases)
             .unwrap_or(true);
         Self {
+            room_environment_worker_binding: super::RoomEnvironmentWorkerBinding::from_environment(
+            ),
             user_config_path,
             user_config,
             publication_control_state_root: env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR")

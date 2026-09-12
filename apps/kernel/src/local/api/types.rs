@@ -13,6 +13,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
+mod browser_import;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
@@ -29,6 +30,7 @@ mod provider_control;
 mod remote_access;
 mod request;
 mod response;
+mod room_environment;
 mod session_control;
 mod slice;
 mod terminal_command_catalog;
@@ -40,6 +42,7 @@ mod workspace;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
+pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
@@ -56,6 +59,7 @@ pub use provider_control::*;
 pub use remote_access::*;
 pub use request::*;
 pub use response::*;
+pub use room_environment::*;
 pub use session_control::*;
 pub use slice::*;
 pub use terminal_command_catalog::*;
@@ -64,4 +68,9 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 287;
+/// Version 319 adds Git credential enrollment for an existing managed environment.
+/// Version 320 adds encrypted browser-cookie delivery to a consent-bound Environment.
+/// Version 321 adds admitted private browser-cookie delivery and durable recovery.
+/// Version 322 makes Selkies the omitted backend for new headed slices.
+/// Version 323 projects bounded provider-run termination metadata with failed turns.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 323;

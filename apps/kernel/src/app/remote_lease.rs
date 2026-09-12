@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::VecDeque, path::Path};
 
 use crate::agent::CreateAgentRequest;
 use crate::agent::GitWorktreePlacement;
@@ -22,6 +22,17 @@ mod skill_sync;
 
 pub(crate) use projection::RemoteProviderFailure;
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
+
+// Keep only small worker-generated IDs, not completed agents or prompt history.
+// Expiry or a worker restart must fail closed rather than infer successful cleanup.
+const COMPLETED_WORKER_CLEANUP_LIMIT: usize = 256;
+
+fn remember_completed_cleanup(completed: &mut VecDeque<String>, id: &str) {
+    if completed.len() == COMPLETED_WORKER_CLEANUP_LIMIT {
+        completed.pop_front();
+    }
+    completed.push_back(id.to_string());
+}
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
     app: &'a mut DaemonApp,
@@ -64,18 +75,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(lease)
     }
 
-    pub(crate) fn destroy_execution_lease(
-        &mut self,
-        lease_id: &str,
-    ) -> Result<ExecutionLease, DaemonError> {
-        self.app
+    pub(crate) fn destroy_execution_lease(&mut self, lease_id: &str) -> Result<(), DaemonError> {
+        if !self.app.execution_leases.contains_key(lease_id) {
+            return if self
+                .app
+                .completed_execution_lease_deletions
+                .iter()
+                .any(|id| id == lease_id)
+            {
+                Ok(())
+            } else {
+                Err(DaemonError::ExecutionLeaseNotFound {
+                    lease_id: lease_id.to_string(),
+                })
+            };
+        }
+        let agent_ids = self
+            .app
             .leased_agents
-            .retain(|_, agent| agent.lease_id != lease_id);
-        self.app.execution_leases.remove(lease_id).ok_or_else(|| {
-            DaemonError::ExecutionLeaseNotFound {
-                lease_id: lease_id.to_string(),
-            }
-        })
+            .values()
+            .filter(|agent| agent.lease_id == lease_id)
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>();
+        for agent_id in agent_ids {
+            self.destroy_leased_agent(&agent_id)?;
+        }
+        self.app.execution_leases.remove(lease_id);
+        remember_completed_cleanup(&mut self.app.completed_execution_lease_deletions, lease_id);
+        Ok(())
     }
 
     pub(crate) fn create_leased_agent(
@@ -275,14 +302,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn destroy_leased_agent(
         &mut self,
         leased_agent_id: &str,
-    ) -> Result<LeasedAgent, DaemonError> {
-        let agent = self
-            .app
-            .leased_agents
-            .remove(leased_agent_id)
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
+    ) -> Result<(), DaemonError> {
+        let Some(agent) = self.app.leased_agents.remove(leased_agent_id) else {
+            return if self
+                .app
+                .completed_leased_agent_deletions
+                .iter()
+                .any(|id| id == leased_agent_id)
+            {
+                Ok(())
+            } else {
+                Err(DaemonError::LeasedAgentNotFound {
+                    leased_agent_id: leased_agent_id.to_string(),
+                })
+            };
+        };
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
@@ -335,7 +369,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let _ = self.app.sessions.end_session(&agent.backing_session_id);
             let _ = self.app.sessions.delete_session(&agent.backing_session_id);
         }
-        Ok(agent)
+        remember_completed_cleanup(
+            &mut self.app.completed_leased_agent_deletions,
+            leased_agent_id,
+        );
+        Ok(())
     }
 
     pub(crate) fn leased_workflow_event_capabilities_for_backing_prompt(

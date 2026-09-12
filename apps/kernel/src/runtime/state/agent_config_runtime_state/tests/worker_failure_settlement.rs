@@ -35,6 +35,7 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
     config.relay_token = Some("offline-relay".to_string());
     let (app, runtime, _, _) = agent_config_runtime_with_config(config).await;
     let diagnostic = "You've hit your session limit";
+    let provider_termination = crate::provider::ProviderRunTermination::process_exit(17, 42);
     let (leased_agent, provider_run_id) = {
         let mut app = app.lock().await;
         let lease = RemoteLeaseRuntime::new(&mut app)
@@ -120,6 +121,7 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
                 &crate::app::StartedProviderLaunch {
                     run,
                     previous_active_run_id: None,
+                    provider_credential_env: Default::default(),
                 },
                 &DaemonError::LocalTransport {
                     operation: "provider launch",
@@ -129,11 +131,12 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
             .await;
     } else {
         runtime
-            .fail_owned_provider_prompt(
+            .fail_owned_provider_prompt_with_termination(
                 &leased_agent.backing_session_id,
                 &provider_run_id,
                 diagnostic,
                 true,
+                Some(provider_termination.clone()),
             )
             .await
             .expect(
@@ -179,6 +182,11 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
         completions[0].home_prompt_id.as_deref(),
         Some("home-prompt-1")
     );
+    assert_eq!(
+        completions[0].provider_termination,
+        (!launch_failure).then_some(provider_termination.clone()),
+        "provider termination must survive worker completion projection"
+    );
     let (_, replay) = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection_with_recovery(
             &leased_agent.id,
@@ -195,4 +203,9 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
     assert_eq!(retried.len(), 1);
     assert_eq!(retried[0].home_prompt_id, completions[0].home_prompt_id);
     assert_eq!(retried[0].message_id, completions[0].message_id);
+    assert_eq!(
+        retried[0].provider_termination,
+        (!launch_failure).then_some(provider_termination),
+        "provider termination must survive unacknowledged completion replay"
+    );
 }

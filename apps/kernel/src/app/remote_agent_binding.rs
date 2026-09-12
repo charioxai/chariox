@@ -282,7 +282,7 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
-        self.remember_remote_worker_public_key(&relay_config, worker_kernel);
+        self.remember_remote_worker_public_key(&relay_config, worker_kernel)?;
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&worker_kernel.kernel_id);
         let (lease, relay_peer_protocol_version) = match self.send_remote_binding_request(
@@ -345,6 +345,7 @@ impl DaemonApp {
                 ),
             });
         }
+        let mut materialized_account = None;
         if crate::provider::canonical_provider_family(agent.provider())
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
@@ -356,112 +357,136 @@ impl DaemonApp {
                     &self.config,
                     agent.owner_user_id(),
                 );
-            let mut account_materialization =
-                match self.provider_account_profiles.export_materialization(
-                    &account_owner_user_id,
-                    agent.provider(),
-                    agent.provider_account_profile(),
-                ) {
-                    Ok(materialization) => materialization,
-                    Err(error) => {
-                        let _ = self
-                        .provider_account_profiles
-                        .update_materialization_status(
+            let source_profile = match self.provider_account_profiles.get(
+                &account_owner_user_id,
+                agent.provider(),
+                agent.provider_account_profile(),
+            ) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                    return Err(error);
+                }
+            };
+            if let Some(installed) = installed_remote_account_metadata(
+                &source_profile,
+                materialization_target_kind,
+                &materialization_target_ref,
+                agent.owner_user_id(),
+            ) {
+                materialized_account = Some(installed);
+            } else {
+                let mut account_materialization = match self
+                    .provider_account_profiles
+                    .export_materialization(
                         &account_owner_user_id,
                         agent.provider(),
                         agent.provider_account_profile(),
-                        crate::account_profile::ProviderAccountMaterializationStatus {
-                            target_kind: materialization_target_kind,
-                            target_ref: materialization_target_ref.clone(),
-                            state:
-                                crate::account_profile::ProviderAccountMaterializationState::Error,
-                            observed_at_ms: crate::session::unix_epoch_ms(),
-                            last_error: Some("account materialization export failed".to_string()),
-                        },
-                    );
+                    ) {
+                    Ok(materialization) => materialization,
+                    Err(error) => {
+                        let _ = self.provider_account_profiles.update_materialization_status(
+                                &account_owner_user_id,
+                                agent.provider(),
+                                agent.provider_account_profile(),
+                                crate::account_profile::ProviderAccountMaterializationStatus {
+                                    target_kind: materialization_target_kind,
+                                    target_ref: materialization_target_ref.clone(),
+                                    state: crate::account_profile::ProviderAccountMaterializationState::Error,
+                                    observed_at_ms: crate::session::unix_epoch_ms(),
+                                    last_error: Some(
+                                        "account materialization export failed".to_string(),
+                                    ),
+                                },
+                            );
                         cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                         return Err(error);
                     }
                 };
-            // The home registry aliases the configured Cloud owner to `local`.
-            // The worker lease remains scoped to the runtime owner identity, so
-            // stamp that identity on the encrypted replica envelope.
-            account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
-            match self.send_remote_binding_request(
-                &relay_config,
-                target.clone(),
-                RelayPeerRequest::EnsureRemoteProviderAccount {
-                    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
-                        home_kernel_id: self.config.daemon_id.clone(),
-                        home_session_id: agent.session_id().to_string(),
-                        home_agent_id: agent.id().to_string(),
-                        execution_lease_id: lease.id.clone(),
+                // The home registry aliases the configured Cloud owner to `local`.
+                // The worker lease remains scoped to the runtime owner identity, so
+                // stamp that identity on the encrypted replica envelope.
+                account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
+                let expected_account = account_materialization.profile.clone();
+                match self.send_remote_binding_request(
+                    &relay_config,
+                    target.clone(),
+                    RelayPeerRequest::EnsureRemoteProviderAccount {
+                        context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                            home_kernel_id: self.config.daemon_id.clone(),
+                            home_session_id: agent.session_id().to_string(),
+                            home_agent_id: agent.id().to_string(),
+                            execution_lease_id: lease.id.clone(),
+                        },
+                        materialization: account_materialization,
                     },
-                    materialization: account_materialization,
-                },
-                use_connected_relay,
-            ) {
-                Ok(RelayPeerResponse::RemoteProviderAccountEnsured {
-                    provider,
-                    account_profile,
-                }) if provider == agent.provider()
-                    && account_profile == agent.provider_account_profile() => {
-                    if let Err(error) =
-                        self.provider_account_profiles.update_materialization_status(
+                    use_connected_relay,
+                ) {
+                    Ok(response)
+                        if remote_provider_account_response_matches(
+                            &response,
+                            &expected_account,
+                        ) =>
+                    {
+                        if let Err(error) = self
+                            .provider_account_profiles
+                            .update_materialization_status(
+                                &account_owner_user_id,
+                                agent.provider(),
+                                agent.provider_account_profile(),
+                                crate::account_profile::ProviderAccountMaterializationStatus {
+                                    target_kind: materialization_target_kind,
+                                    target_ref: materialization_target_ref.clone(),
+                                    state: crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                                    observed_at_ms: crate::session::unix_epoch_ms(),
+                                    last_error: None,
+                                },
+                            )
+                        {
+                            cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                            return Err(error);
+                        }
+                        materialized_account = Some(expected_account);
+                    }
+                    Ok(other) => {
+                        let _ = self.provider_account_profiles.update_materialization_status(
                             &account_owner_user_id,
                             agent.provider(),
                             agent.provider_account_profile(),
                             crate::account_profile::ProviderAccountMaterializationStatus {
                                 target_kind: materialization_target_kind,
                                 target_ref: materialization_target_ref.clone(),
-                                state: crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                                state:
+                                    crate::account_profile::ProviderAccountMaterializationState::Error,
                                 observed_at_ms: crate::session::unix_epoch_ms(),
-                                last_error: None,
+                                last_error: Some(
+                                    "worker rejected account materialization".to_string(),
+                                ),
                             },
-                        )
-                    {
+                        );
+                        cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                        return Err(DaemonError::LocalTransport {
+                            operation: "materialize remote provider account",
+                            message: format!("unexpected peer response: {other:?}"),
+                        });
+                    }
+                    Err(error) => {
+                        let _ = self.provider_account_profiles.update_materialization_status(
+                            &account_owner_user_id,
+                            agent.provider(),
+                            agent.provider_account_profile(),
+                            crate::account_profile::ProviderAccountMaterializationStatus {
+                                target_kind: materialization_target_kind,
+                                target_ref: materialization_target_ref,
+                                state:
+                                    crate::account_profile::ProviderAccountMaterializationState::Error,
+                                observed_at_ms: crate::session::unix_epoch_ms(),
+                                last_error: Some("account materialization failed".to_string()),
+                            },
+                        );
                         cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                         return Err(error);
                     }
-                }
-                Ok(other) => {
-                    let _ = self.provider_account_profiles.update_materialization_status(
-                        &account_owner_user_id,
-                        agent.provider(),
-                        agent.provider_account_profile(),
-                        crate::account_profile::ProviderAccountMaterializationStatus {
-                            target_kind: materialization_target_kind,
-                            target_ref: materialization_target_ref.clone(),
-                            state:
-                                crate::account_profile::ProviderAccountMaterializationState::Error,
-                            observed_at_ms: crate::session::unix_epoch_ms(),
-                            last_error: Some(
-                                "worker rejected account materialization".to_string(),
-                            ),
-                        },
-                    );
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(DaemonError::LocalTransport {
-                        operation: "materialize remote provider account",
-                        message: format!("unexpected peer response: {other:?}"),
-                    });
-                }
-                Err(error) => {
-                    let _ = self.provider_account_profiles.update_materialization_status(
-                        &account_owner_user_id,
-                        agent.provider(),
-                        agent.provider_account_profile(),
-                        crate::account_profile::ProviderAccountMaterializationStatus {
-                            target_kind: materialization_target_kind,
-                            target_ref: materialization_target_ref,
-                            state:
-                                crate::account_profile::ProviderAccountMaterializationState::Error,
-                            observed_at_ms: crate::session::unix_epoch_ms(),
-                            last_error: Some("account materialization failed".to_string()),
-                        },
-                    );
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(error);
                 }
             }
         }
@@ -471,7 +496,10 @@ impl DaemonApp {
             RelayPeerRequest::SpawnLeasedAgent {
                 lease_id: lease.id.clone(),
                 provider: agent.provider().to_string(),
-                account_profile: agent.provider_account_profile().to_string(),
+                account_profile: worker_account_profile_for_spawn(
+                    agent.provider_account_profile(),
+                    materialized_account.as_ref(),
+                ),
                 model: agent.model().map(ToOwned::to_owned),
                 effort: agent.effort().map(ToOwned::to_owned),
                 execution_mode: Some(effective_config.mode),
@@ -563,10 +591,14 @@ impl DaemonApp {
             agent.provider(),
             &discovery_config,
         )?;
+        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
+            &worker_kernel.kernel_id,
+            &worker_kernel.machine_id,
+        );
         let rebound = self.bind_remote_agent_to_worker(
             &agent,
             &worker_kernel,
-            None,
+            worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
@@ -599,10 +631,14 @@ impl DaemonApp {
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
+        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
+            &worker_kernel.kernel_id,
+            &worker_kernel.machine_id,
+        );
         let rebound = self.bind_remote_agent_to_worker(
             &agent,
             worker_kernel,
-            None,
+            worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
@@ -869,9 +905,7 @@ impl DaemonApp {
     ) -> Result<RelayKernelPresence, DaemonError> {
         let machine_ref = crate::config::DaemonConfig::resolve_registered_machine_ref(machine_ref)
             .unwrap_or_else(|| machine_ref.to_string());
-        if relay_config.relay_url == self.config.relay_url
-            && relay_config.relay_token == self.config.relay_token
-        {
+        if self.can_use_connected_relay_inventory(&machine_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
             if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
                 return Ok(kernel);
@@ -897,9 +931,7 @@ impl DaemonApp {
         relay_config: &DaemonConfig,
     ) -> Result<RelayKernelPresence, DaemonError> {
         let kernel_ref = kernel_ref.trim();
-        if relay_config.relay_url == self.config.relay_url
-            && relay_config.relay_token == self.config.relay_token
-        {
+        if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
             if let Some(kernel) = projected_kernels
                 .into_iter()
@@ -932,32 +964,51 @@ impl DaemonApp {
         }))
     }
 
+    fn can_use_connected_relay_inventory(
+        &self,
+        kernel_or_machine_ref: &str,
+        relay_config: &DaemonConfig,
+    ) -> bool {
+        relay_config.relay_url == self.config.relay_url
+            && (relay_config.relay_token == self.config.relay_token
+                || self.hosted_shared_slice_uses_connected_relay(kernel_or_machine_ref))
+    }
+
     fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {
-        let slice = self.slices.resolve_by_worker_kernel_ref(kernel_ref)?;
-        let mut config = self.config.clone();
-        if let Some(endpoint) = slice.relay_endpoint.as_ref() {
-            if !endpoint.private && self.config.relay_url_uses_cloud_profile(&endpoint.url) {
-                return None;
-            }
-            config.relay_url = Some(endpoint.url.clone());
-            if endpoint.private {
-                config.relay_token = Some(crate::slice::local_docker_private_relay_token(&slice));
-            }
-        } else {
-            let relay = crate::slice::local_docker_private_relay(&slice);
-            config.relay_url = Some(relay.relay_url);
-            config.relay_token = Some(relay.relay_token);
-        }
-        config.cloud_relay = None;
-        Some(config)
+        let slice = self.resolve_slice_by_connected_worker_ref(kernel_ref)?;
+        self.config.slice_relay_override(&slice)
     }
 
     fn hosted_shared_slice_uses_connected_relay(&self, kernel_ref: &str) -> bool {
-        self.slices
-            .resolve_by_worker_kernel_ref(kernel_ref)
+        self.resolve_slice_by_connected_worker_ref(kernel_ref)
             .and_then(|slice| slice.relay_endpoint)
             .is_some_and(|endpoint| {
                 !endpoint.private && self.config.relay_url_uses_cloud_profile(&endpoint.url)
+            })
+    }
+
+    fn resolve_slice_by_connected_worker_ref(
+        &self,
+        worker_ref: &str,
+    ) -> Option<crate::slice::SliceRecord> {
+        self.slices
+            .resolve_by_worker_kernel_ref(worker_ref)
+            .or_else(|| {
+                let (_, projected_kernels) =
+                    self.remote_relay_inventory_projection_store().snapshot();
+                let worker = projected_kernels
+                    .iter()
+                    .find(|kernel| kernel_presence_matches_ref(kernel, worker_ref))?;
+                let slice = [
+                    worker.kernel_alias.as_deref(),
+                    worker.relay_alias.as_deref(),
+                    worker.machine_alias.as_deref(),
+                    Some(worker.machine_id.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                .find_map(|candidate| self.slices.resolve_by_worker_kernel_ref(candidate));
+                slice
             })
     }
 
@@ -966,8 +1017,7 @@ impl DaemonApp {
         kernel_ref: &str,
     ) -> crate::account_profile::ProviderAccountMaterializationTargetKind {
         if self
-            .slices
-            .resolve_by_worker_kernel_ref(kernel_ref)
+            .resolve_slice_by_connected_worker_ref(kernel_ref)
             .is_some()
         {
             crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
@@ -1034,8 +1084,7 @@ impl DaemonApp {
         kernel_ref: &str,
         requested_worktree_id: Option<String>,
     ) -> Option<String> {
-        self.slices
-            .resolve_by_worker_kernel_ref(kernel_ref)
+        self.resolve_slice_by_connected_worker_ref(kernel_ref)
             .map(|slice| {
                 slice
                     .development_publication
@@ -1043,6 +1092,15 @@ impl DaemonApp {
                     .unwrap_or_else(|| "/workspace".to_string())
             })
             .or(requested_worktree_id)
+    }
+
+    fn worker_worktree_id_for_rebound_worker(
+        &self,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+    ) -> Option<String> {
+        self.worker_worktree_id_for_kernel_ref(worker_kernel_id, None)
+            .or_else(|| self.worker_worktree_id_for_kernel_ref(worker_machine_id, None))
     }
 
     pub(crate) fn relay_config_for_remote_execution(
@@ -1081,23 +1139,80 @@ impl DaemonApp {
         &self,
         relay_config: &DaemonConfig,
         worker_kernel: &RelayKernelPresence,
-    ) {
+    ) -> Result<(), DaemonError> {
+        if !DaemonConfig::claim_relay_peer_public_key(
+            &worker_kernel.kernel_id,
+            &worker_kernel.public_key,
+        )? {
+            return Err(DaemonError::LocalTransport {
+                operation: "bind remote worker identity",
+                message: format!(
+                    "remote worker `{}` changed its public key",
+                    worker_kernel.kernel_id
+                ),
+            });
+        }
         let Some(relay_url) = relay_config.relay_url.clone() else {
-            return;
+            return Ok(());
         };
         let relay_state = self.relay_client_state();
         let kernel_id = worker_kernel.kernel_id.clone();
         let public_key = worker_kernel.public_key.clone();
-        let _ = self.block_on_relay_future(async move {
+        self.block_on_relay_future(async move {
             let mut state = relay_state.write().await;
             if state.connected()
                 && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
             {
-                state.remember_peer_public_key(kernel_id, public_key);
+                if !state.claim_peer_public_key(&kernel_id, &public_key) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "bind remote worker identity",
+                        message: format!("remote worker `{kernel_id}` changed its public key"),
+                    });
+                }
             }
             Ok(())
-        });
+        })
     }
+}
+
+fn remote_provider_account_response_matches(
+    response: &RelayPeerResponse,
+    expected: &crate::account_profile::ProviderAccountReplicaMetadata,
+) -> bool {
+    matches!(
+        response,
+        RelayPeerResponse::RemoteProviderAccountEnsured {
+            provider,
+            account_profile,
+        } if provider == &expected.provider && account_profile == &expected.profile_id
+    )
+}
+
+fn installed_remote_account_metadata(
+    profile: &crate::account_profile::ProviderAccountProfile,
+    target_kind: crate::account_profile::ProviderAccountMaterializationTargetKind,
+    target_ref: &str,
+    worker_owner_user_id: &str,
+) -> Option<crate::account_profile::ProviderAccountReplicaMetadata> {
+    profile.is_installed_at(target_kind, target_ref).then(|| {
+        crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: worker_owner_user_id.to_string(),
+            provider: profile.provider.clone(),
+            profile_id: profile.profile_id.clone(),
+            label: profile.label.clone(),
+            origin: profile.origin,
+            is_default: profile.is_default,
+        }
+    })
+}
+
+fn worker_account_profile_for_spawn(
+    requested_account_profile: &str,
+    materialized_account: Option<&crate::account_profile::ProviderAccountReplicaMetadata>,
+) -> String {
+    materialized_account
+        .map(|account| account.profile_id.clone())
+        .unwrap_or_else(|| requested_account_profile.to_string())
 }
 
 fn app_mcp_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
@@ -1161,7 +1276,102 @@ mod tests {
     use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 
     #[test]
-    fn restored_legacy_binding_is_rejected_until_rebound() {
+    fn remote_account_receipt_matches_the_materialized_profile_id_not_its_alias() {
+        let expected = crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "user-home".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "codex-1-vfx4dshw".to_string(),
+            label: "Codex".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+            is_default: true,
+        };
+
+        assert!(super::remote_provider_account_response_matches(
+            &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                provider: "codex".to_string(),
+                account_profile: "codex-1-vfx4dshw".to_string(),
+            },
+            &expected,
+        ));
+        assert!(!super::remote_provider_account_response_matches(
+            &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                provider: "codex".to_string(),
+                account_profile: "default".to_string(),
+            },
+            &expected,
+        ));
+    }
+
+    #[test]
+    fn remote_agent_launch_uses_the_materialized_profile_id() {
+        let materialized = crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "user-home".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "codex-1-vfx4dshw".to_string(),
+            label: "Codex".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+            is_default: true,
+        };
+
+        assert_eq!(
+            super::worker_account_profile_for_spawn("default", Some(&materialized)),
+            "codex-1-vfx4dshw"
+        );
+    }
+
+    #[test]
+    fn installed_remote_account_is_reused_without_another_transfer() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-installed-remote-account-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let profile = registry
+            .create_managed("home-owner", "codex", "Work")
+            .unwrap();
+        let profile = registry
+            .update_materialization_status(
+                "home-owner",
+                "codex",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountMaterializationStatus {
+                    target_kind:
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                    target_ref: "worker-kernel".to_string(),
+                    state:
+                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                    observed_at_ms: 1,
+                    last_error: None,
+                },
+            )
+            .unwrap();
+
+        let installed = super::installed_remote_account_metadata(
+            &profile,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+            "worker-kernel",
+            "worker-owner",
+        )
+        .unwrap();
+
+        assert_eq!(installed.owner_user_id, "worker-owner");
+        assert_eq!(installed.profile_id, profile.profile_id);
+        assert!(super::installed_remote_account_metadata(
+            &profile,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+            "another-worker",
+            "worker-owner",
+        )
+        .is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restored_stale_or_unversioned_binding_is_rejected_until_rebound() {
         let legacy = RemoteAgentBinding {
             worker_kernel_id: "worker-kernel".to_string(),
             worker_machine_id: "worker-machine".to_string(),
@@ -1173,6 +1383,11 @@ mod tests {
             relay_peer_protocol_version: None,
         };
         assert!(!legacy.relay_peer_protocol_compatible());
+        let stale = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(38),
+            ..legacy.clone()
+        };
+        assert!(!stale.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
             relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
@@ -1383,6 +1598,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
@@ -1467,6 +1683,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
@@ -1498,6 +1715,11 @@ mod tests {
                 Some("/host/worktree".to_string()),
             )
             .as_deref(),
+            Some("/workspace")
+        );
+        assert_eq!(
+            app.worker_worktree_id_for_rebound_worker("slice-kernel-1", "slice:slice-1")
+                .as_deref(),
             Some("/workspace")
         );
         let ports = slice
@@ -1532,6 +1754,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
@@ -1587,6 +1810,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
@@ -1617,6 +1841,82 @@ mod tests {
         assert_eq!(
             app.remote_account_materialization_target_kind(&slice.worker_kernel_ref),
             crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        );
+    }
+
+    #[test]
+    fn hosted_shared_slice_uses_connected_inventory_with_a_scoped_discovery_token() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".to_string());
+        config.relay_token = Some("home-runtime-token".to_string());
+        config.relay_request_timeout_ms = 1;
+        config.cloud_relay = Some(cloud_relay_profile("ws://127.0.0.1:1"));
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "hosted-linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: crate::slice::SliceDisplayBackend::default(),
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    development: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        app.slices()
+            .set_relay_endpoint(
+                &slice.id,
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: "ws://127.0.0.1:1".to_string(),
+                    private: false,
+                }),
+                43,
+            )
+            .expect("slice relay endpoint should update");
+        let worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "kernel-worker".to_string(),
+            machine_id: "slice:slice-1".to_string(),
+            machine_alias: None,
+            relay_alias: Some(slice.worker_kernel_ref.clone()),
+            kernel_alias: Some(slice.worker_kernel_ref.clone()),
+            available_providers: vec!["codex".to_string()],
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "worker-public-key".to_string(),
+        };
+        app.remote_relay_inventory_projection_store()
+            .update(Vec::new(), vec![worker.clone()]);
+        let mut discovery_config = app.config().clone();
+        discovery_config.relay_token = Some("scoped-discovery-token".to_string());
+
+        let selected = app
+            .select_remote_kernel_by_ref_with_config(&worker.kernel_id, "codex", &discovery_config)
+            .expect("connected hosted inventory should resolve the slice worker");
+
+        assert_eq!(selected, worker);
+        assert!(app.hosted_shared_slice_uses_connected_relay(&worker.kernel_id));
+        assert_eq!(
+            app.remote_account_materialization_target_kind(&worker.kernel_id),
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        );
+        assert_eq!(
+            app.worker_worktree_id_for_kernel_ref(&worker.kernel_id, None),
+            Some("/workspace".to_string())
         );
     }
 
@@ -1661,6 +1961,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: crate::slice::SliceDisplayBackend::default(),
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),

@@ -19,6 +19,19 @@ use crate::error::DaemonError;
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+const OPENCODE_CONFIG_FILES: [&str; 6] = [
+    "config",
+    "config.json",
+    "opencode.json",
+    "opencode.jsonc",
+    "tui.json",
+    "tui.jsonc",
+];
+#[cfg(test)]
+#[path = "account_profile_materialization_tests.rs"]
+mod materialization_tests;
+#[path = "account_profile_replica_refresh.rs"]
+mod replica_refresh;
 pub(crate) const MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
@@ -114,6 +127,9 @@ pub(crate) fn provider_auth_env_vars(provider: &str) -> &'static [&'static str] 
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+            "CLAUDE_CODE_OAUTH_SCOPES",
             "CLAUDE_CONFIG_DIR",
         ],
         Some("opencode") => &[
@@ -579,6 +595,22 @@ pub struct ProviderAccountProfile {
 }
 
 impl ProviderAccountProfile {
+    pub(crate) fn is_installed_at(
+        &self,
+        target_kind: ProviderAccountMaterializationTargetKind,
+        target_ref: &str,
+    ) -> bool {
+        self.materializations.iter().any(|status| {
+            status.target_kind == target_kind
+                && status.target_ref == target_ref
+                && matches!(
+                    status.state,
+                    ProviderAccountMaterializationState::Materialized
+                        | ProviderAccountMaterializationState::Stale
+                )
+        })
+    }
+
     /// Reuse prompt admission's plan/model and freshness policy. Missing
     /// reporting and authentication failures are not evidence of exhaustion.
     pub(crate) fn has_confirmed_exhaustion(&self, model: &str, now_ms: u64) -> bool {
@@ -1149,9 +1181,6 @@ impl ProviderAccountProfileRegistry {
                         ProviderAccountAuthState::Error;
                     document.profiles[losing_index].public.last_validated_at_ms =
                         Some(crate::session::unix_epoch_ms());
-                    mark_profile_materializations_stale(
-                        &mut document.profiles[losing_index].public,
-                    );
                     if !incoming_wins {
                         let existing_label =
                             document.profiles[duplicate_index].public.label.clone();
@@ -1167,12 +1196,6 @@ impl ProviderAccountProfileRegistry {
             }
         }
         let profile = &mut document.profiles[profile_index];
-        let identity_changed = profile.public.identity_summary.is_some()
-            && identity_summary.is_some()
-            && profile.public.identity_summary != identity_summary;
-        if identity_changed || auth_state != ProviderAccountAuthState::Authenticated {
-            mark_profile_materializations_stale(&mut profile.public);
-        }
         profile.public.auth_state = auth_state;
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
@@ -1202,7 +1225,6 @@ impl ProviderAccountProfileRegistry {
         profile.public.services.clear();
         profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
-        mark_profile_materializations_stale(&mut profile.public);
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
@@ -1364,8 +1386,10 @@ impl ProviderAccountProfileRegistry {
         let mut environment = locator.environment();
         // Preserve Claude's provider-native default credential scope. Injecting the
         // conventional config directory can select a different credential store, including
-        // a scoped Keychain service on macOS.
+        // a scoped Keychain service on macOS. Managed isolation changes HOME, so it
+        // must retain the explicit directory to bind the selected credential profile.
         if provider == "claude"
+            && !crate::provider::managed_provider_isolation_required()
             && origin == ProviderAccountProfileOrigin::Default
             && matches!(
                 locator,
@@ -1378,6 +1402,33 @@ impl ProviderAccountProfileRegistry {
             environment.remove("CLAUDE_CONFIG_DIR");
         }
         Ok(environment)
+    }
+
+    pub(crate) fn has_portable_claude_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let locator = {
+            let document = self.read_document()?;
+            resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?
+                .locator
+                .clone()
+        };
+        let ProviderAccountLocator::Claude {
+            claude_config_dir, ..
+        } = locator
+        else {
+            return Ok(false);
+        };
+        let credentials = read_bounded_regular_file_no_follow(
+            &claude_config_dir.join(".credentials.json"),
+            MAX_MATERIALIZATION_BYTES,
+            ".credentials.json",
+        )?;
+        Ok(credentials
+            .as_deref()
+            .is_some_and(claude_credentials_are_portable))
     }
 
     pub fn create_managed(
@@ -1632,10 +1683,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let document = self.read_document()?;
         let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
-        let files = materialization_files(
-            &stored.locator,
-            stored.public.origin == ProviderAccountProfileOrigin::Default,
-        )?;
+        let files = materialization_files(&stored.locator)?;
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: stored.public.owner_user_id.clone(),
@@ -1656,18 +1704,27 @@ impl ProviderAccountProfileRegistry {
         provider: &str,
         profile_id: &str,
         label: &str,
+        is_default: bool,
         source_home: &Path,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
-        let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
-        let files = materialization_files(&locator, false)?;
-        if files.is_empty() {
-            return Err(registry_error(
-                "materialize deployment account profile",
-                "provider credential profile is empty",
-            ));
+        if let Some(profile) = self
+            .list(owner_user_id, Some(provider))?
+            .into_iter()
+            .find(|profile| profile.profile_id == profile_id)
+        {
+            return Ok(profile);
         }
+        let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
+        let files = materialization_files(&locator)?;
+        let credential_path = match provider {
+            "codex" => "auth.json",
+            "claude" => ".credentials.json",
+            "opencode" => "data/opencode/auth.json",
+            _ => return Err(unsupported_provider(provider)),
+        };
+        require_materialization_file(&files, credential_path, provider, profile_id)?;
         self.materialize_replica(
             owner_user_id,
             &ProviderAccountMaterialization {
@@ -1677,7 +1734,7 @@ impl ProviderAccountProfileRegistry {
                     profile_id: profile_id.to_string(),
                     label: label.trim().to_string(),
                     origin: ProviderAccountProfileOrigin::Linked,
-                    is_default: false,
+                    is_default,
                 },
                 files,
                 generated_at_ms: crate::session::unix_epoch_ms(),
@@ -1705,10 +1762,11 @@ impl ProviderAccountProfileRegistry {
                     &mut files,
                     MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES,
                 )?;
-                require_materialization_file(&files, "auth.json", provider, profile_id)?;
+                require_managed_materialization_file(&files, "auth.json", provider, profile_id)?;
             }
             ProviderAccountLocator::Claude {
-                claude_config_dir, ..
+                claude_config_dir,
+                ambient_default,
             } => {
                 validate_materialization_root(claude_config_dir)?;
                 collect_optional_file_bounded(
@@ -1720,14 +1778,18 @@ impl ProviderAccountProfileRegistry {
                 )?;
                 discard_nonportable_claude_credentials(&mut files);
                 if !materialization_has_file(&files, ".credentials.json") {
-                    collect_scoped_claude_keychain_credentials(claude_config_dir, &mut files)?;
+                    collect_claude_keychain_credentials_for_scope(
+                        claude_config_dir,
+                        ambient_default == &Some(true),
+                        &mut files,
+                    )?;
                 }
-                if stored.public.origin == ProviderAccountProfileOrigin::Default
-                    && !materialization_has_file(&files, ".credentials.json")
-                {
-                    collect_legacy_claude_keychain_credentials(&mut files)?;
-                }
-                require_materialization_file(&files, ".credentials.json", provider, profile_id)?;
+                require_managed_materialization_file(
+                    &files,
+                    ".credentials.json",
+                    provider,
+                    profile_id,
+                )?;
             }
             ProviderAccountLocator::Opencode { xdg_data_home, .. } => {
                 let auth_root = xdg_data_home.join("opencode");
@@ -1739,7 +1801,7 @@ impl ProviderAccountProfileRegistry {
                     &mut files,
                     MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES,
                 )?;
-                require_materialization_file(
+                require_managed_materialization_file(
                     &files,
                     "data/opencode/auth.json",
                     provider,
@@ -1950,6 +2012,7 @@ impl ProviderAccountProfileRegistry {
             Some(_) => true,
             None => false,
         };
+        let refresh_existing_replica = managed_context.is_none() && replace_existing_replica;
         let managed_root_exists = path_entry_exists(&managed_root)?;
         let adopt_interrupted_managed_publication = managed_context.is_some()
             && managed_root_exists
@@ -1977,7 +2040,26 @@ impl ProviderAccountProfileRegistry {
             ));
         }
 
-        let backup_root = (managed_root_exists && !adopt_interrupted_managed_publication)
+        let mut file_refresh =
+            if managed_context.is_none() && replace_existing_replica && managed_root_exists {
+                match replica_refresh::ReplicaFileRefresh::publish(
+                    &managed_root,
+                    &staging_root,
+                    &decoded_files,
+                    provider,
+                ) {
+                    Ok(refresh) => Some(refresh),
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&staging_root);
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+        let backup_root = (managed_root_exists
+            && !adopt_interrupted_managed_publication
+            && !refresh_existing_replica)
             .then(|| unique_sibling_path(&managed_root, "backup"));
         if let Some(backup_root) = &backup_root {
             if let Err(error) = fs::rename(&managed_root, backup_root) {
@@ -1985,7 +2067,24 @@ impl ProviderAccountProfileRegistry {
                 return Err(registry_io("materialize account profile")(error));
             }
         }
-        let publication_result = if adopt_interrupted_managed_publication {
+        let publication_result = if file_refresh.is_some() {
+            fs::remove_dir_all(&staging_root).map_err(registry_io("clean account refresh staging"))
+        } else if refresh_existing_replica {
+            (|| {
+                for (file, (_, contents)) in materialization.files.iter().zip(decoded_files.iter())
+                {
+                    let destination = materialization_destination(&locator, &file.relative_path)?;
+                    atomic_write_private(&destination, contents)?;
+                }
+                if let ProviderAccountLocator::Codex { codex_home } = &locator {
+                    enforce_codex_file_credentials(codex_home)?;
+                }
+                sync_private_tree(&managed_root)?;
+                fs::remove_dir_all(&staging_root)
+                    .map_err(registry_io("refresh materialized account profile"))?;
+                sync_directory(managed_parent)
+            })()
+        } else if adopt_interrupted_managed_publication {
             fs::remove_dir_all(&staging_root)
                 .map_err(registry_io("recover managed account profile publication"))
                 .and_then(|_| sync_private_tree(&managed_root))
@@ -1996,6 +2095,10 @@ impl ProviderAccountProfileRegistry {
                 .and_then(|_| sync_directory(managed_parent))
         };
         if let Err(error) = publication_result {
+            if let Some(refresh) = &mut file_refresh {
+                refresh.rollback()?;
+                return Err(error);
+            }
             let failed_root = unique_sibling_path(&managed_root, "failed");
             let _ = fs::rename(&managed_root, &failed_root);
             if let Some(backup_root) = &backup_root {
@@ -2013,20 +2116,20 @@ impl ProviderAccountProfileRegistry {
                     locator: stored.locator.clone(),
                 })
         });
-        let previous_default_profile_id = managed_context
-            .filter(|_| materialization.profile.is_default)
-            .and_then(|_| {
-                document
-                    .profiles
-                    .iter()
-                    .find(|stored| {
-                        stored.public.owner_user_id == owner_user_id
-                            && stored.public.provider == provider
-                            && stored.public.profile_id != profile_id
-                            && stored.public.is_default
-                    })
-                    .map(|stored| stored.public.profile_id.clone())
-            });
+        let previous_default_profile_id = if materialization.profile.is_default {
+            document
+                .profiles
+                .iter()
+                .find(|stored| {
+                    stored.public.owner_user_id == owner_user_id
+                        && stored.public.provider == provider
+                        && stored.public.profile_id != profile_id
+                        && stored.public.is_default
+                })
+                .map(|stored| stored.public.profile_id.clone())
+        } else {
+            None
+        };
         if let Some(previous_default_profile_id) = &previous_default_profile_id {
             if let Some(previous_default) = document.profiles.iter_mut().find(|stored| {
                 stored.public.owner_user_id == owner_user_id
@@ -2041,7 +2144,7 @@ impl ProviderAccountProfileRegistry {
             package_sha256: intent.package_sha256.to_string(),
             materialization_sha256: intent.materialization_sha256.to_string(),
             replaced_profile,
-            previous_default_profile_id,
+            previous_default_profile_id: previous_default_profile_id.clone(),
         });
         let result = if let Some(existing) = document.profiles.iter_mut().find(|stored| {
             stored.public.owner_user_id == owner_user_id
@@ -2092,6 +2195,13 @@ impl ProviderAccountProfileRegistry {
             if managed_context.is_some() {
                 return Err(error);
             }
+            if let Some(refresh) = &mut file_refresh {
+                refresh.rollback()?;
+                return Err(error);
+            }
+            if refresh_existing_replica {
+                return Err(error);
+            }
             let failed_root = unique_sibling_path(&managed_root, "failed");
             let _ = fs::rename(&managed_root, &failed_root);
             if let Some(backup_root) = &backup_root {
@@ -2100,6 +2210,9 @@ impl ProviderAccountProfileRegistry {
             let _ = fs::remove_dir_all(&failed_root);
             let _ = sync_directory(managed_parent);
             return Err(error);
+        }
+        if let Some(refresh) = &mut file_refresh {
+            refresh.commit();
         }
         if let Some(backup_root) = &backup_root {
             let _ = fs::remove_dir_all(backup_root);
@@ -2313,6 +2426,29 @@ fn validate_managed_context_materialization_shape(
             "materialize managed account profile",
             "provider account materialization does not match the managed-context credential allowlist",
         ));
+    }
+    if provider == "claude" {
+        let credentials = materialization
+            .files
+            .iter()
+            .find(|file| file.relative_path == required)
+            .and_then(|file| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&file.contents_base64)
+                    .ok()
+            });
+        if !credentials
+            .as_deref()
+            .is_some_and(claude_credentials_are_portable)
+        {
+            return Err(registry_error(
+                "materialize managed account profile",
+                format!(
+                    "{provider} account profile `{}` has no transferable credentials",
+                    materialization.profile.profile_id
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -2603,15 +2739,6 @@ fn new_public_profile(
     }
 }
 
-fn mark_profile_materializations_stale(profile: &mut ProviderAccountProfile) {
-    let now_ms = crate::session::unix_epoch_ms();
-    for materialization in &mut profile.materializations {
-        materialization.state = ProviderAccountMaterializationState::Stale;
-        materialization.observed_at_ms = now_ms;
-        materialization.last_error = None;
-    }
-}
-
 fn normalize_provider(provider: &str) -> Result<&'static str, DaemonError> {
     crate::provider::canonical_provider_family(provider)
         .filter(|provider| SUPPORTED_PROVIDERS.contains(provider))
@@ -2896,7 +3023,6 @@ fn validate_profile_id(profile_id: &str) -> Result<&str, DaemonError> {
 
 fn materialization_files(
     locator: &ProviderAccountLocator,
-    include_default_claude_keychain: bool,
 ) -> Result<Vec<ProviderAccountMaterializationFile>, DaemonError> {
     let mut files = Vec::new();
     match locator {
@@ -2905,41 +3031,48 @@ fn materialization_files(
             collect_optional_file(codex_home, "config.toml", "config.toml", &mut files)?;
         }
         ProviderAccountLocator::Claude {
-            claude_config_dir, ..
+            claude_config_dir,
+            ambient_default,
         } => {
             for name in [".credentials.json", "settings.json", "stats-cache.json"] {
                 collect_optional_file(claude_config_dir, name, name, &mut files)?;
             }
             discard_nonportable_claude_credentials(&mut files);
             if !materialization_has_file(&files, ".credentials.json") {
-                collect_scoped_claude_keychain_credentials(claude_config_dir, &mut files)?;
-            }
-            if include_default_claude_keychain
-                && !materialization_has_file(&files, ".credentials.json")
-            {
-                collect_legacy_claude_keychain_credentials(&mut files)?;
+                collect_claude_keychain_credentials_for_scope(
+                    claude_config_dir,
+                    ambient_default == &Some(true),
+                    &mut files,
+                )?;
             }
         }
         ProviderAccountLocator::Opencode {
             xdg_data_home,
             xdg_config_home,
-            xdg_state_home,
             opencode_config_dir,
             ..
         } => {
-            collect_optional_tree(&xdg_data_home.join("opencode"), "data/opencode", &mut files)?;
-            collect_optional_tree(
-                &xdg_config_home.join("opencode"),
-                "config/opencode",
+            // Account transfer is not provider-session migration. In particular,
+            // never traverse databases, prompt history, locks, or node_modules.
+            collect_optional_profile_files(
+                &xdg_data_home.join("opencode"),
+                "data/opencode",
+                &["auth.json"],
                 &mut files,
             )?;
-            collect_optional_tree(
-                &xdg_state_home.join("opencode"),
-                "state/opencode",
+            collect_optional_profile_files(
+                &xdg_config_home.join("opencode"),
+                "config/opencode",
+                &OPENCODE_CONFIG_FILES,
                 &mut files,
             )?;
             if opencode_config_dir != &xdg_config_home.join("opencode") {
-                collect_optional_tree(opencode_config_dir, "opencode-config", &mut files)?;
+                collect_optional_profile_files(
+                    opencode_config_dir,
+                    "opencode-config",
+                    &OPENCODE_CONFIG_FILES,
+                    &mut files,
+                )?;
             }
         }
     }
@@ -3065,7 +3198,7 @@ fn validate_materialization_root(root: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn require_materialization_file(
+fn require_managed_materialization_file(
     files: &[ProviderAccountMaterializationFile],
     relative_path: &str,
     provider: &str,
@@ -3077,18 +3210,28 @@ fn require_materialization_file(
             "provider account materialization exceeds the 16 MiB managed-context limit",
         ));
     }
-    if files.iter().any(|file| file.relative_path == relative_path) {
+    require_materialization_file(files, relative_path, provider, profile_id)
+}
+
+fn require_materialization_file(
+    files: &[ProviderAccountMaterializationFile],
+    relative_path: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<(), DaemonError> {
+    if materialization_has_file(files, relative_path) {
         return Ok(());
     }
     Err(registry_error(
-        "export managed account profile",
+        "export account profile",
         format!("{provider} account profile `{profile_id}` has no transferable credentials"),
     ))
 }
 
-fn collect_optional_tree(
+fn collect_optional_profile_files(
     root: &Path,
     transfer_prefix: &str,
+    names: &[&str],
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
     let metadata = match fs::symlink_metadata(root) {
@@ -3102,41 +3245,8 @@ fn collect_optional_tree(
             "provider account materialization root must be a regular directory",
         ));
     }
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let mut entries = fs::read_dir(&directory)
-            .map_err(registry_io("export account profile"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(registry_io("export account profile"))?;
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            let path = entry.path();
-            let metadata =
-                fs::symlink_metadata(&path).map_err(registry_io("export account profile"))?;
-            if metadata.file_type().is_symlink() {
-                return Err(registry_error(
-                    "export account profile",
-                    "symlinks are not allowed in transferred provider profile data",
-                ));
-            }
-            if metadata.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            if !metadata.is_file() {
-                continue;
-            }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|error| registry_error("export account profile", error.to_string()))?;
-            let transfer_relative = Path::new(transfer_prefix).join(relative);
-            collect_optional_file(
-                root,
-                &relative.to_string_lossy(),
-                &transfer_relative.to_string_lossy(),
-                files,
-            )?;
-        }
+    for name in names {
+        collect_optional_file(root, name, &format!("{transfer_prefix}/{name}"), files)?;
     }
     Ok(())
 }
@@ -3164,40 +3274,46 @@ fn claude_credentials_are_portable(contents: &[u8]) -> bool {
             value
                 .pointer("/claudeAiOauth/refreshToken")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|refresh_token| !refresh_token.is_empty())
+                .is_some_and(|refresh_token| !refresh_token.trim().is_empty())
         })
 }
 
-#[cfg(target_os = "macos")]
-fn claude_keychain_service_name(claude_config_dir: &Path) -> String {
+#[cfg(any(target_os = "macos", test))]
+fn claude_keychain_service_names(claude_config_dir: &Path, ambient_default: bool) -> Vec<String> {
     let digest = format!(
         "{:x}",
         Sha256::digest(claude_config_dir.as_os_str().as_encoded_bytes())
     );
-    format!("Claude Code-credentials-{}", &digest[..8])
+    let scoped = format!("Claude Code-credentials-{}", &digest[..8]);
+    if ambient_default {
+        vec![scoped, "Claude Code-credentials".to_string()]
+    } else {
+        vec![scoped]
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn collect_scoped_claude_keychain_credentials(
+fn collect_claude_keychain_credentials_for_scope(
     claude_config_dir: &Path,
+    ambient_default: bool,
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
-    collect_claude_keychain_credentials(&claude_keychain_service_name(claude_config_dir), files)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn collect_scoped_claude_keychain_credentials(
-    _claude_config_dir: &Path,
-    _files: &mut [ProviderAccountMaterializationFile],
-) -> Result<(), DaemonError> {
+    for service in claude_keychain_service_names(claude_config_dir, ambient_default) {
+        collect_claude_keychain_credentials(&service, files)?;
+        if materialization_has_file(files, ".credentials.json") {
+            break;
+        }
+    }
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn collect_legacy_claude_keychain_credentials(
-    files: &mut Vec<ProviderAccountMaterializationFile>,
+#[cfg(not(target_os = "macos"))]
+fn collect_claude_keychain_credentials_for_scope(
+    _claude_config_dir: &Path,
+    _ambient_default: bool,
+    _files: &mut [ProviderAccountMaterializationFile],
 ) -> Result<(), DaemonError> {
-    collect_claude_keychain_credentials("Claude Code-credentials", files)
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -3225,13 +3341,6 @@ fn collect_claude_keychain_credentials(
         relative_path: ".credentials.json".to_string(),
         contents_base64: base64::engine::general_purpose::STANDARD.encode(output.stdout),
     });
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn collect_legacy_claude_keychain_credentials(
-    _files: &mut [ProviderAccountMaterializationFile],
-) -> Result<(), DaemonError> {
     Ok(())
 }
 
@@ -4486,6 +4595,49 @@ mod tests {
     }
 
     #[test]
+    fn managed_default_claude_profile_retains_its_credential_directory() {
+        let _lock = crate::env_lock::lock();
+        struct Restore {
+            variables: Vec<(&'static str, Option<std::ffi::OsString>)>,
+            root: PathBuf,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (name, value) in &self.variables {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+        let (root, registry) = fixture();
+        let _restore = Restore {
+            variables: ["CLAUDE_CONFIG_DIR", "CHARIOX_MANAGED_PROVIDER_ISOLATION"]
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect(),
+            root: root.clone(),
+        };
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        let home = root.join("home");
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+        assert_eq!(
+            environment.get("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+            Some(home.join(".claude")),
+            "managed login and sandboxed verification must bind the same default profile"
+        );
+    }
+
+    #[test]
     fn default_claude_profile_inherits_the_host_environment() {
         let (root, registry) = fixture();
         registry
@@ -4578,6 +4730,7 @@ mod tests {
                 "codex",
                 "cloud-profile-2",
                 "Codex validation",
+                false,
                 &source_home,
             )
             .unwrap();
@@ -4593,6 +4746,34 @@ mod tests {
             "{\"token\":\"secret\"}"
         );
         assert!(codex_home.starts_with(root.join("provider-accounts/local/codex/cloud-profile-2")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deployment_profiles_reject_nonrefreshable_claude_credentials_before_materialization() {
+        let (root, registry) = fixture();
+        let source_home = root.join("mounted-profile/home");
+        fs::create_dir_all(source_home.join(".claude")).unwrap();
+        fs::write(source_home.join(".claude/settings.json"), "{}").unwrap();
+        fs::write(
+            source_home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"expired"}}"#,
+        )
+        .unwrap();
+
+        let error = registry
+            .materialize_deployment_profile(
+                "local",
+                "claude",
+                "cloud-profile-2",
+                "Claude validation",
+                false,
+                &source_home,
+            )
+            .expect_err("non-refreshable Claude credentials must fail before provisioning");
+
+        assert!(error.to_string().contains("no transferable credentials"));
+        assert!(registry.get("local", "claude", "cloud-profile-2").is_err());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4657,6 +4838,171 @@ mod tests {
             .is_err());
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn repeated_account_materialization_preserves_provider_runtime_state() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+        fs::create_dir_all(target_codex_home.join("sessions/2026/09/02")).unwrap();
+        let rollout = target_codex_home.join("sessions/2026/09/02/thread.jsonl");
+        fs::write(&rollout, "provider-owned runtime state").unwrap();
+
+        fs::write(
+            source_codex_home.join("auth.json"),
+            br#"{"token":"refreshed"}"#,
+        )
+        .unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        target.materialize_replica("owner-a", &refreshed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target_codex_home.join("auth.json")).unwrap(),
+            r#"{"token":"refreshed"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(rollout).unwrap(),
+            "provider-owned runtime state"
+        );
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_account_materialization_preserves_provider_runtime_links() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+        fs::create_dir_all(target_codex_home.join("runtime")).unwrap();
+        std::os::unix::fs::symlink("../auth.json", target_codex_home.join("runtime/auth-link"))
+            .unwrap();
+
+        fs::write(
+            source_codex_home.join("auth.json"),
+            br#"{"token":"refreshed"}"#,
+        )
+        .unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        target.materialize_replica("owner-a", &refreshed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target_codex_home.join("auth.json")).unwrap(),
+            r#"{"token":"refreshed"}"#
+        );
+        assert!(fs::read_to_string(target_codex_home.join("config.toml"))
+            .unwrap()
+            .contains("cli_auth_credentials_store = \"file\""));
+        assert_eq!(
+            fs::read_link(target_codex_home.join("runtime/auth-link")).unwrap(),
+            PathBuf::from("../auth.json")
+        );
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn repeated_account_materialization_bounds_old_and_new_files_independently() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        let old_auth = vec![b'a'; 40 * 1024 * 1024];
+        fs::write(source_codex_home.join("auth.json"), &old_auth).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+
+        let new_auth = vec![b'b'; 40 * 1024 * 1024];
+        fs::write(source_codex_home.join("auth.json"), &new_auth).unwrap();
+        let refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let refresh_result = target.materialize_replica("owner-a", &refreshed);
+        let published_auth = fs::read(target_codex_home.join("auth.json"));
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+        refresh_result.unwrap();
+        assert_eq!(published_auth.unwrap(), new_auth);
+    }
+
+    #[test]
+    fn repeated_account_materialization_rejects_nonportable_files() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let source_codex_home = Path::new(&source_environment["CODEX_HOME"]);
+        fs::write(source_codex_home.join("auth.json"), br#"{"token":"first"}"#).unwrap();
+
+        let (target_root, target) = fixture();
+        let initial = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let materialized = target.materialize_replica("owner-a", &initial).unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_codex_home = Path::new(&target_environment["CODEX_HOME"]);
+
+        let mut refreshed = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        refreshed.files.push(ProviderAccountMaterializationFile {
+            relative_path: "runtime-state.json".to_string(),
+            contents_base64: base64::engine::general_purpose::STANDARD.encode(b"not portable"),
+        });
+        let refresh_result = target.materialize_replica("owner-a", &refreshed);
+        let published_auth = fs::read_to_string(target_codex_home.join("auth.json"));
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+        assert!(refresh_result.is_err());
+        assert_eq!(published_auth.unwrap(), r#"{"token":"first"}"#);
     }
 
     #[test]
@@ -5055,15 +5401,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_context_uses_each_official_provider_credential_location() {
+    fn managed_context_uses_supported_provider_credential_locations() {
         for (provider, environment_key, relative_path, transfer_path) in [
             ("codex", "CODEX_HOME", "auth.json", "auth.json"),
-            (
-                "claude",
-                "CLAUDE_CONFIG_DIR",
-                ".credentials.json",
-                ".credentials.json",
-            ),
             (
                 "opencode",
                 "XDG_DATA_HOME",
@@ -5082,11 +5422,7 @@ mod tests {
                 Path::new(&source_environment[environment_key]).join(relative_path);
             fs::create_dir_all(source_credential.parent().expect("credential parent"))
                 .expect("create credential parent");
-            let credential_contents = if provider == "claude" {
-                r#"{"claudeAiOauth":{"refreshToken":"secret"}}"#.to_string()
-            } else {
-                format!(r#"{{"provider":"{provider}","token":"secret"}}"#)
-            };
+            let credential_contents = format!(r#"{{"provider":"{provider}","token":"secret"}}"#);
             fs::write(&source_credential, &credential_contents).expect("write provider credential");
             let materialization = source
                 .export_managed_context_materialization(
@@ -5126,12 +5462,145 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn claude_keychain_service_is_scoped_to_the_config_directory() {
+    fn managed_context_round_trips_only_claude_refresh_credentials() {
+        let (source_root, source) = fixture();
+        let profile = source
+            .create_managed("owner-a", "claude", "Work")
+            .expect("create Claude account");
+        let environment = source
+            .resolve_environment("owner-a", "claude", &profile.profile_id)
+            .expect("resolve Claude account");
+        fs::write(
+            Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"secret"}}"#,
+        )
+        .expect("write provider-owned credential fixture");
+
+        let materialization = source
+            .export_managed_context_materialization("owner-a", "claude", &profile.profile_id)
+            .expect("Claude refresh credentials should transfer to managed contexts");
+        assert_eq!(materialization.files.len(), 1);
+        assert_eq!(materialization.files[0].relative_path, ".credentials.json");
+
+        let (target_root, target) = fixture();
+        let receipt = target
+            .materialize_managed_context_replica(
+                "owner-a",
+                "context-claude",
+                &"a".repeat(64),
+                &materialization,
+            )
+            .expect("materialize Claude refresh credentials");
+        let target_environment = target
+            .resolve_environment("owner-a", "claude", &profile.profile_id)
+            .expect("resolve target Claude account");
+        let target_credentials =
+            Path::new(&target_environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json");
         assert_eq!(
-            claude_keychain_service_name(Path::new("/tmp/chariox-claude-profile")),
-            "Claude Code-credentials-bc2236e0"
+            fs::read_to_string(&target_credentials).expect("read target Claude credentials"),
+            r#"{"claudeAiOauth":{"refreshToken":"secret"}}"#
+        );
+        target
+            .rollback_managed_context_replica("owner-a", &receipt)
+            .expect("roll back Claude credentials");
+        assert!(!target_credentials.exists());
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn managed_context_rejects_invalid_claude_payloads_before_provisioning() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "claude", "Work").unwrap();
+        let environment = source
+            .resolve_environment("owner-a", "claude", &profile.profile_id)
+            .unwrap();
+        fs::write(
+            Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"secret"}}"#,
+        )
+        .unwrap();
+        let valid = source
+            .export_managed_context_materialization("owner-a", "claude", &profile.profile_id)
+            .unwrap();
+
+        let mut empty = valid.clone();
+        empty.files[0].contents_base64 = base64::engine::general_purpose::STANDARD.encode(b"");
+        let mut whitespace_refresh_token = valid.clone();
+        whitespace_refresh_token.files[0].contents_base64 =
+            base64::engine::general_purpose::STANDARD
+                .encode(br#"{"claudeAiOauth":{"refreshToken":" \t\n"}}"#);
+        let mut nonrefreshable = valid.clone();
+        nonrefreshable.files[0].contents_base64 = base64::engine::general_purpose::STANDARD
+            .encode(br#"{"claudeAiOauth":{"accessToken":"expired"}}"#);
+        let mut with_extra_file = valid.clone();
+        with_extra_file
+            .files
+            .push(ProviderAccountMaterializationFile {
+                relative_path: "settings.json".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            });
+
+        for (context_id, materialization, expected) in [
+            ("context-claude-empty", empty, "no transferable credentials"),
+            (
+                "context-claude-whitespace-refresh-token",
+                whitespace_refresh_token,
+                "no transferable credentials",
+            ),
+            (
+                "context-claude-nonrefreshable",
+                nonrefreshable,
+                "no transferable credentials",
+            ),
+            (
+                "context-claude-extra",
+                with_extra_file,
+                "managed-context credential allowlist",
+            ),
+        ] {
+            let (target_root, target) = fixture();
+            let registry_path = target_root.join("accounts.json");
+            let registry_existed_before = registry_path.exists();
+            let error = target
+                .materialize_managed_context_replica(
+                    "owner-a",
+                    context_id,
+                    &"a".repeat(64),
+                    &materialization,
+                )
+                .expect_err("invalid Claude credentials must fail before provisioning");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(target
+                .get("owner-a", "claude", &profile.profile_id)
+                .is_err());
+            assert_eq!(registry_path.exists(), registry_existed_before);
+            assert!(!target_root
+                .join("provider-accounts")
+                .join("owner-a")
+                .join("claude")
+                .join(&profile.profile_id)
+                .exists());
+            let _ = fs::remove_dir_all(target_root);
+        }
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn ambient_claude_profile_adds_legacy_fallback_after_the_scoped_service() {
+        let config_dir = Path::new("/tmp/chariox-claude-profile");
+        assert_eq!(
+            claude_keychain_service_names(config_dir, false),
+            vec!["Claude Code-credentials-bc2236e0"]
+        );
+        assert_eq!(
+            claude_keychain_service_names(config_dir, true),
+            vec![
+                "Claude Code-credentials-bc2236e0",
+                "Claude Code-credentials"
+            ]
         );
     }
 

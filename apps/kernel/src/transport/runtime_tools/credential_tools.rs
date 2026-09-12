@@ -108,6 +108,11 @@ pub struct PasteSecretToSliceArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasteSecretToComputerArgs {
+    pub credential_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupChoiceArgs {
     pub id: String,
     pub label: String,
@@ -156,6 +161,8 @@ pub struct SliceScreenshotArgs {
 pub struct SliceOcrArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +170,8 @@ pub struct SliceFindTextArgs {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +187,10 @@ pub struct SliceMouseArgs {
     pub to_y: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizontal_steps: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +200,40 @@ pub struct SliceKeyboardArgs {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u16>,
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceClipboardWriteArgs {
+    pub text: String,
+}
+
+impl SliceClipboardWriteArgs {
+    pub(crate) fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.text))
+    }
+}
+
+impl std::fmt::Debug for SliceClipboardWriteArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SliceClipboardWriteArgs")
+            .field("text", &"[redacted clipboard text]")
+            .finish()
+    }
+}
+
+impl zeroize::Zeroize for SliceClipboardWriteArgs {
+    fn zeroize(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.text);
+    }
+}
+
+impl Drop for SliceClipboardWriteArgs {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +246,20 @@ pub struct SliceBrowserFindArgs {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserTabArgs {
+    pub tab_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserHistoryArgs {
+    pub tab_id: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +292,54 @@ pub struct SliceBrowserDialogArgs {
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserEventsArgs {
+    pub browser_generation: u64,
+    #[serde(default)]
+    pub cursor: u64,
+    #[serde(default = "default_browser_event_limit")]
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserDownloadsArgs {
+    #[serde(default)]
+    pub cancel: Option<SliceBrowserDownloadCancelArgs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserDownloadCancelArgs {
+    pub browser_generation: u64,
+    pub guid: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserUploadArgs {
+    pub field_id: String,
+    pub files: Vec<std::path::PathBuf>,
+}
+
+impl std::fmt::Debug for SliceBrowserUploadArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SliceBrowserUploadArgs")
+            .field("field_id", &self.field_id)
+            .field("file_count", &self.files.len())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserPermissionArgs {
+    pub permission: String,
+    pub setting: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +376,10 @@ fn default_generated_secret_length() -> usize {
 
 fn default_generated_secret_symbols() -> bool {
     true
+}
+
+fn default_browser_event_limit() -> u16 {
+    100
 }
 
 fn default_http_method() -> String {
@@ -389,17 +502,29 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
-            description: "Paste a browser credential into a Chariox slice browser field after validating the current browser target. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
+            description: "Paste a browser credential into an editable password field after validating the current Chariox slice browser target. Unmasked fields are rejected before the secret is resolved, and the secret value is not returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
                 "properties": {
                     "credential_id": {"type": "string"},
-                    "submit": {"type": "boolean", "description": "Press Enter after pasting. Defaults to false."},
+                    "submit": {"type": "boolean", "description": "Submit the containing browser form after filling. Defaults to false."},
                     "expected_host": {"type": "string", "description": "Optional expected current browser host. The paste fails before secret resolution if the browser is on a different host."},
                     "expected_url": {"type": "string", "description": "Optional expected current browser URL prefix. The paste fails before secret resolution if the browser URL does not start with this value."},
                     "selector": {"type": "string", "description": "Optional CSS selector for the intended fillable field."},
                     "field_id": {"type": "string", "description": "Optional opaque field id returned by slice_browser_find or slice_browser_status."}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: PASTE_SECRET_TO_COMPUTER_TOOL.to_string(),
+            description: "After explicit user approval, type a computer credential into the already-focused desktop control without exposing the value to the model or clipboard. Use only when the user can verify that the focused control masks secret input.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential_id"],
+                "properties": {
+                    "credential_id": {"type": "string"}
                 },
                 "additionalProperties": false
             }),
@@ -502,7 +627,7 @@ fn credential_creation_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["http", "pty", "connector", "browser", "mcp"]
+                    "enum": ["http", "pty", "connector", "browser", "computer", "mcp"]
                 }
             },
             "injection": {
@@ -511,7 +636,7 @@ fn credential_creation_schema() -> Value {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["header", "query", "basic", "hmac", "pty", "browser"]
+                        "enum": ["header", "query", "basic", "hmac", "pty", "browser", "computer"]
                     },
                     "name": {"type": "string"},
                     "value": {"type": "string"},
@@ -534,6 +659,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
         PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
+        PASTE_SECRET_TO_COMPUTER_TOOL => PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS,
         MANAGE_CREDENTIAL_VAULT_TOOL => MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS,
         REQUEST_POPUP_TOOL => REQUEST_POPUP_TOOL_ALIAS,
         _ => return None,
@@ -580,6 +706,11 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_paste_secret_to_slice"
         | "mcp__chariox__paste_secret_to_slice"
         | "mcp__chariox__chariox_paste_secret_to_slice" => Some(PASTE_SECRET_TO_SLICE_TOOL),
+        PASTE_SECRET_TO_COMPUTER_TOOL
+        | PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS
+        | "chariox_paste_secret_to_computer"
+        | "mcp__chariox__paste_secret_to_computer"
+        | "mcp__chariox__chariox_paste_secret_to_computer" => Some(PASTE_SECRET_TO_COMPUTER_TOOL),
         MANAGE_CREDENTIAL_VAULT_TOOL
         | MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS
         | "chariox_manage_credential_vault"

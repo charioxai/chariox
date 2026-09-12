@@ -8,7 +8,7 @@ use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
 };
 
-use super::provider_liveness::poll_provider_run_process_running;
+use super::provider_liveness::{poll_provider_run_process_exit, ProviderProcessExit};
 
 pub(crate) struct ProviderLaunchProcessRuntime<'a> {
     app: &'a mut DaemonApp,
@@ -26,10 +26,31 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
     }
 
     pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        self.spawn_for_launch_with_credentials(
+            run,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+        )
+    }
+
+    pub(crate) fn spawn_for_launch_with_credentials(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        if crate::provider::record_provider_credential_delivery_for_test(
+            run.id(),
+            "pty_spawn",
+            credentials,
+        ) {
+            return Ok(());
+        }
         if run.endpoint_mode() != AgentEndpointMode::Managed {
             return Ok(());
         }
-        self.app.pty.spawn_for_run(run)?;
+        self.app
+            .pty
+            .spawn_for_run_with_credentials(run, credentials)?;
         ProviderProcessTracker::new(self.app).register_managed_run(run)
     }
 
@@ -40,8 +61,11 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         remove_provider_pty_process(self.app, provider_run_id)
     }
 
-    pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        poll_provider_run_process_running(self.app, provider_run_id)
+    pub(crate) fn poll_exit(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Option<ProviderProcessExit>, DaemonError> {
+        poll_provider_run_process_exit(self.app, provider_run_id)
     }
 }
 

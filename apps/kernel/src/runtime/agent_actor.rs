@@ -24,7 +24,7 @@ const DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY_PER_SESSION: usize = 8;
 mod agent_resolution;
 mod command_executor;
 mod command_lane;
-mod prompt_attachment_materialization;
+pub(crate) mod prompt_attachment_materialization;
 
 use agent_resolution::parse_prompt_agent_alias_route;
 use command_lane::{AgentCommand, AgentCommandEnvelope, PromptSubmitResponseMode};

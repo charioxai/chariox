@@ -12,6 +12,11 @@ pub struct CreateSliceRequest {
     pub os: String,
     #[serde(default)]
     pub display_mode: crate::slice::SliceDisplayMode,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::slice::SliceDisplayBackend::is_selkies"
+    )]
+    pub display_backend: crate::slice::SliceDisplayBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,6 +40,17 @@ pub struct CreateSliceRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRefRequest {
     pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSliceDisplayEndpointRequest {
+    pub slice_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +98,12 @@ pub struct CreateSliceBackupRequest {
     pub slice_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreSliceBackupRequest {
+    pub slice_ref: String,
+    pub backup_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

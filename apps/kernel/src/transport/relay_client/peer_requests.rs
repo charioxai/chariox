@@ -118,6 +118,147 @@ pub(super) async fn handle_daemon_peer_request(
     }
 
     let response = match request {
+        RelayPeerRequest::RoomBrowserController {
+            session_id,
+            slice_id,
+            command,
+        } => {
+            match router
+                .relay_room_browser_controller(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    command,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomBrowserController {
+                    session_id,
+                    slice_id,
+                    result,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::OpenRoomDisplay {
+            session_id,
+            slice_id,
+            viewer_public_key,
+        } => {
+            match router
+                .relay_open_room_display(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    viewer_public_key,
+                )
+                .await
+            {
+                Ok(endpoint) => RelayPeerResponse::RoomDisplayOpened {
+                    session_id,
+                    slice_id,
+                    endpoint,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::CaptureRoomScreenshot {
+            session_id,
+            slice_id,
+        } => {
+            match router
+                .relay_capture_room_screenshot(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                )
+                .await
+            {
+                Ok(artifact) => RelayPeerResponse::RoomScreenshotCaptured {
+                    session_id,
+                    slice_id,
+                    artifact,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::ReadRoomScreenshotChunk {
+            session_id,
+            slice_id,
+            artifact_id,
+            offset,
+            max_bytes,
+        } => {
+            match router.relay_read_room_screenshot_chunk(
+                stable_peer_daemon_id(from_daemon_id),
+                &requester_public_key,
+                &session_id,
+                &slice_id,
+                &artifact_id,
+                offset,
+                max_bytes,
+            ) {
+                Ok(chunk) => RelayPeerResponse::RoomScreenshotChunk {
+                    session_id,
+                    slice_id,
+                    chunk,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::ObserveRoomComputer {
+            session_id,
+            slice_id,
+            call,
+        } => {
+            match router
+                .relay_observe_room_computer(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    call,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomComputerObserved {
+                    session_id,
+                    slice_id,
+                    result: crate::transport::relay_peer::RemoteRoomComputerObservationResult(
+                        result,
+                    ),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
         RelayPeerRequest::InstallManagedSliceRelayToken {
             slice_id,
@@ -466,6 +607,7 @@ pub(super) async fn handle_daemon_peer_request(
             required_mcps,
             required_skills,
             remote_extension_manifest,
+            provider_launch_credential,
         } => {
             let launched = router
                 .relay_launch_leased_native_provider_run(
@@ -480,6 +622,7 @@ pub(super) async fn handle_daemon_peer_request(
                     required_mcps,
                     required_skills,
                     remote_extension_manifest,
+                    provider_launch_credential,
                 )
                 .await;
             match launched {
@@ -557,6 +700,7 @@ pub(super) async fn handle_daemon_peer_request(
             required_mcps,
             required_skills,
             remote_extension_manifest,
+            provider_launch_credential,
         } => {
             let submitted = router
                 .relay_submit_leased_prompt(
@@ -570,6 +714,7 @@ pub(super) async fn handle_daemon_peer_request(
                     required_mcps,
                     required_skills,
                     remote_extension_manifest,
+                    provider_launch_credential,
                 )
                 .await;
             match submitted {
@@ -708,6 +853,19 @@ pub(super) async fn handle_daemon_peer_request(
                         } else {
                             None
                         };
+                    let provider_termination =
+                        if let Some(provider_run_id) = provider_run_id.as_deref() {
+                            router
+                                .relay_leased_agent_provider_termination(
+                                    &leased_agent_id,
+                                    provider_run_id,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
                     let (git_observations, workspace_live_sync_change) =
                         if let Some(provider_run_id) = provider_run_id.as_deref() {
                             router
@@ -720,6 +878,7 @@ pub(super) async fn handle_daemon_peer_request(
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
+                        provider_termination,
                         git_observations,
                         workspace_live_sync_change,
                         completion,
@@ -885,6 +1044,28 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, call } => {
+            let handled = router
+                .dispatch_forwarded_room_browser_runtime_tool_call(
+                    stable_peer_daemon_id(from_daemon_id),
+                    context,
+                    call,
+                )
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::RoomBrowserRuntimeToolHandled {
+                    result: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolResult(
+                        result,
+                    ),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::InvokeHomeExtensionTool {
             context,
             metadata,
@@ -972,7 +1153,10 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok((credential_id, secret_input)) => {
                     RelayPeerResponse::HomeCredentialSecretResolved {
                         credential_id,
-                        secret_input,
+                        secret_input:
+                            crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                                secret_input,
+                            ),
                     }
                 }
                 Err(error) => {
@@ -1681,6 +1865,7 @@ mod tests {
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
                 display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: crate::slice::SliceDisplayBackend::default(),
                 workspace_id: None,
                 worktree_id: None,
                 workspace_mount: None,
@@ -2010,6 +2195,139 @@ mod tests {
 
         drop(router);
         fs::remove_dir_all(root).expect("remove machine-bound transfer fixture");
+    }
+
+    #[tokio::test]
+    async fn opted_out_managed_kernel_arms_only_a_cloud_authorized_git_enrollment() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-git-enrollment-arm-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("source public key");
+        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
+        let source_kernel_id = "source-kernel-1";
+        let enrollment_plan = ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+            "context-git-enrollment",
+            "realm-1",
+            source_kernel_id,
+            &source_key_thumbprint,
+        );
+        let enrollment_binding = enrollment_plan.package_binding();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind enrollment fixture");
+        let address = listener.local_addr().expect("enrollment fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept enrollment authorization");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("authorization read timeout");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut chunk).expect("read authorization request");
+                assert!(read > 0, "authorization request ended before its body");
+                request.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                assert!(headers
+                    .starts_with("POST /v1/managed-kernels/git-credential-enrollment/authorize "));
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .expect("authorization content length");
+                if request.len() >= header_end + 4 + content_length {
+                    break (header_end, content_length);
+                }
+            };
+            let body = serde_json::from_slice::<serde_json::Value>(
+                &request[header_end + 4..header_end + 4 + content_length],
+            )
+            .expect("decode authorization body");
+            let response = serde_json::to_vec(&serde_json::json!({
+                "authorized": true,
+                "contextPlan": enrollment_plan,
+            }))
+            .expect("encode authorization response");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                response.len()
+            )
+            .expect("write authorization headers");
+            stream
+                .write_all(&response)
+                .expect("write authorization response");
+            body
+        });
+
+        let mut config = DaemonConfig::for_tests();
+        config = config.with_session_history_root(root.join("sessions"));
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        let target_kernel_id = config.daemon_id.clone();
+        let target_machine_id = config.host_machine_id.clone();
+        config.cloud_relay = Some(test_cloud_profile(
+            format!("http://{address}"),
+            target_machine_id.clone(),
+        ));
+        let target_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("managed target daemon should bootstrap"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(app, 1)
+            .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
+                environment_id: "environment-git-enrollment".to_string(),
+                machine_id: target_machine_id,
+                kernel_id: target_kernel_id.clone(),
+                context_plan: Some(ManagedKernelContextPlan::empty_for_tests(
+                    "initial-empty-context",
+                )),
+            });
+        let response = router
+            .relay_arm_managed_context_import(
+                crate::runtime::router::RelayManagedContextArmRequest {
+                    identity: scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX),
+                    source_kernel_id: source_kernel_id.to_string(),
+                    context_id: enrollment_binding.context_id.clone(),
+                    plan_digest: enrollment_binding.plan_digest.clone(),
+                    target_environment_id: "environment-git-enrollment".to_string(),
+                    target_kernel_id,
+                    target_key_thumbprint,
+                    capability: "c".repeat(43),
+                    archive_sha256: "b".repeat(64),
+                    archive_size_bytes: 42,
+                },
+            )
+            .await
+            .expect("arm authorized Git enrollment");
+        assert!(matches!(
+            response,
+            RelayPeerResponse::ManagedContextImportArmed { .. }
+        ));
+        let authorization_body = fixture.join().expect("join authorization fixture");
+        assert_eq!(authorization_body["contextId"], "context-git-enrollment");
+        assert_eq!(authorization_body["sourceKernelId"], source_kernel_id);
+        assert_eq!(
+            authorization_body["sourceKeyThumbprint"],
+            source_key_thumbprint
+        );
+        drop(router);
+        fs::remove_dir_all(root).expect("remove enrollment fixture");
     }
 
     #[test]

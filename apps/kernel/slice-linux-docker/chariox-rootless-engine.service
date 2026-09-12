@@ -1,0 +1,17 @@
+[Unit]
+Description=Chariox rootless Docker engine
+
+[Service]
+Type=simple
+Environment=HOME=/var/lib/chariox-docker/home
+Environment=XDG_RUNTIME_DIR=/run/chariox-docker
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=systemd
+# The system lifecycle adapter owns restarts. Do not start a second daemon
+# after that adapter has stopped or released its runtime directory.
+Restart=no
+Delegate=cpu cpuset io memory pids
+KillMode=mixed
+TimeoutStopSec=60s
+UMask=0077

@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::error::DaemonError;
 
-use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
 pub(crate) const MANAGED_PROVIDER_ISOLATION_ENV: &str = "CHARIOX_MANAGED_PROVIDER_ISOLATION";
 #[cfg(any(target_os = "linux", test))]
@@ -23,9 +23,11 @@ const MAX_MANAGED_WORKSPACE_ROOTS: usize = 128;
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
+#[cfg(target_os = "linux")]
+const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
 #[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
@@ -38,6 +40,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_SLICE_DOCKER_BROKER_FD",
     "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
     "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
     "CHARIOX_MANAGED_RELEASE_SIGNATURE",
     "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
 ];
@@ -84,6 +87,58 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+pub(crate) fn provider_reported_path_on_kernel(
+    run: &RuntimeProviderRun,
+    reported_path: &str,
+) -> Option<PathBuf> {
+    let reported_path = Path::new(reported_path);
+    let managed = run
+        .pty_args()
+        .windows(3)
+        .any(|args| args == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
+    if !managed {
+        return Some(reported_path.to_path_buf());
+    }
+
+    let args = run.pty_args();
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let (source, destination) = args[..separator]
+        .windows(3)
+        .filter(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind"))
+        .filter_map(|args| {
+            let source = PathBuf::from(&args[1]);
+            let destination = PathBuf::from(&args[2]);
+            if !destination.starts_with(SANDBOX_ACCOUNT_ROOT) {
+                return None;
+            }
+            if reported_path.starts_with(&destination) {
+                Some((source, destination))
+            } else if reported_path.starts_with(&source) {
+                Some((source.clone(), source))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(_, destination)| destination.components().count())?;
+    let relative = reported_path.strip_prefix(&destination).ok()?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    let source = source.canonicalize().ok()?;
+    let resolved = source.join(relative).canonicalize().ok()?;
+    resolved.starts_with(&source).then_some(resolved)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -154,17 +209,21 @@ pub(crate) fn apply_managed_provider_isolation(
 
     #[cfg(target_os = "linux")]
     {
-        validate_bubblewrap_binary()?;
+        let bubblewrap = managed_bubblewrap_binary()?;
         let provider_home = managed_provider_home()?;
         let workspace_roots = managed_workspace_roots(request)?;
         let working_directory = managed_working_directory(request, &workspace_roots)?;
         let runtime_roots = managed_runtime_roots(&launch)?;
         let account_bindings = managed_account_bindings(&mut launch.pty_env)?;
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
+        let prompt_attachment_root = managed_prompt_attachment_root(request)?;
 
         let resolver = managed_resolver_binding()?;
-        let (mut args, mut created_directories) =
-            managed_namespace_args(resolver.as_deref(), Path::exists);
+        let (mut args, mut created_directories) = managed_namespace_args(
+            resolver.as_deref(),
+            Path::exists,
+            prompt_attachment_root.as_deref(),
+        );
         append_directory(&mut args, Path::new(SANDBOX_HOME), &mut created_directories);
         append_bind(
             &mut args,
@@ -210,7 +269,7 @@ pub(crate) fn apply_managed_provider_isolation(
         ]);
         args.append(&mut launch.pty_args);
 
-        launch.pty_program = Some(BWRAP_PATH.to_string());
+        launch.pty_program = Some(bubblewrap.display().to_string());
         launch.pty_args = args;
         // Provider-account utilities use the synthetic sandbox home, which
         // does not exist until bubblewrap assembles the namespace. Ordinary
@@ -404,13 +463,17 @@ pub(crate) fn command_from_provider_launch(
 }
 
 #[cfg(target_os = "linux")]
-fn validate_bubblewrap_binary() -> Result<(), DaemonError> {
+fn managed_bubblewrap_binary() -> Result<PathBuf, DaemonError> {
     use std::os::unix::fs::MetadataExt;
 
-    let path = Path::new(BWRAP_PATH);
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+    let path = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(BWRAP_PATH));
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
         isolation_error(format!(
-            "managed provider isolation needs {BWRAP_PATH}: {error}"
+            "managed provider isolation needs {}: {error}",
+            path.display()
         ))
     })?;
     if metadata.file_type().is_symlink()
@@ -420,10 +483,10 @@ fn validate_bubblewrap_binary() -> Result<(), DaemonError> {
         || metadata.mode() & 0o111 == 0
     {
         return Err(isolation_error(
-            "managed provider isolation needs a root-owned, non-writable executable /usr/bin/bwrap",
+            "managed provider isolation needs a root-owned, non-writable Bubblewrap launcher",
         ));
     }
-    Ok(())
+    Ok(path)
 }
 
 #[cfg(target_os = "linux")]
@@ -460,6 +523,7 @@ fn managed_resolver_binding() -> Result<Option<PathBuf>, DaemonError> {
 fn managed_namespace_args(
     resolver: Option<&Path>,
     path_exists: impl Fn(&Path) -> bool,
+    prompt_attachment_root: Option<&Path>,
 ) -> (Vec<String>, BTreeSet<PathBuf>) {
     let mut args = vec![
         "--die-with-parent".to_string(),
@@ -469,7 +533,6 @@ fn managed_namespace_args(
         "--unshare-ipc".to_string(),
         "--unshare-uts".to_string(),
         "--unshare-cgroup-try".to_string(),
-        "--disable-userns".to_string(),
         "--uid".to_string(),
         "0".to_string(),
         "--gid".to_string(),
@@ -506,7 +569,64 @@ fn managed_namespace_args(
     if let Some(resolver) = resolver {
         append_read_only_bind(&mut args, resolver, resolver, &mut created_directories);
     }
+    if let Some(root) = prompt_attachment_root {
+        append_read_only_bind(&mut args, root, root, &mut created_directories);
+    }
     (args, created_directories)
+}
+
+#[cfg(target_os = "linux")]
+fn managed_prompt_attachment_root(
+    request: &LaunchProviderRequest,
+) -> Result<Option<PathBuf>, DaemonError> {
+    let Some(agent_id) = request.agent_id.as_deref() else {
+        return Ok(None);
+    };
+    let root =
+        crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
+            &request.session_id,
+            agent_id,
+        );
+    std::fs::create_dir_all(&root).map_err(|error| {
+        isolation_error(format!(
+            "managed provider prompt attachment directory could not be created: {error}"
+        ))
+    })?;
+    let metadata = std::fs::symlink_metadata(&root).map_err(|error| {
+        isolation_error(format!(
+            "managed provider prompt attachment directory could not be inspected: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(isolation_error(
+            "managed provider prompt attachment path must be a nonsymlink directory",
+        ));
+    }
+    let temp_root = std::env::temp_dir();
+    let relative = root.strip_prefix(&temp_root).map_err(|_| {
+        isolation_error(
+            "managed provider prompt attachment path must stay under the process temp directory",
+        )
+    })?;
+    let expected = temp_root
+        .canonicalize()
+        .map_err(|error| {
+            isolation_error(format!(
+                "managed provider temp directory could not be resolved: {error}"
+            ))
+        })?
+        .join(relative);
+    let canonical = root.canonicalize().map_err(|error| {
+        isolation_error(format!(
+            "managed provider prompt attachment directory could not be resolved: {error}"
+        ))
+    })?;
+    if canonical != expected {
+        return Err(isolation_error(
+            "managed provider prompt attachment path must not traverse symlinks",
+        ));
+    }
+    Ok(Some(root))
 }
 
 #[cfg(target_os = "linux")]
@@ -737,9 +857,129 @@ mod tests {
     use super::*;
 
     #[test]
+    fn managed_provider_reported_path_resolves_through_its_account_bind() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-reported-path-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let host_account = root.join("account");
+        let host_transcript = host_account.join("projects/session.jsonl");
+        std::fs::create_dir_all(
+            host_transcript
+                .parent()
+                .expect("transcript should have a parent"),
+        )
+        .expect("account transcript root should exist");
+        std::fs::write(&host_transcript, "{}\n").expect("transcript should exist");
+        let sandbox_account = Path::new("/home/chariox/.provider-account").join("root-1");
+        let sandbox_transcript = sandbox_account.join("projects/session.jsonl");
+        let request = LaunchProviderRequest::new(
+            "session-managed-path",
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-opus",
+        );
+        let run = RuntimeProviderRun::new(
+            "provider-run-managed-path",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude:headless:managed-isolated".to_string(),
+                pty_target: None,
+                pty_program: Some("/usr/bin/bwrap".to_string()),
+                pty_args: vec![
+                    "--ro-bind".to_string(),
+                    "/".to_string(),
+                    "/".to_string(),
+                    "--bind".to_string(),
+                    host_account.display().to_string(),
+                    sandbox_account.display().to_string(),
+                    "--setenv".to_string(),
+                    MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                    "1".to_string(),
+                    "--".to_string(),
+                    "/usr/local/bin/claude".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                sandbox_transcript
+                    .to_str()
+                    .expect("sandbox transcript should be utf8"),
+            ),
+            Some(
+                host_transcript
+                    .canonicalize()
+                    .expect("host path should resolve")
+            ),
+        );
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                host_transcript
+                    .to_str()
+                    .expect("host transcript should be utf8"),
+            ),
+            Some(
+                host_transcript
+                    .canonicalize()
+                    .expect("host path should resolve")
+            ),
+            "persisted transcript cursors must remain resolvable",
+        );
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                "/home/chariox/.provider-account/root-1/../root-2/session.jsonl",
+            ),
+            None,
+            "provider paths must not escape their kernel-owned bind",
+        );
+        let outside_bind = root.join("outside-bind.jsonl");
+        std::fs::write(&outside_bind, "secret\n").expect("outside fixture should exist");
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                outside_bind
+                    .to_str()
+                    .expect("outside fixture should be utf8"),
+            ),
+            None,
+            "the Bubblewrap root binding must not authorize arbitrary host paths",
+        );
+        #[cfg(unix)]
+        {
+            let outside = root.join("outside.jsonl");
+            let escape = host_account.join("projects/escape.jsonl");
+            std::fs::write(&outside, "secret\n").expect("outside fixture should exist");
+            std::os::unix::fs::symlink(&outside, &escape)
+                .expect("escape symlink should be created");
+            assert_eq!(
+                provider_reported_path_on_kernel(
+                    &run,
+                    "/home/chariox/.provider-account/root-1/projects/escape.jsonl",
+                ),
+                None,
+                "provider transcript symlinks must not escape their account bind",
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn namespace_args_restore_the_resolver_after_masking_run() {
         let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
-        let (args, _) = managed_namespace_args(Some(resolver), |path| path == Path::new("/run"));
+        let (args, _) =
+            managed_namespace_args(Some(resolver), |path| path == Path::new("/run"), None);
 
         let mask = args
             .windows(2)
@@ -771,7 +1011,7 @@ mod tests {
 
     #[test]
     fn namespace_args_do_not_bind_a_resolver_outside_masked_run() {
-        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"));
+        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"), None);
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 1);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
@@ -1023,6 +1263,67 @@ mod tests {
                 directory_text.as_str(),
                 directory_text.as_str(),
             ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_namespace_exposes_materialized_prompt_attachment_to_its_provider() {
+        use crate::runtime::agent_actor::prompt_attachment_materialization::INLINE_PROMPT_ATTACHMENT_DIR;
+        use base64::Engine;
+
+        let session_id = format!(
+            "managed-attachment-session-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let request =
+            LaunchProviderRequest::new(&session_id, "codex", "codex", "default", "gpt-5.6-luna")
+                .with_agent_id("agent:two");
+        let attachment_root = managed_prompt_attachment_root(&request)
+            .expect("managed attachment root should prepare")
+            .expect("agent-bound launches should have an attachment root");
+        let attachment = crate::session::PromptAttachment::new(
+            "chariox-cloud://artifact/art-1",
+            "text/plain",
+            Some("remote-attachment-probe.txt".to_string()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode("attachment probe"));
+        let materialized = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(
+            &session_id,
+            "agent:two",
+            vec![attachment],
+        )
+        .expect("inline attachment should materialize before provider input");
+        let attachment_path = Path::new(
+            materialized[0]
+                .url()
+                .strip_prefix("file://")
+                .expect("materialized attachment should use a file URL"),
+        );
+
+        let (args, _) = managed_namespace_args(
+            None,
+            |path| path == Path::new("/tmp"),
+            Some(&attachment_root),
+        );
+
+        assert!(attachment_path.starts_with(&attachment_root));
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--ro-bind"
+                && window[1] == attachment_root.to_string_lossy()
+                && window[2] == attachment_root.to_string_lossy()
+        }));
+        let global_root = std::env::temp_dir().join(INLINE_PROMPT_ATTACHMENT_DIR);
+        assert!(!args.windows(3).any(|window| {
+            window[0] == "--ro-bind"
+                && window[1] == global_root.to_string_lossy()
+                && window[2] == global_root.to_string_lossy()
+        }));
+        let _ = std::fs::remove_dir_all(
+            attachment_root
+                .parent()
+                .expect("attachment root should have a session parent"),
         );
     }
 

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_slice_logs_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 287);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
 
     let request = LocalDaemonRequest::GetSliceLogs(crate::local::GetSliceLogsRequest {
         slice_ref: "linux-dev".to_string(),
@@ -14,6 +14,7 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
             name: "linux-dev".to_string(),
             owner_kernel_id: "home-kernel".to_string(),
             owner_machine_id: "home-machine".to_string(),
+            environment_session_id: None,
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),
@@ -71,7 +72,7 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_audit_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 287);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
 
     let request = LocalDaemonRequest::ListSliceAudit(crate::local::ListSliceAuditRequest {
         slice_ref: "linux-dev".to_string(),
