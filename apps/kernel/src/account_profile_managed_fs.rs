@@ -1,9 +1,10 @@
 //! No-follow operations on a managed provider directory pinned by a file handle.
 
-use std::ffi::CString;
-use std::fs::{self, File};
+use std::ffi::{CStr, CString};
+use std::fs::File;
 use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 use crate::error::DaemonError;
 
@@ -28,22 +29,11 @@ impl ManagedProviderParent {
     }
 
     pub(super) fn exists(&self, name: &str) -> Result<bool, DaemonError> {
-        match fs::symlink_metadata(self.path(name)) {
-            Ok(_) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(registry_io("inspect managed account profile")(error)),
-        }
+        metadata_at(&self.directory, &component(name)?).map(|metadata| metadata.is_some())
     }
 
     pub(super) fn require_directory(&self, name: &str) -> Result<(), DaemonError> {
-        let metadata = fs::symlink_metadata(self.path(name))
-            .map_err(registry_io("inspect managed account profile"))?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(registry_error(
-                "inspect managed account profile",
-                "managed account profile path must be a regular directory",
-            ));
-        }
+        open_child_directory(&self.directory, name)?;
         Ok(())
     }
 
@@ -68,9 +58,7 @@ impl ManagedProviderParent {
     }
 
     pub(super) fn remove(&self, name: &str) -> Result<(), DaemonError> {
-        self.require_directory(name)?;
-        // The fd path pins the parent even if its original pathname changes.
-        fs::remove_dir_all(self.path(name)).map_err(registry_io("delete managed account profile"))
+        remove_tree_at(&self.directory, &component(name)?)
     }
 
     pub(super) fn sync(&self) -> Result<(), DaemonError> {
@@ -78,20 +66,14 @@ impl ManagedProviderParent {
             .sync_all()
             .map_err(registry_io("sync account profile directory"))
     }
-
-    fn path(&self, name: &str) -> PathBuf {
-        #[cfg(target_os = "linux")]
-        let fd_root = "/proc/self/fd";
-        #[cfg(not(target_os = "linux"))]
-        let fd_root = "/dev/fd";
-        Path::new(fd_root)
-            .join(self.directory.as_raw_fd().to_string())
-            .join(name)
-    }
 }
 
 fn open_child_directory(parent: &File, name: &str) -> Result<File, DaemonError> {
     let name = component(name)?;
+    open_child_directory_cstr(parent, &name)
+}
+
+fn open_child_directory_cstr(parent: &File, name: &CStr) -> Result<File, DaemonError> {
     // O_NOFOLLOW rejects a swapped symlink at each untrusted path component.
     let fd = unsafe {
         libc::openat(
@@ -106,6 +88,98 @@ fn open_child_directory(parent: &File, name: &str) -> Result<File, DaemonError> 
         ));
     }
     Ok(unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+}
+
+fn metadata_at(parent: &File, name: &CStr) -> Result<Option<libc::stat>, DaemonError> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result == 0 {
+        return Ok(Some(unsafe { metadata.assume_init() }));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Ok(None)
+    } else {
+        Err(registry_io("inspect managed account profile")(error))
+    }
+}
+
+fn remove_tree_at(parent: &File, name: &CStr) -> Result<(), DaemonError> {
+    let directory = open_child_directory_cstr(parent, name)?;
+    let pinned = directory
+        .metadata()
+        .map_err(registry_io("inspect managed account profile"))?;
+    let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
+    if duplicate < 0 {
+        return Err(registry_io("delete managed account profile")(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    let stream = unsafe { libc::fdopendir(duplicate) };
+    if stream.is_null() {
+        unsafe { libc::close(duplicate) };
+        return Err(registry_io("delete managed account profile")(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    let stream = DirectoryStream(stream);
+    loop {
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            break;
+        }
+        let child_name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if child_name.to_bytes() == b"." || child_name.to_bytes() == b".." {
+            continue;
+        }
+        let Some(child) = metadata_at(&directory, child_name)? else {
+            continue;
+        };
+        if child.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            remove_tree_at(&directory, child_name)?;
+        } else if unsafe { libc::unlinkat(directory.as_raw_fd(), child_name.as_ptr(), 0) } != 0 {
+            return Err(registry_io("delete managed account profile")(
+                std::io::Error::last_os_error(),
+            ));
+        }
+    }
+    drop(stream);
+    directory
+        .sync_all()
+        .map_err(registry_io("sync account profile directory"))?;
+    let current = metadata_at(parent, name)?.ok_or_else(|| {
+        registry_error(
+            "delete managed account profile",
+            "managed account path changed during deletion",
+        )
+    })?;
+    if current.st_dev as u64 != pinned.dev() || current.st_ino as u64 != pinned.ino() {
+        return Err(registry_error(
+            "delete managed account profile",
+            "managed account path changed during deletion",
+        ));
+    }
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
+        return Err(registry_io("delete managed account profile")(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+struct DirectoryStream(*mut libc::DIR);
+
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        unsafe { libc::closedir(self.0) };
+    }
 }
 
 fn component(name: &str) -> Result<CString, DaemonError> {
