@@ -5,8 +5,8 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "upgrade-image.sh must run as root" >&2
   exit 1
 fi
-if [ "$#" -ne 4 ]; then
-  echo "usage: upgrade-image.sh <managed-kernel-rootfs> <expected-current-release-digest> <expected-new-release-digest> <trusted-public-key>" >&2
+if [ "$#" -ne 4 ] && [ "$#" -ne 5 ]; then
+  echo "usage: upgrade-image.sh <managed-kernel-rootfs> <expected-current-release-digest> <expected-new-release-digest> <current-trusted-public-key> [next-trusted-public-key]" >&2
   exit 1
 fi
 
@@ -14,6 +14,7 @@ image_root=$1
 expected_current_digest=$2
 expected_new_digest=$3
 trusted_public_key=$4
+next_trusted_public_key=${5:-$4}
 install_root=${CHARIOX_MANAGED_UPGRADE_ROOT:-}
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 service_name=chariox-managed-bootstrap.service
@@ -478,12 +479,17 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
 fi
 require_root_owned_private_regular_file "$trusted_public_key" "trusted release public key"
 require_root_owned_ancestor_chain "$trusted_public_key" "trusted release public key"
+require_root_owned_private_regular_file "$next_trusted_public_key" "next trusted release public key"
+require_root_owned_ancestor_chain "$next_trusted_public_key" "next trusted release public key"
 mkdir "$staging_root/image"
 (umask 000; cp -RP "$image_root/." "$staging_root/image/")
 cp "$trusted_public_key" "$staging_root/trusted-public-key"
+cp "$next_trusted_public_key" "$staging_root/next-trusted-public-key"
 image_root=$staging_root/image
 trusted_public_key=$staging_root/trusted-public-key
+next_trusted_public_key=$staging_root/next-trusted-public-key
 require_regular_file "$trusted_public_key"
+require_regular_file "$next_trusted_public_key"
 
 require_root_owned_directory "$chariox_root"
 require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade authority"
@@ -518,7 +524,7 @@ node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
 require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 node "$script_root/verify-image-release.mjs" \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
-node "$script_root/verify-image-release.mjs" "$image_root" "$expected_new_digest" "$trusted_public_key"
+node "$script_root/verify-image-release.mjs" "$image_root" "$expected_new_digest" "$next_trusted_public_key"
 
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
@@ -530,7 +536,7 @@ published_release=$releases_root/$release_name
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   require_directory "$published_release"
   require_root_owned_directory "$published_release"
-  node "$script_root/verify-image-release.mjs" "$published_release" "$expected_new_digest" "$trusted_public_key"
+  node "$script_root/verify-image-release.mjs" "$published_release" "$expected_new_digest" "$next_trusted_public_key"
 else
   pending_release=$(mktemp -d "$releases_root/.new-$release_name.XXXXXX")
   chmod 0755 "$pending_release"
@@ -547,7 +553,7 @@ else
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
-  node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_new_digest" "$trusted_public_key"
+  node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_new_digest" "$next_trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"

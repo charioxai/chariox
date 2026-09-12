@@ -430,6 +430,33 @@ test("managed kernel upgrade atomically advances the release and receipt without
   ])
 })
 
+test("managed kernel upgrade rotates the release trust key explicitly", async (context) => {
+  const harness = await makeHarness(context)
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519")
+  const targetManifest = await readFile(join(harness.target.rootfs, "usr/lib/chariox/release-manifest.json"))
+  await put(
+    join(harness.target.rootfs, "usr/lib/chariox/release-manifest.sig"),
+    sign(null, targetManifest, privateKey).toString("base64"),
+  )
+  const nextTrustedKey = join(harness.root, "next-trusted-release-public-key")
+  const nextRawKey = rawPublicKey(publicKey).toString("base64")
+  await put(join(harness.target.rootfs, "usr/lib/chariox/release-public-key"), nextRawKey)
+  await put(nextTrustedKey, nextRawKey, 0o600)
+
+  const result = harness.run({}, [
+    harness.target.rootfs,
+    harness.current.digest,
+    harness.target.digest,
+    harness.trustedKey,
+    nextTrustedKey,
+  ])
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+})
+
 test("managed kernel upgrade supersedes a managed-hotpatch slice context facade", async (context) => {
   const harness = await makeHarness(context)
   const { facade } = await installManagedHotpatchFacade(harness)
