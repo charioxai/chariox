@@ -328,13 +328,21 @@ async fn assert_remote_native_terminal_resize(
 
 #[test]
 fn remote_machine_agents_execute_prompts_through_the_home_session() {
-    run_async_with_large_test_stack(
-        "remote-agents-execute-prompts",
-        remote_machine_agents_execute_prompts_through_the_home_session_async,
-    );
+    run_async_with_large_test_stack("remote-agents-execute-prompts", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false)
+    });
 }
 
-async fn remote_machine_agents_execute_prompts_through_the_home_session_async() {
+#[test]
+fn remote_agent_message_steers_live_worker_without_a_user_queue() {
+    run_async_with_large_test_stack("remote-agent-direct-message", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(true)
+    });
+}
+
+async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
+    direct_message_only: bool,
+) {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -367,14 +375,24 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async() 
     };
 
     let mut config_home = DaemonConfig::for_tests();
-    config_home.daemon_id = "daemon-home".to_string();
+    config_home.daemon_id = if direct_message_only {
+        "daemon-home-direct-message"
+    } else {
+        "daemon-home"
+    }
+    .to_string();
     config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
     config_home.relay_heartbeat_ms = 50;
     let mut config_worker = DaemonConfig::for_tests();
-    config_worker.daemon_id = "daemon-worker".to_string();
+    config_worker.daemon_id = if direct_message_only {
+        "daemon-worker-direct-message"
+    } else {
+        "daemon-worker"
+    }
+    .to_string();
     config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
     config_worker.host_machine_alias = Some("builder-west".to_string());
@@ -641,6 +659,86 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async() 
         "the regression requires raw provider-run IDs to collide across kernels"
     );
     assert_ne!(projected_provider_run_id, local_provider_run_id);
+
+    if direct_message_only {
+        let sender_token = app_home
+            .lock()
+            .await
+            .providers()
+            .get_run(&local_provider_run_id)
+            .expect("home sender provider run should remain available")
+            .runtime_mcp_auth_token()
+            .expect("home sender should have runtime MCP auth")
+            .to_string();
+        let direct_message_args = serde_json::json!({
+            "agent": remote_agent_id,
+            "message": "REMOTE_AGENT_MESSAGE_DIRECT",
+            "idempotency_key": "remote-direct-message",
+        });
+        let direct_message = router
+            .runtime_state()
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                direct_message_args.clone(),
+            )
+            .await
+            .expect("agent message should steer to the leased worker");
+        assert!(direct_message.ok, "{:?}", direct_message.payload);
+        assert_eq!(direct_message.payload["status"], "steered");
+        assert_eq!(
+            app_home
+                .lock()
+                .await
+                .prompt_owner_queued_prompt_count_for_agent(&session_id, &remote_agent_id)
+                .expect("home prompt queue should load"),
+            0,
+            "remote agent messages must not become queued user prompts"
+        );
+        let repeated_message = router
+            .runtime_state()
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                direct_message_args,
+            )
+            .await
+            .expect("idempotent agent message retry should replay");
+        assert_eq!(
+            repeated_message.payload["prompt_id"],
+            direct_message.payload["prompt_id"]
+        );
+        let mut direct_delivery_count = 0;
+        for _ in 0..80 {
+            direct_delivery_count = app_worker
+                .lock()
+                .await
+                .terminal()
+                .input_records()
+                .iter()
+                .filter(|record| {
+                    String::from_utf8_lossy(&record.bytes).contains("REMOTE_AGENT_MESSAGE_DIRECT")
+                })
+                .count();
+            if direct_delivery_count > 0 {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            direct_delivery_count, 1,
+            "leased worker must receive one direct message"
+        );
+        let _ = shutdown_home_tx.send(true);
+        let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
+        connector_worker
+            .await
+            .expect("worker connector should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+        return;
+    }
 
     {
         let mut app = app_worker.lock().await;

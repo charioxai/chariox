@@ -45,7 +45,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible, human-readable prompt to another existing agent in the current Chariox session. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. The prompt starts immediately when the target is idle and enters its normal queue when it is busy. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. The message starts a turn when the target is idle or steers its active turn when the provider is running. If the provider is not ready, retry after it starts; agent messages do not enter the user prompt queue. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message"],
@@ -56,7 +56,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "message": {
                         "type": "string",
-                        "description": "Natural-language text that should become the target agent's next visible prompt. Do not wrap it in a JSON envelope."
+                        "description": "Natural-language text to send to the target agent. Do not wrap it in a JSON envelope."
                     },
                     "attachments": {
                         "type": "array",
