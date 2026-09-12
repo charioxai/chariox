@@ -161,22 +161,6 @@ async fn start_terminal_provider_auth(
         verification_url: None,
         user_code: None,
     };
-    runtime_state.provider_login_process_store().insert(
-        crate::runtime::state::ProviderLoginProcessRecord {
-            owner_user_id: owner_user_id.to_string(),
-            provider: provider.to_string(),
-            account_profile: profile.profile_id.clone(),
-            credential_scope,
-            login_id: login_id.clone(),
-            start: workflow.clone(),
-            state: ProviderLoginProcessState::Running,
-            backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
-            operation,
-            output: Vec::new(),
-            started_at_ms: now_ms,
-            updated_at_ms: now_ms,
-        },
-    )?;
     let auth_label = match operation {
         crate::runtime::state::ProviderAuthProcessOperation::Login => {
             format!("{provider}:auth-login")
@@ -203,6 +187,22 @@ async fn start_terminal_provider_auth(
     let program = launch
         .pty_program
         .ok_or_else(|| provider_login_error("provider login launch has no executable"))?;
+    runtime_state.provider_login_process_store().insert(
+        crate::runtime::state::ProviderLoginProcessRecord {
+            owner_user_id: owner_user_id.to_string(),
+            provider: provider.to_string(),
+            account_profile: profile.profile_id.clone(),
+            credential_scope,
+            login_id: login_id.clone(),
+            start: workflow.clone(),
+            state: ProviderLoginProcessState::Running,
+            backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
+            operation,
+            output: Vec::new(),
+            started_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        },
+    )?;
     let spawn = runtime_state
         .with_app_side_effect(|app| {
             app.pty_mut().spawn(PtySpawnRequest {
