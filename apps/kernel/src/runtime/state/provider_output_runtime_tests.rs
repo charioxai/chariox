@@ -150,6 +150,7 @@ mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
+mod leased_claude_cold_launch;
 mod leased_output;
 mod prompt_cancellation;
 mod publication_settlement;

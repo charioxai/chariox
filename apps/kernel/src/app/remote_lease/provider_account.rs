@@ -354,11 +354,14 @@ exit 2
             .unwrap();
         assert!(std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]).is_dir());
 
+        // A profile that was never installed on the worker still fails closed:
+        // a fresh Claude payload carrying non-refreshable credentials is rejected
+        // before provisioning and the secret never leaks into the diagnostic.
         let claude_with_refresh_credential = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
-                profile_id: "work".to_string(),
+                profile_id: "claude-invalid".to_string(),
                 label: "Work".to_string(),
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
                 is_default: false,
@@ -610,6 +613,124 @@ exit 2
                 "{message}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_owned_claude_profile_survives_later_home_materializations() {
+        use base64::Engine as _;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-claude-worker-owned-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_claude_auth_fixture(&root);
+        let (mut app, context) = remote_account_fixture(&root);
+        let materialization =
+            |contents_base64: Option<&str>| ProviderAccountMaterialization {
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    owner_user_id: "owner-a".to_string(),
+                    provider: "claude".to_string(),
+                    profile_id: "claude-work".to_string(),
+                    label: "Claude Work".to_string(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+                    is_default: false,
+                },
+                files: contents_base64
+                    .map(|contents_base64| {
+                        vec![crate::account_profile::ProviderAccountMaterializationFile {
+                            relative_path: ".credentials.json".to_string(),
+                            contents_base64: contents_base64.to_string(),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                generated_at_ms: 1,
+            };
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+
+        let initial = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context.clone(),
+                materialization(Some(&encode(
+                    br#"{"claudeAiOauth":{"refreshToken":"original-refresh"}}"#,
+                ))),
+            )
+            .expect("portable Claude credentials must install the worker profile");
+        assert_eq!(
+            initial.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
+        let environment = app
+            .provider_account_profile_registry()
+            .resolve_environment("owner-a", "claude", "claude-work")
+            .unwrap();
+        let claude_config_dir = std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]);
+        let credentials_path = claude_config_dir.join(".credentials.json");
+        let original_credentials = std::fs::read(&credentials_path).unwrap();
+        let original_mode = std::fs::metadata(&credentials_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            original_credentials,
+            br#"{"claudeAiOauth":{"refreshToken":"original-refresh"}}"#
+        );
+        assert_eq!(original_mode, 0o600);
+
+        let settings_path = claude_config_dir.join("settings.json");
+        let provider_state_path = claude_config_dir.join("provider-owned-state.json");
+        std::fs::write(&settings_path, br#"{"source":"worker"}"#).unwrap();
+        std::fs::write(&provider_state_path, b"worker-state").unwrap();
+
+        for (label, later) in [
+            ("missing", materialization(None)),
+            (
+                "nonportable",
+                materialization(Some(&encode(
+                    br#"{"claudeAiOauth":{"accessToken":"expired"}}"#,
+                ))),
+            ),
+            (
+                "replacement-portable",
+                materialization(Some(&encode(
+                    br#"{"claudeAiOauth":{"refreshToken":"replacement-refresh"}}"#,
+                ))),
+            ),
+        ] {
+            RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), later)
+                .unwrap_or_else(|error| {
+                    panic!("{label} ensure must keep the worker-owned account: {error}")
+                });
+            assert_eq!(
+                std::fs::read(&credentials_path).unwrap(),
+                original_credentials,
+                "{label} ensure must not overwrite the worker's original credentials"
+            );
+            assert_eq!(
+                std::fs::metadata(&credentials_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "{label} ensure must preserve the worker credential file mode"
+            );
+            assert_eq!(
+                std::fs::read(&settings_path).unwrap(),
+                br#"{"source":"worker"}"#
+            );
+            assert_eq!(
+                std::fs::read(&provider_state_path).unwrap(),
+                b"worker-state"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
