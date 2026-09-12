@@ -292,9 +292,6 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let _ = self
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let session = self.session_store.get_session(session_id)?;
         let completed = self
             .prompt_state_owner
@@ -374,6 +371,9 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        let _ = self
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(crate::session::PromptCompletion {
             completed,
@@ -681,6 +681,61 @@ mod tests {
         assert!(projected
             .queued_prompts_for_agent(&agent_id)
             .is_some_and(|queue| queue.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn failed_remote_completion_keeps_the_worker_run_binding() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-settlement-order",
+                "worktree-settlement-order",
+            ))
+            .expect("session should be created");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-2".to_string(),
+                    worker_machine_id: "worker-machine-2".to_string(),
+                    execution_lease_id: "lease-2".to_string(),
+                    leased_agent_id: "leased-agent-2".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-2".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        runtime
+            .owned
+            .session_store
+            .delete_session(&session_id)
+            .expect("test should remove the session before settlement");
+
+        runtime
+            .owned
+            .complete_remote_prompt_owner(&session_id, &agent_id, "provider-run-2", None)
+            .expect_err("completion without its session must fail");
+
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
+            Some("provider-run-2"),
+            "a failed settlement must not clear the last drainable worker run",
+        );
     }
 
     #[tokio::test]
