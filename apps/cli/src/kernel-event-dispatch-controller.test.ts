@@ -298,6 +298,46 @@ test("kernel event dispatch backfills durable history from a completed activity 
   ])
 })
 
+test("kernel event dispatch retries failed history backfills and deduplicates successful ones", async () => {
+  const refreshAttempts: string[] = []
+  const harness = createHarness({
+    refreshAssistantMessageHistory: async (agentId) => {
+      refreshAttempts.push(agentId)
+      return refreshAttempts.length > 1
+    },
+  })
+  const dispatchCompletedTurn = (agentActivityRevision: number) => (
+    harness.controller.handleKernelEvent({
+      event: "agent_activity_changed",
+      session_id: "session-1",
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          last_completed_turn: {
+            turn_id: "turn-1",
+            prompt_id: "prompt-1",
+            provider_run_id: "run-1",
+            agent_id: "agent-1",
+            completed_at_ms: 1,
+            settlement_status: "completed",
+            changed_paths: [],
+            undo_available: false,
+          },
+        },
+      },
+      agent_activity_revision: agentActivityRevision,
+    })
+  )
+
+  await dispatchCompletedTurn(10)
+  await dispatchCompletedTurn(11)
+  await dispatchCompletedTurn(12)
+
+  assert.deepEqual(refreshAttempts, ["agent-1", "agent-1"])
+})
+
 test("kernel event dispatch applies provider run deltas without resyncing", async () => {
   const harness = createHarness()
 
@@ -476,7 +516,9 @@ test("kernel event dispatch reconciles durable history after assistant completio
   ])
 })
 
-function createHarness() {
+function createHarness(options: {
+  refreshAssistantMessageHistory?: (agentId: string) => Promise<boolean>
+} = {}) {
   const calls: string[] = []
   const snapshots: Array<{
     session: RuntimeSession
@@ -500,9 +542,10 @@ function createHarness() {
     applyAssistantMessageCompleted: (event) => {
       calls.push(`assistant-completed:${event.agent_id ?? "null"}`)
     },
-    refreshAssistantMessageHistory: (agentId: string) => {
+    refreshAssistantMessageHistory: options.refreshAssistantMessageHistory ?? (async (agentId: string) => {
       calls.push(`refresh-assistant-history:${agentId}`)
-    },
+      return true
+    }),
     applyKernelSessionSnapshot: (nextSession, nextProviderRun) => {
       snapshots.push({ session: nextSession, providerRun: nextProviderRun })
       calls.push(`apply-session-snapshot:${nextSession.id}:${nextProviderRun?.id ?? "null"}`)
