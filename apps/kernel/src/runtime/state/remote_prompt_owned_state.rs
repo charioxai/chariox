@@ -292,9 +292,6 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let _ = self
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let session = self.session_store.get_session(session_id)?;
         let completed = self
             .prompt_state_owner
@@ -374,6 +371,9 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        let _ = self
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(crate::session::PromptCompletion {
             completed,

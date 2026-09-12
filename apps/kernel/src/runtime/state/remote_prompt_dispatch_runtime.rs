@@ -20,6 +20,13 @@ struct RemotePromptAgentClaim {
     released: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RemotePromptRunBindingRecovery {
+    Recovered,
+    PendingCompletion,
+    Rejected,
+}
+
 impl RemotePromptAgentClaim {
     fn try_acquire(
         claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
@@ -242,8 +249,86 @@ impl KernelRuntimeState {
             .ok()?
             .remote_execution()
             .cloned()?;
-        let provider_run_id = remote_execution.active_worker_provider_run_id.clone()?;
+        let provider_run_id = remote_execution
+            .active_worker_provider_run_id
+            .clone()
+            .or_else(|| {
+                (active_prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Delivered))
+                .then(|| {
+                    active_prompt
+                        .durable_delivery_provider_run_id()
+                        .filter(|provider_run_id| !provider_run_id.trim().is_empty())
+                        .map(str::to_string)
+                })
+                .flatten()
+            })?;
         Some((remote_execution, provider_run_id))
+    }
+
+    fn recover_remote_prompt_run_binding_from_projection(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_binding: &crate::agent::RemoteAgentBinding,
+        provider_run_id: &str,
+        event: &crate::transport::relay_peer::RelayPeerEvent,
+    ) -> Result<RemotePromptRunBindingRecovery, DaemonError> {
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id,
+            home_agent_id,
+            provider_run_id: projected_provider_run_id,
+            completions,
+            ..
+        } = event;
+        if home_session_id != session_id
+            || home_agent_id != agent_id
+            || projected_provider_run_id != provider_run_id
+        {
+            return Ok(RemotePromptRunBindingRecovery::Rejected);
+        }
+        if completions.is_empty() {
+            return Ok(RemotePromptRunBindingRecovery::PendingCompletion);
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(RemotePromptRunBindingRecovery::Rejected);
+        };
+        if active_prompt.durable_delivery_phase()
+            != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            || active_prompt.durable_delivery_provider_run_id() != Some(provider_run_id)
+            || !completions
+                .iter()
+                .any(|completion| completion.home_prompt_id.as_deref() == Some(active_prompt.id()))
+        {
+            return Ok(RemotePromptRunBindingRecovery::Rejected);
+        }
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let Some(current_binding) = agent.remote_execution() else {
+            return Ok(RemotePromptRunBindingRecovery::Rejected);
+        };
+        if !same_remote_prompt_worker_binding(current_binding, expected_binding) {
+            return Ok(RemotePromptRunBindingRecovery::Rejected);
+        }
+        match current_binding.active_worker_provider_run_id.as_deref() {
+            Some(current_provider_run_id) if current_provider_run_id == provider_run_id => {
+                return Ok(RemotePromptRunBindingRecovery::Recovered);
+            }
+            Some(_) => return Ok(RemotePromptRunBindingRecovery::Rejected),
+            None => {}
+        }
+        self.owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                agent_id,
+                Some(provider_run_id.to_string()),
+            )?;
+        let _ = self.owned.session_snapshot(session_id)?;
+        Ok(RemotePromptRunBindingRecovery::Recovered)
     }
 
     pub(super) async fn drain_active_remote_prompt_projections_for_session(
@@ -272,6 +357,7 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
+        let recover_missing_run_binding = remote_execution.active_worker_provider_run_id.is_none();
         let relay_config = self
             .with_app_side_effect(|app| app.relay_config_for_remote_execution(&remote_execution))
             .await;
@@ -307,7 +393,12 @@ impl KernelRuntimeState {
         };
         let response = match response {
             Ok(response) => response,
-            Err(error) if remote_prompt_error_should_refresh_binding(&error) => {
+            Err(error)
+                if remote_prompt_projection_error_should_refresh_binding(
+                    recover_missing_run_binding,
+                    &error,
+                ) =>
+            {
                 self.spawn_stale_remote_prompt_recovery(
                     session_id.to_string(),
                     agent_id.to_string(),
@@ -322,6 +413,19 @@ impl KernelRuntimeState {
         match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
                 if let Some(event) = event {
+                    if recover_missing_run_binding {
+                        match self.recover_remote_prompt_run_binding_from_projection(
+                            session_id,
+                            agent_id,
+                            &remote_execution,
+                            &provider_run_id,
+                            &event,
+                        )? {
+                            RemotePromptRunBindingRecovery::Recovered => {}
+                            RemotePromptRunBindingRecovery::PendingCompletion => return Ok(true),
+                            RemotePromptRunBindingRecovery::Rejected => return Ok(false),
+                        }
+                    }
                     self.project_remote_runtime_projection_event(event).await?;
                 }
                 Ok(true)
@@ -998,6 +1102,26 @@ impl KernelRuntimeState {
     }
 }
 
+fn same_remote_prompt_worker_binding(
+    current: &crate::agent::RemoteAgentBinding,
+    expected: &crate::agent::RemoteAgentBinding,
+) -> bool {
+    current.worker_kernel_id == expected.worker_kernel_id
+        && current.worker_machine_id == expected.worker_machine_id
+        && current.execution_lease_id == expected.execution_lease_id
+        && current.leased_agent_id == expected.leased_agent_id
+        && current.relay_url == expected.relay_url
+        && current.relay_token == expected.relay_token
+        && current.relay_peer_protocol_version == expected.relay_peer_protocol_version
+}
+
+fn remote_prompt_projection_error_should_refresh_binding(
+    recovering_missing_run_binding: bool,
+    error: &DaemonError,
+) -> bool {
+    !recovering_missing_run_binding && remote_prompt_error_should_refresh_binding(error)
+}
+
 fn remote_prompt_recovery_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1_u64 << attempt.saturating_sub(1).min(3);
     std::time::Duration::from_millis(500_u64.saturating_mul(multiplier))
@@ -1008,6 +1132,29 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    fn completed_worker_projection(
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        home_prompt_id: &str,
+    ) -> crate::transport::relay_peer::RelayPeerEvent {
+        crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: session_id.to_string(),
+            home_agent_id: agent_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            provider_run: None,
+            prompts: Vec::new(),
+            output_chunks: Vec::new(),
+            notices: Vec::new(),
+            completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "assistant-completed".to_string(),
+                completed_at_ms: crate::session::unix_epoch_ms(),
+                home_prompt_id: Some(home_prompt_id.to_string()),
+                provider_termination: None,
+            }],
+        }
+    }
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
@@ -1331,6 +1478,117 @@ mod tests {
         assert_eq!(binding.execution_lease_id, "lease-2");
         assert_eq!(binding.leased_agent_id, "leased-agent-2");
         assert_eq!(provider_run_id, "provider-run-2");
+
+        let matching_projection =
+            completed_worker_projection(session.id(), agent.id(), "provider-run-2", &prompt_id);
+        assert_eq!(
+            runtime
+                .recover_remote_prompt_run_binding_from_projection(
+                    session.id(),
+                    agent.id(),
+                    &binding,
+                    "provider-run-2",
+                    &matching_projection,
+                )
+                .expect("matching worker completion should recover the binding"),
+            RemotePromptRunBindingRecovery::Recovered,
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(agent.id())
+                .expect("agent should remain available")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
+            Some("provider-run-2"),
+        );
+
+        runtime
+            .owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(agent.id(), None)
+            .expect("test should clear the recovered pointer");
+        let mismatched_prompt = completed_worker_projection(
+            session.id(),
+            agent.id(),
+            "provider-run-2",
+            "other-home-prompt",
+        );
+        assert_eq!(
+            runtime
+                .recover_remote_prompt_run_binding_from_projection(
+                    session.id(),
+                    agent.id(),
+                    &binding,
+                    "provider-run-2",
+                    &mismatched_prompt,
+                )
+                .expect("mismatched prompt projection should be rejected safely"),
+            RemotePromptRunBindingRecovery::Rejected,
+        );
+        let stale_run =
+            completed_worker_projection(session.id(), agent.id(), "provider-run-stale", &prompt_id);
+        assert_eq!(
+            runtime
+                .recover_remote_prompt_run_binding_from_projection(
+                    session.id(),
+                    agent.id(),
+                    &binding,
+                    "provider-run-2",
+                    &stale_run,
+                )
+                .expect("stale run projection should be rejected safely"),
+            RemotePromptRunBindingRecovery::Rejected,
+        );
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    execution_lease_id: "lease-other".to_string(),
+                    leased_agent_id: "leased-agent-other".to_string(),
+                    ..binding.clone()
+                },
+            )
+            .expect("test should replace the current lease binding");
+        assert_eq!(
+            runtime
+                .recover_remote_prompt_run_binding_from_projection(
+                    session.id(),
+                    agent.id(),
+                    &binding,
+                    "provider-run-2",
+                    &matching_projection,
+                )
+                .expect("other lease projection should be rejected safely"),
+            RemotePromptRunBindingRecovery::Rejected,
+        );
+        assert!(runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+            .is_none());
+    }
+
+    #[test]
+    fn live_run_binding_recovery_never_refreshes_the_lease() {
+        let missing_lease = DaemonError::ExecutionLeaseNotFound {
+            lease_id: "lease-2".to_string(),
+        };
+
+        assert!(!remote_prompt_projection_error_should_refresh_binding(
+            true,
+            &missing_lease,
+        ));
+        assert!(remote_prompt_projection_error_should_refresh_binding(
+            false,
+            &missing_lease,
+        ));
     }
 
     #[tokio::test]
