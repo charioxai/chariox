@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use base64::Engine;
-use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity};
+use chariox_relay::protocol::{
+    canonical_peer_daemon_id, EncryptedRelayPayload, RelayCallerIdentity,
+};
 use tokio::sync::RwLock;
 
 use crate::runtime::router::CommandRouter;
@@ -1572,23 +1574,6 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
 }
 
-fn canonical_peer_daemon_id(from_daemon_id: &str) -> Option<&str> {
-    const PEER_TMP: &str = ":peer-tmp:daemon-peer-tmp-";
-    let (daemon_id, suffix) = match from_daemon_id.split_once(PEER_TMP) {
-        Some((daemon_id, suffix)) => (daemon_id, Some(suffix)),
-        None => (from_daemon_id, None),
-    };
-    if daemon_id.trim().is_empty()
-        || daemon_id.contains(":peer-tmp:")
-        || suffix.is_some_and(|suffix| {
-            suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit())
-        })
-    {
-        return None;
-    }
-    Some(daemon_id)
-}
-
 fn authenticated_lease_worker_caller(
     router: &CommandRouter,
     from_daemon_id: &str,
@@ -1795,15 +1780,17 @@ mod tests {
         ));
         assert_eq!(canonical_peer_daemon_id("home-kernel"), Some("home-kernel"));
         assert_eq!(
-            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-17"),
+            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7"),
             Some("home-kernel")
         );
         assert_eq!(
-            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-17:forged"),
+            canonical_peer_daemon_id(
+                "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7-forged"
+            ),
             None
         );
         assert_eq!(
-            canonical_peer_daemon_id(":peer-tmp:daemon-peer-tmp-17"),
+            canonical_peer_daemon_id(":peer-tmp:daemon-peer-tmp-4242-1767225600123-7"),
             None
         );
     }
@@ -2007,7 +1994,7 @@ mod tests {
             &router,
             &state,
             &outgoing_tx,
-            "forged-home:peer-tmp:daemon-peer-tmp-7",
+            "forged-home:peer-tmp:daemon-peer-tmp-4243-1767225600123-8",
             identity.clone(),
             &source_private_key,
             &target_public_key,
@@ -2030,7 +2017,7 @@ mod tests {
             &router,
             &state,
             &outgoing_tx,
-            "source-kernel-1:peer-tmp:daemon-peer-tmp-1",
+            "source-kernel-1:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
             identity.clone(),
             &source_private_key,
             &target_public_key,

@@ -95,7 +95,7 @@ async fn hosted_kernel_production_temporary_peer_uses_registered_machine_binding
         ),
         (
             &mut alias_home,
-            "forged-home:peer-tmp:daemon-peer-tmp-2",
+            "forged-home:peer-tmp:daemon-peer-tmp-4243-1767225600123-8",
             Some("home-alias"),
             "machine-forged",
             "alias-public-key",

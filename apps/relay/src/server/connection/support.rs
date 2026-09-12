@@ -12,8 +12,8 @@ use crate::auth::{
     VerifiedRelayIdentity,
 };
 use crate::protocol::{
-    ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayCallerIdentity,
-    RelayConnectionRole, RelayEnvelope, RelayError,
+    canonical_peer_daemon_id, ClientTarget, DaemonRegistration, EncryptedRelayPayload,
+    RelayCallerIdentity, RelayConnectionRole, RelayEnvelope, RelayError,
 };
 use crate::registry::{
     ActiveEventRoute, DaemonKey, PendingClientRequest, PendingDaemonPeerRequest,
@@ -931,17 +931,7 @@ fn registration_daemon_is_exact_kernel_or_temporary_peer(
     registered_daemon_id: &str,
     kernel_subject: &str,
 ) -> bool {
-    if registered_daemon_id == kernel_subject {
-        return true;
-    }
-    let Some(suffix) = registered_daemon_id.strip_prefix(kernel_subject) else {
-        return false;
-    };
-    suffix
-        .strip_prefix(":peer-tmp:daemon-peer-tmp-")
-        .is_some_and(|sequence| {
-            !sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    canonical_peer_daemon_id(registered_daemon_id) == Some(kernel_subject)
 }
 
 pub(super) async fn peer_allows_action(
