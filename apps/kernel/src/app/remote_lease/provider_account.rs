@@ -430,6 +430,71 @@ exit 2
 
     #[cfg(unix)]
     #[test]
+    fn failed_default_materialization_restores_the_exact_previous_default() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-opencode-default-rollback-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_opencode_auth_fixture(&root);
+        let (mut app, context) = remote_account_fixture(&root);
+        let registry = app.provider_account_profile_registry();
+        let profile_a = registry
+            .create_managed("owner-a", "opencode", "A")
+            .expect("create A");
+        let profile_b = registry
+            .create_managed("owner-a", "opencode", "B")
+            .expect("create B");
+        registry
+            .set_default("owner-a", "opencode", &profile_b.profile_id)
+            .expect("select B");
+        let failed_c = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "opencode".to_string(),
+                profile_id: "failed-c".to_string(),
+                label: "C".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+                is_default: true,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".to_string(),
+                contents_base64: "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiIn19".to_string(),
+            }],
+            generated_at_ms: 1,
+        };
+
+        RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, failed_c)
+            .expect_err("invalid default C must fail closed");
+
+        let profiles = app
+            .provider_account_profile_registry()
+            .list("owner-a", Some("opencode"))
+            .expect("list profiles after rollback");
+        assert!(
+            !profiles
+                .iter()
+                .find(|profile| profile.profile_id == profile_a.profile_id)
+                .expect("A survives")
+                .is_default
+        );
+        assert!(
+            profiles
+                .iter()
+                .find(|profile| profile.profile_id == profile_b.profile_id)
+                .expect("B survives")
+                .is_default
+        );
+        assert!(profiles
+            .iter()
+            .all(|profile| profile.profile_id != "failed-c"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn opencode_materialization_requires_native_authentication_before_acknowledgement() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(

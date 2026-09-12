@@ -3787,6 +3787,136 @@ mod tests {
         (root, registry)
     }
 
+    fn codex_replica_materialization(
+        profile_id: &str,
+        is_default: bool,
+    ) -> ProviderAccountMaterialization {
+        ProviderAccountMaterialization {
+            profile: ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "codex".to_string(),
+                profile_id: profile_id.to_string(),
+                label: profile_id.to_string(),
+                origin: ProviderAccountProfileOrigin::CharioxCreated,
+                is_default,
+            },
+            files: vec![ProviderAccountMaterializationFile {
+                relative_path: "auth.json".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD
+                    .encode(br#"{"token":"fixture"}"#),
+            }],
+            generated_at_ms: 1,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replica_rollback_rejects_a_symlink_swapped_managed_root() {
+        use std::os::unix::fs::symlink;
+
+        let (root, registry) = fixture();
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("sibling", false))
+            .expect("materialize sibling replica");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+        let provider_root = root.join("provider-accounts/owner-a/codex");
+        let sibling_root = provider_root.join("sibling");
+        let failed_root = provider_root.join("failed");
+        let sibling_credential = sibling_root.join("codex/auth.json");
+        fs::remove_dir_all(&failed_root).expect("swap out failed replica root");
+        symlink(&sibling_root, &failed_root).expect("install swapped root symlink");
+
+        let error = registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("rollback must reject a symlink-swapped root");
+
+        assert!(error.to_string().contains("roll back"), "{error}");
+        assert!(fs::symlink_metadata(&failed_root)
+            .expect("swapped symlink should survive")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(&sibling_credential).expect("sibling credential should survive"),
+            r#"{"token":"fixture"}"#
+        );
+        registry
+            .get("owner-a", "codex", "failed")
+            .expect("failed replica registration should remain recoverable");
+
+        fs::remove_file(&failed_root).expect("remove test symlink");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replica_rollback_registry_failure_restores_registry_and_root_for_reopen() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+        let managed_root = root.join("provider-accounts/owner-a/codex/failed");
+        let credential = managed_root.join("codex/auth.json");
+
+        FAIL_ACCOUNT_PROFILE_REGISTRY_PARENT_SYNC_ONCE.with(|fail| fail.set(true));
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("injected registry persistence failure must fail rollback");
+        assert!(credential.is_file(), "replica root must be restored");
+        registry
+            .get("owner-a", "codex", "failed")
+            .expect("in-memory registration must be restored");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reopen registry after rollback failure");
+        reopened
+            .get("owner-a", "codex", "failed")
+            .expect("durable registration must be restored");
+        assert!(credential.is_file(), "durable replica root must survive");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replica_rollback_rejects_an_authenticated_worker_owned_profile() {
+        let (root, registry) = fixture();
+        registry
+            .materialize_replica(
+                "owner-a",
+                &codex_replica_materialization("worker-owned", false),
+            )
+            .expect("materialize worker replica");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "worker-owned",
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("authenticate worker profile");
+
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "worker-owned")
+            .expect_err("authenticated worker-owned replica must not be rolled back");
+        registry
+            .require_authenticated(
+                "owner-a",
+                "codex",
+                "worker-owned",
+                None,
+                "test worker profile",
+            )
+            .expect("authenticated worker-owned replica must survive");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn usage_meter(observed_at_ms: u64) -> ProviderAccountUsageMeter {
         ProviderAccountUsageMeter {
             meter_id: "rate_limit/five_hour".to_string(),
