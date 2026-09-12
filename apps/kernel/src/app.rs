@@ -134,7 +134,7 @@ pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
     LeaseCallerBinding, LeasedAgentCleanupPhase, PreparedLeasedProviderRun, RemoteLeaseRuntime,
-    RemoteProviderFailure,
+    RemoteProviderFailure, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
