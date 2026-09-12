@@ -480,6 +480,9 @@ async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let lane = router.provider_runtime_lanes.acquire(target_run.id()).await;
+    let acquire_probe = router
+        .provider_runtime_lanes
+        .notify_on_next_acquire_for_tests(target_run.id());
     let args = serde_json::json!({
         "agent": target_id,
         "message": "MESSAGE_RETRY_PROOF",
@@ -496,27 +499,9 @@ async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let prepared = router
-                .operational_history_store
-                .load_session_events(&session_id, Some(&target_id))
-                .expect("recipient history should remain readable")
-                .iter()
-                .any(|event| {
-                    event
-                        .content
-                        .as_deref()
-                        .is_some_and(|content| content.contains("MESSAGE_RETRY_PROOF"))
-                });
-            if prepared {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("sender should prepare the steer before the turn settles");
+    tokio::time::timeout(Duration::from_secs(5), acquire_probe.notified())
+        .await
+        .expect("sender should reach the provider lane before the turn settles");
     assert!(
         !first_send.is_finished(),
         "sender must not receive success before provider delivery"
@@ -540,6 +525,37 @@ async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_
     assert!(
         first_result.is_err(),
         "superseded delivery must fail: {first_result:?}"
+    );
+    let failed_message_events = router
+        .operational_history_store
+        .load_session_events(&session_id, Some(&target_id))
+        .expect("recipient history should remain readable")
+        .into_iter()
+        .filter(|event| {
+            event.kind == crate::history::HistoryEventKind::UserPrompt
+                && event
+                    .content
+                    .as_deref()
+                    .is_some_and(|content| content.contains("MESSAGE_RETRY_PROOF"))
+        })
+        .count();
+    assert_eq!(
+        failed_message_events, 0,
+        "undelivered agent messages must not appear as user prompts"
+    );
+    assert_eq!(
+        app.lock()
+            .await
+            .terminal()
+            .output_records()
+            .iter()
+            .filter(|record| {
+                record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                    && String::from_utf8_lossy(&record.bytes).contains("MESSAGE_RETRY_PROOF")
+            })
+            .count(),
+        0,
+        "undelivered agent messages must not be echoed to terminals"
     );
 
     let second_active = crate::session::PromptQueueItem::new(
@@ -576,6 +592,37 @@ async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_
         .expect("same idempotency key should retry after failure");
     assert!(retried.ok, "{:?}", retried.payload);
     assert_eq!(retried.payload["status"], "steered");
+    let delivered_message_events = router
+        .operational_history_store
+        .load_session_events(&session_id, Some(&target_id))
+        .expect("recipient history should remain readable")
+        .into_iter()
+        .filter(|event| {
+            event.kind == crate::history::HistoryEventKind::UserPrompt
+                && event
+                    .content
+                    .as_deref()
+                    .is_some_and(|content| content.contains("MESSAGE_RETRY_PROOF"))
+        })
+        .count();
+    assert_eq!(
+        delivered_message_events, 1,
+        "only the delivered retry should appear as a prompt"
+    );
+    assert_eq!(
+        app.lock()
+            .await
+            .terminal()
+            .output_records()
+            .iter()
+            .filter(|record| {
+                record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                    && String::from_utf8_lossy(&record.bytes).contains("MESSAGE_RETRY_PROOF")
+            })
+            .count(),
+        1,
+        "only the delivered retry should be echoed to terminals"
+    );
     assert_eq!(
         app.lock()
             .await

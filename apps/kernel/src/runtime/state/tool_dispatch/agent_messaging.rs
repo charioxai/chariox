@@ -178,6 +178,44 @@ impl KernelRuntimeState {
                 .acquire(&dispatch.provider_run_id)
                 .await;
             self.enqueue_prompt_dispatch(&dispatch).await?;
+            if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
+                if let Err(error) = self.owned.append_steering_prompt_history(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    active_prompt_id,
+                    &dispatch.source_attachment_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.prompt,
+                    &dispatch.attachments,
+                ) {
+                    tracing::warn!(
+                        session_id = %dispatch.session_id,
+                        prompt_id = %dispatch.prompt_id,
+                        error = %error,
+                        "delivered agent message could not be recorded in prompt history"
+                    );
+                    self.owned.record_notice(
+                        &dispatch.session_id,
+                        Some(&dispatch.provider_run_id),
+                        self.owned
+                            .attachment_store
+                            .list_session_attachment_ids(&dispatch.session_id),
+                        "Agent message reached the provider, but its prompt history could not be recorded.",
+                    );
+                }
+            }
+            self.owned.echo_steering_prompt_to_other_attachments(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                &dispatch.source_attachment_id,
+                &dispatch.source_attachment_id,
+                &dispatch.prompt,
+                &dispatch.attachments,
+                dispatch.prompt_origin,
+            );
             let result = crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({
@@ -323,27 +361,6 @@ impl KernelRuntimeState {
                 operation: "steer agent message",
             });
         }
-        self.owned.append_steering_prompt_history(
-            session_id,
-            provider_run.id(),
-            active_prompt.id(),
-            prompt.source_attachment_id(),
-            agent_id,
-            prompt.id(),
-            prompt.prompt(),
-            prompt.attachments(),
-        )?;
-        self.owned.echo_steering_prompt_to_other_attachments(
-            session_id,
-            provider_run.id(),
-            agent_id,
-            prompt.id(),
-            prompt.source_attachment_id(),
-            prompt.source_attachment_id(),
-            prompt.prompt(),
-            prompt.attachments(),
-            prompt.prompt_origin(),
-        );
         Ok(Some(crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
             provider_run_id: provider_run.id().to_string(),
