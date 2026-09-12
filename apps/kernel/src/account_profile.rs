@@ -4170,6 +4170,42 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn replica_rollback_rejects_a_real_directory_swapped_managed_root_after_reopen() {
+        let (root, registry) = fixture();
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("sibling", false))
+            .expect("materialize sibling replica");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+        let registry_path = root.join("accounts.json");
+        let provider_root = root.join("provider-accounts/owner-a/codex");
+        let failed_root = provider_root.join("failed");
+        let sibling_root = provider_root.join("sibling");
+        fs::write(failed_root.join("marker"), b"failed").unwrap();
+        fs::write(sibling_root.join("marker"), b"sibling").unwrap();
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reopen registry before directory swap");
+        let spare_root = provider_root.join("spare");
+        fs::rename(&failed_root, &spare_root).unwrap();
+        fs::rename(&sibling_root, &failed_root).unwrap();
+        fs::rename(&spare_root, &sibling_root).unwrap();
+
+        reopened
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect_err("rollback must not delete a swapped sibling directory");
+        assert_eq!(fs::read(failed_root.join("marker")).unwrap(), b"sibling");
+        assert_eq!(fs::read(sibling_root.join("marker")).unwrap(), b"failed");
+        reopened
+            .get("owner-a", "codex", "failed")
+            .expect("failed replica registration must remain");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn replica_rollback_rejects_a_symlink_swapped_managed_ancestor() {
         use std::os::unix::fs::symlink;
 
@@ -6707,6 +6743,10 @@ mod tests {
         let profile = registry
             .create_managed("owner-a", "opencode", "Work")
             .unwrap();
+        let managed_root = root
+            .join("provider-accounts/owner-a/opencode")
+            .join(&profile.profile_id);
+        assert!(managed_root.is_dir());
         assert!(registry
             .delete_managed_profile_data(
                 "owner-a",
@@ -6727,6 +6767,29 @@ mod tests {
             .list("owner-a", Some("opencode"))
             .unwrap()
             .is_empty());
+        assert!(!managed_root.exists(), "managed profile root must be deleted");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_managed_codex_profile_removes_its_root() {
+        let (root, registry) = fixture();
+        let profile = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        let managed_root = root
+            .join("provider-accounts/owner-a/codex")
+            .join(&profile.profile_id);
+        assert!(managed_root.is_dir());
+
+        registry
+            .delete_managed_profile_data(
+                "owner-a",
+                "codex",
+                &profile.profile_id,
+                &profile.profile_id,
+            )
+            .expect("delete the exact managed Codex profile");
+        assert!(!managed_root.exists(), "managed profile root must be deleted");
+        assert!(registry.get("owner-a", "codex", &profile.profile_id).is_err());
         let _ = fs::remove_dir_all(root);
     }
 
