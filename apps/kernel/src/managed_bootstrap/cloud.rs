@@ -210,10 +210,11 @@ impl HttpBootstrapCloudClient {
         path: &str,
         request: &impl Serialize,
     ) -> Result<T, DaemonError> {
-        self.post(api_url, path, request).map_err(|error| match error {
-            PostError::Rejected => cloud_error("Cloud bootstrap request was rejected"),
-            PostError::Failure(error) => error,
-        })
+        self.post(api_url, path, request)
+            .map_err(|error| match error {
+                PostError::Rejected => cloud_error("Cloud bootstrap request was rejected"),
+                PostError::Failure(error) => error,
+            })
     }
 
     fn post<T: DeserializeOwned>(
@@ -253,9 +254,7 @@ enum PostError {
 
 fn map_http_error(error: ureq::Error) -> PostError {
     match error {
-        ureq::Error::Status(status, _)
-            if matches!(status, 400 | 401 | 403 | 409 | 410 | 422) =>
-        {
+        ureq::Error::Status(status, _) if matches!(status, 400 | 401 | 403 | 409 | 410 | 422) => {
             PostError::Rejected
         }
         ureq::Error::Status(status, _) => PostError::Failure(cloud_error(format!(

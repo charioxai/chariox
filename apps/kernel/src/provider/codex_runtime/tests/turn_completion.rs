@@ -1684,12 +1684,8 @@ fn completed_tool_evidence_stays_bounded_across_ordinary_activity_bursts() {
                 &tracker,
                 true,
             ));
-            let recovery_evidence = codex_turn_recovery_evidence(
-                endpoint_mode,
-                true,
-                &tracker,
-                true,
-            );
+            let recovery_evidence =
+                codex_turn_recovery_evidence(endpoint_mode, true, &tracker, true);
             assert_eq!(recovery_evidence, completed_tool_evidence);
             if gate.is_due(true, recovery_evidence, now) {
                 full_thread_requests += 1;
