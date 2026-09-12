@@ -5,15 +5,9 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    # Opening a non-draft PR or marking a draft ready starts the final CI run.
-    # A later push has no CI run. Return the PR to draft, complete review, then
-    # mark the exact head ready again, or dispatch this workflow for that head.
-    types: [opened, ready_for_review]
 
 jobs:
   node:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:
@@ -55,7 +49,6 @@ jobs:
         run: pnpm test
 
   rust:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:
