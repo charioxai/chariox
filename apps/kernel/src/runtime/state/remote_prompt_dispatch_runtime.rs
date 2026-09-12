@@ -1263,6 +1263,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delivered_remote_prompt_uses_durable_run_for_live_projection_drain() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-live-recovery",
+                "worktree-live-recovery",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-live-recovery",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-2".to_string(),
+                    worker_machine_id: "worker-machine-2".to_string(),
+                    execution_lease_id: "lease-2".to_string(),
+                    leased_agent_id: "leased-agent-2".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-live-recovery",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let prompt_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("remote prompt should start")
+            }
+        };
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some("provider-run-2".to_string()),
+            None,
+        )
+        .expect("delivery metadata should persist");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let (binding, provider_run_id) = runtime
+            .remote_prompt_projection_drain_target(session.id(), agent.id())
+            .expect("live drain must recover the durable delivered worker run");
+
+        assert_eq!(binding.execution_lease_id, "lease-2");
+        assert_eq!(binding.leased_agent_id, "leased-agent-2");
+        assert_eq!(provider_run_id, "provider-run-2");
+    }
+
+    #[tokio::test]
     async fn remote_prompt_dispatch_success_refreshes_session_projection() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
