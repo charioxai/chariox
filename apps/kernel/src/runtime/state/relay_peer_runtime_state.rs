@@ -136,13 +136,65 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn create_bound_relay_execution_lease(
+        &self,
+        home_kernel_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        home_agent_metaagent: bool,
+        owner_user_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<ExecutionLease, DaemonError> {
+        let home_kernel_id = home_kernel_id.to_string();
+        let home_session_id = home_session_id.to_string();
+        let home_agent_id = home_agent_id.to_string();
+        let owner_user_id = owner_user_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).create_bound_execution_lease(
+                &home_kernel_id,
+                &home_session_id,
+                &home_agent_id,
+                home_agent_metaagent,
+                &owner_user_id,
+                caller,
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn authorize_relay_execution_lease_caller(
+        &self,
+        lease_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        let lease_id = lease_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).stage_execution_lease_caller(&lease_id, caller)
+        })
+        .await
+    }
+
+    pub(crate) async fn authorize_relay_leased_agent_caller(
+        &self,
+        leased_agent_id: &str,
+        caller: crate::app::LeaseCallerBinding,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).stage_leased_agent_caller(&leased_agent_id, caller)
+        })
+        .await
+    }
+
     pub(crate) async fn destroy_relay_execution_lease(
         &self,
         lease_id: &str,
     ) -> Result<(), DaemonError> {
         let lease_id = lease_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).destroy_execution_lease(&lease_id)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_execution_lease_authorization(&lease_id)?;
+            runtime.destroy_execution_lease(&lease_id)
         })
         .await
     }
@@ -165,7 +217,9 @@ impl KernelRuntimeState {
         let provider = provider.to_string();
         let account_profile = account_profile.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).create_leased_agent(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_execution_lease_authorization(&lease_id)?;
+            runtime.create_leased_agent(
                 &lease_id,
                 &provider,
                 &account_profile,
@@ -187,7 +241,9 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).destroy_leased_agent(&leased_agent_id)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.destroy_leased_agent(&leased_agent_id)
         })
         .await
     }
@@ -200,11 +256,9 @@ impl KernelRuntimeState {
     ) -> Result<LeasedAgent, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_agent_config(
-                &leased_agent_id,
-                execution_mode,
-                permission_level,
-            )
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.update_leased_agent_config(&leased_agent_id, execution_mode, permission_level)
         })
         .await
     }
@@ -220,7 +274,9 @@ impl KernelRuntimeState {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_agent_profile(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.update_leased_agent_profile(
                 &leased_agent_id,
                 provider,
                 account_profile,
@@ -238,7 +294,9 @@ impl KernelRuntimeState {
     ) -> Result<LeasedAgent, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_agent_meta_mode(&leased_agent_id, active)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.update_leased_agent_meta_mode(&leased_agent_id, active)
         })
         .await
     }
@@ -250,7 +308,9 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_agent_remote_extension_manifest(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.update_leased_agent_remote_extension_manifest(
                 &leased_agent_id,
                 remote_extension_manifest,
             )
@@ -283,7 +343,9 @@ impl KernelRuntimeState {
         let model = model.to_string();
         let launch_request = self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app).prepare_leased_native_provider_launch(
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                runtime.prepare_leased_native_provider_launch(
                     &leased_agent_id,
                     &adapter_key,
                     &provider,
@@ -314,7 +376,9 @@ impl KernelRuntimeState {
         let attachment_id = attachment_id.to_string();
         let data_base64 = data_base64.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).send_leased_native_provider_input(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.send_leased_native_provider_input(
                 &leased_agent_id,
                 &provider_run_id,
                 &attachment_id,
@@ -334,12 +398,9 @@ impl KernelRuntimeState {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).resize_leased_provider_terminal(
-                &leased_agent_id,
-                &provider_run_id,
-                cols,
-                rows,
-            )
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.resize_leased_provider_terminal(&leased_agent_id, &provider_run_id, cols, rows)
         })
         .await
     }
@@ -370,16 +431,18 @@ impl KernelRuntimeState {
         let replay_git_context = git_context.clone();
         if let Some(replayed) = self
             .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&replay_leased_agent_id)?;
                 // A prior profile acknowledgement may have been lost. Home remains
                 // authoritative, including when this is a retry of an active prompt.
-                RemoteLeaseRuntime::new(app).update_leased_agent_profile(
+                runtime.update_leased_agent_profile(
                     &replay_leased_agent_id,
                     expected_profile.provider,
                     expected_profile.account_profile,
                     expected_profile.model,
                     expected_profile.effort,
                 )?;
-                RemoteLeaseRuntime::new(app).replay_active_leased_prompt_submission(
+                runtime.replay_active_leased_prompt_submission(
                     &replay_leased_agent_id,
                     replay_git_context.as_ref(),
                 )
@@ -463,7 +526,9 @@ impl KernelRuntimeState {
             let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
             let (prepared_provider_run_id, dispatch) = self
                 .with_app_side_effect(|app| {
-                    RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
+                    let mut runtime = RemoteLeaseRuntime::new(app);
+                    runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                    runtime.prepare_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
@@ -509,8 +574,11 @@ impl KernelRuntimeState {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
+        let leased_agent_id = context.leased_agent_id.clone();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).ensure_remote_skill_packages(context, packages)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.ensure_remote_skill_packages(context, packages)
         })
         .await
     }
@@ -520,8 +588,11 @@ impl KernelRuntimeState {
         context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
         materialization: crate::account_profile::ProviderAccountMaterialization,
     ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+        let lease_id = context.execution_lease_id.clone();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).ensure_remote_provider_account(context, materialization)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_execution_lease_authorization(&lease_id)?;
+            runtime.ensure_remote_provider_account(context, materialization)
         })
         .await
     }
@@ -531,8 +602,11 @@ impl KernelRuntimeState {
         context: RemoteMcpCheckContext,
         required_mcps: Vec<RequiredRemoteMcp>,
     ) -> Result<Vec<RemoteMcpAvailability>, DaemonError> {
+        let leased_agent_id = context.leased_agent_id.clone();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).check_remote_mcp_availability(context, required_mcps)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.check_remote_mcp_availability(context, required_mcps)
         })
         .await
     }
@@ -543,7 +617,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).complete_leased_prompt(&leased_agent_id)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.complete_leased_prompt(&leased_agent_id)
         })
         .await
     }
@@ -552,6 +628,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         provider_run_id: &str,
+        require_authorization: bool,
     ) -> Result<
         (
             Vec<RemoteGitObservation>,
@@ -562,8 +639,11 @@ impl KernelRuntimeState {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app)
-                .observe_leased_git_after(&leased_agent_id, &provider_run_id)
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            if require_authorization {
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            }
+            runtime.observe_leased_git_after(&leased_agent_id, &provider_run_id)
         })
         .await
     }
@@ -572,6 +652,11 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
+        let authorized_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&authorized_id)
+        })
+        .await?;
         self.cancel_remote_home_extension_invocations_for_leased_agent(leased_agent_id)
             .await;
         let leased_agent_id = leased_agent_id.to_string();
@@ -623,11 +708,16 @@ impl KernelRuntimeState {
         provider_run_id: &str,
         pump_output: bool,
         replay_settled_completion: bool,
+        require_authorization: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).drain_leased_runtime_projection_with_recovery(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            if require_authorization {
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            }
+            runtime.drain_leased_runtime_projection_with_recovery(
                 &leased_agent_id,
                 &provider_run_id,
                 pump_output,

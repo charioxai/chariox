@@ -140,6 +140,18 @@ pub(crate) struct ManagedContextTransferStore {
 }
 
 impl ManagedContextTransferStore {
+    pub(crate) fn has_incomplete_import(&self) -> bool {
+        self.lock_state().entries.values().any(|entry| {
+            matches!(
+                entry.phase,
+                ManagedContextTransferPhase::Armed
+                    | ManagedContextTransferPhase::Receiving
+                    | ManagedContextTransferPhase::ReadyToImport
+                    | ManagedContextTransferPhase::Importing
+            )
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn open(root: PathBuf) -> Result<Self, DaemonError> {
         Self::open_with_launch_recovery(root, None)

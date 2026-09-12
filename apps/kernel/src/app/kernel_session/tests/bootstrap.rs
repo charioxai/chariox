@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
 #[test]
@@ -39,6 +40,110 @@ fn bootstrap_restores_created_session_and_agents_from_durable_state() {
             .session_id(),
         session_id
     );
+}
+
+#[test]
+fn lease_worker_bootstrap_rejects_every_restored_durable_session() {
+    for hidden in [false, true] {
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(
+            std::env::temp_dir()
+                .join(format!(
+                    "chariox-lease-worker-restored-session-{}-{}-{hidden}",
+                    std::process::id(),
+                    rand::random::<u64>()
+                ))
+                .join("state.db")
+                .display()
+                .to_string(),
+        );
+        {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("general kernel should boot");
+            crate::app::KernelSessionService::new(&mut app)
+                .create_session(
+                    CreateSessionRequest::new("workspace", "worktree").with_hidden(hidden),
+                )
+                .expect("durable session should persist");
+        }
+        let mut worker = config;
+        worker.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        worker.remote_lease_capacity = Some(1);
+        let error = match DaemonApp::bootstrap(worker) {
+            Ok(_) => panic!("lease worker must reject every persisted session"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            DaemonError::KernelRuntimeRoleDenied {
+                operation: "startup.restored_session",
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn lease_worker_bootstrap_rejects_incomplete_managed_context_import() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-lease-worker-managed-context-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+    let transfer_root = config
+        .private_runtime_state_root()
+        .join("managed-context-transfers");
+    let store = crate::managed_context::transfer::ManagedContextTransferStore::open(transfer_root)
+        .expect("managed context transfer store should open");
+    let now = crate::session::unix_epoch_ms();
+    store
+        .arm(
+            crate::managed_context::transfer::ArmManagedContextTransfer {
+                plan: crate::managed_context::package::ManagedContextPlanBinding {
+                    context_id: "context-1".to_string(),
+                    plan_digest: format!("sha256:{}", "1".repeat(64)),
+                    kernel_context:
+                        crate::managed_context::package::ManagedContextKernelSelection::Empty,
+                    development:
+                        crate::managed_context::package::ManagedContextDevelopmentSelection::Empty,
+                    provider_accounts:
+                        crate::managed_context::package::ManagedContextProviderAccountSelection::None,
+                    git_credentials:
+                        crate::managed_context::package::ManagedContextGitCredentialSelection::None,
+                },
+                target_environment_id: "environment-1".to_string(),
+                target_kernel_id: config.daemon_id.clone(),
+                target_key_thumbprint: "a".repeat(64),
+                source_kernel_id: "home-kernel-1".to_string(),
+                source_key_thumbprint: "b".repeat(64),
+                owner_user_id: "user-1".to_string(),
+                realm_id: "realm-1".to_string(),
+                capability: "c".repeat(43),
+                archive_sha256: "d".repeat(64),
+                archive_size_bytes: 1,
+                destination_parent: root.join("destination"),
+                expires_at_ms: now + 60_000,
+            },
+            now,
+        )
+        .expect("managed context import should arm");
+    drop(store);
+
+    config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
+    let error = match DaemonApp::bootstrap(config) {
+        Ok(_) => panic!("lease worker must reject an incomplete managed context import"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        DaemonError::KernelRuntimeRoleDenied {
+            operation: "startup.managed_context_import",
+            ..
+        }
+    ));
+    std::fs::remove_dir_all(root).expect("remove managed context startup fixture");
 }
 
 #[test]

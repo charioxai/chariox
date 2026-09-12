@@ -41,7 +41,7 @@ isolated-PR, review, evidence, resource, and cleanup rules in this plan.
 Ship one Chariox-owned shared browser and computer environment per Room that is
 usable by humans and every agent in that Room.
 
-Work proceeds in three ordered phases. A later phase cannot compensate for a
+Work proceeds in four ordered phases. A later phase cannot compensate for a
 failure in an earlier one.
 
 1. Implement and prove the complete functional contract locally. Run the
@@ -51,12 +51,24 @@ failure in an earlier one.
    Local proof includes every functional matrix row that does not inherently
    require a remote machine. Do not use a managed-machine run to discover basic
    product defects that a local test should have caught.
-2. Deploy the locally proven implementation to a fresh Chariox-managed machine
-   through the in-house OpenShip stack. Repeat the applicable functional,
+2. Upgrade the active Chariox-managed kernel to the reviewed signed release and
+   close the client/runtime defects exposed by real remote use. Before resuming
+   Browser and Computer feature work, implement path 1 from
+   `chariox-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`: one disposable
+   Cloud VM per isolated worker behind the provider-neutral worker contract.
+   Prove ordinary-kernel behavior, all three official provider harnesses, selected
+   context and credential transfer, remote Git, reconnect/recovery, resource
+   bounds, cost controls, and complete provider-resource deletion. Hetzner is the
+   first live adapter; no kernel, protocol, or client behavior may depend on it.
+   Bare-metal or nested-virtualization microVM hosting is path 2 and is explicitly
+   deferred until path 1 is accepted.
+3. Deploy the locally proven Browser and Computer implementation to a fresh
+   Chariox-managed machine through the in-house OpenShip stack. Repeat the
+   applicable functional,
    security, reconnect, persistence, resiliency, Web, and TUI drills through
    the hosted Caddy-fronted `wss://` relay. This phase proves portability,
    deployment, hosted transport, machine lifecycle, and production topology.
-3. Start benchmarking only after the complete local and managed-machine
+4. Start benchmarking only after the complete local and managed-machine
    functional gates pass. Build reproducible submissions for every relevant
    public browser-use and computer-use benchmark, compare Chariox with the
    published leaders under equivalent conditions, profile failures, and
@@ -1155,6 +1167,10 @@ CHA-16 is complete only when:
 - vault-backed public-service work passes leak scans
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
+- disposable Cloud-VM workers pass the provider-neutral path-1 allocation,
+  enrollment, ordinary-kernel parity, Codex/Claude/OpenCode, selected context and
+  credential transfer, remote Git, reconnect/recovery, bounded lifetime, cost,
+  and residue-free deletion gates before Browser and Computer feature work resumes
 - Chariox has a verified first-place public result on every relevant maintained
   browser-use and computer-use benchmark, with all inclusions and exclusions
   recorded

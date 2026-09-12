@@ -174,7 +174,7 @@ async function makeHarness(context, { targetProtocol = 323 } = {}) {
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
-presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/.chariox/kernels/active/kernel-1.json"
+presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
   rm -f -- "$presence"
 fi
@@ -660,11 +660,21 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
-test("managed kernel upgrade rejects a release with an incompatible local daemon protocol", async (context) => {
+test("managed kernel upgrade accepts a newer local daemon protocol", async (context) => {
   const harness = await makeHarness(context, { targetProtocol: 324 })
   const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+})
+
+test("managed kernel upgrade rejects a local daemon protocol downgrade", async (context) => {
+  const harness = await makeHarness(context, { targetProtocol: 322 })
+  const result = harness.run()
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /target local daemon protocol 324 is incompatible with installed protocol 323/)
+  assert.match(result.stderr, /target local daemon protocol 322 is older than installed protocol 323/)
   assert.equal(
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`,
@@ -685,6 +695,7 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.doesNotMatch(contents, /\b(?:curl|wget|ssh|scp)\b/)
   assert.doesNotMatch(contents, /installation[_-]origin|CHARIOX_INSTALLATION/)
   assert.doesNotMatch(contents, /\.arroba/)
+  assert.match(contents, /CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000/)
   assert.match(serviceContents, /ExecStartPre=-\+\/usr\/bin\/systemctl start chariox-slice-broker\.service/)
   assert.doesNotMatch(serviceContents, /systemctl restart/)
 
