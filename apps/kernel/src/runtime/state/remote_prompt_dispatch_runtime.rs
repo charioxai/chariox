@@ -1156,6 +1156,173 @@ mod tests {
         }
     }
 
+    fn actual_worker_output_then_completion(
+        home_session_id: &str,
+        home_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> (
+        crate::agent::RemoteAgentBinding,
+        String,
+        crate::transport::relay_peer::RelayPeerEvent,
+        crate::transport::relay_peer::RelayPeerEvent,
+    ) {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut worker = DaemonApp::bootstrap(config).expect("worker bootstrap should succeed");
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .create_execution_lease(
+                "home-kernel-live-recovery",
+                home_session_id,
+                home_agent_id,
+                false,
+                "owner-live-recovery",
+            )
+            .expect("worker lease should be created");
+        let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("worker leased agent should be created");
+        let (provider_run_id, outcome) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .submit_leased_prompt_with_workflow_context(
+                &leased_agent.id,
+                "remote prompt\n",
+                Vec::new(),
+                None,
+                Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                    home_session_id: home_session_id.to_string(),
+                    home_agent_id: home_agent_id.to_string(),
+                    home_prompt_id: home_prompt_id.to_string(),
+                    home_turn_id: home_prompt_id.to_string(),
+                    source_attachment_id: None,
+                    workspace_live_sync_mode: None,
+                    prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                    external_provider: None,
+                    external_provider_session_id: None,
+                    external_provider_turn_id: None,
+                    prompt_summary: "remote prompt".to_string(),
+                }),
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("worker prompt should submit");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+        crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .set_leased_agent_provider_for_test(&leased_agent.id, "codex");
+        let launch_request = crate::provider::LaunchProviderRequest::new(
+            &leased_agent.backing_session_id,
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.4",
+        )
+        .with_agent_id(&leased_agent.backing_agent_id)
+        .with_client_interface(crate::provider::ProviderClientInterface::Chariox);
+        let mut running_provider = crate::provider::RuntimeProviderRun::new(
+            &provider_run_id,
+            &launch_request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "codex:codex:gpt-5.4".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        running_provider.mark_running();
+        worker.providers_mut().insert_run_for_test(running_provider);
+        worker.fan_out_output_for_agent(
+            &leased_agent.backing_session_id,
+            &provider_run_id,
+            Some(&leased_agent.backing_agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("assistant-output".to_string()),
+            vec![leased_agent.backing_attachment_id.clone()],
+            b"LIVE_RECOVERY_OUTPUT_ONCE",
+        );
+        worker.record_notice_for_agent(
+            &leased_agent.backing_session_id,
+            Some(&provider_run_id),
+            Some(&leased_agent.backing_agent_id),
+            vec![leased_agent.backing_attachment_id.clone()],
+            "LIVE_RECOVERY_NOTICE_ONCE",
+        );
+        let output_event = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("worker output drain should succeed")
+            .expect("worker output should project")
+            .1;
+        if let Some((_, duplicate_event)) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("worker duplicate drain should succeed")
+        {
+            let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                output_chunks,
+                notices,
+                ..
+            } = duplicate_event;
+            assert!(output_chunks.is_empty(), "worker output must not repeat");
+            assert!(notices.is_empty(), "worker notice must not repeat");
+        }
+        worker
+            .complete_active_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                Some(&provider_run_id),
+            )
+            .expect("worker prompt should settle");
+        let completion_event = crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("worker completion drain should succeed")
+            .expect("worker completion should project")
+            .1;
+        let binding = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel-live-recovery".to_string(),
+            worker_machine_id: "worker-machine-live-recovery".to_string(),
+            execution_lease_id: lease.id,
+            leased_agent_id: leased_agent.id,
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        (binding, provider_run_id, output_event, completion_event)
+    }
+
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
@@ -1426,23 +1593,6 @@ mod tests {
                 crate::attachment::ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.agents
-            .bind_remote_execution(
-                agent.id(),
-                crate::agent::RemoteAgentBinding {
-                    worker_kernel_id: "worker-kernel-2".to_string(),
-                    worker_machine_id: "worker-machine-2".to_string(),
-                    execution_lease_id: "lease-2".to_string(),
-                    leased_agent_id: "leased-agent-2".to_string(),
-                    active_worker_provider_run_id: None,
-                    relay_url: None,
-                    relay_token: None,
-                    relay_peer_protocol_version: Some(
-                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                    ),
-                },
-            )
-            .expect("agent should bind to remote execution");
         let prompt = crate::session::PromptQueueItem::new(
             "prompt-live-recovery",
             attachment.id(),
@@ -1459,60 +1609,60 @@ mod tests {
                 panic!("remote prompt should start")
             }
         };
+        let (binding, provider_run_id, output_event, completion_event) =
+            actual_worker_output_then_completion(session.id(), agent.id(), &prompt_id);
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            output_chunks,
+            notices,
+            completions,
+            ..
+        } = &output_event;
+        assert!(provider_run.is_some(), "worker status should project");
+        assert_eq!(output_chunks.len(), 1);
+        assert_eq!(notices, &["LIVE_RECOVERY_NOTICE_ONCE"]);
+        assert!(completions.is_empty());
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            output_chunks,
+            notices,
+            completions,
+            ..
+        } = &completion_event;
+        assert!(
+            output_chunks.is_empty(),
+            "worker output must be deduplicated"
+        );
+        assert!(notices.is_empty(), "worker notice must be consumed once");
+        assert_eq!(completions.len(), 1);
+        assert_eq!(
+            completions[0].home_prompt_id.as_deref(),
+            Some(prompt_id.as_str())
+        );
+        app.agents
+            .bind_remote_execution(agent.id(), binding.clone())
+            .expect("agent should bind to the worker projection source");
         app.mark_active_prompt_delivery(
             session.id(),
             agent.id(),
             &prompt_id,
             crate::session::DurablePromptDeliveryPhase::Delivered,
-            Some("provider-run-2".to_string()),
+            Some(provider_run_id.clone()),
             None,
         )
         .expect("delivery metadata should persist");
 
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
-        let (binding, provider_run_id) = runtime
+        let (drain_binding, drain_provider_run_id) = runtime
             .remote_prompt_projection_drain_target(session.id(), agent.id())
             .expect("live drain must recover the durable delivered worker run");
 
-        assert_eq!(binding.execution_lease_id, "lease-2");
-        assert_eq!(binding.leased_agent_id, "leased-agent-2");
-        assert_eq!(provider_run_id, "provider-run-2");
-
-        let matching_projection =
-            completed_worker_projection(session.id(), agent.id(), "provider-run-2", &prompt_id);
-        assert_eq!(
-            runtime
-                .recover_remote_prompt_run_binding_from_projection(
-                    session.id(),
-                    agent.id(),
-                    &binding,
-                    "provider-run-2",
-                    &matching_projection,
-                )
-                .expect("matching worker completion should recover the binding"),
-            RemotePromptRunBindingRecovery::Recovered,
-        );
-        assert_eq!(
-            runtime
-                .owned
-                .agent_store
-                .get_agent(agent.id())
-                .expect("agent should remain available")
-                .remote_execution()
-                .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
-            Some("provider-run-2"),
-        );
-
-        runtime
-            .owned
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(agent.id(), None)
-            .expect("test should clear the recovered pointer");
+        assert_eq!(drain_binding, binding);
+        assert_eq!(drain_provider_run_id, provider_run_id);
         let mismatched_prompt = completed_worker_projection(
             session.id(),
             agent.id(),
-            "provider-run-2",
+            &provider_run_id,
             "other-home-prompt",
         );
         assert_eq!(
@@ -1521,7 +1671,7 @@ mod tests {
                     session.id(),
                     agent.id(),
                     &binding,
-                    "provider-run-2",
+                    &provider_run_id,
                     &mismatched_prompt,
                 )
                 .expect("mismatched prompt projection should be rejected safely"),
@@ -1535,12 +1685,72 @@ mod tests {
                     session.id(),
                     agent.id(),
                     &binding,
-                    "provider-run-2",
+                    &provider_run_id,
                     &stale_run,
                 )
                 .expect("stale run projection should be rejected safely"),
             RemotePromptRunBindingRecovery::Rejected,
         );
+        assert_eq!(
+            runtime
+                .recover_remote_prompt_run_binding_from_projection(
+                    session.id(),
+                    agent.id(),
+                    &binding,
+                    &provider_run_id,
+                    &output_event,
+                )
+                .expect("output-only worker projection should recover the binding"),
+            RemotePromptRunBindingRecovery::Recovered,
+        );
+        runtime
+            .project_remote_runtime_projection_event(output_event)
+            .await
+            .expect("output-only worker projection should reach the home session");
+        let first_output = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id());
+        assert_eq!(
+            first_output
+                .iter()
+                .filter(|record| record.bytes == b"LIVE_RECOVERY_OUTPUT_ONCE")
+                .count(),
+            1
+        );
+        let first_notices = runtime
+            .owned
+            .terminal_stream
+            .drain_notice_records(session.id(), attachment.id());
+        assert_eq!(
+            first_notices
+                .iter()
+                .filter(|record| record.message == "LIVE_RECOVERY_NOTICE_ONCE")
+                .count(),
+            1
+        );
+        let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            &provider_run_id,
+        );
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run(&projected_provider_run_id)
+            .is_ok());
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("home session should remain available"),
+                agent.id(),
+            )
+            .is_some());
+
         runtime
             .owned
             .agent_store
@@ -1559,19 +1769,49 @@ mod tests {
                     session.id(),
                     agent.id(),
                     &binding,
-                    "provider-run-2",
-                    &matching_projection,
+                    &provider_run_id,
+                    &completion_event,
                 )
                 .expect("other lease projection should be rejected safely"),
             RemotePromptRunBindingRecovery::Rejected,
         );
-        assert!(runtime
+        runtime
             .owned
             .agent_store
-            .get_agent(agent.id())
-            .expect("agent should remain available")
-            .remote_execution()
-            .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    active_worker_provider_run_id: Some(provider_run_id.clone()),
+                    ..binding.clone()
+                },
+            )
+            .expect("test should restore the recovered worker binding");
+
+        runtime
+            .project_remote_runtime_projection_event(completion_event)
+            .await
+            .expect("worker completion should settle the home prompt");
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .is_empty());
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_notice_records(session.id(), attachment.id())
+            .is_empty());
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("home session should remain available"),
+                agent.id(),
+            )
             .is_none());
     }
 
