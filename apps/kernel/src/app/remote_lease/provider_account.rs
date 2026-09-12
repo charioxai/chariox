@@ -127,6 +127,13 @@ impl RemoteLeaseRuntime<'_> {
                 return Err(error);
             }
         };
+        self.app
+            .provider_account_profile_registry()
+            .mark_materialized_replica_validated(
+                &lease.owner_user_id,
+                &materialization.profile.provider,
+                &materialization.profile.profile_id,
+            )?;
         self.app.durable_state_store().append_event(
             "provider_account.materialized",
             Some(lease.id),

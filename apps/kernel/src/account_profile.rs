@@ -818,6 +818,8 @@ struct StoredProviderAccountProfile {
     locator: ProviderAccountLocator,
     #[serde(default)]
     materialized_replica: bool,
+    #[serde(default)]
+    pending_native_validation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replica_previous_default_profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1023,6 +1025,7 @@ impl ProviderAccountProfileRegistry {
                 public: profile,
                 locator,
                 materialized_replica: false,
+                pending_native_validation: false,
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
@@ -1521,6 +1524,7 @@ impl ProviderAccountProfileRegistry {
             public: profile.clone(),
             locator,
             materialized_replica: false,
+            pending_native_validation: false,
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
@@ -1564,6 +1568,7 @@ impl ProviderAccountProfileRegistry {
             public: profile.clone(),
             locator,
             materialized_replica: false,
+            pending_native_validation: false,
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
@@ -1619,6 +1624,7 @@ impl ProviderAccountProfileRegistry {
             public: profile.clone(),
             locator,
             materialized_replica: false,
+            pending_native_validation: false,
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
@@ -1837,13 +1843,25 @@ impl ProviderAccountProfileRegistry {
                 }
                 self.clear_pending_replica_cleanup(owner_user_id, provider, profile_id)?;
             }
+            if stored
+                .as_ref()
+                .is_some_and(|profile| profile.pending_native_validation)
+            {
+                self.rollback_materialized_replica_restoring_default(
+                    owner_user_id,
+                    provider,
+                    profile_id,
+                    None,
+                )?;
+            }
             return Ok(());
         }
         if let Some(stored) = stored {
             if pending_cleanup.is_some()
                 || !stored.materialized_replica
                 || stored.managed_context_replica.is_some()
-                || stored.public.auth_state == ProviderAccountAuthState::Authenticated
+                || (stored.public.auth_state == ProviderAccountAuthState::Authenticated
+                    && !stored.pending_native_validation)
             {
                 return Err(registry_error(
                     "recover materialized account rollback",
@@ -1954,7 +1972,8 @@ impl ProviderAccountProfileRegistry {
         if !stored.materialized_replica
             || stored.managed_context_replica.is_some()
             || stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated
-            || stored.public.auth_state == ProviderAccountAuthState::Authenticated
+            || (stored.public.auth_state == ProviderAccountAuthState::Authenticated
+                && !stored.pending_native_validation)
             || stored.locator != expected_locator
         {
             return Err(registry_error(
@@ -2037,7 +2056,8 @@ impl ProviderAccountProfileRegistry {
                 "materialized account profile and rollback state both exist",
             ));
         }
-        if !managed_root_exists && !rollback_root_exists {
+        let root_missing = !managed_root_exists && !rollback_root_exists;
+        if root_missing && !stored.pending_native_validation {
             return Err(registry_error(
                 "roll back materialized account profile",
                 "materialized account profile data is missing",
@@ -2051,7 +2071,7 @@ impl ProviderAccountProfileRegistry {
                 &rollback_root,
                 "inspect materialized account profile rollback",
             )?;
-        } else {
+        } else if managed_root_exists {
             #[cfg(unix)]
             {
                 require_replica_root_identity(&managed_parent, profile_id, expected_root_identity)?;
@@ -2103,23 +2123,31 @@ impl ProviderAccountProfileRegistry {
             *document = original_document;
             let registry_restore_error = self.persist_locked(&document).err();
             #[cfg(unix)]
-            let root_restore_error = require_replica_root_identity(
-                &managed_parent,
-                rollback_name,
-                expected_root_identity,
-            )
-            .and_then(|_| managed_parent.rename(rollback_name, profile_id))
-            .and_then(|_| managed_parent.sync())
-            .err();
-            #[cfg(not(unix))]
-            let root_restore_error = fs::rename(&rollback_root, &managed_root)
-                .map_err(registry_io(
-                    "restore materialized account profile after registry failure",
-                ))
-                .and_then(|_| {
-                    sync_directory(managed_root.parent().unwrap_or_else(|| Path::new(".")))
+            let root_restore_error = (!root_missing)
+                .then(|| {
+                    require_replica_root_identity(
+                        &managed_parent,
+                        rollback_name,
+                        expected_root_identity,
+                    )
+                    .and_then(|_| managed_parent.rename(rollback_name, profile_id))
+                    .and_then(|_| managed_parent.sync())
+                    .err()
                 })
-                .err();
+                .flatten();
+            #[cfg(not(unix))]
+            let root_restore_error = (!root_missing)
+                .then(|| {
+                    fs::rename(&rollback_root, &managed_root)
+                        .map_err(registry_io(
+                            "restore materialized account profile after registry failure",
+                        ))
+                        .and_then(|_| {
+                            sync_directory(managed_root.parent().unwrap_or_else(|| Path::new(".")))
+                        })
+                        .err()
+                })
+                .flatten();
             if registry_restore_error.is_some() || root_restore_error.is_some() {
                 return Err(registry_error(
                     "roll back materialized account profile",
@@ -2144,12 +2172,12 @@ impl ProviderAccountProfileRegistry {
             ));
         }
         #[cfg(unix)]
-        {
+        if !root_missing {
             managed_parent.remove_matching(rollback_name, expected_root_identity)?;
             managed_parent.sync()?;
         }
         #[cfg(not(unix))]
-        {
+        if !root_missing {
             remove_managed_root(&rollback_root, &self.path)?;
             if let Some(parent) = rollback_root.parent() {
                 sync_directory(parent)?;
@@ -2315,7 +2343,7 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         materialization: &ProviderAccountMaterialization,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        self.materialize_replica_internal(owner_user_id, materialization, None)
+        self.materialize_replica_internal(owner_user_id, materialization, None, false)
             .map(|(profile, _)| profile)
     }
 
@@ -2324,7 +2352,65 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         materialization: &ProviderAccountMaterialization,
     ) -> Result<(ProviderAccountProfile, Option<String>), DaemonError> {
-        self.materialize_replica_internal(owner_user_id, materialization, None)
+        self.materialize_replica_internal(owner_user_id, materialization, None, true)
+    }
+
+    pub(crate) fn mark_materialized_replica_validated(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        let mut document = self.write_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        let stored = &document.profiles[index];
+        if !stored.materialized_replica || stored.managed_context_replica.is_some() {
+            return Err(registry_error(
+                "validate materialized account profile",
+                "profile is not a remote materialized replica",
+            ));
+        }
+        if !stored.pending_native_validation {
+            return Ok(());
+        }
+        if provider != "claude"
+            && stored.public.auth_state != ProviderAccountAuthState::Authenticated
+        {
+            return Err(registry_error(
+                "validate materialized account profile",
+                "provider-native authentication has not succeeded",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let parent = managed_fs::ManagedProviderParent::open(
+                &self.path,
+                &safe_path_component(owner_user_id),
+                provider,
+            )?;
+            let expected_identity = stored.replica_root_identity.ok_or_else(|| {
+                registry_error(
+                    "validate materialized account profile",
+                    "materialized account root identity is unavailable",
+                )
+            })?;
+            require_replica_root_identity(&parent, profile_id, expected_identity)?;
+        }
+        #[cfg(not(unix))]
+        return Err(registry_error(
+            "validate materialized account profile",
+            "remote replica validation requires a supported Unix managed host",
+        ));
+
+        let original = document.clone();
+        document.profiles[index].pending_native_validation = false;
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) fn materialize_managed_context_replica(
@@ -2349,6 +2435,7 @@ impl ProviderAccountProfileRegistry {
                 package_sha256,
                 materialization_sha256: &materialization_sha256,
             }),
+            false,
         )?;
         Ok(ManagedContextProviderAccountReceipt {
             context_id: context_id.to_string(),
@@ -2364,6 +2451,7 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         materialization: &ProviderAccountMaterialization,
         managed_context: Option<ManagedContextReplicaIntent<'_>>,
+        pending_native_validation: bool,
     ) -> Result<(ProviderAccountProfile, Option<String>), DaemonError> {
         if materialization.profile.owner_user_id != owner_user_id {
             return Err(registry_error(
@@ -2693,6 +2781,7 @@ impl ProviderAccountProfileRegistry {
             existing.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
             existing.locator = locator;
             existing.materialized_replica = true;
+            existing.pending_native_validation = pending_native_validation;
             existing.replica_previous_default_profile_id = previous_default_profile_id.clone();
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
@@ -2710,6 +2799,7 @@ impl ProviderAccountProfileRegistry {
                 public: public.clone(),
                 locator,
                 materialized_replica: true,
+                pending_native_validation,
                 replica_previous_default_profile_id: previous_default_profile_id.clone(),
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
@@ -2828,6 +2918,7 @@ impl ProviderAccountProfileRegistry {
                 public: replaced.public,
                 locator: replaced.locator,
                 materialized_replica: false,
+                pending_native_validation: false,
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
@@ -4377,6 +4468,135 @@ mod tests {
             }],
             generated_at_ms: 1,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replica_pending_native_validation_rolls_back_after_reopen() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        let original = codex_replica_materialization("interrupted", false);
+        registry
+            .materialize_replica_with_rollback_state("owner-a", &original)
+            .expect("materialization should commit before native validation");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reopen must recover the unfinished native validation");
+        assert!(
+            reopened.get("owner-a", "codex", "interrupted").is_err(),
+            "an unvalidated replica must not become an authoritative worker profile"
+        );
+        reopened
+            .materialize_replica_with_rollback_state("owner-a", &original)
+            .expect("corrected materialization must be able to retry");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validated_replica_preserves_worker_owned_credentials_after_reopen() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("validated", false),
+            )
+            .expect("materialize replica");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "validated",
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("provider-native validation should succeed");
+        registry
+            .mark_materialized_replica_validated("owner-a", "codex", "validated")
+            .expect("commit validation phase");
+        let credential = root.join("provider-accounts/owner-a/codex/validated/codex/auth.json");
+        fs::write(&credential, br#"{"token":"worker-owned"}"#)
+            .expect("worker may rotate credentials");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("validated replica should survive restart");
+        reopened
+            .get("owner-a", "codex", "validated")
+            .expect("validated worker profile should remain registered");
+        assert_eq!(
+            fs::read(&credential).expect("worker credentials should remain"),
+            br#"{"token":"worker-owned"}"#
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_rollback_registry_sync_recovers_pending_validation_after_reopen() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("interrupted", false),
+            )
+            .expect("materialize replica before native validation");
+        FAIL_ACCOUNT_PROFILE_REGISTRY_PARENT_SYNC_ONCE.with(|fail| fail.set(true));
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "interrupted")
+            .expect_err("injected registry sync failure must interrupt rollback");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reopen must recover the unfinished rollback");
+        assert!(reopened.get("owner-a", "codex", "interrupted").is_err());
+        let mut corrected = codex_replica_materialization("interrupted", false);
+        corrected.files[0].contents_base64 =
+            base64::engine::general_purpose::STANDARD.encode(br#"{"token":"corrected"}"#);
+        reopened
+            .materialize_replica_with_rollback_state("owner-a", &corrected)
+            .expect("corrected materialization must retry after reopen");
+        assert_eq!(
+            fs::read_to_string(
+                root.join("provider-accounts/owner-a/codex/interrupted/codex/auth.json")
+            )
+            .unwrap(),
+            r#"{"token":"corrected"}"#
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_unvalidated_replica_root_does_not_block_corrected_retry() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("interrupted", false),
+            )
+            .expect("materialize replica before native validation");
+        let managed_root = root.join("provider-accounts/owner-a/codex/interrupted");
+        fs::remove_dir_all(&managed_root).expect("simulate worker removing the unvalidated root");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("missing unvalidated files must not make the registry unusable");
+        assert!(reopened.get("owner-a", "codex", "interrupted").is_err());
+        reopened
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("interrupted", false),
+            )
+            .expect("corrected transfer must be able to create a new root");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
