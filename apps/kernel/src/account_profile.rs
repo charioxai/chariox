@@ -3279,15 +3279,17 @@ fn claude_credentials_are_portable(contents: &[u8]) -> bool {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn claude_keychain_service_name(claude_config_dir: &Path, ambient_default: bool) -> String {
-    if ambient_default {
-        return "Claude Code-credentials".to_string();
-    }
+fn claude_keychain_service_names(claude_config_dir: &Path, ambient_default: bool) -> Vec<String> {
     let digest = format!(
         "{:x}",
         Sha256::digest(claude_config_dir.as_os_str().as_encoded_bytes())
     );
-    format!("Claude Code-credentials-{}", &digest[..8])
+    let scoped = format!("Claude Code-credentials-{}", &digest[..8]);
+    if ambient_default {
+        vec![scoped, "Claude Code-credentials".to_string()]
+    } else {
+        vec![scoped]
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3296,10 +3298,13 @@ fn collect_claude_keychain_credentials_for_scope(
     ambient_default: bool,
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
-    collect_claude_keychain_credentials(
-        &claude_keychain_service_name(claude_config_dir, ambient_default),
-        files,
-    )
+    for service in claude_keychain_service_names(claude_config_dir, ambient_default) {
+        collect_claude_keychain_credentials(&service, files)?;
+        if materialization_has_file(files, ".credentials.json") {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -5584,15 +5589,18 @@ mod tests {
     }
 
     #[test]
-    fn ambient_and_explicit_claude_profiles_select_distinct_keychain_services() {
+    fn ambient_claude_profile_adds_legacy_fallback_after_the_scoped_service() {
         let config_dir = Path::new("/tmp/chariox-claude-profile");
         assert_eq!(
-            claude_keychain_service_name(config_dir, false),
-            "Claude Code-credentials-bc2236e0"
+            claude_keychain_service_names(config_dir, false),
+            vec!["Claude Code-credentials-bc2236e0"]
         );
         assert_eq!(
-            claude_keychain_service_name(config_dir, true),
-            "Claude Code-credentials"
+            claude_keychain_service_names(config_dir, true),
+            vec![
+                "Claude Code-credentials-bc2236e0",
+                "Claude Code-credentials"
+            ]
         );
     }
 
