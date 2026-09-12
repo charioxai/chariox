@@ -193,9 +193,10 @@ repository object database and must not each acquire a Cargo `target`,
 `node_modules`, package cache, browser profile, container image, or slice state.
 Put the smallest necessary test binary or generated file in a task-specific
 disposable directory outside every repository, then remove it immediately
-after validation. Use final-head remote CI for full builds while the laptop is
-under disk pressure. Remove a worktree as soon as its PR merges, and keep only
-the worktrees needed for active or externally gated PRs.
+after validation. Use a resource-capped local or temporary builder for needed
+intermediate builds while the laptop is under disk pressure. Remove a worktree
+as soon as its PR merges, and keep only the worktrees needed for active or
+externally gated PRs.
 
 ### Commit, push, and review after every completed subtask
 
@@ -219,24 +220,21 @@ force-push away reviewed evidence unless recovery requires it. If the head
 changes, repeat review. A subtask is not complete while the reviewer has an
 unaddressed comment, a question without evidence, or a stale-head review.
 
-### Final-head CI only
+### Program-final CI only
 
-Do not run the repository-wide GitHub CI suite for intermediate implementation
-or reviewer-fix commits. Use the narrow local unit and integration checks above
-while the PR is still evolving. Keep the PR out of the ready-to-merge CI path
-until its exact head has passed focused validation and the independent reviewer
-has no remaining comments.
+Do not run the repository-wide GitHub CI suite for intermediate PRs or reviewer-fix
+commits. Use focused local checks and independent review while the full goal is
+still in progress.
 
-Run GitHub CI once for that final, reviewer-clean head immediately before
-merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
-exact-head reviewer loop, and then run the final CI gate again. Do not treat a
-successful run for an older SHA as evidence for a changed head.
+Run GitHub CI only after the full feature, plan, or goal is implemented and the
+reviewer-clean integration head is ready to merge into `main`. If CI finds a
+defect, fix it, repeat exact-head review, and rerun the final CI gate. A run
+for an older SHA does not validate a changed head.
 
-Repository workflow triggers must enforce this policy: ordinary PR
-`synchronize` events must not start the expensive CI jobs, while the explicit
-ready-for-review/final-gate transition may start them. Reviewer automation is
-independent of this CI gate and must continue to receive the commits it needs
-to review.
+Repository workflow triggers must enforce this policy: ordinary PR updates
+and intermediate ready-for-review transitions must not start expensive CI
+jobs. Only the explicit program-final gate may do so. Reviewer automation
+remains independent and continues to receive commits for review.
 
 ### Reviewer independence and outages
 
