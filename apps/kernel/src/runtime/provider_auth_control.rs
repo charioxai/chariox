@@ -177,20 +177,42 @@ async fn start_terminal_provider_auth(
             updated_at_ms: now_ms,
         },
     )?;
-    let env_remove = crate::account_profile::provider_auth_env_vars(provider)
-        .iter()
-        .map(|name| (*name).to_string())
-        .collect::<Vec<_>>();
+    let auth_label = match operation {
+        crate::runtime::state::ProviderAuthProcessOperation::Login => {
+            format!("{provider}:auth-login")
+        }
+        crate::runtime::state::ProviderAuthProcessOperation::Logout => {
+            format!("{provider}:auth-logout")
+        }
+    };
+    let launch = crate::provider::managed_isolated_utility_launch(
+        program.to_string_lossy().to_string(),
+        args,
+        environment,
+        None,
+        &auth_label,
+    )?;
+    let mut env_remove = launch.pty_env_remove;
+    env_remove.extend(
+        crate::account_profile::provider_auth_env_vars(provider)
+            .iter()
+            .map(|name| (*name).to_string()),
+    );
+    env_remove.sort();
+    env_remove.dedup();
+    let program = launch
+        .pty_program
+        .ok_or_else(|| provider_login_error("provider login launch has no executable"))?;
     let spawn = runtime_state
         .with_app_side_effect(|app| {
             app.pty_mut().spawn(PtySpawnRequest {
                 process_key: login_id.clone(),
                 provider_run_id: login_id.clone(),
-                program: program.to_string_lossy().to_string(),
-                args,
-                env: environment,
+                program,
+                args: launch.pty_args,
+                env: launch.pty_env,
                 env_remove,
-                working_directory: None,
+                working_directory: launch.working_directory,
                 cols: 120,
                 rows: 40,
             })
