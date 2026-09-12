@@ -26,6 +26,7 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "Cargo.lock",
   "adapters/rust",
   "apps/aegs-dummy",
+  "apps/browser-session-import",
   "apps/kernel",
   "apps/relay",
   "examples/workflow-code",
