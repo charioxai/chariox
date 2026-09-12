@@ -820,6 +820,8 @@ struct StoredProviderAccountProfile {
     materialized_replica: bool,
     #[serde(default)]
     pending_native_validation: bool,
+    #[serde(default)]
+    legacy_unpinned_replica: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replica_previous_default_profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -915,19 +917,23 @@ impl Drop for ProviderAccountUsageRefreshLease {
 impl ProviderAccountProfileRegistry {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DaemonError> {
         let path = path.into();
-        let (mut document, migrated_legacy_failed_replicas) = if path.exists() {
+        let (mut document, migrated_legacy_replicas) = if path.exists() {
             let bytes = fs::read(&path).map_err(registry_io("read account profile registry"))?;
             let raw_document: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|error| {
                     registry_error("read account profile registry", error.to_string())
                 })?;
-            let missing_validation_markers = raw_document
+            let old_format_replicas = raw_document
                 .get("profiles")
                 .and_then(serde_json::Value::as_array)
                 .map(|profiles| {
                     profiles
                         .iter()
-                        .map(|profile| profile.get("pending_native_validation").is_none())
+                        .map(|profile| {
+                            profile.get("pending_native_validation").is_none()
+                                && profile.get("replica_root_identity").is_none()
+                                && profile.get("legacy_unpinned_replica").is_none()
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -944,15 +950,12 @@ impl ProviderAccountProfileRegistry {
                     ),
                 ));
             }
-            let migrated = migrate_legacy_failed_replica_validation(
-                &mut document,
-                &missing_validation_markers,
-            );
+            let migrated = migrate_legacy_replica_metadata(&mut document, &old_format_replicas);
             (document, migrated)
         } else {
             (RegistryDocument::default(), false)
         };
-        let changed = migrated_legacy_failed_replicas
+        let changed = migrated_legacy_replicas
             | migrate_legacy_default_profile_ids(&mut document)
             | migrate_legacy_default_profile_labels(&mut document)
             | migrate_legacy_managed_claude_scope(&mut document);
@@ -1046,6 +1049,7 @@ impl ProviderAccountProfileRegistry {
                 locator,
                 materialized_replica: false,
                 pending_native_validation: false,
+                legacy_unpinned_replica: false,
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
@@ -1545,6 +1549,7 @@ impl ProviderAccountProfileRegistry {
             locator,
             materialized_replica: false,
             pending_native_validation: false,
+            legacy_unpinned_replica: false,
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
@@ -1589,6 +1594,7 @@ impl ProviderAccountProfileRegistry {
             locator,
             materialized_replica: false,
             pending_native_validation: false,
+            legacy_unpinned_replica: false,
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
@@ -1645,6 +1651,7 @@ impl ProviderAccountProfileRegistry {
             locator,
             materialized_replica: false,
             pending_native_validation: false,
+            legacy_unpinned_replica: false,
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
@@ -1863,10 +1870,9 @@ impl ProviderAccountProfileRegistry {
                 }
                 self.clear_pending_replica_cleanup(owner_user_id, provider, profile_id)?;
             }
-            if stored
-                .as_ref()
-                .is_some_and(|profile| profile.pending_native_validation)
-            {
+            if stored.as_ref().is_some_and(|profile| {
+                profile.pending_native_validation && !profile.legacy_unpinned_replica
+            }) {
                 self.rollback_materialized_replica_restoring_default(
                     owner_user_id,
                     provider,
@@ -2433,6 +2439,207 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
+    pub(crate) fn is_legacy_unpinned_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            resolve_stored_profile(&document, owner_user_id, provider, profile_id)?
+                .legacy_unpinned_replica,
+        )
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn pin_validated_legacy_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        let mut document = self.write_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        let stored = &document.profiles[index];
+        if !stored.legacy_unpinned_replica {
+            return Ok(());
+        }
+        if stored.public.auth_state != ProviderAccountAuthState::Authenticated {
+            return Err(registry_error(
+                "validate legacy account profile",
+                "provider-native authentication has not succeeded",
+            ));
+        }
+        let expected_root = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts")
+            .join(safe_path_component(owner_user_id))
+            .join(provider)
+            .join(profile_id);
+        if stored.locator != ProviderAccountLocator::managed(provider, &expected_root)? {
+            return Err(registry_error(
+                "validate legacy account profile",
+                "legacy account locator does not match its managed root",
+            ));
+        }
+        let identity = managed_fs::ManagedProviderParent::open(
+            &self.path,
+            &safe_path_component(owner_user_id),
+            provider,
+        )?
+        .identity(profile_id)?;
+        let original = document.clone();
+        document.profiles[index].replica_root_identity = Some(identity);
+        document.profiles[index].pending_native_validation = false;
+        document.profiles[index].legacy_unpinned_replica = false;
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn pin_validated_legacy_replica(
+        &self,
+        _owner_user_id: &str,
+        _provider: &str,
+        _profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        Err(registry_error(
+            "validate legacy account profile",
+            "remote replica validation requires a supported Unix managed host",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn retain_failed_legacy_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<Option<PathBuf>, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        let managed_root = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts")
+            .join(safe_path_component(owner_user_id))
+            .join(provider)
+            .join(profile_id);
+        let expected_locator = ProviderAccountLocator::managed(provider, &managed_root)?;
+        let mut document = self.write_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        let stored = &document.profiles[index];
+        if !stored.legacy_unpinned_replica
+            || !stored.materialized_replica
+            || stored.managed_context_replica.is_some()
+            || stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated
+            || stored.public.auth_state == ProviderAccountAuthState::Authenticated
+            || stored.locator != expected_locator
+        {
+            return Err(registry_error(
+                "retain failed legacy account profile",
+                "refusing to replace an authoritative or authenticated worker account",
+            ));
+        }
+        let parent = managed_fs::ManagedProviderParent::open(
+            &self.path,
+            &safe_path_component(owner_user_id),
+            provider,
+        )?;
+        let retained = if parent.exists(profile_id)? {
+            let identity = parent.identity(profile_id)?;
+            let retained_root = unique_sibling_path(&managed_root, "legacy-retained");
+            let retained_name = retained_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    registry_error(
+                        "retain failed legacy account profile",
+                        "invalid retained path",
+                    )
+                })?;
+            if parent.exists(retained_name)? {
+                return Err(registry_error(
+                    "retain failed legacy account profile",
+                    "retained account path is occupied",
+                ));
+            }
+            parent.rename(profile_id, retained_name)?;
+            require_replica_root_identity(&parent, retained_name, identity)?;
+            parent.sync()?;
+            Some((retained_root, identity))
+        } else {
+            None
+        };
+        let original = document.clone();
+        let removed = document.profiles.remove(index);
+        if removed.public.is_default {
+            if let Some(next) = document.profiles.iter_mut().find(|profile| {
+                profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+            }) {
+                next.public.is_default = true;
+            }
+        }
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original;
+            let registry_restore_error = self.persist_locked(&document).err();
+            let root_restore_error = retained.as_ref().and_then(|(root, identity)| {
+                let name = root.file_name()?.to_str()?;
+                require_replica_root_identity(&parent, name, *identity)
+                    .and_then(|_| {
+                        if parent.exists(profile_id)? {
+                            return Err(registry_error(
+                                "restore legacy account profile",
+                                "original account path is occupied",
+                            ));
+                        }
+                        parent.rename(name, profile_id)?;
+                        parent.sync()
+                    })
+                    .err()
+            });
+            if registry_restore_error.is_some() || root_restore_error.is_some() {
+                return Err(registry_error(
+                    "retain failed legacy account profile",
+                    format!(
+                        "{error}; registry restore: {}; account root restore: {}",
+                        registry_restore_error
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "ok".to_string()),
+                        root_restore_error
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "ok".to_string()),
+                    ),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(retained.map(|(root, _)| root))
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn retain_failed_legacy_replica(
+        &self,
+        _owner_user_id: &str,
+        _provider: &str,
+        _profile_id: &str,
+    ) -> Result<Option<PathBuf>, DaemonError> {
+        Err(registry_error(
+            "retain failed legacy account profile",
+            "remote replica recovery requires a supported Unix managed host",
+        ))
+    }
+
     pub(crate) fn materialize_managed_context_replica(
         &self,
         owner_user_id: &str,
@@ -2802,6 +3009,7 @@ impl ProviderAccountProfileRegistry {
             existing.locator = locator;
             existing.materialized_replica = true;
             existing.pending_native_validation = pending_native_validation;
+            existing.legacy_unpinned_replica = false;
             existing.replica_previous_default_profile_id = previous_default_profile_id.clone();
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
@@ -2820,6 +3028,7 @@ impl ProviderAccountProfileRegistry {
                 locator,
                 materialized_replica: true,
                 pending_native_validation,
+                legacy_unpinned_replica: false,
                 replica_previous_default_profile_id: previous_default_profile_id.clone(),
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
@@ -2938,6 +3147,7 @@ impl ProviderAccountProfileRegistry {
                 public: replaced.public,
                 locator: replaced.locator,
                 materialized_replica: false,
+                legacy_unpinned_replica: false,
                 pending_native_validation: false,
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
@@ -3510,27 +3720,23 @@ fn unique_profile_id(
     }
 }
 
-fn migrate_legacy_failed_replica_validation(
+fn migrate_legacy_replica_metadata(
     document: &mut RegistryDocument,
-    missing_validation_markers: &[bool],
+    old_format_replicas: &[bool],
 ) -> bool {
     let mut changed = false;
     for (index, profile) in document.profiles.iter_mut().enumerate() {
-        if missing_validation_markers.get(index) != Some(&true)
+        if old_format_replicas.get(index) != Some(&true)
             || !profile.materialized_replica
             || profile.managed_context_replica.is_some()
             || profile.public.origin != ProviderAccountProfileOrigin::CharioxCreated
             || !matches!(profile.public.provider.as_str(), "codex" | "opencode")
-            || !matches!(
-                profile.public.auth_state,
-                ProviderAccountAuthState::Unknown
-                    | ProviderAccountAuthState::NotConfigured
-                    | ProviderAccountAuthState::Error
-            )
         {
             continue;
         }
-        profile.pending_native_validation = true;
+        profile.legacy_unpinned_replica = true;
+        profile.pending_native_validation =
+            profile.public.auth_state != ProviderAccountAuthState::Authenticated;
         changed = true;
     }
     changed
@@ -4516,13 +4722,18 @@ mod tests {
         }
     }
 
-    fn remove_native_validation_marker(registry_path: &Path) {
+    fn remove_current_replica_fields(registry_path: &Path) {
         let mut document: serde_json::Value =
             serde_json::from_slice(&fs::read(registry_path).unwrap()).unwrap();
-        document["profiles"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("pending_native_validation");
+        let profile = document["profiles"][0].as_object_mut().unwrap();
+        for field in [
+            "pending_native_validation",
+            "legacy_unpinned_replica",
+            "replica_root_identity",
+            "replica_previous_default_profile_id",
+        ] {
+            profile.remove(field);
+        }
         fs::write(registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
     }
 
@@ -4572,10 +4783,21 @@ mod tests {
             .expect("old native validation should record failure");
         drop(registry);
 
-        remove_native_validation_marker(&registry_path);
+        remove_current_replica_fields(&registry_path);
 
         let reopened = ProviderAccountProfileRegistry::open(&registry_path)
             .expect("legacy failed replica should reconcile");
+        reopened
+            .get("owner-a", "codex", "legacy-failed")
+            .expect("old worker data must remain registered until native validation");
+        let retained = reopened
+            .retain_failed_legacy_replica("owner-a", "codex", "legacy-failed")
+            .expect("failed old replica should be retained")
+            .expect("old root should exist");
+        assert_eq!(
+            fs::read(retained.join("codex/auth.json")).unwrap(),
+            br#"{"token":"fixture"}"#
+        );
         assert!(
             reopened.get("owner-a", "codex", "legacy-failed").is_err(),
             "a failed base-format replica must not block corrected materialization"
@@ -4610,10 +4832,18 @@ mod tests {
             )
             .expect("old native validation should record failure");
         drop(registry);
-        remove_native_validation_marker(&registry_path);
+        remove_current_replica_fields(&registry_path);
 
         let reopened = ProviderAccountProfileRegistry::open(&registry_path)
             .expect("legacy failed OpenCode replica should reconcile");
+        let retained = reopened
+            .retain_failed_legacy_replica("owner-a", "opencode", "legacy-opencode")
+            .expect("failed old OpenCode replica should be retained")
+            .expect("old root should exist");
+        assert_eq!(
+            fs::read(retained.join("data/opencode/auth.json")).unwrap(),
+            br#"{"token":"fixture"}"#
+        );
         assert!(reopened
             .get("owner-a", "opencode", "legacy-opencode")
             .is_err());
@@ -4653,13 +4883,16 @@ mod tests {
         fs::write(&credential, br#"{"token":"worker-owned"}"#)
             .expect("worker may rotate credentials");
         drop(registry);
-        remove_native_validation_marker(&registry_path);
+        remove_current_replica_fields(&registry_path);
 
         let reopened = ProviderAccountProfileRegistry::open(&registry_path)
             .expect("legacy authenticated profile should survive reopen");
         reopened
             .get("owner-a", "codex", "legacy-valid")
             .expect("worker profile should remain registered");
+        reopened
+            .pin_validated_legacy_replica("owner-a", "codex", "legacy-valid")
+            .expect("authenticated old worker profile should be pinned without replacement");
         assert_eq!(
             fs::read(&credential).unwrap(),
             br#"{"token":"worker-owned"}"#
