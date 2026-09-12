@@ -26,6 +26,8 @@ pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 // Keep only small worker-generated IDs, not completed agents or prompt history.
 // Expiry or a worker restart must fail closed rather than infer successful cleanup.
 const COMPLETED_WORKER_CLEANUP_LIMIT: usize = 256;
+// Worker heartbeats intentionally do not renew this absolute safety ceiling.
+pub(crate) const REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS: u64 = 60 * 60 * 1_000;
 
 fn remember_completed_cleanup(completed: &mut VecDeque<String>, id: &str) -> Option<String> {
     let mut evicted = None;
@@ -341,6 +343,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
             self.app.completed_execution_lease_callers.remove(&evicted);
         }
         Ok(())
+    }
+
+    pub(crate) fn reconcile_expired_execution_leases(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<Vec<String>, DaemonError> {
+        if self.app.config.kernel_runtime_role
+            != crate::config::KernelRuntimeRole::RemoteLeaseWorker
+        {
+            return Ok(Vec::new());
+        }
+        let expired_lease_ids = self
+            .app
+            .execution_leases
+            .values()
+            .filter(|lease| {
+                now_ms.saturating_sub(lease.created_at_ms)
+                    >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+            })
+            .map(|lease| lease.id.clone())
+            .collect::<Vec<_>>();
+        for lease_id in &expired_lease_ids {
+            self.destroy_execution_lease(lease_id)?;
+        }
+        Ok(expired_lease_ids)
     }
 
     pub(crate) fn destroy_execution_lease_for_caller(

@@ -60,6 +60,108 @@ fn execution_lease_capacity_rejects_concurrent_lease_and_reopens_after_destroy()
 }
 
 #[test]
+fn expired_worker_execution_lease_reconciliation_cleans_up_once_and_reopens_capacity() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
+    let mut app = DaemonApp::bootstrap(config).expect("worker should boot");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "home-session",
+            "home-agent",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should create");
+    let worktree = std::env::temp_dir().join(format!(
+        "chariox-expired-worker-lease-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "dev-stub",
+            "default",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("leased agent should create");
+    assert!(!app.relay_registration().accepting_remote_leases);
+
+    let reaped = RemoteLeaseRuntime::new(&mut app)
+        .reconcile_expired_execution_leases(
+            lease
+                .created_at_ms
+                .saturating_add(crate::app::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS)
+                .saturating_add(1),
+        )
+        .expect("expired lease reconciliation should complete");
+
+    assert_eq!(reaped, vec![lease.id.clone()]);
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+    assert!(app
+        .attachments
+        .get_attachment(&leased_agent.backing_attachment_id)
+        .is_err());
+    assert!(app
+        .agents
+        .get_agent(&leased_agent.backing_agent_id)
+        .is_err());
+    assert!(app
+        .sessions()
+        .get_session(&leased_agent.backing_session_id)
+        .is_err());
+    let registration = app.relay_registration();
+    assert!(registration.accepting_remote_leases);
+    assert_eq!(registration.leased_agent_count, 0);
+
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .reconcile_expired_execution_leases(u64::MAX)
+        .expect("repeated reconciliation should be idempotent")
+        .is_empty());
+    assert!(app.relay_registration().accepting_remote_leases);
+    std::fs::remove_dir_all(worktree).expect("leased worktree should clean up");
+}
+
+#[test]
+fn unexpired_worker_execution_lease_reconciliation_leaves_runtime_untouched() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
+    let mut app = DaemonApp::bootstrap(config).expect("worker should boot");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "home-session",
+            "home-agent",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should create");
+
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .reconcile_expired_execution_leases(
+            lease
+                .created_at_ms
+                .saturating_add(crate::app::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS)
+                .saturating_sub(1),
+        )
+        .expect("unexpired lease reconciliation should complete")
+        .is_empty());
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+    assert!(!app.relay_registration().accepting_remote_leases);
+}
+
+#[test]
 fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
