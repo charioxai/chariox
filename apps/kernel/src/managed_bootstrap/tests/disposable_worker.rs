@@ -1,7 +1,5 @@
 use super::*;
-use crate::config::{
-    load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity,
-};
+use crate::config::{load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity};
 use crate::managed_bootstrap::cloud::{
     DisposableWorkerBootstrapResult, DisposableWorkerEnrollmentReceipt,
     DisposableWorkerExchangeOutcome, DisposableWorkerExchangeRequest,
@@ -184,11 +182,8 @@ fn pristine_disposable_worker_initializes_the_envelope_bound_identity_and_local_
     let fixture = Fixture::new("worker-pristine-identity");
     let previous_home = std::env::var_os("CHARIOX_HOME");
     std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-    let binding = worker_binding_for_identity(
-        &fixture,
-        "cloud-worker-machine-1",
-        "cloud-worker-kernel-1",
-    );
+    let binding =
+        worker_binding_for_identity(&fixture, "cloud-worker-machine-1", "cloud-worker-kernel-1");
     write_worker_envelope(&fixture, &binding);
     let cloud = WorkerCloud::new(FirstExchange::Accept);
 
@@ -221,11 +216,8 @@ fn disposable_worker_rejects_a_preexisting_mismatched_identity() {
         fixture.config.kernel_port,
     )
     .unwrap();
-    let binding = worker_binding_for_identity(
-        &fixture,
-        "cloud-worker-machine-2",
-        "cloud-worker-kernel-2",
-    );
+    let binding =
+        worker_binding_for_identity(&fixture, "cloud-worker-machine-2", "cloud-worker-kernel-2");
     write_worker_envelope(&fixture, &binding);
     let cloud = WorkerCloud::new(FirstExchange::Accept);
 
@@ -346,7 +338,9 @@ fn ordinary_http_client_does_not_forge_the_home_kernel_caller_boundary() {
     let error = HttpBootstrapCloudClient::default()
         .exchange_disposable_worker("https://cloud.example.test", &request)
         .unwrap_err();
-    assert!(error.to_string().contains("verified home-kernel sender proof"));
+    assert!(error
+        .to_string()
+        .contains("verified home-kernel sender proof"));
 }
 
 #[test]
@@ -364,11 +358,19 @@ fn disposable_worker_envelope_is_strict_and_distinct() {
     let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
     value["unexpected"] = serde_json::json!(true);
-    fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
     assert!(BootstrapEnvelope::read(&fixture.config.envelope_path).is_err());
     value.as_object_mut().unwrap().remove("unexpected");
     value["expiresAt"] = serde_json::json!("tomorrow");
-    fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
     assert!(BootstrapEnvelope::read(&fixture.config.envelope_path).is_err());
     let cloud = WorkerCloud::new(FirstExchange::Accept);
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
@@ -394,7 +396,10 @@ fn disposable_worker_exchanges_once_and_persists_the_complete_binding() {
         panic!("disposable worker receipt must exist")
     };
     assert_eq!(receipt.binding, binding);
-    assert_eq!(receipt.binding_digest, disposable_worker_binding_digest(&binding).unwrap());
+    assert_eq!(
+        receipt.binding_digest,
+        disposable_worker_binding_digest(&binding).unwrap()
+    );
     assert_eq!(
         receipt.enrollment_receipt.as_ref().unwrap().grant_id,
         "grant-1"
@@ -484,7 +489,10 @@ fn disposable_worker_recovers_missing_profile_and_rejects_any_stale_profile() {
     fs::remove_file(&profile_path).unwrap();
     prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
     let restored = load_managed_cloud_relay_profile().unwrap();
-    assert_eq!(restored.machine_id.as_deref(), Some(binding.worker_machine_id.as_str()));
+    assert_eq!(
+        restored.machine_id.as_deref(),
+        Some(binding.worker_machine_id.as_str())
+    );
 
     let mut persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
@@ -596,7 +604,11 @@ fn disposable_worker_recreated_envelope_is_removed_only_for_the_exact_receipt_bi
         &serde_json::from_value(value["binding"].clone()).unwrap()
     )
     .unwrap());
-    fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
     fixture.cleanup();
@@ -635,7 +647,11 @@ fn disposable_worker_binding_mismatch_and_terminal_rejection_remove_envelope() {
         serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
     value["expiresAt"] =
         serde_json::json!((fixture.now + chrono::Duration::minutes(31)).to_rfc3339());
-    fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
     let cloud = WorkerCloud::new(FirstExchange::Accept);
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
@@ -644,7 +660,11 @@ fn disposable_worker_binding_mismatch_and_terminal_rejection_remove_envelope() {
     let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
     value["binding"]["allocationId"] = serde_json::json!("allocation-tampered");
-    fs::write(&fixture.config.envelope_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
     let cloud = WorkerCloud::new(FirstExchange::Accept);
     assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
     assert!(!fixture.config.envelope_path.exists());
@@ -671,7 +691,9 @@ fn existing_supervisor_inherits_disposable_worker_environment() {
     let cloud = include_str!("../cloud.rs");
     assert!(cloud.contains("/v1/disposable-workers/bootstrap/exchange"));
     assert_eq!(
-        cloud.matches("/v1/managed-kernels/bootstrap/exchange").count(),
+        cloud
+            .matches("/v1/managed-kernels/bootstrap/exchange")
+            .count(),
         1
     );
     assert!(cloud.contains("verified home-kernel sender proof"));

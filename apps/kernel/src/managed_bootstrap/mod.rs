@@ -185,12 +185,8 @@ fn prepare_managed_kernel(
         &config.kernel_binary,
     )?;
     let disposable_binding = match (receipt.as_ref(), envelope.as_ref()) {
-        (Some(BootstrapReceiptDocument::DisposableWorker(receipt)), _) => {
-            Some(&receipt.binding)
-        }
-        (None, Some(BootstrapEnvelope::DisposableWorker(envelope))) => {
-            Some(&envelope.binding)
-        }
+        (Some(BootstrapReceiptDocument::DisposableWorker(receipt)), _) => Some(&receipt.binding),
+        (None, Some(BootstrapEnvelope::DisposableWorker(envelope))) => Some(&envelope.binding),
         _ => None,
     };
     let identity = if let Some(binding) = disposable_binding {
@@ -223,7 +219,9 @@ fn prepare_managed_kernel(
             let envelope = match envelope {
                 Some(BootstrapEnvelope::ManagedEnvironment(value)) => Some(value),
                 Some(BootstrapEnvelope::DisposableWorker(_)) => {
-                    return Err(bootstrap_error("bootstrap envelope conflicts with its receipt"));
+                    return Err(bootstrap_error(
+                        "bootstrap envelope conflicts with its receipt",
+                    ));
                 }
                 None => None,
             };
@@ -241,7 +239,9 @@ fn prepare_managed_kernel(
             let envelope = match envelope {
                 Some(BootstrapEnvelope::DisposableWorker(value)) => Some(value),
                 Some(BootstrapEnvelope::ManagedEnvironment(_)) => {
-                    return Err(bootstrap_error("bootstrap envelope conflicts with its receipt"));
+                    return Err(bootstrap_error(
+                        "bootstrap envelope conflicts with its receipt",
+                    ));
                 }
                 None => None,
             };
@@ -440,17 +440,17 @@ fn resume_disposable_worker(
         };
     }
     validate_disposable_worker_result(receipt)?;
-    let receipt_relay = receipt.cloud_relay.clone().ok_or_else(|| {
-        bootstrap_error("disposable worker relay receipt is missing")
-    })?;
+    let receipt_relay = receipt
+        .cloud_relay
+        .clone()
+        .ok_or_else(|| bootstrap_error("disposable worker relay receipt is missing"))?;
     let expected_profile = persisted_profile(receipt_relay);
     let profile = match load_managed_cloud_relay_profile() {
         Some(profile) => profile,
         None => {
             persist_managed_cloud_relay_profile(expected_profile.clone())?;
-            load_managed_cloud_relay_profile().ok_or_else(|| {
-                bootstrap_error("disposable worker Cloud profile did not persist")
-            })?
+            load_managed_cloud_relay_profile()
+                .ok_or_else(|| bootstrap_error("disposable worker Cloud profile did not persist"))?
         }
     };
     if profile != expected_profile {
@@ -507,12 +507,7 @@ fn exchange_disposable_worker(
     };
     match cloud.exchange_disposable_worker(&pending_receipt.cloud_api_url, &request)? {
         DisposableWorkerExchangeOutcome::Accepted(enrollment_receipt) => {
-            accept_disposable_worker_enrollment(
-                config,
-                cloud,
-                pending_receipt,
-                enrollment_receipt,
-            )
+            accept_disposable_worker_enrollment(config, cloud, pending_receipt, enrollment_receipt)
         }
         DisposableWorkerExchangeOutcome::Pending => Err(bootstrap_error(
             "Cloud has not completed the disposable worker bootstrap exchange",
@@ -627,9 +622,10 @@ fn validate_disposable_worker_result(
 ) -> Result<(), DaemonError> {
     validate_disposable_worker_enrollment(receipt)?;
     let binding = &receipt.binding;
-    let relay = receipt.cloud_relay.as_ref().ok_or_else(|| {
-        bootstrap_error("disposable worker relay receipt is missing")
-    })?;
+    let relay = receipt
+        .cloud_relay
+        .as_ref()
+        .ok_or_else(|| bootstrap_error("disposable worker relay receipt is missing"))?;
     if relay.machine_id != binding.worker_machine_id
         || relay.user_id != binding.user_id
         || relay.realm_id != binding.realm_id
@@ -655,9 +651,10 @@ fn validate_disposable_worker_enrollment(
     receipt: &DisposableWorkerBootstrapReceipt,
 ) -> Result<(), DaemonError> {
     let binding = &receipt.binding;
-    let enrollment = receipt.enrollment_receipt.as_ref().ok_or_else(|| {
-        bootstrap_error("disposable worker enrollment receipt is missing")
-    })?;
+    let enrollment = receipt
+        .enrollment_receipt
+        .as_ref()
+        .ok_or_else(|| bootstrap_error("disposable worker enrollment receipt is missing"))?;
     if !valid_disposable_identifier(&enrollment.grant_id)
         || enrollment.allocation_id != binding.allocation_id
         || enrollment.worker_machine_id != binding.worker_machine_id

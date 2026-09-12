@@ -803,6 +803,7 @@ function completedTurnAction(
     completedAtMs: 100,
     durationMs: 50,
     changedPaths: [],
+    settlementStatus: "completed",
     undoAvailable: false,
     undoUnavailableReason: null,
     ...overrides,

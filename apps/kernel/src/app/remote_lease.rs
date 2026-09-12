@@ -359,8 +359,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .execution_leases
             .values()
             .filter(|lease| {
-                now_ms.saturating_sub(lease.created_at_ms)
-                    >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+                now_ms.saturating_sub(lease.created_at_ms) >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
             })
             .map(|lease| lease.id.clone())
             .collect::<Vec<_>>();
