@@ -4125,6 +4125,69 @@ mod tests {
     }
 
     #[test]
+    fn replica_rollback_reopens_after_interrupted_root_staging() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("first", false))
+            .expect("materialize first replica");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("previous", true))
+            .expect("materialize previous default");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", true))
+            .expect("materialize failed default");
+        let managed_root = root.join("provider-accounts/owner-a/codex/failed");
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        fs::rename(&managed_root, &rollback_root)
+            .expect("simulate interruption after rollback root staging");
+        drop(registry);
+
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("reopen interrupted registry");
+        assert!(reopened.get("owner-a", "codex", "failed").is_err());
+        assert_eq!(
+            reopened
+                .get("owner-a", "codex", "default")
+                .expect("restore exact prior default")
+                .profile_id,
+            "previous"
+        );
+        assert!(!rollback_root.exists(), "staged root must be cleaned");
+        reopened
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", true))
+            .expect("corrected materialization may retry after reopen");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replica_materialization_cleans_committed_rollback_residue_before_retry() {
+        let (root, registry) = fixture();
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect("commit replica rollback");
+        let managed_root = root.join("provider-accounts/owner-a/codex/failed");
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        fs::create_dir_all(rollback_root.join("codex"))
+            .expect("simulate interruption before staged-root cleanup");
+
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("retry corrected materialization");
+        assert!(
+            !rollback_root.exists(),
+            "committed rollback residue must be cleaned"
+        );
+        registry
+            .rollback_materialized_replica("owner-a", "codex", "failed")
+            .expect("later failed validation can roll back without a collision");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn replica_rollback_rejects_an_authenticated_worker_owned_profile() {
         let (root, registry) = fixture();
         registry
