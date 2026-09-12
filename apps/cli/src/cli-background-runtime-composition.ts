@@ -239,26 +239,28 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     recordDaemonActivity,
   })
 
-  const refreshAssistantMessageHistory = (agentId: string) => {
+  const refreshAssistantMessageHistory = (agentId: string): Promise<boolean> => {
     if (!deps.isAttached()) {
-      return
+      return Promise.resolve(false)
     }
     const session = deps.sessionState()
-    void deps.refreshAgentHistories(session, [agentId]).then(() => {
+    return deps.refreshAgentHistories(session, [agentId]).then(() => {
       if (!deps.isAttached() || deps.sessionState().id !== session.id) {
-        return
+        return false
       }
       deps.syncVisibleTranscriptPreview()
       deps.appLogger?.debug?.("refreshed completed assistant history", {
         session_id: session.id,
         agent_id: agentId,
       })
+      return true
     }).catch((error: unknown) => {
       deps.appLogger?.warn?.("failed to refresh completed assistant history", {
         session_id: session.id,
         agent_id: agentId,
         error: deps.formatError(error),
       })
+      return false
     })
   }
 
