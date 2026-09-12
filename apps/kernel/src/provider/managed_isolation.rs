@@ -27,7 +27,7 @@ const BWRAP_PATH: &str = "/usr/bin/bwrap";
 const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
 #[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
@@ -102,13 +102,20 @@ pub(crate) fn provider_reported_path_on_kernel(
         return Some(reported_path.to_path_buf());
     }
 
-    let (source, destination) = run
-        .pty_args()
+    let args = run.pty_args();
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let (source, destination) = args[..separator]
         .windows(3)
         .filter(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind"))
         .filter_map(|args| {
             let source = PathBuf::from(&args[1]);
             let destination = PathBuf::from(&args[2]);
+            if !destination.starts_with(SANDBOX_ACCOUNT_ROOT) {
+                return None;
+            }
             if reported_path.starts_with(&destination) {
                 Some((source, destination))
             } else if reported_path.starts_with(&source) {
@@ -883,6 +890,9 @@ mod tests {
                 pty_target: None,
                 pty_program: Some("/usr/bin/bwrap".to_string()),
                 pty_args: vec![
+                    "--ro-bind".to_string(),
+                    "/".to_string(),
+                    "/".to_string(),
                     "--bind".to_string(),
                     host_account.display().to_string(),
                     sandbox_account.display().to_string(),
@@ -933,6 +943,18 @@ mod tests {
             ),
             None,
             "provider paths must not escape their kernel-owned bind",
+        );
+        let outside_bind = root.join("outside-bind.jsonl");
+        std::fs::write(&outside_bind, "secret\n").expect("outside fixture should exist");
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                outside_bind
+                    .to_str()
+                    .expect("outside fixture should be utf8"),
+            ),
+            None,
+            "the Bubblewrap root binding must not authorize arbitrary host paths",
         );
         #[cfg(unix)]
         {
