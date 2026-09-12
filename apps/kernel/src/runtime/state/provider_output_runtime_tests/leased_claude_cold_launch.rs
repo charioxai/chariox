@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::transport::relay_peer::{
-    REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE, RelayAgentExecutionProfile,
-    RemoteGitTurnContext,
+    RelayAgentExecutionProfile, RemoteGitTurnContext,
+    REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -43,6 +43,7 @@ impl Drop for FixtureCleanup {
 fn fixture_claude_script() -> &'static str {
     r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then printf 'Claude Code 2.1.207\n'; exit 0; fi
+if [[ "$1" == "auth" && "$2" == "status" && "$3" == "--json" ]]; then printf '%s\n' '{"loggedIn":true,"email":"worker@example.com","subscriptionType":"Pro"}'; exit 0; fi
 : > "$CHARIOX_TEST_RECEIVED"
 while IFS= read -r line; do :; done
 "#
@@ -67,7 +68,8 @@ async fn cold_claude_launch_without_portable_worker_credentials_requires_home_fa
 }
 
 #[tokio::test]
-async fn cold_native_claude_launch_with_portable_worker_credentials_does_not_require_home_credential() {
+async fn cold_native_claude_launch_with_portable_worker_credentials_does_not_require_home_credential(
+) {
     let Some(fixture_root) = std::env::var_os(NATIVE_PORTABLE_CHILD_ROOT) else {
         run_isolated_regular_child(NATIVE_PORTABLE_CHILD_ROOT, NATIVE_PORTABLE_TEST);
         return;
@@ -145,41 +147,66 @@ async fn run_worker_cold_launch_scenario(fixture_root: PathBuf, native: bool, po
     config.local_socket_path = root.join("kernel.sock");
     config = config.with_session_history_root(root.join("history"));
     config.user_config.state.path = Some(root.join("state.db").display().to_string());
-    config.user_config.history.operational.path = Some(root.join("events.db").display().to_string());
+    config.user_config.history.operational.path =
+        Some(root.join("events.db").display().to_string());
     config.user_config.artifacts.operational.root =
         Some(root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =
         Some(root.join("artifacts.db").display().to_string());
     let app = crate::app::DaemonApp::bootstrap(config).expect("worker bootstrap");
     cleanup.providers = Some(app.providers().clone());
-    let account = app
-        .provider_account_profile_registry()
-        .create_managed("owner", "claude", "fixture")
-        .expect("isolated worker account profile");
-    if portable {
-        let claude_config_dir = PathBuf::from(
-            app.provider_account_profile_registry()
-                .resolve_environment("owner", "claude", &account.profile_id)
-                .expect("Claude environment should resolve")["CLAUDE_CONFIG_DIR"]
-                .clone(),
-        );
-        std::fs::write(
-            claude_config_dir.join(".credentials.json"),
-            br#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#,
-        )
-        .expect("portable Claude credential fixture should write");
-    }
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let lease = runtime
         .create_relay_execution_lease("home", "room", "agent", false, "owner")
         .await
         .expect("execution lease");
+    // The realistic worker setup materializes the transferred portable profile,
+    // which persists Authenticated state before any cold launch arrives.
+    let profile_id = if portable {
+        let context = crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+            home_kernel_id: "home".to_string(),
+            home_session_id: "room".to_string(),
+            home_agent_id: "agent".to_string(),
+            execution_lease_id: lease.id.clone(),
+        };
+        let materialization = crate::account_profile::ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner".to_string(),
+                provider: "claude".to_string(),
+                profile_id: "fixture".to_string(),
+                label: "fixture".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+                is_default: false,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: ".credentials.json".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD
+                    .encode(br#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#),
+            }],
+            generated_at_ms: 1,
+        };
+        let profile = crate::app::RemoteLeaseRuntime::new(&mut *app.lock().await)
+            .ensure_remote_provider_account(context, materialization)
+            .expect("portable Claude credentials must install the worker profile");
+        assert_eq!(
+            profile.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
+        profile.profile_id
+    } else {
+        app.lock()
+            .await
+            .provider_account_profile_registry()
+            .create_managed("owner", "claude", "fixture")
+            .expect("isolated worker account profile")
+            .profile_id
+    };
     let leased = runtime
         .create_relay_leased_agent(
             &lease.id,
             "claude",
-            &account.profile_id,
+            &profile_id,
             Some("sonnet".to_string()),
             None,
             None,
@@ -197,7 +224,7 @@ async fn run_worker_cold_launch_scenario(fixture_root: PathBuf, native: bool, po
                 &leased.id,
                 "claude",
                 "claude",
-                &account.profile_id,
+                &profile_id,
                 "sonnet",
                 None,
                 None,
@@ -262,9 +289,8 @@ async fn run_worker_cold_launch_scenario(fixture_root: PathBuf, native: bool, po
         )
         .await;
     if portable {
-        let (run_id, _outcome) = result.expect(
-            "portable worker Claude must cold-launch without a home credential",
-        );
+        let (run_id, _outcome) =
+            result.expect("portable worker Claude must cold-launch without a home credential");
         assert!(!run_id.is_empty());
         assert_worker_provider_received(&fixture_root.join("received")).await;
     } else {

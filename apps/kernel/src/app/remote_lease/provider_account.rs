@@ -72,6 +72,25 @@ impl RemoteLeaseRuntime<'_> {
                 && crate::account_profile::materialization_has_portable_claude_credentials(
                     &materialization,
                 );
+        // A worker-owned profile is authoritative. Once a profile is installed it
+        // is never rejected, overwritten, or invalidated by a later home
+        // materialization: missing, nonportable, or different portable credentials
+        // all keep the worker's installed profile. The matching lookup below
+        // preserves the lease/owner/provider/profile binding.
+        if let Some(profile) = self
+            .app
+            .provider_account_profile_registry()
+            .list(
+                &lease.owner_user_id,
+                Some(&materialization.profile.provider),
+            )?
+            .into_iter()
+            .find(|profile| profile.profile_id == materialization.profile.profile_id)
+        {
+            return self.validate_remote_provider_account(profile, claude_portable_materialization);
+        }
+        // Fresh profiles still fail closed before provisioning: a Claude payload
+        // carrying empty or non-refreshable `.credentials.json` is never created.
         if crate::provider::canonical_provider_family(&materialization.profile.provider)
             == Some("claude")
             && materialization
@@ -84,19 +103,6 @@ impl RemoteLeaseRuntime<'_> {
                 operation: "ensure remote provider account",
                 message: "Claude provider credentials are empty or not refreshable and cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path instead".to_string(),
             });
-        }
-
-        if let Some(profile) = self
-            .app
-            .provider_account_profile_registry()
-            .list(
-                &lease.owner_user_id,
-                Some(&materialization.profile.provider),
-            )?
-            .into_iter()
-            .find(|profile| profile.profile_id == materialization.profile.profile_id)
-        {
-            return self.validate_remote_provider_account(profile, claude_portable_materialization);
         }
 
         materialization.profile.origin =
@@ -159,6 +165,30 @@ fn remote_provider_account_requires_auth_validation(
     let claude = crate::provider::canonical_provider_family(provider) == Some("claude");
     (claude && claude_portable_materialization || !claude)
         && auth_state != ProviderAccountAuthState::Authenticated
+}
+
+/// Shared worker-side cold-launch policy for Claude leases. The worker's
+/// selected registered profile is authoritative: when it carries usable
+/// portable credentials the worker launches without a home Chariox-vault setup
+/// token. Only a worker that truly lacks usable provider-native credentials
+/// replies with the typed credential-required diagnostic so home can resolve
+/// its vault credential and retry. A home-provided credential is never a
+/// blocker and is passed through as an optional fallback/additional credential.
+pub(crate) fn remote_worker_claude_launch_requires_home_credential(
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    request: &crate::provider::LaunchProviderRequest,
+    provider_launch_credential: Option<
+        &crate::transport::relay_peer::RemoteProviderLaunchCredential,
+    >,
+) -> Result<bool, DaemonError> {
+    if crate::provider::canonical_provider_family(&request.provider) != Some("claude") {
+        return Ok(false);
+    }
+    if provider_launch_credential.is_some() {
+        return Ok(false);
+    }
+    Ok(!profiles
+        .has_portable_claude_credentials(&request.owner_user_id, &request.account_profile)?)
 }
 
 #[cfg(test)]
@@ -630,26 +660,25 @@ exit 2
         std::fs::create_dir_all(&root).unwrap();
         let _cleanup = install_claude_auth_fixture(&root);
         let (mut app, context) = remote_account_fixture(&root);
-        let materialization =
-            |contents_base64: Option<&str>| ProviderAccountMaterialization {
-                profile: crate::account_profile::ProviderAccountReplicaMetadata {
-                    owner_user_id: "owner-a".to_string(),
-                    provider: "claude".to_string(),
-                    profile_id: "claude-work".to_string(),
-                    label: "Claude Work".to_string(),
-                    origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
-                    is_default: false,
-                },
-                files: contents_base64
-                    .map(|contents_base64| {
-                        vec![crate::account_profile::ProviderAccountMaterializationFile {
-                            relative_path: ".credentials.json".to_string(),
-                            contents_base64: contents_base64.to_string(),
-                        }]
-                    })
-                    .unwrap_or_default(),
-                generated_at_ms: 1,
-            };
+        let materialization = |contents_base64: Option<&str>| ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "claude".to_string(),
+                profile_id: "claude-work".to_string(),
+                label: "Claude Work".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+                is_default: false,
+            },
+            files: contents_base64
+                .map(|contents_base64| {
+                    vec![crate::account_profile::ProviderAccountMaterializationFile {
+                        relative_path: ".credentials.json".to_string(),
+                        contents_base64: contents_base64.to_string(),
+                    }]
+                })
+                .unwrap_or_default(),
+            generated_at_ms: 1,
+        };
         let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
 
         let initial = RemoteLeaseRuntime::new(&mut app)

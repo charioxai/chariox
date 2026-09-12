@@ -16,8 +16,11 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
 ) -> Result<String, DaemonError> {
     let mut attempt = 0_u32;
     let transport_retry_started_at = tokio::time::Instant::now();
-    let mut provider_launch_credential =
-        remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+    // Home always submits a cold remote launch without a secret first. The
+    // worker's registered profile/portable credentials decide whether it can
+    // launch; only the typed credential-required diagnostic makes home resolve
+    // its Chariox-vault setup token and retry below.
+    let mut provider_launch_credential = None;
     loop {
         if let Some(error) = remote_prompt_dispatch_unavailable_slice_error(state, dispatch) {
             return Err(error);
@@ -65,8 +68,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         if remote_prompt_dispatch_should_refresh_binding(&result) {
             result = match refresh_remote_prompt_binding(state, dispatch).await {
                 Ok(()) => {
-                    provider_launch_credential =
-                        remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+                    provider_launch_credential = None;
                     submit_remote_prompt_to_worker(
                         state,
                         dispatch,
@@ -119,27 +121,6 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
             result => return result,
         }
     }
-}
-
-async fn remote_prompt_provider_launch_credential_if_needed(
-    state: &KernelRuntimeState,
-    dispatch: &crate::app::KernelRemotePromptDispatch,
-) -> Result<Option<crate::transport::relay_peer::RemoteProviderLaunchCredential>, DaemonError> {
-    let agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
-    if agent
-        .remote_execution()
-        .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
-        .is_some()
-    {
-        return Ok(None);
-    }
-    state
-        .resolve_remote_provider_launch_credential(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            "launch remote provider run",
-        )
-        .await
 }
 
 async fn refresh_remote_prompt_binding(
@@ -340,8 +321,8 @@ fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonE
     remote_prompt_error_should_refresh_binding(error)
 }
 
-fn remote_prompt_dispatch_requires_provider_launch_credential(
-    result: &Result<String, DaemonError>,
+pub(super) fn remote_prompt_dispatch_requires_provider_launch_credential<T>(
+    result: &Result<T, DaemonError>,
 ) -> bool {
     let Err(DaemonError::LocalTransport { message, .. }) = result else {
         return false;
@@ -466,7 +447,7 @@ mod tests {
 
     #[test]
     fn remote_prompt_dispatch_retries_with_a_credential_only_when_worker_requests_it() {
-        let required = Err(DaemonError::LocalTransport {
+        let required: Result<String, DaemonError> = Err(DaemonError::LocalTransport {
             operation: "read relay peer response",
             message: format!(
                 "transport error: {}: worker run was lost",
@@ -477,7 +458,7 @@ mod tests {
             &required
         ));
 
-        let unrelated = Err(DaemonError::LocalTransport {
+        let unrelated: Result<String, DaemonError> = Err(DaemonError::LocalTransport {
             operation: "read relay peer response",
             message: "worker run was lost".to_string(),
         });

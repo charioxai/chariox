@@ -22,6 +22,7 @@ mod skill_sync;
 
 pub(crate) use projection::RemoteProviderFailure;
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
+pub(crate) use provider_account::remote_worker_claude_launch_requires_home_credential;
 
 // Keep only small worker-generated IDs, not completed agents or prompt history.
 // Expiry or a worker restart must fail closed rather than infer successful cleanup.
@@ -359,8 +360,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .execution_leases
             .values()
             .filter(|lease| {
-                now_ms.saturating_sub(lease.created_at_ms)
-                    >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+                now_ms.saturating_sub(lease.created_at_ms) >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
             })
             .map(|lease| lease.id.clone())
             .collect::<Vec<_>>();

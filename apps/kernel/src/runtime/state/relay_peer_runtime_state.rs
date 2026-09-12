@@ -360,6 +360,19 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
+        if crate::app::remote_worker_claude_launch_requires_home_credential(
+            &self.owned.provider_account_profiles,
+            &launch_request,
+            provider_launch_credential.as_ref(),
+        )? {
+            return Err(DaemonError::LocalTransport {
+                operation: "launch remote native provider run",
+                message: format!(
+                    "{}: the worker must relaunch the selected Claude profile",
+                    crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                ),
+            });
+        }
         self.launch_provider_for_remote_lease_detached(launch_request, provider_launch_credential)
             .await
     }
@@ -471,9 +484,11 @@ impl KernelRuntimeState {
                 provider_run_id.clone()
             }
             crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
-                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                    && provider_launch_credential.is_none()
-                {
+                if crate::app::remote_worker_claude_launch_requires_home_credential(
+                    &self.owned.provider_account_profiles,
+                    &request,
+                    provider_launch_credential.as_ref(),
+                )? {
                     return Err(DaemonError::LocalTransport {
                         operation: "launch remote provider without credential",
                         message: format!(
