@@ -42,7 +42,7 @@ function createDeferred<T>() {
   return { promise, resolve }
 }
 
-test("resync catches up, applies the projected session, refreshes panes, and marks connected", async () => {
+test("focused-agent resync forces authoritative pane reconciliation", async () => {
   let currentSession: RuntimeSession = makeSession({ active_prompt: activePrompt() })
   const events: string[] = []
   const controller = createKernelResyncController({
@@ -62,7 +62,7 @@ test("resync catches up, applies the projected session, refreshes panes, and mar
     tryGetProviderRun: async () => null,
     sameProviderRun: (currentRun, nextRun) => currentRun.id === nextRun.id,
     projectSession: (session, providerRun) => ({ ...session, workspace_label: providerRun?.id ?? null }),
-    shouldRefreshAgentPanesForSessionChange: (session) => session.alias === "next",
+    shouldRefreshAgentPanesForSessionChange: () => false,
     applySession: (session) => {
       currentSession = session
       events.push("apply-session")
@@ -79,17 +79,17 @@ test("resync catches up, applies the projected session, refreshes panes, and mar
     onProviderRunCleared: () => {},
     onProviderRunRefreshed: () => {},
     onResyncStart: (_sessionId, _attachmentId, reason) => {
-      assert.equal(reason, "replay_gap")
+      assert.equal(reason, "focused_agent_changed")
       events.push("start")
     },
     onResyncComplete: (reason) => {
-      assert.equal(reason, "replay_gap")
+      assert.equal(reason, "focused_agent_changed")
       events.push("complete")
     },
     onResyncFailed: () => {},
   })
 
-  await controller.resync("replay_gap")
+  await controller.resync("focused_agent_changed")
 
   assert.deepEqual(events, [
     "start",
