@@ -338,6 +338,58 @@ test("kernel event dispatch retries failed history backfills and deduplicates su
   assert.deepEqual(refreshAttempts, ["agent-1", "agent-1"])
 })
 
+test("kernel event dispatch retries a failed backfill awaited by a concurrent duplicate", async () => {
+  const refreshAttempts: string[] = []
+  const refreshResolvers: Array<(refreshed: boolean) => void> = []
+  const harness = createHarness({
+    refreshAssistantMessageHistory: (agentId) => {
+      refreshAttempts.push(agentId)
+      return new Promise((resolve) => refreshResolvers.push(resolve))
+    },
+  })
+  const dispatchCompletedTurn = (agentActivityRevision: number) => (
+    harness.controller.handleKernelEvent({
+      event: "agent_activity_changed",
+      session_id: "session-1",
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          last_completed_turn: {
+            turn_id: "turn-1",
+            prompt_id: "prompt-1",
+            provider_run_id: "run-1",
+            agent_id: "agent-1",
+            completed_at_ms: 1,
+            settlement_status: "completed",
+            changed_paths: [],
+            undo_available: false,
+          },
+        },
+      },
+      agent_activity_revision: agentActivityRevision,
+    })
+  )
+
+  const firstDispatch = dispatchCompletedTurn(10)
+  await Promise.resolve()
+  assert.deepEqual(refreshAttempts, ["agent-1"])
+
+  const duplicateDispatch = dispatchCompletedTurn(11)
+  await Promise.resolve()
+  assert.deepEqual(refreshAttempts, ["agent-1"])
+
+  refreshResolvers[0]?.(false)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(refreshAttempts, ["agent-1", "agent-1"])
+
+  refreshResolvers[1]?.(true)
+  await Promise.all([firstDispatch, duplicateDispatch])
+  await dispatchCompletedTurn(12)
+  assert.deepEqual(refreshAttempts, ["agent-1", "agent-1"])
+})
+
 test("kernel event dispatch applies provider run deltas without resyncing", async () => {
   const harness = createHarness()
 
