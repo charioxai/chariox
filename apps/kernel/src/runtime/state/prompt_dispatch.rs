@@ -131,9 +131,13 @@ impl KernelRuntimeState {
                 prompt.prompt(),
                 prompt.attachments(),
             )?;
+            let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+                &remote_execution.leased_agent_id,
+                &provider_run_id,
+            );
             owned.echo_steering_prompt_to_other_attachments(
                 session_id,
-                &provider_run_id,
+                &projected_provider_run_id,
                 agent_id,
                 prompt.id(),
                 prompt.source_attachment_id(),
@@ -142,10 +146,7 @@ impl KernelRuntimeState {
                 prompt.attachments(),
                 prompt.prompt_origin(),
             );
-            Ok(Some(crate::provider::projected_leased_provider_run_id(
-                &remote_execution.leased_agent_id,
-                &provider_run_id,
-            )))
+            Ok(Some(projected_provider_run_id))
         })
         .await
     }

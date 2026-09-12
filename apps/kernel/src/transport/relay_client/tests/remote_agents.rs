@@ -729,6 +729,28 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             direct_delivery_count, 1,
             "leased worker must receive one direct message"
         );
+        let direct_echoes = app_home
+            .lock()
+            .await
+            .terminal()
+            .output_records()
+            .iter()
+            .filter(|record| {
+                record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                    && String::from_utf8_lossy(&record.bytes)
+                        .contains("REMOTE_AGENT_MESSAGE_DIRECT")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(direct_echoes.len(), 1, "direct message should echo once");
+        assert_eq!(
+            direct_echoes[0].provider_run_id, projected_provider_run_id,
+            "the echo must identify the home-projected leased run, not the colliding local run"
+        );
+        assert_eq!(
+            direct_echoes[0].agent_id.as_deref(),
+            Some(remote_agent_id.as_str())
+        );
         let _ = shutdown_home_tx.send(true);
         let _ = shutdown_worker_tx.send(true);
         connector_home.await.expect("home connector should join");
@@ -916,6 +938,24 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         .started_next
         .expect("queued prompt must be promoted");
     assert_eq!(promoted.prompt(), "REMOTE_QUEUE_COMPLETION_DELIVERY\n");
+    let promoted_echoes = app_home
+        .lock()
+        .await
+        .terminal()
+        .output_records()
+        .iter()
+        .filter(|record| {
+            record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                && String::from_utf8_lossy(&record.bytes)
+                    .contains("REMOTE_QUEUE_COMPLETION_DELIVERY")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(promoted_echoes.len(), 1, "promoted prompt should echo once");
+    assert_eq!(
+        promoted_echoes[0].provider_run_id, projected_provider_run_id,
+        "the promoted echo must identify the home-projected leased run"
+    );
     let mut home = app_home.lock().await;
     let confirmed_run = home
         .agents()
