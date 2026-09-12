@@ -3970,6 +3970,45 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn replica_rollback_rejects_a_symlink_swapped_managed_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let (root, registry) = fixture();
+        let mut sibling = codex_replica_materialization("failed", false);
+        sibling.profile.owner_user_id = "owner-b".to_string();
+        registry
+            .materialize_replica("owner-b", &sibling)
+            .expect("materialize sibling replica");
+        registry
+            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .expect("materialize failed replica");
+
+        let owner_a_provider = root.join("provider-accounts/owner-a/codex");
+        let owner_b_provider = root.join("provider-accounts/owner-b/codex");
+        let preserved_owner_a = root.join("owner-a-provider-before-swap");
+        let sibling_credential = owner_b_provider.join("failed/codex/auth.json");
+        fs::rename(&owner_a_provider, &preserved_owner_a)
+            .expect("move owner-a provider directory aside");
+        symlink(&owner_b_provider, &owner_a_provider).expect("swap owner-a provider ancestor");
+
+        let result = registry.rollback_materialized_replica("owner-a", "codex", "failed");
+        assert!(result.is_err(), "rollback must reject a symlinked ancestor");
+        assert_eq!(
+            fs::read_to_string(&sibling_credential).expect("sibling credential must survive"),
+            r#"{"token":"fixture"}"#
+        );
+        registry
+            .get("owner-a", "codex", "failed")
+            .expect("failed replica registration must remain");
+
+        fs::remove_file(&owner_a_provider).expect("remove test symlink");
+        fs::rename(&preserved_owner_a, &owner_a_provider)
+            .expect("restore owner-a provider directory");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn replica_rollback_registry_failure_restores_registry_and_root_for_reopen() {
         let (root, registry) = fixture();
