@@ -452,7 +452,7 @@ exit 2
 
         let error = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(
-                context,
+                context.clone(),
                 materialization(
                     "opencode-invalid",
                     "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiIn19",
@@ -463,14 +463,47 @@ exit 2
         assert!(message.contains("OpenCode Zen"), "{message}");
         assert!(message.contains("not authenticated"), "{message}");
         assert!(!message.contains("eyJvcGVuY29kZSI"), "{message}");
-        let stored = app
-            .provider_account_profile_registry()
-            .get("owner-a", "opencode", "opencode-invalid")
-            .expect("failed validation should still persist the observed state");
+        let corrected = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context.clone(),
+                materialization(
+                    "opencode-invalid",
+                    "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiemVuLXNlY3JldCJ9fQ==",
+                ),
+            )
+            .expect("corrected materialization should replace the failed fresh replica");
         assert_eq!(
-            stored.auth_state,
-            crate::account_profile::ProviderAccountAuthState::NotConfigured
+            corrected.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
         );
-        assert!(stored.last_validated_at_ms.is_some());
+
+        let environment = app
+            .provider_account_profile_registry()
+            .resolve_environment("owner-a", "opencode", "opencode-invalid")
+            .expect("corrected profile should resolve on the worker");
+        let auth_path = std::path::Path::new(&environment["XDG_DATA_HOME"])
+            .join("opencode")
+            .join("auth.json");
+        let worker_owned_auth = br#"{"opencode":{"type":"api","key":"worker-secret"}}"#;
+        std::fs::write(&auth_path, worker_owned_auth)
+            .expect("test should simulate provider-owned credential rotation");
+
+        let repeated = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(
+                context,
+                materialization(
+                    "opencode-invalid",
+                    "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiaG9tZS1yZWZyZXNoIn19",
+                ),
+            )
+            .expect("repeated ensure should preserve the authenticated worker profile");
+        assert_eq!(
+            repeated.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
+        assert_eq!(
+            std::fs::read(&auth_path).expect("worker auth should remain readable"),
+            worker_owned_auth,
+        );
     }
 }
