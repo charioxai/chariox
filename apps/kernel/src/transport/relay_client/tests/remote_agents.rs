@@ -335,15 +335,19 @@ fn remote_machine_agents_execute_prompts_through_the_home_session() {
 
 #[test]
 fn remote_agent_message_steers_live_worker_without_a_user_queue() {
-    run_async_with_large_test_stack("remote-agent-direct-message", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(true)
-    });
+    // Fixed worker IDs must not retain the previous fixture's generated trust key.
+    for _ in 0..2 {
+        run_async_with_large_test_stack("remote-agent-direct-message", || {
+            remote_machine_agents_execute_prompts_through_the_home_session_async(true)
+        });
+    }
 }
 
 async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     direct_message_only: bool,
 ) {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,

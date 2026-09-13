@@ -18,10 +18,20 @@ was generated outside the repository and removed afterward. No GitHub CI ran.
 
 ## Required before deployment
 
-The combined Rust source has not yet been compiled or executed. Run the remote
-prompt recovery, local and leased agent-message delivery, slice broker readiness,
-provider launch policy, managed isolation, and worker bootstrap regression tests.
-Then build and attest this exact combined commit with the pinned release builder.
+The combined Rust test binary compiled on the original remote machine with one
+Cargo job, a 12 GiB memory cap, and 1.5 CPU cores. Focused checks passed:
+8 remote prompt recovery, 7 local messaging, 1 broker readiness, 7 provider launch
+policy, 11 managed isolation, 25 bootstrap, and 1 key-rebinding protection test.
+Both leased-message and leased-prompt tests passed twice across separate process
+invocations. The message test also repeats its scenario twice internally.
+
+Repeating the original leased-message fixture exposed fixed worker IDs persisting
+generated keys into shared trust state. A fresh outer home passed once and failed
+on its second invocation. The fixture now isolates and cleans its Chariox home;
+repeat validation confirms the outer home stays empty. Production trust checks
+are unchanged and still reject a different key for an already trusted worker.
+
+Build and attest this exact combined commit with the pinned release builder.
 The earlier `16c38d6a91` build is not this combined candidate.
 
 Validate the resulting binary's protocol, package signatures and source identity,
