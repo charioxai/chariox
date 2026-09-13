@@ -10,7 +10,7 @@ use super::provider_run_read::ProviderRunReadService;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ProviderRunExitPromptSettlement {
     FinalizeCancellation,
-    CompleteActivePrompt,
+    FailActivePrompt,
     SyncIdleProvider,
 }
 
@@ -18,7 +18,7 @@ impl ProviderRunExitPromptSettlement {
     fn from_active_prompt_status(active_prompt_status: Option<PromptStatus>) -> Self {
         match active_prompt_status {
             Some(PromptStatus::Cancelling) => Self::FinalizeCancellation,
-            Some(_) => Self::CompleteActivePrompt,
+            Some(_) => Self::FailActivePrompt,
             None => Self::SyncIdleProvider,
         }
     }
@@ -206,8 +206,8 @@ impl ProviderRunLivenessSessionEffects {
                 )?
                 .started_next
                 .is_some(),
-            ProviderRunExitPromptSettlement::CompleteActivePrompt => app
-                .complete_active_prompt(
+            ProviderRunExitPromptSettlement::FailActivePrompt => app
+                .fail_active_prompt(
                     &outcome.session_id,
                     &outcome.agent_id,
                     Some(&outcome.provider_run_id),
