@@ -286,11 +286,11 @@ mod tests {
             bind.execution_target,
             TerminalCommandCatalogExecutionTarget::Kernel
         );
+        assert_eq!(bind.surfaces, vec![TerminalCommandCatalogSurface::Session]);
         assert_eq!(
-            bind.surfaces,
-            vec![TerminalCommandCatalogSurface::Session]
+            bind.examples,
+            vec!["/room bind desktop", "/room bind slice-7"]
         );
-        assert_eq!(bind.examples, vec!["/room bind desktop", "/room bind slice-7"]);
         assert_eq!(
             bind.search_aliases,
             vec![
