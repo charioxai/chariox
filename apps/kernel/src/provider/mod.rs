@@ -124,6 +124,7 @@ pub(crate) use runtime_run::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
+pub(crate) use termination::sanitize_provider_diagnostic;
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{

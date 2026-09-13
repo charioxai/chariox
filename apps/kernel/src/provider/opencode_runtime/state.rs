@@ -18,6 +18,7 @@ pub(in crate::provider) struct OpenCodeEventDrainResult {
     pub completions: Vec<OpenCodeAssistantCompletion>,
     pub prompt_completed: bool,
     pub terminal_failure: Option<String>,
+    pub explicit_provider_error: bool,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,

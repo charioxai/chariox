@@ -244,6 +244,7 @@ pub(super) fn execute_output_poll_command(
             completed_codex_turn_resume_state(state.thread_id(), poll.as_ref().ok());
         runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);
         let poll = poll?;
+        let explicit_provider_error = poll.terminal_failure.is_some();
         crate::logging::debug_with_fields(
             "daemon.provider_run_actor",
             "codex output poll result trace",
@@ -252,7 +253,10 @@ pub(super) fn execute_output_poll_command(
                 "chunks": poll.chunks.len(),
                 "completions": poll.completions.len(),
                 "prompt_completed": poll.prompt_completed,
-                "terminal_failure": poll.terminal_failure,
+                "terminal_failure": poll
+                    .terminal_failure
+                    .as_deref()
+                    .map(crate::provider::sanitize_provider_diagnostic),
                 "notices": poll.notices.len(),
             }),
         );
@@ -276,6 +280,7 @@ pub(super) fn execute_output_poll_command(
                 .collect(),
             prompt_completed: poll.prompt_completed,
             terminal_failure: poll.terminal_failure,
+            explicit_provider_error,
             notices: poll.notices,
             resolved_model: None,
             resolved_model_source: None,
@@ -311,6 +316,7 @@ pub(super) fn execute_output_poll_command(
     let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
     runtime_registry.restore_opencode_runtime_if_live(run_id, &slot, state);
     let drain = drain?;
+    let explicit_provider_error = drain.explicit_provider_error;
     Ok(Some(ProviderPromptSignalBatch {
         chunks: drain
             .chunks
@@ -331,6 +337,7 @@ pub(super) fn execute_output_poll_command(
             .collect(),
         prompt_completed: drain.prompt_completed,
         terminal_failure: drain.terminal_failure,
+        explicit_provider_error,
         notices: drain.notices,
         resolved_model: drain.resolved_model,
         resolved_model_source: drain.resolved_model_source,

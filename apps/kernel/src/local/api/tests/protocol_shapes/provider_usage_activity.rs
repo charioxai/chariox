@@ -1184,6 +1184,32 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 }
 
 #[test]
+fn local_completed_turn_provider_termination_categories_are_wire_distinct() {
+    let cases = [
+        (
+            crate::provider::ProviderRunTermination::signal("SIGTERM", 1_234),
+            "signal",
+        ),
+        (
+            crate::provider::ProviderRunTermination::explicit_provider_error(
+                "provider rejected request",
+                1_235,
+            ),
+            "explicit_provider_error",
+        ),
+    ];
+
+    for (provider_termination, category) in cases {
+        let snapshot = serde_json::to_value(provider_termination)
+            .expect("provider termination category should serialize");
+        assert_eq!(
+            snapshot.pointer("/category"),
+            Some(&serde_json::json!(category)),
+        );
+    }
+}
+
+#[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 323);
 

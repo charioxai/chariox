@@ -118,14 +118,17 @@ struct PtyOutputSignalState {
     ready_processes: Mutex<BTreeSet<String>>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtyProcessState {
     Running,
-    Exited { exit_code: u32 },
+    Exited {
+        exit_code: Option<u32>,
+        signal: Option<String>,
+    },
 }
 
 impl PtyProcessState {
-    pub fn is_exited(self) -> bool {
+    pub fn is_exited(&self) -> bool {
         matches!(self, Self::Exited { .. })
     }
 }
@@ -136,7 +139,55 @@ struct PtyProcess {
     input_writer: PtyInputWriter,
     output_rx: Receiver<Vec<u8>>,
     exit_code: Option<u32>,
+    signal: Option<String>,
     reference_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PtyProcessExit {
+    exit_code: Option<u32>,
+    signal: Option<String>,
+}
+
+fn observe_pty_process_exit(status: portable_pty::ExitStatus) -> PtyProcessExit {
+    let display = status.to_string();
+    if let Some(signal) = display.strip_prefix("Terminated by ") {
+        return PtyProcessExit {
+            exit_code: None,
+            signal: Some(sanitize_pty_signal(signal).unwrap_or_else(|| "unknown".to_string())),
+        };
+    }
+    PtyProcessExit {
+        exit_code: Some(status.exit_code()),
+        signal: None,
+    }
+}
+
+fn sanitize_pty_signal(signal: &str) -> Option<String> {
+    let signal = signal.trim();
+    if signal.is_empty()
+        || signal.chars().count() > 64
+        || !signal.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '-' | '_' | '(' | ')' | '/')
+        })
+    {
+        return None;
+    }
+    Some(signal.to_string())
+}
+
+fn cached_pty_process_state(process: &PtyProcess) -> PtyProcessState {
+    PtyProcessState::Exited {
+        exit_code: process.exit_code,
+        signal: process.signal.clone(),
+    }
+}
+
+fn cache_pty_process_exit(process: &mut PtyProcess, status: portable_pty::ExitStatus) {
+    let exit = observe_pty_process_exit(status);
+    process.exit_code = exit.exit_code;
+    process.signal = exit.signal;
 }
 
 impl PtyManager {
@@ -358,6 +409,7 @@ impl PtyManager {
                 input_writer,
                 output_rx,
                 exit_code: None,
+                signal: None,
                 reference_count: 1,
             },
         );
@@ -520,7 +572,7 @@ impl PtyManager {
             });
         }
 
-        if process.exit_code.is_none() {
+        if process.exit_code.is_none() && process.signal.is_none() {
             let status = process
                 .child
                 .try_wait()
@@ -528,9 +580,11 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                     message: error.to_string(),
                 })?;
-            process.exit_code = status.map(|status| status.exit_code());
+            if let Some(status) = status {
+                cache_pty_process_exit(process, status);
+            }
         }
-        if process.exit_code.is_some() {
+        if process.exit_code.is_some() || process.signal.is_some() {
             if let Ok(bytes) = process
                 .output_rx
                 .recv_timeout(std::time::Duration::from_millis(50))
@@ -562,8 +616,8 @@ impl PtyManager {
             }
         })?;
 
-        if let Some(exit_code) = process.exit_code {
-            return Ok(PtyProcessState::Exited { exit_code });
+        if process.exit_code.is_some() || process.signal.is_some() {
+            return Ok(cached_pty_process_state(process));
         }
 
         let status = process
@@ -575,9 +629,8 @@ impl PtyManager {
             })?;
 
         if let Some(status) = status {
-            let exit_code = status.exit_code();
-            process.exit_code = Some(exit_code);
-            Ok(PtyProcessState::Exited { exit_code })
+            cache_pty_process_exit(process, status);
+            Ok(cached_pty_process_state(process))
         } else {
             Ok(PtyProcessState::Running)
         }
@@ -815,7 +868,7 @@ mod tests {
 
     use super::{
         mpsc, run_pty_writer, PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal,
-        PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
+        PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
     };
 
     struct AttributionProbeWriter {
@@ -915,6 +968,92 @@ mod tests {
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
         assert!(!manager.has_process(run.id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_pty_reap_preserves_exit_code_separate_from_untrusted_output() {
+        let provider_run_id = "provider-run-real-exit-code";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:real-exit-code".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "printf 'UNTRUSTED_STDERR_PAYLOAD\\n' >&2; exit 1".to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("real exit-code PTY process should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id);
+        let state = wait_for_exit(&mut manager, provider_run_id);
+        assert_eq!(
+            state,
+            PtyProcessState::Exited {
+                exit_code: Some(1),
+                signal: None,
+            }
+        );
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("UNTRUSTED_STDERR_PAYLOAD"));
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("reaped PTY process cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_pty_reap_preserves_signal_without_mislabeling_status_one() {
+        let provider_run_id = "provider-run-real-signal";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:real-signal".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "printf 'UNTRUSTED_SIGNAL_STDERR_PAYLOAD\\n' >&2; kill -TERM $$".to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("real signal PTY process should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id);
+        let state = wait_for_exit(&mut manager, provider_run_id);
+        let PtyProcessState::Exited { exit_code, signal } = state else {
+            panic!("signal process should be reaped");
+        };
+        assert_eq!(exit_code, None, "a signal must not be reported as status 1");
+        assert!(signal.as_deref().is_some_and(|value| !value.is_empty()));
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("UNTRUSTED_SIGNAL_STDERR_PAYLOAD"));
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("signal-reaped PTY process cleanup should succeed");
     }
 
     #[cfg(unix)]
@@ -1269,6 +1408,26 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "timed out waiting for PTY output"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(manager: &mut PtyManager, provider_run_id: &str) -> PtyProcessState {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let state = manager
+                .poll_process_state(provider_run_id)
+                .expect("PTY process state should be readable");
+            if state.is_exited() {
+                return state;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for PTY process exit"
             );
             thread::sleep(Duration::from_millis(10));
         }

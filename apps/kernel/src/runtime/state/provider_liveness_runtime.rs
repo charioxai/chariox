@@ -112,15 +112,12 @@ impl KernelRuntimeState {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "provider run has no agent".to_string(),
                 })?;
-        let occurred_at_ms = crate::session::unix_epoch_ms();
-        let termination = process_exit
-            .and_then(|exit| exit.exit_code)
-            .map(|exit_code| {
-                crate::provider::ProviderRunTermination::process_exit(exit_code, occurred_at_ms)
-            })
-            .unwrap_or_else(|| {
-                crate::provider::ProviderRunTermination::unknown_process_exit(occurred_at_ms)
-            });
+        let termination = termination_for_process_exit(
+            process_exit
+                .as_ref()
+                .map(|exit| (exit.exit_code, exit.signal.as_deref())),
+            crate::session::unix_epoch_ms(),
+        );
         let session_outcome = self
             .settle_unexpected_provider_run_exit(
                 session_id,
@@ -212,5 +209,58 @@ impl KernelRuntimeState {
             cancelled_prompt: false,
             started_next_prompt,
         })
+    }
+}
+
+fn termination_for_process_exit(
+    process_exit: Option<(Option<u32>, Option<&str>)>,
+    occurred_at_ms: u64,
+) -> crate::provider::ProviderRunTermination {
+    match process_exit {
+        Some((exit_code, signal)) => match (exit_code, signal) {
+            (Some(exit_code), _) => {
+                crate::provider::ProviderRunTermination::process_exit(exit_code, occurred_at_ms)
+            }
+            (None, Some(signal)) => {
+                crate::provider::ProviderRunTermination::signal(signal, occurred_at_ms)
+            }
+            (None, None) => {
+                crate::provider::ProviderRunTermination::unknown_process_exit(occurred_at_ms)
+            }
+        },
+        None => crate::provider::ProviderRunTermination::unknown_process_exit(occurred_at_ms),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::termination_for_process_exit;
+
+    #[test]
+    fn process_exit_mapping_keeps_code_signal_and_unknown_distinct() {
+        let exit_code = termination_for_process_exit(Some((Some(1), None)), 42);
+        assert_eq!(
+            exit_code.category,
+            crate::provider::ProviderRunTerminationCategory::ProcessExit
+        );
+        assert!(exit_code.reason.ends_with("status 1"));
+
+        let signal = termination_for_process_exit(Some((None, Some("SIGTERM"))), 43);
+        assert_eq!(
+            signal.category,
+            crate::provider::ProviderRunTerminationCategory::Signal
+        );
+        assert!(signal.reason.ends_with("signal SIGTERM"));
+
+        let unknown = termination_for_process_exit(Some((None, None)), 44);
+        assert_eq!(
+            unknown.category,
+            crate::provider::ProviderRunTerminationCategory::Unknown
+        );
+        assert!(unknown.reason.contains("without an available status"));
+        assert_eq!(
+            termination_for_process_exit(None, 45).category,
+            crate::provider::ProviderRunTerminationCategory::Unknown
+        );
     }
 }
