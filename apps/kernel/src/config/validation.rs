@@ -90,6 +90,43 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
+        if self
+            .lease_worker_capacity
+            .is_some_and(|capacity| capacity != 1)
+            || (self.lease_worker_capacity.is_some() && !self.accept_remote_leases)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "lease_worker_capacity",
+                message: "lease workers must accept exactly one remote execution lease",
+            });
+        }
+        if self.lease_worker_capacity.is_some() {
+            let Some(home) = &self.lease_worker_home_caller else {
+                return Err(DaemonError::InvalidConfig {
+                    field: "lease_worker_home_caller",
+                    message: "lease workers require a Cloud-selected home caller",
+                });
+            };
+            if [
+                &home.kernel_id,
+                &home.realm_id,
+                &home.user_id,
+                &home.relay_public_key,
+            ]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            {
+                return Err(DaemonError::InvalidConfig {
+                    field: "lease_worker_home_caller",
+                    message: "home caller identity fields must not be empty",
+                });
+            }
+        } else if self.lease_worker_home_caller.is_some() {
+            return Err(DaemonError::InvalidConfig {
+                field: "lease_worker_home_caller",
+                message: "home caller binding requires lease worker mode",
+            });
+        }
         Ok(())
     }
 }

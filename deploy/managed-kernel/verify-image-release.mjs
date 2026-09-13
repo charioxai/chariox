@@ -14,6 +14,10 @@ const EXPECTED_ARTIFACTS = new Map([
     { path: "/etc/systemd/system/chariox-managed-bootstrap.service", type: "file" },
   ],
   [
+    "chariox-disposable-worker-bootstrap.service",
+    { path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", type: "file" },
+  ],
+  [
     "chariox-rootless-docker.service",
     { path: "/etc/systemd/system/chariox-rootless-docker.service", type: "file" },
   ],

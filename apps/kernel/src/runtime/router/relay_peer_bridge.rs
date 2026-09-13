@@ -4,6 +4,27 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    pub(crate) async fn persist_lease_worker_state(
+        &self,
+        callers: &crate::transport::relay_client::LeaseCallerAuthorization,
+    ) -> Result<(), DaemonError> {
+        self.app.lock().await.persist_lease_worker_state(callers)
+    }
+
+    pub(crate) fn is_lease_worker(&self) -> bool {
+        self.config_projection
+            .snapshot()
+            .lease_worker_capacity
+            .is_some()
+    }
+
+    pub(crate) fn lease_worker_home_caller(&self) -> crate::config::LeaseWorkerHomeCaller {
+        self.config_projection
+            .snapshot()
+            .lease_worker_home_caller
+            .expect("validated lease worker requires a selected home caller")
+    }
+
     pub(crate) fn relay_daemon_id(&self) -> String {
         self.config_projection.snapshot().daemon_id
     }

@@ -13,6 +13,7 @@ use crate::transport::relay_peer::{
 };
 
 use super::daemon_requests::RelayRequestOutcome;
+use super::lease_caller_authorization::LeaseCallerDecision;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
 use super::sender_identity::{
@@ -76,6 +77,28 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    let lease_caller = if router.is_lease_worker() {
+        match state.read().await.lease_callers.authorize_for_home(
+            &request,
+            caller_identity.as_ref(),
+            &encrypted_request,
+            stable_peer_daemon_id(from_daemon_id),
+            &router.lease_worker_home_caller(),
+        ) {
+            Ok(LeaseCallerDecision::Continue(caller)) => caller,
+            Ok(LeaseCallerDecision::Replay(response)) => {
+                return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+            }
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
+        }
+    } else {
+        None
+    };
     let managed_context_caller = if managed_context_request(&request) {
         let identity = match require_bound_managed_context_sender(
             caller_identity.as_ref(),
@@ -105,7 +128,8 @@ pub(super) async fn handle_daemon_peer_request(
     } else {
         None
     };
-    if !from_daemon_id.trim().is_empty()
+    if (!router.is_lease_worker() || lease_caller.is_some())
+        && !from_daemon_id.trim().is_empty()
         && !matches!(
             &request,
             RelayPeerRequest::RefreshManagedSliceRelayToken { .. }
@@ -1217,6 +1241,26 @@ pub(super) async fn handle_daemon_peer_request(
             }
         }
     };
+    if let Some(caller) = lease_caller {
+        let mut relay_state = state.write().await;
+        relay_state.lease_callers.record_response(&response, caller);
+        let callers = relay_state.lease_callers.clone();
+        drop(relay_state);
+        if matches!(
+            response,
+            RelayPeerResponse::ExecutionLeaseCreated { .. }
+                | RelayPeerResponse::ExecutionLeaseDestroyed { .. }
+                | RelayPeerResponse::LeasedAgentSpawned { .. }
+                | RelayPeerResponse::LeasedAgentDestroyed { .. }
+        ) {
+            if let Err(error) = router.persist_lease_worker_state(&callers).await {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        }
+    }
     encrypt_peer_response(&daemon_private_key, &requester_public_key, response)
 }
 
@@ -1440,6 +1484,481 @@ mod tests {
             assert!(!error.retryable);
             assert!(outcome.encrypted_response.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn lease_worker_binds_reserve_and_destroy_to_the_same_relay_caller() {
+        let mut config = DaemonConfig::for_tests();
+        config.lease_worker_capacity = Some(1);
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "source-kernel-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: home_public_key.clone(),
+        });
+        let app = DaemonApp::bootstrap(config).expect("lease worker should boot");
+        let worker_public_key = app.config().relay_public_key.clone();
+        let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&app),
+            1,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&home_public_key)), u64::MAX);
+        let reserve = RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id: "source-kernel-1".to_string(),
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            home_agent_metaagent: false,
+            owner_user_id: "user-1".to_string(),
+        };
+        let encrypt = |request: &RelayPeerRequest| {
+            relay_crypto::encrypt_payload_for_peer(
+                &home_private_key,
+                &worker_public_key,
+                &serde_json::to_vec(request).expect("serialize lease request"),
+            )
+            .expect("encrypt lease request")
+        };
+        let ping = RelayPeerRequest::Ping {
+            value: "health".to_string(),
+        };
+        let _ = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            None,
+            encrypt(&ping),
+        )
+        .await;
+        assert!(state
+            .read()
+            .await
+            .peer_public_key("source-kernel-1")
+            .is_none());
+        let unbound = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            None,
+            encrypt(&reserve),
+        )
+        .await;
+        assert_eq!(
+            unbound.error.as_ref().map(|error| error.code.as_str()),
+            Some("unauthorized")
+        );
+
+        let other_private_key = relay_crypto::generate_private_key_base64();
+        let other_public_key = relay_crypto::public_key_from_private_key_base64(&other_private_key)
+            .expect("other public key");
+        let other_identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&other_public_key)), u64::MAX);
+        let other_request = relay_crypto::encrypt_payload_for_peer(
+            &other_private_key,
+            &worker_public_key,
+            &serde_json::to_vec(&reserve).expect("serialize other reservation"),
+        )
+        .expect("encrypt other reservation");
+        let other = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            Some(other_identity),
+            other_request,
+        )
+        .await;
+        assert_eq!(
+            other.error.as_ref().map(|error| error.code.as_str()),
+            Some("unauthorized")
+        );
+
+        let reserved = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            Some(identity.clone()),
+            encrypt(&reserve),
+        )
+        .await;
+        let encrypted_response = reserved
+            .encrypted_response
+            .expect("encrypted lease response");
+        let plaintext =
+            relay_crypto::decrypt_payload_for_private_key(&home_private_key, &encrypted_response)
+                .expect("decrypt lease response")
+                .plaintext;
+        let lease_id = match serde_json::from_slice::<RelayPeerResponse>(&plaintext)
+            .expect("decode lease response")
+        {
+            RelayPeerResponse::ExecutionLeaseCreated { lease, .. } => lease.id,
+            other => panic!("unexpected lease response: {other:?}"),
+        };
+        let destroy = RelayPeerRequest::DestroyExecutionLease {
+            lease_id: lease_id.clone(),
+        };
+        let mut foreign_identity = identity.clone();
+        foreign_identity.user_id = Some("other-user".to_string());
+        let foreign = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            Some(foreign_identity),
+            encrypt(&destroy),
+        )
+        .await;
+        assert_eq!(
+            foreign.error.as_ref().map(|error| error.code.as_str()),
+            Some("unauthorized")
+        );
+        {
+            let mut app = app.lock().await;
+            assert_eq!(
+                crate::app::RemoteLeaseRuntime::new(&mut app).execution_lease_count(),
+                1
+            );
+        }
+
+        for _ in 0..2 {
+            let outcome = handle_daemon_peer_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                "source-kernel-1",
+                Some(identity.clone()),
+                encrypt(&destroy),
+            )
+            .await;
+            let encrypted_response = outcome
+                .encrypted_response
+                .expect("encrypted destroy response");
+            let plaintext = relay_crypto::decrypt_payload_for_private_key(
+                &home_private_key,
+                &encrypted_response,
+            )
+            .expect("decrypt destroy response")
+            .plaintext;
+            assert!(matches!(
+                serde_json::from_slice::<RelayPeerResponse>(&plaintext).expect("decode destroy response"),
+                RelayPeerResponse::ExecutionLeaseDestroyed { lease_id: ref id } if id == &lease_id
+            ));
+        }
+        {
+            let mut app = app.lock().await;
+            assert_eq!(
+                crate::app::RemoteLeaseRuntime::new(&mut app).execution_lease_count(),
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lease_worker_restores_reservation_and_caller_after_snapshot_restart() {
+        let mut config = DaemonConfig::for_tests();
+        config.lease_worker_capacity = Some(1);
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "source-kernel-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: home_public_key.clone(),
+        });
+        let worker = DaemonApp::bootstrap(config.clone()).expect("lease worker should boot");
+        let worker_public_key = worker.config().relay_public_key.clone();
+        let state = worker.relay_client_state();
+        let worker = Arc::new(Mutex::new(worker));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&worker),
+            1,
+        ));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&home_public_key)), u64::MAX);
+        let reserve = RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id: "source-kernel-1".to_string(),
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            home_agent_metaagent: false,
+            owner_user_id: "user-1".to_string(),
+        };
+        let lease_id = match send_managed_peer_request(
+            &ManagedPeerRequestHarness {
+                router: &router,
+                state: &state,
+                outgoing_tx: &outgoing_tx,
+            },
+            "source-kernel-1",
+            &identity,
+            &home_private_key,
+            &worker_public_key,
+            reserve,
+        )
+        .await
+        {
+            RelayPeerResponse::ExecutionLeaseCreated { lease, .. } => lease.id,
+            other => panic!("unexpected reservation response: {other:?}"),
+        };
+        worker
+            .lock()
+            .await
+            .save_durable_state_snapshot()
+            .expect("snapshot worker before restart");
+        drop(router);
+        drop(worker);
+        drop(state);
+
+        let mut restored = DaemonApp::bootstrap(config).expect("lease worker should restore");
+        assert!(!restored.relay_registration().accepting_remote_leases);
+        let state = restored.relay_client_state();
+        let restored = Arc::new(Mutex::new(restored));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&restored),
+            1,
+        ));
+        let destroy = RelayPeerRequest::DestroyExecutionLease {
+            lease_id: lease_id.clone(),
+        };
+        let mut foreign_identity = identity.clone();
+        foreign_identity.user_id = Some("other-user".to_string());
+        let encrypted = relay_crypto::encrypt_payload_for_peer(
+            &home_private_key,
+            &worker_public_key,
+            &serde_json::to_vec(&destroy).expect("serialize destroy"),
+        )
+        .expect("encrypt destroy");
+        let foreign = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            Some(foreign_identity),
+            encrypted,
+        )
+        .await;
+        assert_eq!(
+            foreign.error.as_ref().map(|error| error.code.as_str()),
+            Some("unauthorized")
+        );
+        assert!(matches!(
+            send_managed_peer_request(
+                &ManagedPeerRequestHarness {
+                    router: &router,
+                    state: &state,
+                    outgoing_tx: &outgoing_tx,
+                },
+                "source-kernel-1",
+                &identity,
+                &home_private_key,
+                &worker_public_key,
+                destroy,
+            )
+            .await,
+            RelayPeerResponse::ExecutionLeaseDestroyed { lease_id: id } if id == lease_id
+        ));
+        assert!(
+            restored
+                .lock()
+                .await
+                .relay_registration()
+                .accepting_remote_leases
+        );
+    }
+
+    #[test]
+    fn lease_worker_restores_agent_config_and_prompt_after_restart() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(lease_worker_restores_agent_config_and_prompt_after_restart_async());
+            })
+            .expect("test thread")
+            .join()
+            .expect("test thread should finish");
+    }
+
+    async fn lease_worker_restores_agent_config_and_prompt_after_restart_async() {
+        let mut config = DaemonConfig::for_tests();
+        config.lease_worker_capacity = Some(1);
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "source-kernel-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: home_public_key.clone(),
+        });
+        let worker = DaemonApp::bootstrap(config.clone()).expect("lease worker should boot");
+        let worker_public_key = worker.config().relay_public_key.clone();
+        let state = worker.relay_client_state();
+        let worker = Arc::new(Mutex::new(worker));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&worker),
+            1,
+        ));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&home_public_key)), u64::MAX);
+        let harness = ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
+        let lease_id = match send_managed_peer_request(
+            &harness,
+            "source-kernel-1",
+            &identity,
+            &home_private_key,
+            &worker_public_key,
+            RelayPeerRequest::CreateExecutionLease {
+                home_kernel_id: "source-kernel-1".to_string(),
+                home_session_id: "home-session".to_string(),
+                home_agent_id: "home-agent".to_string(),
+                home_agent_metaagent: false,
+                owner_user_id: "user-1".to_string(),
+            },
+        )
+        .await
+        {
+            RelayPeerResponse::ExecutionLeaseCreated { lease, .. } => lease.id,
+            other => panic!("unexpected reservation response: {other:?}"),
+        };
+        let leased_agent = match send_managed_peer_request(
+            &harness,
+            "source-kernel-1",
+            &identity,
+            &home_private_key,
+            &worker_public_key,
+            RelayPeerRequest::SpawnLeasedAgent {
+                lease_id: lease_id.clone(),
+                provider: "managed-dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: None,
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                workspace_live_sync_mode: None,
+                worktree_id: None,
+                worktree_placement: None,
+            },
+        )
+        .await
+        {
+            RelayPeerResponse::LeasedAgentSpawned { leased_agent } => leased_agent,
+            other => panic!("unexpected spawn response: {other:?}"),
+        };
+        let leased_agent_id = leased_agent.id.clone();
+        let backing_session_id = leased_agent.backing_session_id;
+        drop(harness);
+        drop(router);
+        drop(worker);
+        drop(state);
+
+        let restored = DaemonApp::bootstrap(config).expect("lease worker should restore");
+        let state = restored.relay_client_state();
+        let restored = Arc::new(Mutex::new(restored));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&restored),
+            1,
+        ));
+        let updated = send_managed_peer_request(
+            &ManagedPeerRequestHarness {
+                router: &router,
+                state: &state,
+                outgoing_tx: &outgoing_tx,
+            },
+            "source-kernel-1",
+            &identity,
+            &home_private_key,
+            &worker_public_key,
+            RelayPeerRequest::UpdateLeasedAgentConfig {
+                leased_agent_id: leased_agent_id.clone(),
+                execution_mode: crate::provider::AgentExecutionMode::Plan,
+                permission_level: crate::provider::AgentPermissionLevel::Required,
+            },
+        )
+        .await;
+        assert!(matches!(
+            updated,
+            RelayPeerResponse::LeasedAgentConfigUpdated { leased_agent }
+                if leased_agent.id == leased_agent_id
+                    && leased_agent.execution_mode == Some(crate::provider::AgentExecutionMode::Plan)
+                    && leased_agent.permission_level == Some(crate::provider::AgentPermissionLevel::Required)
+        ));
+        let submitted = send_managed_peer_request(
+            &ManagedPeerRequestHarness {
+                router: &router,
+                state: &state,
+                outgoing_tx: &outgoing_tx,
+            },
+            "source-kernel-1",
+            &identity,
+            &home_private_key,
+            &worker_public_key,
+            RelayPeerRequest::SubmitLeasedPrompt {
+                leased_agent_id,
+                expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+                    provider: "managed-dev-stub".to_string(),
+                    account_profile: "default".to_string(),
+                    model: None,
+                    effort: None,
+                },
+                prompt: "continue after restart".to_string(),
+                hidden_system_context: String::new(),
+                attachments: Vec::new(),
+                workflow_context: None,
+                git_context: None,
+                required_mcps: Vec::new(),
+                required_skills: None,
+                remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            submitted,
+            RelayPeerResponse::LeasedPromptSubmitted { .. }
+        ));
+        let destroyed = send_managed_peer_request(
+            &ManagedPeerRequestHarness {
+                router: &router,
+                state: &state,
+                outgoing_tx: &outgoing_tx,
+            },
+            "source-kernel-1",
+            &identity,
+            &home_private_key,
+            &worker_public_key,
+            RelayPeerRequest::DestroyExecutionLease {
+                lease_id: lease_id.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            destroyed,
+            RelayPeerResponse::ExecutionLeaseDestroyed { lease_id: id } if id == lease_id
+        ));
+        assert!(restored
+            .lock()
+            .await
+            .sessions
+            .get_session(&backing_session_id)
+            .is_err());
     }
 
     #[tokio::test]
@@ -2010,6 +2529,139 @@ mod tests {
 
         drop(router);
         fs::remove_dir_all(root).expect("remove machine-bound transfer fixture");
+    }
+
+    #[tokio::test]
+    async fn opted_out_managed_kernel_arms_only_a_cloud_authorized_git_enrollment() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-git-enrollment-arm-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("source public key");
+        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
+        let source_kernel_id = "source-kernel-1";
+        let enrollment_plan = ManagedKernelContextPlan::git_credential_enrollment_for_tests(
+            "context-git-enrollment",
+            "realm-1",
+            source_kernel_id,
+            &source_key_thumbprint,
+        );
+        let enrollment_binding = enrollment_plan.package_binding();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind enrollment fixture");
+        let address = listener.local_addr().expect("enrollment fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept enrollment authorization");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("authorization read timeout");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut chunk).expect("read authorization request");
+                assert!(read > 0, "authorization request ended before its body");
+                request.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                assert!(headers
+                    .starts_with("POST /v1/managed-kernels/git-credential-enrollment/authorize "));
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .expect("authorization content length");
+                if request.len() >= header_end + 4 + content_length {
+                    break (header_end, content_length);
+                }
+            };
+            let body = serde_json::from_slice::<serde_json::Value>(
+                &request[header_end + 4..header_end + 4 + content_length],
+            )
+            .expect("decode authorization body");
+            let response = serde_json::to_vec(&serde_json::json!({
+                "authorized": true,
+                "contextPlan": enrollment_plan,
+            }))
+            .expect("encode authorization response");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                response.len()
+            )
+            .expect("write authorization headers");
+            stream
+                .write_all(&response)
+                .expect("write authorization response");
+            body
+        });
+
+        let mut config = DaemonConfig::for_tests();
+        config = config.with_session_history_root(root.join("sessions"));
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        let target_kernel_id = config.daemon_id.clone();
+        let target_machine_id = config.host_machine_id.clone();
+        config.cloud_relay = Some(test_cloud_profile(
+            format!("http://{address}"),
+            target_machine_id.clone(),
+        ));
+        let target_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("managed target daemon should bootstrap"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(app, 1)
+            .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
+                environment_id: "environment-git-enrollment".to_string(),
+                machine_id: target_machine_id,
+                kernel_id: target_kernel_id.clone(),
+                context_plan: Some(ManagedKernelContextPlan::empty_for_tests(
+                    "initial-empty-context",
+                )),
+            });
+        let response = router
+            .relay_arm_managed_context_import(
+                crate::runtime::router::RelayManagedContextArmRequest {
+                    identity: scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX),
+                    source_kernel_id: source_kernel_id.to_string(),
+                    context_id: enrollment_binding.context_id.clone(),
+                    plan_digest: enrollment_binding.plan_digest.clone(),
+                    target_environment_id: "environment-git-enrollment".to_string(),
+                    target_kernel_id,
+                    target_key_thumbprint,
+                    capability: "c".repeat(43),
+                    archive_sha256: "b".repeat(64),
+                    archive_size_bytes: 42,
+                },
+            )
+            .await
+            .expect("arm authorized Git enrollment");
+        assert!(matches!(
+            response,
+            RelayPeerResponse::ManagedContextImportArmed { .. }
+        ));
+        let authorization_body = fixture.join().expect("join authorization fixture");
+        assert_eq!(authorization_body["contextId"], "context-git-enrollment");
+        assert_eq!(authorization_body["sourceKernelId"], source_kernel_id);
+        assert_eq!(
+            authorization_body["sourceKeyThumbprint"],
+            source_key_thumbprint
+        );
+        drop(router);
+        fs::remove_dir_all(root).expect("remove enrollment fixture");
     }
 
     #[test]

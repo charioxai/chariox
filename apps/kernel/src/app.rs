@@ -14,6 +14,7 @@ mod history_event_context;
 mod kernel_agent;
 mod kernel_api_facade;
 mod kernel_session;
+mod lease_worker_state;
 mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
@@ -351,6 +352,22 @@ impl DaemonApp {
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        app.restore_lease_worker_state()?;
+        if app.config.lease_worker_capacity.is_some() {
+            if app.managed_kernel_registration.is_some()
+                || app
+                    .managed_context_transfers
+                    .has_worker_incompatible_state()
+                || app.sessions().list_sessions().iter().any(|session| {
+                    !session.is_hidden() || !session.workspace_id().starts_with("remote-lease:")
+                })
+            {
+                return Err(DaemonError::InvalidConfig {
+                    field: "lease_worker_capacity",
+                    message: "lease worker contains public sessions or managed context state",
+                });
+            }
+        }
         let restored_publication_tunnel_count = {
             let sessions = app.sessions();
             let mut relay_state = app.relay_client_state.try_write().map_err(|error| {

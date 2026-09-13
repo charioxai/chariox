@@ -121,6 +121,9 @@ pub enum LocalDaemonRequest {
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
     GetManagedEnvironment(GetManagedEnvironmentRequest),
     PrepareManagedEnvironmentContextTransfer(PrepareManagedEnvironmentContextTransferRequest),
+    PrepareManagedEnvironmentGitCredentialEnrollment(
+        PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
+    ),
     CreateManagedEnvironment(CreateManagedEnvironmentRequest),
     RequestManagedEnvironmentLifecycle(RequestManagedEnvironmentLifecycleRequest),
     StartManagedContextTransfer(StartManagedContextTransferRequest),

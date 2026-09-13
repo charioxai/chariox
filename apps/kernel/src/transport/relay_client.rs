@@ -42,6 +42,8 @@ mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod lease_caller_authorization;
+pub(crate) use lease_caller_authorization::LeaseCallerAuthorization;
 mod peer_client;
 mod peer_events;
 mod peer_requests;

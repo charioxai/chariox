@@ -5,6 +5,55 @@ snapshot from the exact OSS revision before adding its numeric ID and release
 digest to a Cloud provider profile. OpenShip deploys Cloud and the private
 manager; it does not provision managed machines or build their images.
 
+## Execution-boundary roadmap
+
+Managed capacity must expose an ordinary developer machine to an agent without
+making the long-lived host kernel, vault, or another agent part of that trust
+boundary. Chariox therefore treats the worker machine or VM as the isolation
+boundary: an agent may have broad control inside its disposable worker while
+the home kernel remains the authority for sessions, prompts, agents, leases,
+and provider-account selection.
+
+The provider contract must stay provider-neutral. Hetzner is the first live
+adapter, not an architectural dependency. Allocation, signed-image selection,
+bootstrap identity, lease capacity, observation, recovery, and deletion must be
+expressed through shared contracts that other cloud and bare-metal providers
+can implement without forking kernel runtime behavior.
+
+Delivery is split into two paths:
+
+1. **Path 1 — cloud VMs.** Allocate a disposable VM through a supported cloud
+   provider, boot an immutable signed Chariox image, enroll one worker kernel,
+   and give agents normal developer-machine usability inside that VM. Prove
+   authenticated bootstrap, replay-safe recovery, provider-neutral lifecycle,
+   Git and provider-account materialization, ordinary agent execution, resource
+   limits, deletion, and zero-or-accounted residual billing. A transferred or
+   installed kernel must use the same runtime paths as any other kernel after
+   enrollment; Cloud must not retain a special execution path for it.
+2. **Path 2 — VMs on leased bare metal.** Add a host-level allocator that
+   creates and destroys isolated guest VMs on a leased physical machine while
+   reusing the same worker contract and signed guest image. This path is needed
+   for density and provider flexibility, but starts only after Path 1 is
+   implemented, validated, and independently verified.
+
+Path 1 is part of the current Browser/Computer-use goal and is a release gate
+before feature development resumes. Path 2 is explicitly deferred to the next
+goal. Containers and Bubblewrap remain useful inner defenses, but they do not
+replace the worker-VM boundary in either path.
+
+A Path 1 worker starts the ordinary kernel with
+`CHARIOX_LEASE_WORKER_CAPACITY=1`. This lease-only setting rejects public
+sessions, session-invite joins, external-provider imports, and managed-context
+imports. It admits one reserved execution lease, keeps its backing session
+private, and advertises no spare capacity until that lease is destroyed.
+The worker journals its hidden backing Room and agent, and stores the reservation
+and authorized home-kernel caller in private runtime state. After a restart it
+restores the reservation before advertising capacity and reattaches the backing
+agent for new prompts. Releasing the lease deletes the backing Room.
+Lease requests require a relay-authenticated home kernel with a sender-bound
+key. The worker retains that kernel, realm, user, and key binding for the lease,
+its agents, and deletion retries. A lease or agent ID alone grants no access.
+
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,

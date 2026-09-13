@@ -15,6 +15,11 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if self.config_snapshot().await.lease_worker_capacity.is_some() {
+            return Err(DaemonError::LeaseWorkerOperationDenied {
+                operation: "create public session",
+            });
+        }
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if slice_ref.is_some() && kernel_ref.is_some() {
