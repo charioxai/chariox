@@ -530,6 +530,8 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod sandbox_lifetime;
     mod tool_results;
 
     #[cfg(unix)]
