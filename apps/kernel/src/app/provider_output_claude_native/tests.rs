@@ -1420,6 +1420,7 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         &events_file,
         format!("tee {} >/dev/null", capture_file.display()),
     );
+    let context_file = context_file.display().to_string();
     let mut run = run;
     run.mark_running();
     app.pty
@@ -1625,7 +1626,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
     for _ in 0..100 {
         if matches!(
             app.pty.poll_process_state(run.id()),
-            Ok(crate::pty::PtyProcessState::Exited)
+            Ok(crate::pty::PtyProcessState::Exited { .. })
         ) {
             break;
         }
@@ -1789,10 +1790,11 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         .prompt_owner_active_prompt_for_agent(other_session.id(), other_agent.id())
         .expect("unrelated agent should remain queryable")
         .is_some());
-    let diagnostic = app
+    let rejected_run = app
         .providers()
         .get_run(run.id())
-        .expect("rejected provider run should remain inspectable")
+        .expect("rejected provider run should remain inspectable");
+    let diagnostic = rejected_run
         .terminal_diagnostic()
         .expect("rejection should preserve a terminal diagnostic");
     assert!(

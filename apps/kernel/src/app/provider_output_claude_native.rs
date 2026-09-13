@@ -1082,8 +1082,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         if provider_run.provider() == "claude-headless"
             && provider_run.pty_target().is_some()
-            && !crate::app::ProviderLaunchProcessRuntime::new(self.app)
-                .poll_running(provider_run_id)?
+            && crate::app::ProviderLaunchProcessRuntime::new(self.app)
+                .poll_exit(provider_run_id)?
+                .is_some()
         {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
