@@ -4,17 +4,30 @@ use super::*;
 #[cfg(unix)]
 #[tokio::test]
 async fn cancel_request_stops_in_flight_worker_validation() {
-    exercise_cancel_request(false).await;
+    exercise_cancel_request(CancellationScenario::Local).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn retry_request_cannot_revive_cancelled_worker_validation() {
-    exercise_cancel_request(true).await;
+    exercise_cancel_request(CancellationScenario::Retry).await;
 }
 
 #[cfg(unix)]
-async fn exercise_cancel_request(retry_immediately: bool) {
+#[tokio::test]
+async fn unreachable_worker_cannot_acknowledge_cancellation_or_allow_retry() {
+    exercise_cancel_request(CancellationScenario::UnreachableWorker).await;
+}
+
+#[cfg(unix)]
+enum CancellationScenario {
+    Local,
+    Retry,
+    UnreachableWorker,
+}
+
+#[cfg(unix)]
+async fn exercise_cancel_request(scenario: CancellationScenario) {
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
     use crate::runtime::router::CommandRouter;
 
@@ -95,15 +108,26 @@ async fn exercise_cancel_request(retry_immediately: bool) {
         }))
         .unwrap(),
     );
-    ensure_worker_validation_boundary(&config).expect("fixture is a confirmed worker");
+    if matches!(scenario, CancellationScenario::UnreachableWorker) {
+        config.kernel_runtime_role = KernelRuntimeRole::General;
+        config.lease_worker_home_caller = None;
+        config.accept_remote_leases = false;
+        config.remote_lease_capacity = None;
+    } else {
+        ensure_worker_validation_boundary(&config).expect("fixture is a confirmed worker");
+    }
     let app = crate::DaemonApp::bootstrap(config).unwrap();
     let mut execution = super::tests::execution();
     execution.workspace_id = workspace.display().to_string();
     execution.target_worker_id = "worker-machine".into();
     execution.target_platform = actual_worker_platform();
+    if matches!(scenario, CancellationScenario::UnreachableWorker) {
+        execution.remote_leased_agent_id = Some("unreachable-lease".into());
+    }
     let mut definition = execution.definition.clone().unwrap();
     definition.target_platform = execution.target_platform.clone();
-    definition.validation_commands = vec!["touch started; sleep 2; touch should-not-exist".into()];
+    definition.validation_commands =
+        vec!["echo $$ > command-pid; touch started; sleep 2; touch should-not-exist".into()];
     execution.definition = Some(definition.clone());
     let request = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
         .with_agent_id("agent-1")
@@ -134,6 +158,40 @@ async fn exercise_cancel_request(retry_immediately: bool) {
         .project_environment_setups
         .begin(execution.clone())
         .unwrap();
+    if matches!(scenario, CancellationScenario::UnreachableWorker) {
+        // The target binding is unavailable. No provider or command is started.
+        let response = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                    CancelProjectEnvironmentSetupRequest {
+                        operation_id: "setup-1".into(),
+                        session_id: "session-1".into(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        assert!(
+            response.is_err(),
+            "unreachable worker falsely acknowledged cancellation: {response:?}"
+        );
+        let retry = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::RetryProjectEnvironmentSetup(
+                    RetryProjectEnvironmentSetupRequest {
+                        operation_id: "setup-1".into(),
+                        session_id: "session-1".into(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        assert!(
+            retry.is_err(),
+            "retry started before the worker confirmed cancellation: {retry:?}"
+        );
+        return;
+    }
     runtime
         .owned
         .project_environment_setups
@@ -166,7 +224,18 @@ async fn exercise_cancel_request(retry_immediately: bool) {
             "user-1",
         )
         .await;
-    let retry_response = if retry_immediately {
+    let command_alive_at_acknowledgement = if started {
+        let pid = std::fs::read_to_string(workspace.join("command-pid"))
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        // Signal zero observes only; the normal cancellation path owns cleanup.
+        unsafe { libc::kill(pid, 0) == 0 }
+    } else {
+        false
+    };
+    let retry_response = if matches!(scenario, CancellationScenario::Retry) {
         Some(
             runtime
                 .execute_project_environment_setup_request(
@@ -191,6 +260,10 @@ async fn exercise_cancel_request(retry_immediately: bool) {
         response,
         Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { .. })
     ));
+    assert!(
+        !command_alive_at_acknowledgement,
+        "kernel acknowledged cancellation before the worker command settled"
+    );
     if let Some(response) = retry_response {
         assert!(matches!(
             response,
