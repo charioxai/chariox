@@ -781,9 +781,12 @@ impl KernelRuntimeState {
                 {
                     break;
                 }
-                let result = run_worker_validation_command(&command, &workspace_root, &environment, || {
-                    cancellation.is_cancelled(&operation_id, attempt)
-                });
+                let result = run_worker_validation_command(
+                    &command,
+                    &workspace_root,
+                    &environment,
+                    || cancellation.is_cancelled(&operation_id, attempt),
+                );
                 match result {
                     Ok((exit_code, stdout_bytes, stderr_bytes)) => {
                         results.push(ProjectEnvironmentCommandResult {
@@ -1049,8 +1052,9 @@ mod tests {
             test ! -r "${CHARIOX_HOME:-/no-worker-home}/vault/secret.json" &&
             test ! -w "${CHARIOX_MANAGED_KERNEL_BINARY:-/no-worker-kernel}"
         "#;
-        let (exit_code, _, _) = run_worker_validation_command(command, &workspace, &environment, || false)
-            .expect("worker validation shell should execute");
+        let (exit_code, _, _) =
+            run_worker_validation_command(command, &workspace, &environment, || false)
+                .expect("worker validation shell should execute");
         assert_eq!(
             exit_code, 0,
             "validation must not inherit protected home/vault or kernel replacement controls"
@@ -1093,9 +1097,13 @@ mod tests {
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).expect("worker workspace should exist");
         let environment = BTreeMap::from([(String::from("PATH"), bin.display().to_string())]);
-        let (exit_code, _, _) =
-            run_worker_validation_command("command -v worker-local-tool", &workspace, &environment, || false)
-                .expect("worker validation shell should execute");
+        let (exit_code, _, _) = run_worker_validation_command(
+            "command -v worker-local-tool",
+            &workspace,
+            &environment,
+            || false,
+        )
+        .expect("worker validation shell should execute");
         assert_eq!(exit_code, 0, "installed worker-local tool must resolve");
         let _ = std::fs::remove_dir_all(root);
     }
