@@ -109,6 +109,7 @@ pub(super) fn run_worker_validation_command(
     command_text: &str,
     workspace_root: &Path,
     environment: &BTreeMap<String, String>,
+    should_cancel: impl Fn() -> bool,
 ) -> Result<(i32, usize, usize), String> {
     // This child is spawned only by a confirmed disposable worker kernel after
     // the provider run context and workspace have been fenced above. Keep the
@@ -159,22 +160,29 @@ pub(super) fn run_worker_validation_command(
     };
     let stdout_reader = std::thread::spawn(move || count_validation_output(stdout));
     let stderr_reader = std::thread::spawn(move || count_validation_output(stderr));
-    let timeout = Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
-    let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            terminate_validation_process_group(&mut child);
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err("worker validation command timed out".to_string());
+    let deadline = Instant::now() + Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
+    let outcome = loop {
+        if should_cancel() {
+            break Err("worker validation command cancelled".to_string());
         }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break Err("worker validation command timed out".to_string());
+        }
+        match child.wait_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => continue,
+            Err(error) => break Err(error.to_string()),
+        }
+    };
+    let status = match outcome {
+        Ok(status) => status,
         Err(error) => {
             terminate_validation_process_group(&mut child);
             let _ = child.wait();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(error.to_string());
+            return Err(error);
         }
     };
     terminate_validation_process_group(&mut child);
