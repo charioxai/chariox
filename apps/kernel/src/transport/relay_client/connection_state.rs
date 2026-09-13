@@ -14,6 +14,7 @@ use chariox_relay::protocol::{
     RelayDisplayTunnelRegistration, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
 };
 
+use super::lease_caller_authorization::LeaseCallerAuthorization;
 use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
 use super::RelayOutgoingSender;
@@ -32,6 +33,7 @@ pub struct RelayClientState {
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
     peer_public_keys: BTreeMap<String, String>,
+    pub(super) lease_callers: LeaseCallerAuthorization,
     pub(super) display_tunnels: BTreeMap<String, RelayDisplayTunnelTarget>,
     pub(super) pending_display_tunnel_registrations:
         BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
@@ -411,6 +413,7 @@ impl Default for RelayClientState {
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
             peer_public_keys: BTreeMap::new(),
+            lease_callers: LeaseCallerAuthorization::default(),
             display_tunnels: BTreeMap::new(),
             pending_display_tunnel_registrations: BTreeMap::new(),
             display_streams: BTreeMap::new(),
