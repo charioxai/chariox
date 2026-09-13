@@ -57,6 +57,19 @@ no incremental cache, and no debug information. GitHub CI was not run.
 
 ## Validation still required before deployment acceptance
 
+The first remote upgrade-suite run exposed two integration defects: requiring
+the new worker service in old signed manifests blocked existing installations,
+and staging omitted that service from new releases. The upgrade fixture now
+exercises a legacy installed image and worker-capable target. Verification
+accepts both exact signed artifact sets, rejects an undeclared worker service,
+and continues checking the declared service hash. Upgrade staging copies the
+service when present. The 39-test upgrade/rollback suite passed on the original
+managed machine using temporary roots and a fake service manager; after the
+additional undeclared-service guard, three focused cases passed. No live upgrade
+or restart occurred. All 17 packaging/build-context tests also passed with the
+final verifier changes. Packaging fixtures still use synthetic binaries and
+the committed source base, so these results do not attest a new release image.
+
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.
 - Verify queued prompts and unresolved permissions prevent idle release.

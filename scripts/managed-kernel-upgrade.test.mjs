@@ -69,7 +69,7 @@ async function put(path, contents, mode = 0o644) {
   await chmod(path, mode)
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false) {
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
@@ -108,6 +108,12 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", builderKey, "file"],
   ]
   const artifacts = []
+  if (includeWorkerService) {
+    const path = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
+    const source = join(rootfs, path)
+    await put(source, "[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker\n")
+    artifactSpecs.push(["chariox-disposable-worker-bootstrap.service", path, source, "file"])
+  }
   for (const [name, path, source, type] of artifactSpecs) {
     artifacts.push({ name, path, sha256: type === "tree" ? await sha256Tree(source) : await sha256File(source) })
   }
@@ -148,7 +154,7 @@ async function makeHarness(context, {
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
   )
   const target = await makeRelease(
-    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy,
+    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true,
   )
   const installRoot = join(root, "host")
   const releases = join(installRoot, "usr/lib/chariox/releases")
@@ -428,6 +434,30 @@ test("managed kernel upgrade atomically advances the release and receipt without
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("managed upgrade rejects a corrupted declared worker service before stopping the kernel", async (context) => {
+  const harness = await makeHarness(context)
+  await put(
+    join(harness.target.rootfs, "etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
+    "[Service]\nExecStart=/unexpected\n",
+  )
+  const result = harness.run()
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /chariox-disposable-worker-bootstrap.service is corrupted/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+test("legacy managed release rejects an unsigned extra worker service before stopping the kernel", async (context) => {
+  const harness = await makeHarness(context)
+  await put(
+    join(harness.installRoot, "usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
+    "[Service]\nExecStart=/unexpected\n",
+  )
+  const result = harness.run()
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /undeclared worker service/)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
 test("managed kernel upgrade rotates the release trust key explicitly", async (context) => {

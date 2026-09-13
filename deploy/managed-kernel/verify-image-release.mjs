@@ -188,7 +188,22 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath) {
   ) {
     fail("release manifest schema is unsupported")
   }
-  if (manifest.artifacts.length !== EXPECTED_ARTIFACTS.size) {
+  // Schema 2 releases predating disposable workers have the same signed base
+  // artifacts but no worker service. They must remain verifiable during upgrade
+  // and rollback. If declared, the worker service is checked like every artifact.
+  const hasWorkerService = manifest.artifacts.some(
+    (artifact) => artifact?.name === "chariox-disposable-worker-bootstrap.service",
+  )
+  const expectedArtifactCount = EXPECTED_ARTIFACTS.size - (hasWorkerService ? 0 : 1)
+  if (!hasWorkerService) {
+    const workerPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-disposable-worker-bootstrap.service").path)
+    const workerExists = await lstat(workerPath).then(() => true, (error) => {
+      if (error.code !== "ENOENT") throw error
+      return false
+    })
+    if (workerExists) fail("release contains an undeclared worker service")
+  }
+  if (manifest.artifacts.length !== expectedArtifactCount) {
     fail("release manifest does not contain the exact image artifacts")
   }
   const seen = new Set()

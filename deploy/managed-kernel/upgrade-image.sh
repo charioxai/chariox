@@ -552,6 +552,10 @@ else
   for unit in chariox-managed-bootstrap.service chariox-rootless-docker.service chariox-slice-broker.service; do
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
+  worker_unit=chariox-disposable-worker-bootstrap.service
+  if [ -f "$image_root/etc/systemd/system/$worker_unit" ]; then
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/$worker_unit" "$pending_release/etc/systemd/system/$worker_unit"
+  fi
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
   node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_new_digest" "$next_trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
