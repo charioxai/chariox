@@ -6,8 +6,8 @@ const SYNTHETIC_TOKEN: &str = "synthetic-structured-exit-token";
 
 #[tokio::test]
 async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_replay() {
-    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests())
-        .expect("daemon should boot");
+    let mut app =
+        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-structured-exit-diagnostic",
@@ -75,6 +75,15 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
     else {
         panic!("the diagnostic regression prompt should start immediately");
     };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        run.provider_session_id().map(str::to_string),
+    )
+    .expect("prompt should be durably delivered");
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -122,6 +131,8 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .terminal_diagnostic()
         .expect("structured PTY diagnostic should survive liveness settlement");
     assert!(diagnostic.contains(SAFE_DIAGNOSTIC_CONTEXT), "{diagnostic}");
+    assert!(diagnostic.contains("api_key[redacted]"), "{diagnostic}");
+    assert!(diagnostic.contains("token[redacted]"), "{diagnostic}");
     assert!(!diagnostic.contains(SYNTHETIC_API_KEY), "{diagnostic}");
     assert!(!diagnostic.contains(SYNTHETIC_TOKEN), "{diagnostic}");
 
@@ -155,9 +166,26 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .collect::<Vec<_>>();
     assert_eq!(terminal_errors.len(), 1, "{terminal_records:?}");
     let terminal_error = String::from_utf8_lossy(&terminal_errors[0].bytes);
-    assert!(terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT), "{terminal_error}");
-    assert!(!terminal_error.contains(SYNTHETIC_API_KEY), "{terminal_error}");
-    assert!(!terminal_error.contains(SYNTHETIC_TOKEN), "{terminal_error}");
+    assert!(
+        terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        "{terminal_error}"
+    );
+    assert!(
+        terminal_error.contains("api_key[redacted]"),
+        "{terminal_error}"
+    );
+    assert!(
+        terminal_error.contains("token[redacted]"),
+        "{terminal_error}"
+    );
+    assert!(
+        !terminal_error.contains(SYNTHETIC_API_KEY),
+        "{terminal_error}"
+    );
+    assert!(
+        !terminal_error.contains(SYNTHETIC_TOKEN),
+        "{terminal_error}"
+    );
 
     let history = runtime
         .owned
@@ -168,7 +196,11 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .iter()
         .filter(|event| event.kind == crate::history::HistoryEventKind::UserPrompt)
         .collect::<Vec<_>>();
-    assert_eq!(user_prompts.len(), 1, "the prompt must not be replayed: {history:?}");
+    assert_eq!(
+        user_prompts.len(),
+        1,
+        "the prompt must not be replayed: {history:?}"
+    );
     let provider_errors = history
         .iter()
         .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderError)
@@ -178,9 +210,26 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .content
         .as_deref()
         .expect("provider error history should have content");
-    assert!(provider_error.contains(SAFE_DIAGNOSTIC_CONTEXT), "{provider_error}");
-    assert!(!provider_error.contains(SYNTHETIC_API_KEY), "{provider_error}");
-    assert!(!provider_error.contains(SYNTHETIC_TOKEN), "{provider_error}");
+    assert!(
+        provider_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        "{provider_error}"
+    );
+    assert!(
+        provider_error.contains("api_key[redacted]"),
+        "{provider_error}"
+    );
+    assert!(
+        provider_error.contains("token[redacted]"),
+        "{provider_error}"
+    );
+    assert!(
+        !provider_error.contains(SYNTHETIC_API_KEY),
+        "{provider_error}"
+    );
+    assert!(
+        !provider_error.contains(SYNTHETIC_TOKEN),
+        "{provider_error}"
+    );
 
     runtime
         .pump_owned_provider_output(
