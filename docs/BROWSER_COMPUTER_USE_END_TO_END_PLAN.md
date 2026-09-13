@@ -195,6 +195,14 @@ inside webpage DOM.
 
 ## Mandatory development discipline
 
+### Agent delegation
+
+Do not spawn or coordinate Codex sub-agents. Delegate work through Chariox
+agents in the product frontend on Chariox-managed machines. While those agents
+are unavailable, work directly on the remote machine and resume frontend
+delegation once they are available. The goal's restriction on communicating
+with other agents applies only to Codex sub-agents, not Chariox agents.
+
 ### Isolated PRs and worktrees
 
 Every independently reviewable subtask must use an isolated branch and
