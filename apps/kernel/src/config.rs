@@ -66,6 +66,15 @@ pub use user_config_schema::UserConfigSchemaEntry;
 pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
 pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeaseWorkerHomeCaller {
+    pub kernel_id: String,
+    pub realm_id: String,
+    pub user_id: String,
+    pub relay_public_key: String,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum KernelRuntimeRole {
     #[default]
@@ -158,6 +167,8 @@ pub struct DaemonConfig {
     /// Maximum concurrent remote execution leases accepted by this kernel.
     /// `None` preserves the ordinary remote-worker behavior of no fixed limit.
     pub remote_lease_capacity: Option<usize>,
+    pub lease_worker_home_caller: Option<LeaseWorkerHomeCaller>,
+    lease_worker_home_caller_parse_error: bool,
     kernel_runtime_role_parse_error: Option<&'static str>,
     remote_lease_capacity_parse_error: Option<&'static str>,
     pub room_environment_worker_binding: Option<RoomEnvironmentWorkerBinding>,
@@ -266,6 +277,8 @@ impl DaemonConfig {
             accept_remote_leases: true,
             kernel_runtime_role: KernelRuntimeRole::General,
             remote_lease_capacity: None,
+            lease_worker_home_caller: None,
+            lease_worker_home_caller_parse_error: false,
             kernel_runtime_role_parse_error: None,
             remote_lease_capacity_parse_error: None,
             room_environment_worker_binding: None,

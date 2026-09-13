@@ -4,6 +4,11 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    pub(crate) fn lease_worker_selected_home(
+        &self,
+    ) -> Option<crate::config::LeaseWorkerHomeCaller> {
+        self.config_projection.snapshot().lease_worker_home_caller
+    }
     pub(crate) fn kernel_runtime_role(&self) -> crate::config::KernelRuntimeRole {
         self.config_projection.snapshot().kernel_runtime_role
     }

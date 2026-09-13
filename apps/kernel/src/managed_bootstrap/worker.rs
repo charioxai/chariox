@@ -167,7 +167,7 @@ impl WorkerCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &ExchangeRequest,
     ) -> Result<ExchangeResponse, DaemonError> {
-        self.post(
+        self.post_managed(
             api_url,
             "/v1/disposable-workers/bootstrap/exchange",
             request,
@@ -179,7 +179,7 @@ impl WorkerCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &ConfirmRequest,
     ) -> Result<ConfirmResponse, DaemonError> {
-        self.post(api_url, "/v1/disposable-workers/bootstrap/confirm", request)
+        self.post_managed(api_url, "/v1/disposable-workers/bootstrap/confirm", request)
     }
 }
 
@@ -421,7 +421,8 @@ fn spawn_kernel(
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
         .env("CHARIOX_ACCEPT_REMOTE_LEASES", "1")
-        .env("CHARIOX_LEASE_WORKER_CAPACITY", "1")
+        .env("CHARIOX_KERNEL_RUNTIME_ROLE", "remote_lease_worker")
+        .env("CHARIOX_REMOTE_LEASE_CAPACITY", "1")
         .env("CHARIOX_LEASE_WORKER_HOME_CALLER", home_caller)
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_PATH")
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")

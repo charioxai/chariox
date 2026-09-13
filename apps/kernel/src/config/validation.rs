@@ -3,6 +3,29 @@ use crate::error::DaemonError;
 
 impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
+        if self.lease_worker_home_caller_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "lease_worker_home_caller",
+                message: "invalid home caller binding",
+            });
+        }
+        if let Some(home) = &self.lease_worker_home_caller {
+            if self.kernel_runtime_role != super::KernelRuntimeRole::RemoteLeaseWorker
+                || [
+                    &home.kernel_id,
+                    &home.realm_id,
+                    &home.user_id,
+                    &home.relay_public_key,
+                ]
+                .iter()
+                .any(|value| value.trim().is_empty())
+            {
+                return Err(DaemonError::InvalidConfig {
+                    field: "lease_worker_home_caller",
+                    message: "selected home requires worker role and nonempty identity",
+                });
+            }
+        }
         if let Some(message) = self.kernel_runtime_role_parse_error {
             return Err(DaemonError::InvalidConfig {
                 field: "kernel_runtime_role",

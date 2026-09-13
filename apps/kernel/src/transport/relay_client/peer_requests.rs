@@ -1626,6 +1626,20 @@ fn authenticated_lease_worker_caller(
             false,
         ));
     }
+    if let Some(home) = router.lease_worker_selected_home() {
+        if home.kernel_id != home_kernel_id
+            || home.realm_id != identity.realm_id
+            || home.user_id != owner_user_id
+            || crate::runtime::terminal_pairings::public_key_thumbprint(&home.relay_public_key)
+                != public_key_thumbprint
+        {
+            return Err(relay_error(
+                "unauthorized",
+                "execution lease caller does not match the selected home",
+                false,
+            ));
+        }
+    }
     Ok(crate::app::LeaseCallerBinding {
         home_kernel_id: home_kernel_id.to_string(),
         authenticated_machine_id: identity.subject.clone(),

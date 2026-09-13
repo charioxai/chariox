@@ -95,7 +95,14 @@ impl DaemonConfig {
                 Ok(capacity) => (capacity, None),
                 Err(error) => (None, Some(error)),
             };
+        let home_caller = env::var("CHARIOX_LEASE_WORKER_HOME_CALLER")
+            .ok()
+            .map(|value| serde_json::from_str(&value))
+            .transpose();
+        let lease_worker_home_caller_parse_error = home_caller.is_err();
         Self {
+            lease_worker_home_caller: home_caller.unwrap_or(None),
+            lease_worker_home_caller_parse_error,
             room_environment_worker_binding: super::RoomEnvironmentWorkerBinding::from_environment(
             ),
             user_config_path,

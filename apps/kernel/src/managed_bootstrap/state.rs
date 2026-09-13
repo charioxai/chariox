@@ -10,8 +10,8 @@ use url::Url;
 use crate::config::write_private_file;
 use crate::error::DaemonError;
 
-use super::context_plan::ManagedKernelContextPlan;
 use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
+use super::context_plan::ManagedKernelContextPlan;
 
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 
@@ -247,7 +247,9 @@ impl DisposableWorkerBootstrapEnvelope {
             || self.binding.validate().is_err()
             || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
         {
-            return Err(state_error("disposable worker bootstrap envelope is invalid"));
+            return Err(state_error(
+                "disposable worker bootstrap envelope is invalid",
+            ));
         }
         self.expires_at()?;
         validate_cloud_url(&self.cloud_api_url)
@@ -357,29 +359,29 @@ impl DisposableWorkerBootstrapReceipt {
                 self.cloud_relay.as_ref(),
             ) {
                 (DisposableWorkerBootstrapReceiptStatus::ExchangePending, None, None) => false,
-                (
-                    DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted,
-                    Some(receipt),
-                    None,
-                ) => DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err(),
-                (
-                    DisposableWorkerBootstrapReceiptStatus::Exchanged,
-                    Some(receipt),
-                    Some(_),
-                ) => DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err(),
+                (DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted, Some(receipt), None) => {
+                    DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err()
+                }
+                (DisposableWorkerBootstrapReceiptStatus::Exchanged, Some(receipt), Some(_)) => {
+                    DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err()
+                }
                 _ => true,
             }
         {
-            return Err(state_error("disposable worker bootstrap receipt is invalid"));
+            return Err(state_error(
+                "disposable worker bootstrap receipt is invalid",
+            ));
         }
         Ok(())
     }
 
     pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
-        let bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| state_error(&error.to_string()))?;
+        let bytes =
+            serde_json::to_vec_pretty(self).map_err(|error| state_error(&error.to_string()))?;
         if bytes.len() as u64 > MAX_STATE_BYTES {
-            return Err(state_error("disposable worker bootstrap receipt is too large"));
+            return Err(state_error(
+                "disposable worker bootstrap receipt is too large",
+            ));
         }
         write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
     }
@@ -428,7 +430,9 @@ pub(super) fn remove_envelope(path: &Path) -> Result<(), DaemonError> {
 pub(super) fn remove_receipt(path: &Path) -> Result<(), DaemonError> {
     let metadata = fs::symlink_metadata(path).map_err(|error| state_error(&error.to_string()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(state_error("managed bootstrap receipt is not a regular file"));
+        return Err(state_error(
+            "managed bootstrap receipt is not a regular file",
+        ));
     }
     fs::remove_file(path).map_err(|error| state_error(&error.to_string()))
 }
