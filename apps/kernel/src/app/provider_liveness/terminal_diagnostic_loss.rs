@@ -70,9 +70,22 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         "exercise app liveness reconciliation",
         PromptStatus::Queued,
     );
-    let prompt_id = prompt.id().to_string();
-    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("prompt should start");
+    let prompt_id = match app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+            panic!("diagnostic prompt should start, got queued prompt {}", prompt.id())
+        }
+    };
+    let active_prompt_id = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should resolve")
+        .expect("diagnostic prompt should remain active before process exit")
+        .id()
+        .to_string();
+    assert_eq!(active_prompt_id, prompt_id);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
@@ -127,6 +140,14 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         .latest_projection_for_agent(session.id(), agent.id())
         .expect("app liveness settlement should remain projected");
     assert_eq!(completed_turn.prompt_id, prompt_id);
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should remain queryable after provider exit")
+            .state(),
+        crate::agent::AgentState::Error,
+        "app-level liveness keeps the legacy Completed settlement while marking the unexpected exit on the agent"
+    );
     assert_eq!(
         completed_turn.settlement_status,
         crate::git_observer::CompletedTurnSettlementStatus::Completed
