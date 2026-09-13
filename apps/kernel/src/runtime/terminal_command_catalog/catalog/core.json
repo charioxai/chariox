@@ -160,6 +160,23 @@
         ]
       },
       {
+        "id": "room-bind",
+        "label": "bind",
+        "description": "Bind a headed slice to this Room Environment without starting or restarting the worker",
+        "value": "/room bind ",
+        "examples": [
+          "/room bind desktop",
+          "/room bind slice-7"
+        ],
+        "searchAliases": [
+          "bind slice",
+          "room slice",
+          "environment slice",
+          "reserve slice",
+          "slice binding"
+        ]
+      },
+      {
         "id": "room-start",
         "label": "start",
         "description": "Start the Room Environment; optionally append WIDTHxHEIGHT and display scale",
