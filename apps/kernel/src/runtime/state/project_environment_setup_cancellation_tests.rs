@@ -110,6 +110,9 @@ async fn exercise_cancel_request(scenario: CancellationScenario) {
     );
     if matches!(scenario, CancellationScenario::UnreachableWorker) {
         config.kernel_runtime_role = KernelRuntimeRole::General;
+        config.lease_worker_home_caller = None;
+        config.accept_remote_leases = false;
+        config.remote_lease_capacity = None;
     } else {
         ensure_worker_validation_boundary(&config).expect("fixture is a confirmed worker");
     }
