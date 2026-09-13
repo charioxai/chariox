@@ -5,29 +5,43 @@ commit `70e1f4c5916747bb42d69f722cf02968d51382eb` (the catalog fix plus the
 rustfmt-only correction). This runbook was prepared without Cargo, a build,
 Docker, CI, deployment, service mutation, or credential access.
 
-Use a disposable Linux validation VM and a separately controlled release
-builder. Never use the protected home-kernel host, its `/var/lib/chariox/home`,
-its current release, or any shared service as a fixture. `install-image.sh` and
-`upgrade-image.sh` are root operations; an override root does not isolate their
-`systemctl`, account, or filesystem effects.
+The authorized original rented Linux host may run the non-destructive source
+track: a clean independent worktree, direct Cargo compilation, and read-only
+source/Node checks inside the bounded external target/cache below. It must not
+touch the protected home kernel, `/var/lib/chariox/home`, current release, or
+shared services. Use disposable targets for the invasive track: image/account
+installation, rootless Docker/resource/lifecycle drills, managed upgrade,
+live-provider drills, and any deployment. Signed release building remains on a
+separately controlled builder. `install-image.sh` and `upgrade-image.sh` are
+root operations; an override root does not isolate their `systemctl`, account,
+or filesystem effects. The commands in this document are future gates and
+were not run during preparation. An approved real deployment remains a
+separate, explicitly gated operator action and is not authorized by this
+runbook.
 
 ## Source and task-local paths
 
-Keep the source checkout, Cargo target, evidence, build output, and release
-output outside the Git worktree. These are the exact task-scoped paths used by
-the commands below:
+The source checkout is the Git worktree. Keep generated Cargo targets/caches,
+evidence, build output, and release output outside that source worktree. These
+are the exact task-scoped paths used by the commands below:
 
 ```sh
 export SOURCE_COMMIT=70e1f4c5916747bb42d69f722cf02968d51382eb
-export KERNEL_VALIDATION_ROOT="$HOME/.chariox/dev/kernel-validation-prep-20260913"
+export KERNEL_VALIDATION_ROOT=/var/lib/chariox/validation/kernel-validation-prep-20260913
 export KERNEL_WORKTREE="$KERNEL_VALIDATION_ROOT/worktree"
-export CARGO_HOME="$KERNEL_VALIDATION_ROOT/cache/cargo-home"
-export CARGO_TARGET_DIR="$KERNEL_VALIDATION_ROOT/cache/cargo-target/$SOURCE_COMMIT"
+export CARGO_HOME="$HOME/.cargo"
+export CARGO_TARGET_DIR="$KERNEL_VALIDATION_ROOT/cache/cargo-target"
 export EVIDENCE_ROOT="$KERNEL_VALIDATION_ROOT/evidence/$SOURCE_COMMIT"
 export BUILD_OUTPUT="$KERNEL_VALIDATION_ROOT/build/$SOURCE_COMMIT"
 export RELEASE_OUTPUT="$KERNEL_VALIDATION_ROOT/release/$SOURCE_COMMIT"
 export VALIDATION_LOCK="$KERNEL_VALIDATION_ROOT/validation.lock"
 ```
+
+The retained `CARGO_HOME` is operator-owned and must resolve outside
+`/var/lib/chariox/home`; stop if it overlaps that protected path. The
+validation root, worktree, target, evidence, and release paths must all be
+task-scoped and non-shared. `CARGO_HOME` is the retained reusable operator
+cache; preserve it and serialize any writes through the validation lock.
 
 The worktree must be an independent checkout at `SOURCE_COMMIT`, with no staged,
 unstaged, or untracked source changes. On a fresh validation host, create it
@@ -35,17 +49,30 @@ from that host's existing product-managed OSS Git store; do not reuse a
 protected or another agent's worktree:
 
 ```sh
-mkdir -p "$KERNEL_VALIDATION_ROOT" "$(dirname "$CARGO_TARGET_DIR")" "$EVIDENCE_ROOT"
+case "$KERNEL_VALIDATION_ROOT" in
+  /var/lib/chariox/home|/var/lib/chariox/home/*) echo "validation root overlaps protected home" >&2; exit 1 ;;
+esac
+case "$(realpath -m "$CARGO_HOME")" in
+  /var/lib/chariox/home|/var/lib/chariox/home/*) echo "Cargo home overlaps protected home" >&2; exit 1 ;;
+esac
+mkdir -p "$KERNEL_VALIDATION_ROOT" "$CARGO_TARGET_DIR" "$EVIDENCE_ROOT"
 git -C <existing-oss-git-store> worktree add --detach "$KERNEL_WORKTREE" "$SOURCE_COMMIT"
 test "$(git -C "$KERNEL_WORKTREE" rev-parse HEAD)" = "$SOURCE_COMMIT"
 test -z "$(git -C "$KERNEL_WORKTREE" status --porcelain)"
 ```
 
-`CARGO_HOME` must be a pre-provisioned, dependency-only cache with no credential
-files. `--offline` below prevents registry access; this runbook does not
-install packages or dependencies. Keep this target cache private to this
-source/toolchain and do not share it with a release build or another Cargo
-process.
+Reuse the retained operator `CARGO_HOME`; do not create a new dependency cache
+per source SHA, delete the existing cache, or inspect credential files. The
+external target is task-scoped and may be reused on reruns for the same
+operator/toolchain; do not share it with a release build or another Cargo
+process. The focused command deliberately uses `--locked` without forcing
+`--offline`: Cargo can reuse a valid cache, while a cache miss can follow the
+operator's normal approved registry policy instead of being forced into an
+avoidable offline failure. If a no-network repeat is explicitly desired after
+the cache is known complete, add `--offline`; if a required package is missing
+or a permitted fetch fails, preserve the cache, record the exact dependency and
+error in evidence, and stop unless a separately approved dependency-fetch
+window is available. This runbook does not install packages or dependencies.
 
 ## Host gate and resource policy
 
@@ -53,30 +80,47 @@ The focused test needs a Linux C compiler/linker, `pkg-config`, OpenSSL and
 DBus development files, and `protobuf-compiler`; the pinned release Dockerfile
 names `build-essential`, `libssl-dev`, `libdbus-1-dev`, `pkg-config`, and
 `protobuf-compiler`. Require these to be preinstalled. Also require Git,
-`flock`, `systemd-run`, cgroup v2 CPU/memory/PIDs delegation, Rust/Cargo 1.88.0,
-and Node.js 22 or newer for the release scripts. Do not install anything in
-this runbook.
+`flock`, `systemd-run`, cgroup v2 CPU/memory/PIDs controls, and Node.js 22 or
+newer for the release scripts. The resource-drill track additionally needs
+Python 3, `jq`, `sudo`, and the disposable target's rootless-Docker
+prerequisites.
+Do not install anything in this runbook.
+
+There is no `rust-toolchain.toml` and no `rust-version` field in the checked-in
+Cargo manifests. The repository's effective CI/release minimum is Rust
+`1.88.0`, and the signed release image pins
+`rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0`.
+Those are the compatibility/release pins, not a demand to replace the
+operator's retained toolchain. The authorized operator toolchain is Rust/Cargo
+`1.98.1`; verify that exact pair before a source compile and record the verbose
+host/target details:
 
 Before a future validation window, check the host without starting a build:
 
 ```sh
 test "$(uname -s)" = Linux
 uname -m
-command -v cargo node git flock systemd-run
-cargo --version
+command -v rustc cargo node git flock systemd-run jq
+export RUSTUP_TOOLCHAIN=1.98.1
+test "$(rustc --version | awk '{print $2}')" = 1.98.1
+test "$(cargo --version | awk '{print $2}')" = 1.98.1
+rustc -Vv
 node --version
 test -r /sys/fs/cgroup/cgroup.controllers
 grep -qw cpu /sys/fs/cgroup/cgroup.controllers
 grep -qw memory /sys/fs/cgroup/cgroup.controllers
 grep -qw pids /sys/fs/cgroup/cgroup.controllers
 free -h
-df -h "$KERNEL_WORKTREE" "$KERNEL_VALIDATION_ROOT"
+df -h "$KERNEL_WORKTREE" "$KERNEL_VALIDATION_ROOT" "$CARGO_HOME"
 ```
 
 Reserve at least 12 GiB of RAM for the test scope plus 4 GiB for the host and
 at least 10 GiB of free disk for the external target and evidence. Stop if
 either reserve is unavailable. Hold `VALIDATION_LOCK` for every Cargo, build,
 package, or upgrade operation; no two such operations may run concurrently.
+The original rented host is acceptable for the focused source track only when
+the protected-kernel/shared-service inventory remains untouched and the test
+process is inside one of the bounded scopes below.
 
 ## Focused kernel regression
 
@@ -84,6 +128,7 @@ The actual focused Cargo test is:
 
 ```sh
 cd "$KERNEL_WORKTREE"
+export CARGO_BIN="$(command -v cargo)"
 flock -n "$VALIDATION_LOCK" \
   systemd-run --user --scope --quiet --wait --collect \
   --property=MemoryMax=12G \
@@ -95,9 +140,10 @@ flock -n "$VALIDATION_LOCK" \
   --setenv=CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
   --setenv=CARGO_BUILD_JOBS=2 \
   --setenv=CARGO_INCREMENTAL=1 \
+  --setenv=RUSTUP_TOOLCHAIN=1.98.1 \
   --setenv=RUST_TEST_THREADS=1 \
   --setenv=RUST_MIN_STACK=16777216 \
-  cargo test --offline --locked --manifest-path apps/kernel/Cargo.toml \
+  "$CARGO_BIN" test --locked --manifest-path apps/kernel/Cargo.toml \
     --lib terminal_command_catalog_includes_room_environment_status -- --nocapture
 ```
 
@@ -115,12 +161,61 @@ flag is needed: use the default Linux dependency set and the locked workspace.
 The Windows-only dependency section is not selected on Linux. The test command
 is not the root `test:daemon` or a full workspace test.
 
-The `flock` plus user-systemd scope is the only max-2/incremental Linux path
-described here. The checked-in local Rust-fault helper is serial (`CARGO_BUILD_JOBS=1`)
-and has no Linux memory cap, and the managed release Dockerfile is also
-serial, sets `CARGO_INCREMENTAL=0`, and has no host memory property. Do not
-claim either existing path provides this policy or silently fall back to an
-unbounded Cargo invocation when user cgroup delegation is unavailable.
+The user-systemd scope and the root-managed transient service are the two
+bounded max-2/incremental Linux paths described here. The checked-in
+`apps/cli/scripts/lib/local-rust-fault-drill-runtime.mjs` helper is serial
+(`CARGO_BUILD_JOBS=1`) and has no Linux memory cap; the managed release
+Dockerfile's release and dev Cargo invocations are also serial, set
+`CARGO_INCREMENTAL=0`, and have no host memory property. Do not claim either
+existing path provides this policy or silently fall back to an unbounded Cargo
+invocation when user cgroup delegation is unavailable.
+
+If the operator user lacks delegated controllers, run the same non-destructive
+test as a transient root-managed systemd service. This creates only a
+task-named validation unit, runs Cargo as the operator, and does not stop,
+reload, enable, or restart a product service. Do not run this block during
+preparation; verify the protected-home exclusion and the exact toolchain first:
+
+```sh
+export OPERATOR_USER="$(id -un)"
+export OPERATOR_GROUP="$(id -gn)"
+export CARGO_BIN="$(command -v cargo)"
+export OPERATOR_PATH="$(dirname "$CARGO_BIN"):/usr/local/bin:/usr/bin:/bin"
+test "$(rustc --version | awk '{print $2}')" = 1.98.1
+test "$(cargo --version | awk '{print $2}')" = 1.98.1
+test "$(realpath -m "$KERNEL_WORKTREE")" != /var/lib/chariox/home
+case "$(realpath -m "$KERNEL_WORKTREE")" in
+  /var/lib/chariox/home/*) echo "worktree overlaps protected home" >&2; exit 1 ;;
+esac
+sudo systemd-run --system \
+  --unit=chariox-kernel-catalog-test-20260913 \
+  --wait --collect \
+  --property=User="$OPERATOR_USER" \
+  --property=Group="$OPERATOR_GROUP" \
+  --property=WorkingDirectory="$KERNEL_WORKTREE" \
+  --property=MemoryMax=12G \
+  --property=MemorySwapMax=0 \
+  --property=CPUQuota=150% \
+  --property=TasksMax=512 \
+  --property=RuntimeMaxSec=30min \
+  --setenv=PATH="$OPERATOR_PATH" \
+  --setenv=CARGO_HOME="$CARGO_HOME" \
+  --setenv=CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
+  --setenv=CARGO_BUILD_JOBS=2 \
+  --setenv=CARGO_INCREMENTAL=1 \
+  --setenv=RUSTUP_TOOLCHAIN=1.98.1 \
+  --setenv=RUST_TEST_THREADS=1 \
+  --setenv=RUST_MIN_STACK=16777216 \
+  /usr/bin/flock -n "$VALIDATION_LOCK" \
+  "$CARGO_BIN" test --locked --manifest-path "$KERNEL_WORKTREE/apps/kernel/Cargo.toml" \
+    --lib terminal_command_catalog_includes_room_environment_status -- --nocapture
+```
+
+The root-managed alternative requires the system manager to expose the CPU,
+memory, and PID controllers; if it cannot apply any property, fail closed.
+Record the transient unit's exit status and peak memory/CPU/task readings.
+Neither path is an invasive install or lifecycle drill, and both keep all
+generated output in the external target/cache.
 
 ## Discovery seam and snapshot impact
 
@@ -148,7 +243,7 @@ and the source pin unchanged:
 
 ```sh
 export PROJECT_SETUP_BRANCH=codex/project-environment-setup-20260913
-export INTEGRATION_WORKTREE="$HOME/.chariox/dev/kernel-project-setup-integration-20260913"
+export INTEGRATION_WORKTREE=/var/lib/chariox/validation/kernel-project-setup-integration-20260913
 git -C <existing-oss-git-store> fetch origin \
   "refs/heads/$PROJECT_SETUP_BRANCH:refs/remotes/origin/$PROJECT_SETUP_BRANCH"
 git -C <existing-oss-git-store> worktree add --detach "$INTEGRATION_WORKTREE" \
