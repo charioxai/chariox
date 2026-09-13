@@ -70,6 +70,14 @@ or restart occurred. All 17 packaging/build-context tests also passed with the
 final verifier changes. Packaging fixtures still use synthetic binaries and
 the committed source base, so these results do not attest a new release image.
 
+The additional `allocation worker upgrade` regression is currently RED on the
+original Linux machine: `managed bootstrap receipt contains unsupported fields`.
+It uses the active `worker.rs` receipt shape with allocationId/homeCaller, rather
+than the older binding/enrollmentReceipt fixture. The earlier green worker tests
+therefore do not prove active worker upgrade compatibility. Consolidation must
+cover the actual receipt path, supervisor service, signed-release selection on
+restart, and activity reporting, not merely make the JSON parser accept it.
+
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.
 - Verify queued prompts and unresolved permissions prevent idle release.

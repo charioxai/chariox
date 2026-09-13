@@ -524,6 +524,33 @@ test("managed kernel recovery restores a hotpatch facade after interrupted activ
   assert.equal(await readlink(facade), hotpatch)
 })
 
+test("allocation worker upgrade preserves the receipt written by the active bootstrap", async (context) => {
+  const harness = await makeHarness(context)
+  // Keep this shape aligned with WorkerReceipt in managed_bootstrap/worker.rs,
+  // not the disabled pre-allocation bootstrap's binding/enrollmentReceipt shape.
+  const receipt = {
+    schemaVersion: 1,
+    status: "confirmed",
+    allocationId: "allocation-1",
+    machineId: "machine-1",
+    kernelId: "kernel-1",
+    relayPublicKey: "relay-public-key",
+    runtimeReleaseDigest: harness.current.digest,
+    homeCaller: {
+      accountId: "account-1", userId: "owner-1", realmId: "realm-1",
+      machineId: "home-machine-1", kernelId: "home-kernel-1", relayPublicKey: "home-relay-key",
+    },
+    confirmedAt: "2026-09-11T00:00:00Z",
+  }
+  const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`
+  await put(harness.receiptPath, receiptBytes, 0o640)
+  const before = await persistentSnapshot(harness.persistent)
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBytes)
+  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
+})
+
 test("managed kernel upgrade preserves an exact disposable worker receipt and persistent state", async (context) => {
   const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
   const before = await persistentSnapshot(harness.persistent)
