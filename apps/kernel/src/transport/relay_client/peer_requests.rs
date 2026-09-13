@@ -1627,12 +1627,13 @@ fn authenticated_lease_worker_caller(
         ));
     }
     if let Some(home) = router.lease_worker_selected_home() {
-        if home.kernel_id != home_kernel_id
-            || home.realm_id != identity.realm_id
-            || home.user_id != owner_user_id
-            || crate::runtime::terminal_pairings::public_key_thumbprint(&home.relay_public_key)
-                != public_key_thumbprint
-        {
+        if !selected_home_matches(
+            &home,
+            home_kernel_id,
+            &identity.realm_id,
+            owner_user_id,
+            public_key_thumbprint,
+        ) {
             return Err(relay_error(
                 "unauthorized",
                 "execution lease caller does not match the selected home",
@@ -1652,6 +1653,50 @@ fn authenticated_lease_worker_caller(
 enum LeaseResource<'a> {
     ExecutionLease(&'a str),
     LeasedAgent(&'a str),
+}
+
+fn selected_home_matches(
+    home: &crate::config::LeaseWorkerHomeCaller,
+    kernel_id: &str,
+    realm_id: &str,
+    user_id: &str,
+    key_thumbprint: &str,
+) -> bool {
+    home.kernel_id == kernel_id
+        && home.realm_id == realm_id
+        && home.user_id == user_id
+        && crate::runtime::terminal_pairings::public_key_thumbprint(&home.relay_public_key)
+            == key_thumbprint
+}
+
+#[cfg(test)]
+mod selected_home_tests {
+    use super::*;
+
+    #[test]
+    fn selected_home_requires_every_authenticated_identity_field() {
+        let home = crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "home".into(),
+            realm_id: "realm".into(),
+            user_id: "owner".into(),
+            relay_public_key: "home-key".into(),
+        };
+        let thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint("home-key");
+        assert!(selected_home_matches(
+            &home,
+            "home",
+            "realm",
+            "owner",
+            &thumbprint
+        ));
+        for field in 0..4 {
+            let mut actual = ["home", "realm", "owner", thumbprint.as_str()];
+            actual[field] = "different";
+            assert!(!selected_home_matches(
+                &home, actual[0], actual[1], actual[2], actual[3]
+            ));
+        }
+    }
 }
 
 fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {

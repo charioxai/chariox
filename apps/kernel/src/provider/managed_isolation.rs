@@ -27,7 +27,6 @@ const BWRAP_PATH: &str = "/usr/bin/bwrap";
 const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
 #[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
-#[cfg(any(target_os = "linux", test))]
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
