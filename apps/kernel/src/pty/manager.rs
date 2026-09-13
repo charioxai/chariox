@@ -974,6 +974,46 @@ mod tests {
         assert!(!manager.has_process(run.id()));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires Bubblewrap and Linux user namespaces; run explicitly on the managed host"]
+    fn sandboxed_pty_survives_launching_thread_exit() {
+        const RUN: &str = "provider-launch-thread-lifetime";
+        let caller = thread::spawn(|| {
+            let mut manager = PtyManager::new();
+            manager.spawn(PtySpawnRequest {
+                process_key: RUN.into(),
+                provider_run_id: RUN.into(),
+                program: "/usr/bin/bwrap".into(),
+                args: ["--die-with-parent", "--new-session", "--unshare-user",
+                    "--unshare-pid", "--uid", "0", "--gid", "0", "--ro-bind",
+                    "/", "/", "--", "/bin/sh", "-c", "printf 'ready\\n'; exec sleep 30"]
+                    .into_iter().map(str::to_string).collect(),
+                env: Default::default(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            }).expect("real sandbox should launch");
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut output = Vec::new();
+            while std::time::Instant::now() < deadline {
+                output.extend(manager.drain_output(RUN).unwrap().into_iter().flat_map(|c| c.bytes));
+                if String::from_utf8_lossy(&output).contains("ready") { break; }
+                thread::sleep(Duration::from_millis(10));
+            }
+            (manager, output)
+        });
+        // Joining retires the actual spawning thread while the kernel process lives.
+        let (mut manager, output) = caller.join().expect("launching caller should return");
+        thread::sleep(Duration::from_secs(2));
+        let state = manager.poll_process_state(RUN).unwrap();
+        manager.remove_process(RUN).expect("sandbox must be cleaned up before assertions");
+        assert!(String::from_utf8_lossy(&output).contains("ready"), "sandbox never became ready: {output:?}");
+        assert_eq!(state, PtyProcessState::Running, "retiring a caller must not terminate its provider");
+        assert!(!manager.has_process(RUN));
+    }
+
     #[cfg(unix)]
     #[test]
     fn real_pty_reap_preserves_exit_code_separate_from_untrusted_output() {
