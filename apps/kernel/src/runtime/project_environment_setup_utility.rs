@@ -60,6 +60,25 @@ pub(crate) fn parse_project_environment_setup_utility_output(
         operation: "run project environment setup utility",
         message: "project environment setup utility did not return a JSON object".to_string(),
     })?;
+    // Keep the rejection diagnostic stable when the schema validator reports
+    // only its generic `minItems` failure. An empty list is still rejected
+    // before parsing or accepting the utility definition.
+    if serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/definition/validation_commands")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::is_empty)
+        })
+        == Some(true)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "run project environment setup utility",
+            message: "environment definition must include at least one validation command"
+                .to_string(),
+        });
+    }
     let schema = project_environment_setup_utility_schema();
     crate::transport::runtime_tools::validate_json_output_schema(
         "project_environment_setup_utility_output",
