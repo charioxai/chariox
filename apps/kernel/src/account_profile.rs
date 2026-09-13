@@ -1889,8 +1889,7 @@ impl ProviderAccountProfileRegistry {
             if pending_cleanup.is_some()
                 || !stored.materialized_replica
                 || stored.managed_context_replica.is_some()
-                || (stored.public.auth_state == ProviderAccountAuthState::Authenticated
-                    && !stored.pending_native_validation)
+                || !stored.pending_native_validation
             {
                 return Err(registry_error(
                     "recover materialized account rollback",
@@ -2001,8 +2000,7 @@ impl ProviderAccountProfileRegistry {
         if !stored.materialized_replica
             || stored.managed_context_replica.is_some()
             || stored.public.origin != ProviderAccountProfileOrigin::CharioxCreated
-            || (stored.public.auth_state == ProviderAccountAuthState::Authenticated
-                && !stored.pending_native_validation)
+            || !stored.pending_native_validation
             || stored.locator != expected_locator
         {
             return Err(registry_error(
@@ -4971,6 +4969,62 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn validated_replica_cannot_be_rolled_back_after_auth_changes() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("validated", false),
+            )
+            .expect("materialize replica");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "validated",
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("native authentication succeeded");
+        registry
+            .mark_materialized_replica_validated("owner-a", "codex", "validated")
+            .expect("validation is durable");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "validated",
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("worker later logs out");
+        let managed_root = root.join("provider-accounts/owner-a/codex/validated");
+        let rollback_root = materialized_replica_rollback_root(&managed_root);
+        fs::rename(&managed_root, &rollback_root).expect("simulate stale rollback rename");
+        let credential = rollback_root.join("codex/auth.json");
+        drop(registry);
+
+        assert!(
+            ProviderAccountProfileRegistry::open(&registry_path).is_err(),
+            "validated worker profile must not enter rollback recovery"
+        );
+        assert!(
+            credential.is_file(),
+            "worker credentials must not be deleted"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn failed_rollback_registry_sync_recovers_pending_validation_after_reopen() {
         let (root, registry) = fixture();
         let registry_path = root.join("accounts.json");
@@ -5068,7 +5122,10 @@ mod tests {
             .materialize_replica("owner-a", &codex_replica_materialization("sibling", false))
             .expect("materialize sibling replica");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", false),
+            )
             .expect("materialize failed replica");
         let provider_root = root.join("provider-accounts/owner-a/codex");
         let sibling_root = provider_root.join("sibling");
@@ -5214,7 +5271,10 @@ mod tests {
             .materialize_replica("owner-a", &codex_replica_materialization("previous", true))
             .expect("materialize previous default");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", true))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", true),
+            )
             .expect("materialize failed default");
         let managed_root = root.join("provider-accounts/owner-a/codex/failed");
         let rollback_root = materialized_replica_rollback_root(&managed_root);
@@ -5248,7 +5308,10 @@ mod tests {
             .materialize_replica("owner-a", &codex_replica_materialization("previous", true))
             .expect("materialize prior default");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", true))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", true),
+            )
             .expect("materialize failed default");
         FAIL_REPLICA_ROLLBACK_STAGING_SYNC_ONCE.with(|fail| fail.set(true));
         let error = registry
@@ -5285,7 +5348,10 @@ mod tests {
         let (root, registry) = fixture();
         let registry_path = root.join("accounts.json");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", false),
+            )
             .expect("materialize failed replica");
         FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
         let error = registry
@@ -5300,7 +5366,10 @@ mod tests {
         let reopened = ProviderAccountProfileRegistry::open(&registry_path)
             .expect("reopen registry with committed rollback residue");
         reopened
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", false),
+            )
             .expect("retry corrected materialization");
         assert!(
             !rollback_root.exists(),
@@ -5319,7 +5388,7 @@ mod tests {
         let registry_path = root.join("accounts.json");
         let replica = codex_replica_materialization("failed", false);
         registry
-            .materialize_replica("owner-a", &replica)
+            .materialize_replica_with_rollback_state("owner-a", &replica)
             .expect("materialize replica before rollback");
         FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
         registry
@@ -5345,7 +5414,10 @@ mod tests {
         let (root, registry) = fixture();
         let registry_path = root.join("accounts.json");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", false),
+            )
             .expect("materialize failed replica");
         FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
         registry
@@ -5374,7 +5446,10 @@ mod tests {
             .materialize_replica("owner-a", &codex_replica_materialization("sibling", false))
             .expect("materialize sibling replica");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", false),
+            )
             .expect("materialize failed replica");
         FAIL_REPLICA_ROLLBACK_CLEANUP_ONCE.with(|fail| fail.set(true));
         registry
@@ -5409,7 +5484,10 @@ mod tests {
             .materialize_replica("owner-a", &codex_replica_materialization("sibling", false))
             .expect("materialize sibling replica");
         registry
-            .materialize_replica("owner-a", &codex_replica_materialization("failed", false))
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("failed", false),
+            )
             .expect("materialize failed replica");
         let provider_root = root.join("provider-accounts/owner-a/codex");
         let failed_root = provider_root.join("failed");
