@@ -169,7 +169,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -211,7 +211,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),

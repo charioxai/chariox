@@ -26,350 +26,19 @@ use crate::runtime::agent_utility_executor::{
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
+use crate::transport::relay_peer::{
+    RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
+};
 
-const OPERATION: &str = "project environment setup";
-const MAX_OPERATION_ID_CHARS: usize = 128;
-const MAX_VALIDATION_COMMANDS: usize = 32;
-const MAX_COMMAND_CHARS: usize = 8_192;
-const VALIDATION_COMMAND_TIMEOUT_MS: u64 = 120_000;
-const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
-
-const WORKER_KERNEL_ENV_NAMES: &[&str] = &[
-    "CHARIOX_HOME",
-    "CHARIOX_MANAGED_VAULT_PATH",
-    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
-    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
-    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
-    "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
-    "CHARIOX_MANAGED_BOOTSTRAP_PATH",
-    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-    "CHARIOX_KERNEL_HOST",
-    "CHARIOX_KERNEL_PORT",
-    "CHARIOX_DAEMON_ID",
-    "CHARIOX_MACHINE_ID",
-    "CHARIOX_MANAGED_KERNEL_BINARY",
-    "CHARIOX_MANAGED_RELEASE_MANIFEST",
-    "CHARIOX_MANAGED_RELEASE_SIGNATURE",
-    "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
-    "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
-    "CHARIOX_ACCEPT_REMOTE_LEASES",
-    "CHARIOX_KERNEL_RUNTIME_ROLE",
-    "CHARIOX_REMOTE_LEASE_CAPACITY",
-    "CHARIOX_LEASE_WORKER_HOME_CALLER",
-];
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SetupExecution {
-    owner_user_id: String,
-    operation_id: String,
-    project_id: String,
-    session_id: String,
-    agent_id: String,
-    workspace_id: String,
-    target_worker_id: String,
-    target_platform: String,
-    definition: Option<ProjectEnvironmentDefinition>,
-    validation_commands: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SetupEntry {
-    execution: SetupExecution,
-    status: ProjectEnvironmentSetupStatus,
-    fingerprint: String,
-    cancel_requested: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedSetupEntry {
-    entry: SetupEntry,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ProjectEnvironmentSetupStore {
-    entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
-    durable_state_store: Option<DurableKernelStateStore>,
-}
-
-impl Default for ProjectEnvironmentSetupStore {
-    fn default() -> Self {
-        Self {
-            entries: Arc::new(Mutex::new(BTreeMap::new())),
-            durable_state_store: None,
-        }
-    }
-}
-
-impl ProjectEnvironmentSetupStore {
-    pub(crate) fn restore_from_durable_state(
-        durable_state_store: &DurableKernelStateStore,
-    ) -> Self {
-        let store = Self {
-            entries: Arc::new(Mutex::new(BTreeMap::new())),
-            durable_state_store: Some(durable_state_store.clone()),
-        };
-        let events =
-            match durable_state_store.load_events_by_kind("project.environment_setup.updated") {
-                Ok(events) => events,
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "project.environment_setup",
-                        "failed to restore project environment setup state",
-                        serde_json::json!({"error": error.to_string()}),
-                    );
-                    return store;
-                }
-            };
-        let mut entries = store
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        for event in events {
-            let Ok(persisted) = serde_json::from_value::<PersistedSetupEntry>(event.payload) else {
-                continue;
-            };
-            entries.insert(
-                persisted.entry.execution.operation_id.clone(),
-                persisted.entry,
-            );
-        }
-        for entry in entries.values_mut() {
-            if matches!(
-                entry.status.phase,
-                ProjectEnvironmentSetupPhase::Requested
-                    | ProjectEnvironmentSetupPhase::Preparing
-                    | ProjectEnvironmentSetupPhase::Validating
-            ) {
-                entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
-                entry.status.progress_percent = 0;
-                entry.status.message =
-                    Some("kernel restarted before target environment setup completed".to_string());
-                entry.status.failure_code = Some("kernel_restarted".to_string());
-                entry.status.failure_message = Some(
-                    "setup was interrupted by kernel restart; retry the operation".to_string(),
-                );
-                entry.status.retryable = true;
-                entry.status.updated_at_ms = crate::session::unix_epoch_ms();
-                entry.cancel_requested = false;
-            }
-        }
-        drop(entries);
-        store
-    }
-
-    fn begin(
-        &self,
-        execution: SetupExecution,
-    ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
-        let fingerprint = setup_fingerprint(&execution)?;
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        if let Some(existing) = entries.get(&execution.operation_id) {
-            if existing.fingerprint != fingerprint {
-                return Err(setup_error(
-                    "operation id was already used for a different setup request",
-                ));
-            }
-            return Ok((existing.status.clone(), false));
-        }
-        let now = crate::session::unix_epoch_ms();
-        let status = ProjectEnvironmentSetupStatus {
-            operation_id: execution.operation_id.clone(),
-            project_id: execution.project_id.clone(),
-            session_id: execution.session_id.clone(),
-            agent_id: execution.agent_id.clone(),
-            worker_id: execution.target_worker_id.clone(),
-            platform: execution.target_platform.clone(),
-            phase: ProjectEnvironmentSetupPhase::Requested,
-            attempt: 1,
-            progress_percent: 0,
-            definition_digest: execution
-                .definition
-                .as_ref()
-                .map(ProjectEnvironmentDefinition::digest),
-            validation: None,
-            message: Some("setup request accepted".to_string()),
-            failure_code: None,
-            failure_message: None,
-            retryable: true,
-            created_at_ms: now,
-            updated_at_ms: now,
-        };
-        let entry = SetupEntry {
-            execution,
-            status: status.clone(),
-            fingerprint,
-            cancel_requested: false,
-        };
-        entries.insert(status.operation_id.clone(), entry.clone());
-        drop(entries);
-        self.persist(&entry);
-        Ok((status, true))
-    }
-
-    fn retry(
-        &self,
-        operation_id: &str,
-        session_id: &str,
-        caller_user_id: &str,
-    ) -> Result<(SetupExecution, u32, ProjectEnvironmentSetupStatus), DaemonError> {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        let entry = entries
-            .get_mut(operation_id)
-            .ok_or_else(|| setup_error("setup operation was not found"))?;
-        ensure_entry_owner(entry, session_id, caller_user_id)?;
-        if !matches!(
-            entry.status.phase,
-            ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
-        ) {
-            return Err(setup_error(
-                "only failed or cancelled setup operations can be retried",
-            ));
-        }
-        let attempt = entry.status.attempt.saturating_add(1);
-        entry.status.attempt = attempt;
-        entry.status.phase = ProjectEnvironmentSetupPhase::Requested;
-        entry.status.progress_percent = 0;
-        entry.status.definition_digest = entry
-            .execution
-            .definition
-            .as_ref()
-            .map(ProjectEnvironmentDefinition::digest);
-        entry.status.validation = None;
-        entry.status.message = Some("setup retry accepted".to_string());
-        entry.status.failure_code = None;
-        entry.status.failure_message = None;
-        entry.status.retryable = true;
-        entry.status.updated_at_ms = crate::session::unix_epoch_ms();
-        entry.cancel_requested = false;
-        let execution = entry.execution.clone();
-        let status = entry.status.clone();
-        let persisted = entry.clone();
-        drop(entries);
-        self.persist(&persisted);
-        Ok((execution, attempt, status))
-    }
-
-    fn get(
-        &self,
-        operation_id: &str,
-        caller_user_id: &str,
-    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
-        let entries = self
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        let entry = entries
-            .get(operation_id)
-            .ok_or_else(|| setup_error("setup operation was not found"))?;
-        if entry.execution.owner_user_id != caller_user_id {
-            return Err(setup_error(
-                "caller is not allowed to inspect this setup operation",
-            ));
-        }
-        Ok(entry.status.clone())
-    }
-
-    fn cancel(
-        &self,
-        operation_id: &str,
-        session_id: &str,
-        caller_user_id: &str,
-    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        let entry = entries
-            .get_mut(operation_id)
-            .ok_or_else(|| setup_error("setup operation was not found"))?;
-        ensure_entry_owner(entry, session_id, caller_user_id)?;
-        if !matches!(
-            entry.status.phase,
-            ProjectEnvironmentSetupPhase::Ready
-                | ProjectEnvironmentSetupPhase::Failed
-                | ProjectEnvironmentSetupPhase::Cancelled
-        ) {
-            entry.cancel_requested = true;
-            entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
-            entry.status.message = Some("setup cancellation requested".to_string());
-            entry.status.failure_code = None;
-            entry.status.failure_message = None;
-            entry.status.retryable = true;
-            entry.status.updated_at_ms = crate::session::unix_epoch_ms();
-        }
-        let status = entry.status.clone();
-        let persisted = entry.clone();
-        drop(entries);
-        self.persist(&persisted);
-        Ok(status)
-    }
-
-    fn is_cancelled(&self, operation_id: &str, attempt: u32) -> bool {
-        let entries = self
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        entries.get(operation_id).is_some_and(|entry| {
-            entry.status.attempt == attempt
-                && (entry.cancel_requested
-                    || entry.status.phase == ProjectEnvironmentSetupPhase::Cancelled)
-        })
-    }
-
-    fn update<F>(&self, operation_id: &str, attempt: u32, update: F) -> bool
-    where
-        F: FnOnce(&mut SetupEntry),
-    {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("setup state lock should not be poisoned");
-        let Some(entry) = entries.get_mut(operation_id) else {
-            return false;
-        };
-        if entry.status.attempt != attempt
-            || matches!(
-                entry.status.phase,
-                ProjectEnvironmentSetupPhase::Ready
-                    | ProjectEnvironmentSetupPhase::Failed
-                    | ProjectEnvironmentSetupPhase::Cancelled
-            )
-        {
-            return false;
-        }
-        update(entry);
-        entry.status.updated_at_ms = crate::session::unix_epoch_ms();
-        let persisted = entry.clone();
-        drop(entries);
-        self.persist(&persisted);
-        true
-    }
-
-    fn persist(&self, entry: &SetupEntry) {
-        let Some(durable_state_store) = &self.durable_state_store else {
-            return;
-        };
-        if let Err(error) = durable_state_store.append_event(
-            "project.environment_setup.updated",
-            Some(entry.execution.operation_id.clone()),
-            serde_json::json!(PersistedSetupEntry {
-                entry: entry.clone(),
-            }),
-        ) {
-            crate::logging::warn_with_fields(
-                "project.environment_setup",
-                "failed to persist project environment setup state",
-                serde_json::json!({"error": error.to_string()}),
-            );
-        }
-    }
-}
+mod project_environment_setup_dispatch;
+mod project_environment_setup_policy;
+mod project_environment_setup_storage;
+mod project_environment_setup_validation;
+use project_environment_setup_dispatch::*;
+use project_environment_setup_policy::*;
+pub(super) use project_environment_setup_storage::ProjectEnvironmentSetupStore;
+use project_environment_setup_storage::{SetupEntry, SetupExecution};
+use project_environment_setup_validation::*;
 
 impl KernelRuntimeState {
     pub(crate) async fn execute_project_environment_setup_request(
@@ -385,23 +54,60 @@ impl KernelRuntimeState {
                     .project_environment_setups
                     .begin(execution.clone())?;
                 if should_spawn {
-                    self.spawn_project_environment_setup(execution, status.attempt);
+                    if execution.remote_leased_agent_id.is_some() {
+                        self.spawn_remote_project_environment_setup(execution, status.attempt);
+                    } else {
+                        self.spawn_project_environment_setup(execution, status.attempt);
+                    }
                 }
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupStarted { status })
             }
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(request) => {
-                let status = self
+                let (execution, status) = self
                     .owned
                     .project_environment_setups
-                    .get(&request.operation_id, caller_user_id)?;
+                    .get_entry(&request.operation_id, caller_user_id)?;
+                if execution.remote_leased_agent_id.is_some() {
+                    let setup = get_remote_setup_status(self, &execution).await;
+                    let status = match setup {
+                        Ok(setup) => {
+                            self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        }
+                        Err(error) => {
+                            self.owned.project_environment_setups.mark_failed(
+                                &execution.operation_id,
+                                status.attempt,
+                                "worker_status_unavailable",
+                                "the remote worker status could not be confirmed",
+                            );
+                            return Err(error);
+                        }
+                    };
+                    return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus { status });
+                }
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus { status })
             }
             LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => {
+                let (execution, _) = self
+                    .owned
+                    .project_environment_setups
+                    .get_entry(&request.operation_id, caller_user_id)?;
                 let status = self.owned.project_environment_setups.cancel(
                     &request.operation_id,
                     &request.session_id,
                     caller_user_id,
                 )?;
+                if execution.remote_leased_agent_id.is_some() {
+                    if let Ok(setup) = cancel_remote_setup(self, &execution).await {
+                        if let Ok(reconciled) =
+                            self.reconcile_remote_project_environment_setup(&execution, setup)
+                        {
+                            return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled {
+                                status: reconciled,
+                            });
+                        }
+                    }
+                }
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status })
             }
             LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
@@ -410,11 +116,248 @@ impl KernelRuntimeState {
                     &request.session_id,
                     caller_user_id,
                 )?;
-                self.spawn_project_environment_setup(execution, attempt);
+                if execution.remote_leased_agent_id.is_some() {
+                    self.spawn_remote_project_environment_setup_retry(execution, attempt);
+                } else {
+                    self.spawn_project_environment_setup(execution, attempt);
+                }
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupRetried { status })
             }
             _ => Err(setup_error("unsupported project environment setup request")),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_leased_project_environment_setup(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: String,
+        operation_id: String,
+        project_id: String,
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        definition: Option<ProjectEnvironmentDefinition>,
+        validation_commands: Vec<String>,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        validate_operation_id(&operation_id)?;
+        validate_commands(&validation_commands)?;
+        let config = self.owned.config_projection.snapshot();
+        if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
+            return Err(setup_error(
+                "project environment setup is only executable by a lease worker",
+            ));
+        }
+        if target_worker_id != config.host_machine_id {
+            return Err(setup_error(
+                "requested worker does not match this kernel's worker identity",
+            ));
+        }
+        if target_platform.trim().is_empty() || target_platform != actual_worker_platform() {
+            return Err(setup_error("requested platform does not match this worker"));
+        }
+        if !workspace_id.is_empty() && workspace_id != target.workspace_id {
+            return Err(setup_error(
+                "requested workspace does not match the leased worker worktree",
+            ));
+        }
+        let definition =
+            validate_setup_definition(definition, &target_platform, &validation_commands)?;
+        ensure_worker_validation_boundary(&config)?;
+        let execution = SetupExecution {
+            owner_user_id: target.owner_user_id.clone(),
+            operation_id,
+            project_id,
+            session_id: target.home_session_id.clone(),
+            agent_id: target.home_agent_id.clone(),
+            execution_session_id: target.backing_session_id,
+            execution_agent_id: target.backing_agent_id,
+            workspace_id: target.workspace_id,
+            target_worker_id,
+            target_platform,
+            definition,
+            validation_commands,
+            persist_project_definition: false,
+            remote_leased_agent_id: Some(leased_agent_id),
+        };
+        let (status, should_spawn) = self
+            .owned
+            .project_environment_setups
+            .begin(execution.clone())?;
+        if should_spawn {
+            self.spawn_project_environment_setup(execution.clone(), status.attempt);
+        }
+        let (_, definition) = self.owned.project_environment_setups.remote_status(
+            &execution.operation_id,
+            execution
+                .remote_leased_agent_id
+                .as_deref()
+                .unwrap_or_default(),
+        )?;
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    pub(crate) async fn get_leased_project_environment_setup_status(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: &str,
+        operation_id: &str,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let (status, definition) = self
+            .owned
+            .project_environment_setups
+            .remote_status(operation_id, leased_agent_id)?;
+        let config = self.owned.config_projection.snapshot();
+        ensure_worker_setup_status_target(&target, &status, &config)?;
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    pub(crate) async fn cancel_leased_project_environment_setup(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: &str,
+        operation_id: &str,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let (current_status, definition) = self
+            .owned
+            .project_environment_setups
+            .remote_status(operation_id, leased_agent_id)?;
+        let config = self.owned.config_projection.snapshot();
+        ensure_worker_setup_status_target(&target, &current_status, &config)?;
+        let status = self.owned.project_environment_setups.cancel(
+            operation_id,
+            &target.home_session_id,
+            &target.owner_user_id,
+        )?;
+        ensure_worker_setup_status_target(&target, &status, &config)?;
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    pub(crate) async fn retry_leased_project_environment_setup(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: &str,
+        operation_id: &str,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let (current_status, definition) = self
+            .owned
+            .project_environment_setups
+            .remote_status(operation_id, leased_agent_id)?;
+        let config = self.owned.config_projection.snapshot();
+        ensure_worker_setup_status_target(&target, &current_status, &config)?;
+        let (execution, attempt, status) = self.owned.project_environment_setups.retry(
+            operation_id,
+            &target.home_session_id,
+            &target.owner_user_id,
+        )?;
+        if execution.remote_leased_agent_id.as_deref() != Some(leased_agent_id) {
+            return Err(setup_error(
+                "setup operation is not bound to this leased agent",
+            ));
+        }
+        ensure_worker_setup_status_target(&target, &status, &config)?;
+        self.spawn_project_environment_setup(execution, attempt);
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    fn spawn_remote_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        self.spawn_remote_project_environment_setup_request(execution, attempt, false);
+    }
+
+    fn spawn_remote_project_environment_setup_retry(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+    ) {
+        self.spawn_remote_project_environment_setup_request(execution, attempt, true);
+    }
+
+    fn spawn_remote_project_environment_setup_request(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+        retry: bool,
+    ) {
+        let runtime_state = self.clone();
+        tokio::spawn(async move {
+            let result = if retry {
+                retry_remote_setup(&runtime_state, &execution).await
+            } else {
+                start_remote_setup(&runtime_state, &execution).await
+            };
+            match result {
+                Ok(setup) => {
+                    if let Err(error) =
+                        runtime_state.reconcile_remote_project_environment_setup(&execution, setup)
+                    {
+                        runtime_state.owned.project_environment_setups.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "worker_status_invalid",
+                            "the remote worker returned an invalid setup status",
+                        );
+                        crate::logging::warn_with_fields(
+                            "project.environment_setup",
+                            "remote setup status was rejected",
+                            serde_json::json!({
+                                "operation_id": execution.operation_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                Err(error) => {
+                    runtime_state.owned.project_environment_setups.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "worker_dispatch_failed",
+                        "the remote worker could not be reached for environment setup",
+                    );
+                    crate::logging::warn_with_fields(
+                        "project.environment_setup",
+                        "remote setup dispatch failed",
+                        serde_json::json!({
+                            "operation_id": execution.operation_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    fn reconcile_remote_project_environment_setup(
+        &self,
+        execution: &SetupExecution,
+        setup: RelayProjectEnvironmentSetupStatus,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        let (_, current_status) = self
+            .owned
+            .project_environment_setups
+            .get_entry(&execution.operation_id, &execution.owner_user_id)?;
+        validate_remote_setup_status(
+            execution,
+            current_status.attempt,
+            &setup.status,
+            setup.definition.as_ref(),
+        )?;
+        validate_remote_setup_transition(current_status.phase, setup.status.phase)?;
+        if setup.status.phase == ProjectEnvironmentSetupPhase::Ready {
+            let definition = setup.definition.clone().ok_or_else(|| {
+                setup_error("worker cannot report setup ready without a definition")
+            })?;
+            self.update_project_environment_definition(
+                &execution.project_id,
+                definition,
+                &execution.owner_user_id,
+            )?;
+        }
+        self.owned.project_environment_setups.reconcile_remote(
+            &execution.operation_id,
+            execution,
+            setup.status,
+            setup.definition,
+        )
     }
 
     fn prepare_setup_execution(
@@ -424,20 +367,6 @@ impl KernelRuntimeState {
     ) -> Result<SetupExecution, DaemonError> {
         validate_operation_id(&request.operation_id)?;
         let config = self.owned.config_projection.snapshot();
-        if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
-            return Err(setup_error(
-                "project environment setup is only available on a dedicated worker kernel",
-            ));
-        }
-        let actual_platform = actual_worker_platform();
-        if request.target_worker_id != config.host_machine_id {
-            return Err(setup_error(
-                "requested worker does not match this kernel's worker identity",
-            ));
-        }
-        if request.target_platform != actual_platform {
-            return Err(setup_error("requested platform does not match this worker"));
-        }
         if request.target_platform.trim().is_empty() {
             return Err(setup_error("target platform must not be empty"));
         }
@@ -459,6 +388,47 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|agent| agent.id() == request.agent_id)
             .ok_or_else(|| setup_error("agent does not belong to the selected session"))?;
+        let remote_execution = agent.remote_execution().cloned();
+        let is_remote_worker_dispatch = match config.kernel_runtime_role {
+            KernelRuntimeRole::RemoteLeaseWorker => {
+                if request.target_worker_id != config.host_machine_id {
+                    return Err(setup_error(
+                        "requested worker does not match this kernel's worker identity",
+                    ));
+                }
+                if request.target_platform != actual_worker_platform() {
+                    return Err(setup_error("requested platform does not match this worker"));
+                }
+                if remote_execution.is_some() {
+                    return Err(setup_error(
+                        "a lease worker cannot execute setup for another remote worker",
+                    ));
+                }
+                false
+            }
+            KernelRuntimeRole::General => {
+                let Some(remote_execution) = remote_execution.as_ref() else {
+                    return Err(setup_error(
+                        "project environment setup requires a dedicated worker or remote-backed agent",
+                    ));
+                };
+                if request.target_worker_id != remote_execution.worker_machine_id {
+                    return Err(setup_error(
+                        "requested worker does not match the remote agent binding",
+                    ));
+                }
+                if remote_execution.worker_kernel_id.trim().is_empty()
+                    || remote_execution.worker_machine_id.trim().is_empty()
+                    || remote_execution.leased_agent_id.trim().is_empty()
+                    || !remote_execution.relay_peer_protocol_compatible()
+                {
+                    return Err(setup_error(
+                        "remote agent binding is incomplete or uses an obsolete relay protocol",
+                    ));
+                }
+                true
+            }
+        };
         let definition = request
             .definition
             .or_else(|| project.environment_definition().cloned());
@@ -476,19 +446,43 @@ impl KernelRuntimeState {
                     "additional validation commands are only allowed when no definition exists",
                 ));
             }
+            if definition.validation_commands.is_empty() {
+                return Err(setup_error(
+                    "environment definition must include at least one validation command",
+                ));
+            }
         }
-        let workspace_id = agent.worktree_id().unwrap_or_else(|| session.worktree_id());
+        // A home worktree path is not a worker worktree path. The worker
+        // derives its canonical backing worktree from the authenticated lease
+        // and rejects any non-empty path that does not match it.
+        let workspace_id = if is_remote_worker_dispatch {
+            String::new()
+        } else {
+            agent
+                .worktree_id()
+                .unwrap_or_else(|| session.worktree_id())
+                .to_string()
+        };
         Ok(SetupExecution {
             owner_user_id: caller_user_id.to_string(),
             operation_id: request.operation_id,
             project_id: request.project_id,
             session_id: request.session_id,
             agent_id: request.agent_id,
-            workspace_id: workspace_id.to_string(),
+            execution_session_id: request.session_id.clone(),
+            execution_agent_id: request.agent_id.clone(),
+            workspace_id,
             target_worker_id: request.target_worker_id,
             target_platform: request.target_platform,
             definition,
             validation_commands: request.validation_commands,
+            persist_project_definition: true,
+            remote_leased_agent_id: is_remote_worker_dispatch.then(|| {
+                remote_execution
+                    .expect("remote dispatch binding was checked")
+                    .leased_agent_id
+                    .clone()
+            }),
         })
     }
 
@@ -507,8 +501,7 @@ impl KernelRuntimeState {
             return;
         }
         if ensure_worker_validation_boundary(&self.owned.config_projection.snapshot()).is_err() {
-            mark_setup_failed(
-                store,
+            store.mark_failed(
                 &execution.operation_id,
                 attempt,
                 "worker_boundary_unavailable",
@@ -535,8 +528,8 @@ impl KernelRuntimeState {
         });
 
         let utility_request = RunAgentUtilityRequest {
-            session_id: execution.session_id.clone(),
-            agent_id: execution.agent_id.clone(),
+            session_id: execution.execution_session_id.clone(),
+            agent_id: execution.execution_agent_id.clone(),
             kind: AgentUtilityKind::ProjectEnvironmentSetup,
             input: AgentUtilityInput::ProjectEnvironmentSetup(
                 ProjectEnvironmentSetupUtilityInput {
@@ -551,16 +544,15 @@ impl KernelRuntimeState {
         };
         let (_agent, provider_run) = match assert_agent_utility_can_run(
             self,
-            &execution.session_id,
-            &execution.agent_id,
+            &execution.execution_session_id,
+            &execution.execution_agent_id,
             &AgentUtilityKind::ProjectEnvironmentSetup,
         )
         .await
         {
             Ok(result) => result,
             Err(_) => {
-                mark_setup_failed(
-                    store,
+                store.mark_failed(
                     &execution.operation_id,
                     attempt,
                     "worker_provider_context_unavailable",
@@ -570,8 +562,7 @@ impl KernelRuntimeState {
             }
         };
         if provider_run.owner_user_id() != execution.owner_user_id.as_str() {
-            mark_setup_failed(
-                store,
+            store.mark_failed(
                 &execution.operation_id,
                 attempt,
                 "worker_provider_context_unauthorized",
@@ -600,8 +591,7 @@ impl KernelRuntimeState {
             Ok(result) => match result.output {
                 AgentUtilityOutput::ProjectEnvironmentSetup { definition } => definition,
                 _ => {
-                    mark_setup_failed(
-                        store,
+                    store.mark_failed(
                         &execution.operation_id,
                         attempt,
                         "utility_output_invalid",
@@ -611,8 +601,7 @@ impl KernelRuntimeState {
                 }
             },
             Err(_) => {
-                mark_setup_failed(
-                    store,
+                store.mark_failed(
                     &execution.operation_id,
                     attempt,
                     "utility_failed",
@@ -628,8 +617,7 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|command| !definition.validation_commands.contains(command))
         {
-            mark_setup_failed(
-                store,
+            store.mark_failed(
                 &execution.operation_id,
                 attempt,
                 "definition_invalid",
@@ -652,8 +640,7 @@ impl KernelRuntimeState {
         {
             Ok(validation) => validation,
             Err(_) => {
-                mark_setup_failed(
-                    store,
+                store.mark_failed(
                     &execution.operation_id,
                     attempt,
                     "worker_validation_unavailable",
@@ -684,8 +671,7 @@ impl KernelRuntimeState {
             });
         });
         if !validation_passed {
-            mark_setup_failed(
-                store,
+            store.mark_failed(
                 &execution.operation_id,
                 attempt,
                 "validation_failed",
@@ -693,16 +679,16 @@ impl KernelRuntimeState {
             );
             return;
         }
-        if self
-            .update_project_environment_definition(
-                &execution.project_id,
-                definition,
-                &execution.owner_user_id,
-            )
-            .is_err()
+        if execution.persist_project_definition
+            && self
+                .update_project_environment_definition(
+                    &execution.project_id,
+                    definition,
+                    &execution.owner_user_id,
+                )
+                .is_err()
         {
-            mark_setup_failed(
-                store,
+            store.mark_failed(
                 &execution.operation_id,
                 attempt,
                 "definition_persist_failed",
@@ -739,8 +725,8 @@ impl KernelRuntimeState {
                 "worker identity or platform changed during setup",
             ));
         }
-        if provider_run.session_id() != execution.session_id.as_str()
-            || provider_run.agent_instance_id() != Some(execution.agent_id.as_str())
+        if provider_run.session_id() != execution.execution_session_id.as_str()
+            || provider_run.agent_instance_id() != Some(execution.execution_agent_id.as_str())
             || provider_run.owner_user_id() != execution.owner_user_id.as_str()
             || provider_run.state() != crate::provider::ProviderRunState::Running
         {
@@ -824,266 +810,6 @@ impl KernelRuntimeState {
     }
 }
 
-fn mark_setup_failed(
-    store: &ProjectEnvironmentSetupStore,
-    operation_id: &str,
-    attempt: u32,
-    code: &str,
-    message: &str,
-) {
-    let _ = store.update(operation_id, attempt, |entry| {
-        entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
-        entry.status.progress_percent = 0;
-        entry.status.message = Some(message.to_string());
-        entry.status.failure_code = Some(code.to_string());
-        entry.status.failure_message = Some(message.to_string());
-        entry.status.retryable = true;
-    });
-}
-
-fn ensure_worker_validation_boundary(config: &DaemonConfig) -> Result<(), DaemonError> {
-    if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
-        return Err(setup_error(
-            "project environment setup is only executable by a dedicated worker kernel",
-        ));
-    }
-    let receipt_path = std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| setup_error("disposable worker receipt is missing"))?;
-    let profile = config
-        .cloud_relay
-        .as_ref()
-        .ok_or_else(|| setup_error("disposable worker Cloud binding is missing"))?;
-    crate::managed_bootstrap::worker::confirmed_activity_allocation(
-        Path::new(&receipt_path),
-        config,
-        profile,
-    )
-    .map(|_| ())
-    .map_err(|error| setup_error(&format!("worker boundary is not confirmed: {error}")))
-}
-
-fn canonical_worker_workspace(
-    path: impl AsRef<Path>,
-    kernel_home: Option<&std::ffi::OsStr>,
-) -> Result<PathBuf, DaemonError> {
-    let path = path.as_ref();
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| setup_error(&format!("worker worktree is unavailable: {error}")))?;
-    if !canonical.is_dir() || canonical == Path::new("/") {
-        return Err(setup_error("worker worktree must be a non-root directory"));
-    }
-    let kernel_home = kernel_home
-        .map(PathBuf::from)
-        .ok_or_else(|| setup_error("worker kernel home is not configured"))?
-        .canonicalize()
-        .map_err(|error| setup_error(&format!("worker kernel home is unavailable: {error}")))?;
-    if canonical == kernel_home || canonical.starts_with(&kernel_home) {
-        return Err(setup_error(
-            "worker worktree overlaps kernel-owned home state",
-        ));
-    }
-    Ok(canonical)
-}
-
-fn worker_validation_environment(provider_run: &RuntimeProviderRun) -> BTreeMap<String, String> {
-    let mut removed = BTreeSet::new();
-    removed.extend(
-        crate::provider::managed_provider_control_env_remove()
-            .into_iter()
-            .collect::<BTreeSet<_>>(),
-    );
-    removed.extend(provider_run.pty_env_remove().iter().cloned());
-
-    let mut environment = BTreeMap::new();
-    for (name, value) in std::env::vars() {
-        if worker_validation_environment_allowed(&name, &removed) {
-            environment.insert(name, value);
-        }
-    }
-    for (name, value) in provider_run.pty_env() {
-        if worker_validation_environment_allowed(name, &removed) {
-            environment.insert(name.clone(), value.clone());
-        }
-    }
-    environment
-}
-
-fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>) -> bool {
-    !removed.contains(name)
-        && !crate::secret::secret_like_env_name(name)
-        && !WORKER_KERNEL_ENV_NAMES.contains(&name)
-        && !name.starts_with("CHARIOX_")
-}
-
-fn run_worker_validation_command(
-    command_text: &str,
-    workspace_root: &Path,
-    environment: &BTreeMap<String, String>,
-) -> Result<(i32, usize, usize), String> {
-    // This child is spawned only by a confirmed disposable worker kernel after
-    // the provider run context and workspace have been fenced above. Keep the
-    // shell local to that worker boundary and do not route through the home
-    // kernel's general ShellCommandService.
-    let (shell, shell_flag) = if cfg!(windows) {
-        ("C:\\Windows\\System32\\cmd.exe", "/C")
-    } else {
-        // Preserve the provider PTY's prepared PATH and other environment
-        // exactly; a login shell could source kernel-home startup files.
-        ("/bin/sh", "-c")
-    };
-    let mut command = Command::new(shell);
-    command
-        .arg(shell_flag)
-        .arg(command_text)
-        .current_dir(workspace_root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_clear()
-        .envs(environment);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        // Keep descendants in a worker-local process group so cancellation or
-        // timeout cannot leave a compiler holding the validation pipes open.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("worker validation command did not provide stdout capture".to_string());
-    };
-    let Some(stderr) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("worker validation command did not provide stderr capture".to_string());
-    };
-    let stdout_reader = std::thread::spawn(move || count_validation_output(stdout));
-    let stderr_reader = std::thread::spawn(move || count_validation_output(stderr));
-    let timeout = Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
-    let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            terminate_validation_process_group(&mut child);
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err("worker validation command timed out".to_string());
-        }
-        Err(error) => {
-            terminate_validation_process_group(&mut child);
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(error.to_string());
-        }
-    };
-    terminate_validation_process_group(&mut child);
-    let stdout_bytes = stdout_reader
-        .join()
-        .map_err(|_| "worker validation stdout reader panicked".to_string())?;
-    let stdout_bytes = stdout_bytes?;
-    let stderr_bytes = stderr_reader
-        .join()
-        .map_err(|_| "worker validation stderr reader panicked".to_string())?;
-    let stderr_bytes = stderr_bytes?;
-    Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
-}
-
-#[cfg(unix)]
-fn terminate_validation_process_group(child: &mut std::process::Child) {
-    let process_group = child.id() as libc::pid_t;
-    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_validation_process_group(child: &mut std::process::Child) {
-    let _ = child.kill();
-}
-
-fn count_validation_output(mut output: impl Read) -> Result<usize, String> {
-    let mut buffer = [0_u8; 8192];
-    let mut bytes = 0_usize;
-    loop {
-        let read = output
-            .read(&mut buffer)
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            return Ok(bytes);
-        }
-        bytes = bytes.saturating_add(read);
-    }
-}
-
-fn ensure_entry_owner(
-    entry: &SetupEntry,
-    session_id: &str,
-    caller_user_id: &str,
-) -> Result<(), DaemonError> {
-    if entry.execution.owner_user_id != caller_user_id || entry.execution.session_id != session_id {
-        return Err(setup_error(
-            "caller is not allowed to mutate this setup operation",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_operation_id(operation_id: &str) -> Result<(), DaemonError> {
-    if operation_id.trim().is_empty() || operation_id.chars().count() > MAX_OPERATION_ID_CHARS {
-        return Err(setup_error("operation id must be non-empty and bounded"));
-    }
-    Ok(())
-}
-
-fn validate_commands(commands: &[String]) -> Result<(), DaemonError> {
-    if commands.len() > MAX_VALIDATION_COMMANDS {
-        return Err(setup_error(
-            "validation command count exceeds the bounded setup limit",
-        ));
-    }
-    if commands
-        .iter()
-        .any(|command| command.trim().is_empty() || command.chars().count() > MAX_COMMAND_CHARS)
-    {
-        return Err(setup_error(
-            "validation commands must be non-empty and bounded",
-        ));
-    }
-    Ok(())
-}
-
-fn setup_fingerprint(execution: &SetupExecution) -> Result<String, DaemonError> {
-    let encoded = serde_json::to_vec(execution)
-        .map_err(|error| setup_error(&format!("could not fingerprint setup request: {error}")))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
-}
-
-fn command_digest(command: &str) -> String {
-    format!("sha256:{:x}", Sha256::digest(command.as_bytes()))
-}
-
-fn actual_worker_platform() -> String {
-    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn setup_error(message: &str) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: OPERATION,
-        message: message.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1100,6 +826,8 @@ mod tests {
             project_id: "project-1".to_string(),
             session_id: "session-1".to_string(),
             agent_id: "agent-1".to_string(),
+            execution_session_id: "session-1".to_string(),
+            execution_agent_id: "agent-1".to_string(),
             workspace_id: "/tmp/project".to_string(),
             target_worker_id: "machine-1".to_string(),
             target_platform: "linux-x86_64".to_string(),
@@ -1116,6 +844,8 @@ mod tests {
                 validation_commands: vec!["cargo check --workspace --locked".to_string()],
             }),
             validation_commands: Vec::new(),
+            persist_project_definition: true,
+            remote_leased_agent_id: None,
         }
     }
 
@@ -1154,6 +884,28 @@ mod tests {
         assert_eq!(attempt, 2);
         assert_eq!(retried.phase, ProjectEnvironmentSetupPhase::Requested);
         assert!(!store.is_cancelled("setup-1", 2));
+    }
+
+    #[test]
+    fn late_failure_cannot_reopen_cancelled_setup() {
+        let store = ProjectEnvironmentSetupStore::default();
+        store.begin(execution()).expect("setup should start");
+        store
+            .cancel("setup-1", "session-1", "user-1")
+            .expect("cancel should be accepted");
+
+        store.mark_failed(
+            "setup-1",
+            1,
+            "worker_validation_unavailable",
+            "late worker failure",
+        );
+
+        let status = store
+            .get("setup-1", "user-1")
+            .expect("cancelled setup should remain observable");
+        assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Cancelled);
+        assert_eq!(status.failure_code, None);
     }
 
     #[test]
