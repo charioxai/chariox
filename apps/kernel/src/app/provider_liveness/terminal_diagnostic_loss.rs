@@ -146,11 +146,12 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
             .expect("agent should remain queryable after provider exit")
             .state(),
         crate::agent::AgentState::Error,
-        "app-level liveness keeps the legacy Completed settlement while marking the unexpected exit on the agent"
+        "unexpected provider exit must remain visible as an agent error"
     );
     assert_eq!(
         completed_turn.settlement_status,
-        crate::git_observer::CompletedTurnSettlementStatus::Completed
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        "unexpected provider exit must not project a successful turn"
     );
 
     let repeated_input_result = app.send_terminal_input(
