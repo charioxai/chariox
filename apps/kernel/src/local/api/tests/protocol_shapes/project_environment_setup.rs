@@ -131,7 +131,7 @@ fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
             }
         })
     );
-    let controls = vec![
+    let mut controls = vec![
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
             GetProjectEnvironmentSetupStatusRequest {
                 operation_id: "setup-1".to_string(),
