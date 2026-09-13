@@ -17,6 +17,107 @@ fn remote_git_context(home_prompt_id: &str) -> crate::transport::relay_peer::Rem
 }
 
 #[tokio::test]
+async fn leased_structured_steer_rejection_can_retry_without_retiring_parent_run() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel-structured-steer",
+            "home-session-structured-steer",
+            "home-agent-structured-steer",
+            false,
+            "home-user-structured-steer",
+        )
+        .expect("execution lease should create");
+    let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("slow-structured".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased structured agent should create");
+    let (provider_run_id, outcome) = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "active parent task",
+            Vec::new(),
+            None,
+            Some(remote_git_context("home-prompt-structured")),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    assert!(
+        router
+            .relay_steer_leased_prompt(
+                &leased_agent.id,
+                "remote-steer-retry",
+                "home-prompt-structured",
+                "STRUCTURED_STEER_REJECT_REMOTE",
+                "",
+                Vec::new(),
+                None,
+            )
+            .await
+            .is_err(),
+        "worker must not acknowledge a rejected structured steer"
+    );
+    assert_eq!(
+        app.lock()
+            .await
+            .providers()
+            .get_run(&provider_run_id)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running,
+        "steering failure must not retire the parent provider run"
+    );
+    let (retried_run_id, replayed) = router
+        .relay_steer_leased_prompt(
+            &leased_agent.id,
+            "remote-steer-retry",
+            "home-prompt-structured",
+            "STRUCTURED_STEER_REJECT_REMOTE",
+            "",
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("worker must retry a steer rejected by the adapter");
+    assert_eq!(retried_run_id, provider_run_id);
+    assert!(
+        !replayed,
+        "retry must reach the provider rather than replay success"
+    );
+    let (_, replayed) = router
+        .relay_steer_leased_prompt(
+            &leased_agent.id,
+            "remote-steer-retry",
+            "home-prompt-structured",
+            "STRUCTURED_STEER_REJECT_REMOTE",
+            "",
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("accepted steer should replay");
+    assert!(replayed);
+}
+
+#[tokio::test]
 async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

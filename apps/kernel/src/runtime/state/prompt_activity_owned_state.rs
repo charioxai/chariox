@@ -451,6 +451,50 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    pub(super) fn finish_structured_steering_delivery(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        acknowledgement: &crate::provider::ProviderPromptSubmitAcknowledgement,
+    ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(&dispatch.session_id)?;
+        let active = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id);
+        if active.as_ref().map(|prompt| prompt.id()) != dispatch.target_active_prompt_id.as_deref()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer structured provider prompt",
+                message: "parent prompt changed before steering acknowledgement".to_string(),
+            });
+        }
+        let run = self.provider_store.get_run(&dispatch.provider_run_id)?;
+        if run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: dispatch.provider_run_id.clone(),
+                state: run.state(),
+                operation: "steer structured provider prompt",
+            });
+        }
+        if let Some(agent_id) = run.agent_instance_id() {
+            self.agent_store.set_agent_runtime_profile_durably(
+                &self.durable_state_store,
+                agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
+                acknowledgement.resume_state.clone(),
+                Some(run.id()),
+                Some("prompt_steering_acknowledged"),
+            )?;
+        }
+        let run = self
+            .provider_store
+            .apply_prompt_submit_acknowledgement(&dispatch.provider_run_id, acknowledgement)?;
+        self.provider_run_projection.update(run);
+        Ok(())
+    }
+
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
         self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);

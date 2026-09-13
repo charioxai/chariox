@@ -215,7 +215,14 @@ impl ProviderProcessService {
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
         steering: bool,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<
+        Option<
+            tokio::sync::oneshot::Receiver<
+                Result<super::super::ProviderPromptSubmitAcknowledgement, DaemonError>,
+            >,
+        >,
+        DaemonError,
+    > {
         if let Ok(active_run) = self.get_run_mut(run.id()) {
             active_run.clear_terminal_diagnostic();
             active_run.touch_activity();
@@ -244,14 +251,29 @@ impl ProviderProcessService {
                 mode,
             )?
             .with_steering(steering);
-        self.run_actor_mailbox.spawn_submit(
-            session_id,
-            provider_run_id,
-            agent_id,
-            prompt_id,
-            run.clone(),
-            envelope,
-        )
+        if steering {
+            self.run_actor_mailbox
+                .submit_steering(
+                    session_id,
+                    provider_run_id,
+                    agent_id,
+                    prompt_id,
+                    run.clone(),
+                    envelope,
+                )
+                .map(Some)
+        } else {
+            self.run_actor_mailbox
+                .spawn_submit(
+                    session_id,
+                    provider_run_id,
+                    agent_id,
+                    prompt_id,
+                    run.clone(),
+                    envelope,
+                )
+                .map(|_| None)
+        }
     }
 
     pub(crate) fn run_structured_utility_prompt(

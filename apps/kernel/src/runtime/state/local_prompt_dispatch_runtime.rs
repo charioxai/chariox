@@ -2686,7 +2686,7 @@ impl KernelRuntimeState {
                 source_client_id.as_deref(),
                 &hidden_system_context,
             );
-            let result = owned.provider_store.enqueue_structured_prompt_submit(
+            let completion = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
@@ -2697,15 +2697,32 @@ impl KernelRuntimeState {
                 &dispatch.attachments,
                 mode,
                 dispatch.steering,
-            );
-            if result.is_ok() {
-                owned.consume_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                );
+            )?;
+            if let Some(completion) = completion {
+                let acknowledgement = tokio::time::timeout(
+                    crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                    completion,
+                )
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "steer structured provider prompt",
+                    message: "provider did not acknowledge steering before the delivery timeout"
+                        .to_string(),
+                })?
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "steer structured provider prompt",
+                    message: format!(
+                        "provider actor stopped before steering acknowledgement: {error}"
+                    ),
+                })??;
+                owned.finish_structured_steering_delivery(dispatch, &acknowledgement)?;
             }
-            return result;
+            owned.consume_pending_context_handoff(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &provider_run,
+            );
+            return Ok(());
         }
         if !internal_recovery
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(

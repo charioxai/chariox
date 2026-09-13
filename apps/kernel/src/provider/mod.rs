@@ -175,6 +175,9 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
             && !provider_run_uses_claude_native_bridge(run))
         || run.adapter_key() == "opencode"
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        || (cfg!(test)
+            && run.adapter_key() == "managed-dev-stub"
+            && run.model() == "slow-structured")
 }
 
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {

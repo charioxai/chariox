@@ -15,6 +15,54 @@ impl ProviderRunActorMailbox {
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
     ) -> Result<(), DaemonError> {
+        self.enqueue_submit(
+            session_id,
+            provider_run_id,
+            agent_id,
+            prompt_id,
+            run,
+            envelope,
+            None,
+        )
+    }
+
+    pub(crate) fn submit_steering(
+        &self,
+        session_id: String,
+        provider_run_id: String,
+        agent_id: String,
+        prompt_id: String,
+        run: RuntimeProviderRun,
+        envelope: PromptEnvelope,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<Result<ProviderPromptSubmitAcknowledgement, DaemonError>>,
+        DaemonError,
+    > {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.enqueue_submit(
+            session_id,
+            provider_run_id,
+            agent_id,
+            prompt_id,
+            run,
+            envelope,
+            Some(sender),
+        )?;
+        Ok(receiver)
+    }
+
+    fn enqueue_submit(
+        &self,
+        session_id: String,
+        provider_run_id: String,
+        agent_id: String,
+        prompt_id: String,
+        run: RuntimeProviderRun,
+        envelope: PromptEnvelope,
+        steering_response: Option<
+            tokio::sync::oneshot::Sender<Result<ProviderPromptSubmitAcknowledgement, DaemonError>>,
+        >,
+    ) -> Result<(), DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Submit {
@@ -24,6 +72,7 @@ impl ProviderRunActorMailbox {
             prompt_id,
             run,
             envelope,
+            steering_response,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();

@@ -43,6 +43,11 @@ pub(super) enum ProviderRunActorCommand {
         prompt_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
+        steering_response: Option<
+            tokio::sync::oneshot::Sender<
+                Result<super::ProviderPromptSubmitAcknowledgement, DaemonError>,
+            >,
+        >,
     },
     Utility {
         provider_run_id: String,
@@ -127,18 +132,23 @@ impl ProviderRunWorkerDeps {
                 prompt_id,
                 run,
                 envelope,
+                steering_response,
             } => {
                 let result = execute_submit_command(&self.runtime_registry, run, envelope);
                 self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
-                let finished = FinishedProviderPromptSubmitJob {
-                    session_id,
-                    provider_run_id: provider_run_id.clone(),
-                    agent_id,
-                    prompt_id,
-                    result,
-                    settlement_retry_attempt: 0,
-                };
-                push_finished_submit(&self.finished_submits, finished);
+                if let Some(response) = steering_response {
+                    let _ = response.send(result);
+                } else {
+                    let finished = FinishedProviderPromptSubmitJob {
+                        session_id,
+                        provider_run_id: provider_run_id.clone(),
+                        agent_id,
+                        prompt_id,
+                        result,
+                        settlement_retry_attempt: 0,
+                    };
+                    push_finished_submit(&self.finished_submits, finished);
+                }
                 self.completion_signal.record_completion(&provider_run_id);
             }
             ProviderRunActorCommand::Abort {

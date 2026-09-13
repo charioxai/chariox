@@ -28,7 +28,23 @@ pub(super) fn execute_submit_command(
     envelope: PromptEnvelope,
 ) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
-    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+    #[cfg(test)]
+    if test_slow_structured_run(&run)
+        && envelope.steering
+        && test_reject_first_steering(&envelope.visible_user_prompt)
+    {
+        thread::sleep(Duration::from_millis(100));
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run_id,
+            operation: "test_structured_steer_rejected",
+            message: "test provider rejected steering".to_string(),
+        });
+    }
+    if (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        || (cfg!(test)
+            && run.adapter_key() == "managed-dev-stub"
+            && run.model() == "slow-structured")
+    {
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),
@@ -68,6 +84,23 @@ pub(super) fn execute_submit_command(
     let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state })
+}
+
+#[cfg(test)]
+fn test_slow_structured_run(run: &RuntimeProviderRun) -> bool {
+    (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        || (run.adapter_key() == "managed-dev-stub" && run.model() == "slow-structured")
+}
+
+#[cfg(test)]
+fn test_reject_first_steering(prompt: &str) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LOCAL_REJECTED: AtomicBool = AtomicBool::new(false);
+    static REMOTE_REJECTED: AtomicBool = AtomicBool::new(false);
+    if prompt.contains("STRUCTURED_STEER_REJECT_REMOTE") {
+        return !REMOTE_REJECTED.swap(true, Ordering::SeqCst);
+    }
+    prompt.contains("STRUCTURED_STEER_REJECT") && !LOCAL_REJECTED.swap(true, Ordering::SeqCst)
 }
 
 pub(super) fn execute_abort_command(

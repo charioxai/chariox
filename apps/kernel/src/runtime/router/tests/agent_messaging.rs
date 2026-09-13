@@ -1,5 +1,153 @@
 use super::*;
 
+#[test]
+fn structured_agent_message_rejection_preserves_the_parent_turn() {
+    run_agent_message_test_with_large_stack("structured-agent-message-rejection", || async {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "structured-agent-message-rejection",
+                "structured-agent-message-rejection",
+            ))
+            .expect("session should be created");
+        let target = spawn_test_agent(&mut app, session.id(), "target", "slow-structured");
+        let sender_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        let target_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            target.id(),
+            "dev-stub",
+            "slow-structured",
+            "target-model",
+        );
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-structured-agent-message",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("test client should attach");
+        let active = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            target.id(),
+            "parent task",
+            crate::session::PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt: active } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), active, false)
+            .expect("target should start a prompt")
+        else {
+            panic!("target prompt should start");
+        };
+        let active_id = active.id().to_string();
+        let sender_token = sender_run.runtime_mcp_auth_token().unwrap().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+        let args = serde_json::json!({
+            "agent": target.id(),
+            "message": "STRUCTURED_STEER_REJECT",
+            "idempotency_key": "rejected-structured-steer",
+        });
+        let result = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                args.clone(),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "provider rejection must not return steered success: {result:?}"
+        );
+        let snapshot = router
+            .runtime_state
+            .session_snapshot(session.id())
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .active_prompt_for_agent(target.id())
+                .map(|prompt| prompt.id()),
+            Some(active_id.as_str()),
+            "rejected steering must not settle the parent prompt"
+        );
+        assert_eq!(
+            app.lock()
+                .await
+                .providers()
+                .get_run(target_run.id())
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "rejected steering must not terminate the parent provider run"
+        );
+        assert_eq!(
+            router
+                .operational_history_store
+                .load_session_events(session.id(), Some(target.id()))
+                .unwrap()
+                .into_iter()
+                .filter(
+                    |event| event.kind == crate::history::HistoryEventKind::UserPrompt
+                        && event
+                            .content
+                            .as_deref()
+                            .is_some_and(|content| content.contains("STRUCTURED_STEER_REJECT"))
+                )
+                .count(),
+            0,
+            "rejected steering must not enter prompt history"
+        );
+        assert_eq!(
+            app.lock()
+                .await
+                .terminal()
+                .output_records()
+                .iter()
+                .filter(|record| {
+                    record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                        && String::from_utf8_lossy(&record.bytes)
+                            .contains("STRUCTURED_STEER_REJECT")
+                })
+                .count(),
+            0,
+            "rejected steering must not be echoed to terminals"
+        );
+        let retried = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                args,
+            )
+            .await
+            .expect("same idempotency key must retry after provider rejection");
+        assert!(retried.ok, "{:?}", retried.payload);
+        assert_eq!(retried.payload["status"], "steered");
+        let snapshot = router
+            .runtime_state
+            .session_snapshot(session.id())
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .active_prompt_for_agent(target.id())
+                .map(|prompt| prompt.id()),
+            Some(active_id.as_str()),
+            "successful retry must keep the parent turn active"
+        );
+    });
+}
+
 fn run_agent_message_test_with_large_stack<F, Fut>(name: &'static str, test: F)
 where
     F: FnOnce() -> Fut + Send + 'static,
