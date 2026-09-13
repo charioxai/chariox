@@ -352,9 +352,10 @@ impl ProjectEnvironmentSetupStore {
             .lock()
             .expect("setup state lock should not be poisoned");
         entries.get(operation_id).is_some_and(|entry| {
-            entry.status.attempt == attempt
-                && (entry.cancel_requested
-                    || entry.status.phase == ProjectEnvironmentSetupPhase::Cancelled)
+            // A retry must never revive execution belonging to the old attempt.
+            entry.status.attempt != attempt
+                || entry.cancel_requested
+                || entry.status.phase == ProjectEnvironmentSetupPhase::Cancelled
         })
     }
 
