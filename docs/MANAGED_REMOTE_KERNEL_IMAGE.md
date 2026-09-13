@@ -41,6 +41,12 @@ before feature development resumes. Path 2 is explicitly deferred to the next
 goal. Containers and Bubblewrap remain useful inner defenses, but they do not
 replace the worker-VM boundary in either path.
 
+A Path 1 worker starts the ordinary kernel with
+`CHARIOX_LEASE_WORKER_CAPACITY=1`. This lease-only setting rejects public
+sessions, session-invite joins, external-provider imports, and managed-context
+imports. It admits one reserved execution lease, keeps its backing session
+private, and advertises no spare capacity until that lease is destroyed.
+
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,

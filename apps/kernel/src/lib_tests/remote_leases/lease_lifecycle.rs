@@ -31,9 +31,86 @@ fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
 }
 
 #[test]
+fn lease_worker_counts_reservations_and_reopens_after_release() {
+    let mut config = DaemonConfig::for_tests();
+    config.lease_worker_capacity = Some(1);
+    let mut app = DaemonApp::bootstrap(config).expect("lease worker should boot");
+    assert!(app.relay_registration().accepting_remote_leases);
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
+        .expect("first reservation should fit");
+    assert!(!app.relay_registration().accepting_remote_leases);
+    assert!(matches!(
+        RemoteLeaseRuntime::new(&mut app).create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-2",
+            false,
+            "user-home"
+        ),
+        Err(DaemonError::RemoteLeaseCapacityReached { .. })
+    ));
+    assert!(matches!(
+        app.create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree"
+        )),
+        Err(DaemonError::LeaseWorkerOperationDenied { .. })
+    ));
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_execution_lease(&first.id)
+        .expect("reservation should release");
+    assert!(app.relay_registration().accepting_remote_leases);
+}
+
+#[test]
+fn lease_worker_rejects_invalid_capacity_and_preexisting_public_state() {
+    let mut config = DaemonConfig::for_tests();
+    config.lease_worker_capacity = Some(0);
+    assert!(matches!(
+        config.validate(),
+        Err(DaemonError::InvalidConfig { .. })
+    ));
+    config.lease_worker_capacity = Some(2);
+    assert!(matches!(
+        config.validate(),
+        Err(DaemonError::InvalidConfig { .. })
+    ));
+    config.lease_worker_capacity = Some(1);
+    config.accept_remote_leases = false;
+    assert!(matches!(
+        config.validate(),
+        Err(DaemonError::InvalidConfig { .. })
+    ));
+
+    config.accept_remote_leases = true;
+    config.lease_worker_capacity = None;
+    let mut regular = DaemonApp::bootstrap(config.clone()).expect("regular kernel should boot");
+    regular
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ))
+        .expect("public session should be created");
+    regular
+        .save_durable_state_snapshot()
+        .expect("public session should persist");
+    drop(regular);
+    config.lease_worker_capacity = Some(1);
+    assert!(matches!(
+        DaemonApp::bootstrap(config),
+        Err(DaemonError::InvalidConfig {
+            field: "lease_worker_capacity",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
+    config.lease_worker_capacity = Some(1);
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease(

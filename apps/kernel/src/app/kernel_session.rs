@@ -89,6 +89,11 @@ impl<'a> KernelSessionService<'a> {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
+        if self.app.config.lease_worker_capacity.is_some() {
+            return Err(DaemonError::LeaseWorkerOperationDenied {
+                operation: "create public session",
+            });
+        }
         let session =
             SessionStateOwner::new(self.app.session_state_store()).create_session(request)?;
         let defaults = session.agent_defaults();

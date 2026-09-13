@@ -207,6 +207,9 @@ impl DaemonConfig {
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
             accept_remote_leases,
+            lease_worker_capacity: env::var("CHARIOX_LEASE_WORKER_CAPACITY")
+                .ok()
+                .map(|value| value.trim().parse::<u32>().unwrap_or(0)),
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),

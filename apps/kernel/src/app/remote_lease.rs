@@ -45,6 +45,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 machine_id: self.app.config.host_machine_id.clone(),
             });
         }
+        if self
+            .app
+            .config
+            .lease_worker_capacity
+            .is_some_and(|capacity| self.app.execution_leases.len() >= capacity as usize)
+        {
+            return Err(DaemonError::RemoteLeaseCapacityReached {
+                machine_id: self.app.config.host_machine_id.clone(),
+            });
+        }
         self.app.next_execution_lease_number = self.app.next_execution_lease_number.wrapping_add(1);
         let lease_id = format!(
             "lease-{:016x}",

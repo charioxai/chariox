@@ -171,6 +171,10 @@ pub enum DaemonError {
     },
     #[error("machine `{machine_id}` is not accepting remote execution leases")]
     RemoteLeasesDisabled { machine_id: String },
+    #[error("machine `{machine_id}` has reached its remote execution lease capacity")]
+    RemoteLeaseCapacityReached { machine_id: String },
+    #[error("lease-worker kernel cannot perform `{operation}`")]
+    LeaseWorkerOperationDenied { operation: &'static str },
     #[error("execution lease `{lease_id}` was not found")]
     ExecutionLeaseNotFound { lease_id: String },
     #[error("leased agent `{leased_agent_id}` was not found")]

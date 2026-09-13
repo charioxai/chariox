@@ -45,7 +45,11 @@ impl DaemonApp {
             ],
             available_providers,
             provider_accounts,
-            accepting_remote_leases: self.config.accept_remote_leases,
+            accepting_remote_leases: self.config.accept_remote_leases
+                && self
+                    .config
+                    .lease_worker_capacity
+                    .is_none_or(|capacity| self.execution_leases.len() < capacity as usize),
             leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
         }

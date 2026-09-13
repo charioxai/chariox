@@ -68,6 +68,16 @@ impl CommandRouter {
         &self,
         request: RelayManagedContextArmRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        if self
+            .config_projection
+            .snapshot()
+            .lease_worker_capacity
+            .is_some()
+        {
+            return Err(DaemonError::LeaseWorkerOperationDenied {
+                operation: "import managed context",
+            });
+        }
         let RelayManagedContextArmRequest {
             identity,
             source_kernel_id,

@@ -196,6 +196,7 @@ mod tests {
     mod agent_prompt_schedules;
     mod credential_enrollment;
     mod interactive_command_admission;
+    mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod provider_projection;

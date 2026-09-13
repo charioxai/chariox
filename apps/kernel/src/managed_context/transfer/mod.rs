@@ -140,6 +140,13 @@ pub(crate) struct ManagedContextTransferStore {
 }
 
 impl ManagedContextTransferStore {
+    pub(crate) fn has_worker_incompatible_state(&self) -> bool {
+        let state = self.lock_state();
+        !state.entries.is_empty()
+            || !state.applied_contexts.is_empty()
+            || !state.consumed_context_ids.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn open(root: PathBuf) -> Result<Self, DaemonError> {
         Self::open_with_launch_recovery(root, None)

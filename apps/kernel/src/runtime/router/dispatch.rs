@@ -20,6 +20,18 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let command_trace = CommandTrace::from_command(&command);
         log_command_received(&command_trace);
+        if self
+            .config_projection
+            .snapshot()
+            .lease_worker_capacity
+            .is_some()
+        {
+            if let Some(operation) = lease_worker_denied_operation(&request) {
+                let result = Err(DaemonError::LeaseWorkerOperationDenied { operation });
+                log_command_completed(&command_trace, &result);
+                return result;
+            }
+        }
         let focus_refresh = focus_projection_refresh(&request);
         let caller_user_id = match authorize_session_membership(
             &self.runtime_state,
@@ -91,6 +103,22 @@ impl CommandRouter {
         let result = self.redact_result_for_user(result, &caller_user_id);
         log_command_completed(&command_trace, &result);
         result
+    }
+}
+
+fn lease_worker_denied_operation(request: &LocalDaemonRequest) -> Option<&'static str> {
+    match request {
+        LocalDaemonRequest::CreateSession(_) => Some("create public session"),
+        LocalDaemonRequest::CreateSessionInvite(_)
+        | LocalDaemonRequest::JoinSessionInvite(_)
+        | LocalDaemonRequest::CreateCloudSessionInvite(_)
+        | LocalDaemonRequest::AcceptCloudSessionInvite(_) => Some("manage session invite"),
+        LocalDaemonRequest::ImportExternalProviderSession(_)
+        | LocalDaemonRequest::ImportExternalProviderAgent(_) => {
+            Some("import external provider session")
+        }
+        LocalDaemonRequest::StartManagedContextTransfer(_) => Some("import managed context"),
+        _ => None,
     }
 }
 

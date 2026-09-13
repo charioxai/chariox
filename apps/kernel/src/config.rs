@@ -110,6 +110,9 @@ pub struct DaemonConfig {
     pub relay_heartbeat_ms: u64,
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
+    /// When set, this kernel accepts only remote execution leases and their
+    /// private backing sessions. Path 1 provisions one worker per VM.
+    pub lease_worker_capacity: Option<u32>,
     pub event_delivery_url: Option<String>,
     pub event_delivery_token: Option<String>,
     pub event_delivery_environment_id: String,
@@ -213,6 +216,7 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: true,
+            lease_worker_capacity: None,
             event_delivery_url: None,
             event_delivery_token: None,
             event_delivery_environment_id: daemon_id.clone(),

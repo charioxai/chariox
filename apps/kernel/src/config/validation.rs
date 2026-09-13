@@ -90,6 +90,16 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
+        if self
+            .lease_worker_capacity
+            .is_some_and(|capacity| capacity != 1)
+            || (self.lease_worker_capacity.is_some() && !self.accept_remote_leases)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "lease_worker_capacity",
+                message: "lease workers must accept exactly one remote execution lease",
+            });
+        }
         Ok(())
     }
 }
