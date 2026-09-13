@@ -30,7 +30,9 @@ use attachments::{
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
-    claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_visible,
+    claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_denied,
+    claude_headless_workspace_trust_interaction_id,
+    claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
     claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
     clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
@@ -41,8 +43,10 @@ use permission::{
     take_matching_claude_hook_permission_tombstone, timestamp_millis,
     update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
     write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
-    write_claude_hook_context_response, write_claude_hook_permission_tombstone,
-    write_claude_native_marker, write_claude_permission_input, write_claude_permission_response,
+    write_claude_headless_workspace_trust_denied_marker,
+    write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
+    write_claude_hook_permission_tombstone, write_claude_native_marker,
+    write_claude_permission_input, write_claude_permission_response,
 };
 #[cfg(test)]
 use transcript::drain_claude_transcript_file;
@@ -54,6 +58,10 @@ use transcript::{
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MS: u64 = 300;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
+const CLAUDE_WORKSPACE_TRUST_DENIED: &str =
+    "Claude Code workspace trust was denied before the queued task was dispatched.";
+const CLAUDE_HEADLESS_EARLY_EXIT: &str =
+    "Claude Code exited before acknowledging the queued task; no task text was dispatched.";
 
 /// Delay between writing a prompt's visible text into the provider PTY and
 /// sending the Enter keystroke, giving the terminal time to register the
@@ -73,6 +81,12 @@ struct ClaudeNativePromptInjection<'a> {
 pub(crate) enum ClaudeNativeDispatchAttempt {
     Completed,
     AwaitingInjection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeWorkspaceTrustResolution {
+    Approved,
+    Denied,
 }
 
 const CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT: u8 = 10;
@@ -236,6 +250,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(outcome);
         };
+
+        if claude_headless_workspace_trust_denied(context_file) {
+            outcome.terminal_failure = Some(CLAUDE_WORKSPACE_TRUST_DENIED.to_string());
+            return Ok(outcome);
+        }
+        if let Some(resolution) =
+            self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
+        {
+            if resolution == ClaudeWorkspaceTrustResolution::Denied {
+                outcome.terminal_failure = Some(CLAUDE_WORKSPACE_TRUST_DENIED.to_string());
+                return Ok(outcome);
+            }
+        }
 
         let resolving_permission = claude_native_marker(context_file)
             .as_deref()
@@ -793,11 +820,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 return Ok(());
             }
             if claude_headless_workspace_trust_visible(&recent) {
-                append_claude_headless_debug(context_file, "auto_confirm", "workspace_trust");
-                self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-                write_claude_headless_startup_wait_marker(context_file);
-                clear_claude_permission_recent(context_file);
+                let startup_waiting = claude_native_marker(context_file)
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("startup-wait:"));
+                if !startup_waiting
+                    && claude_headless_workspace_trust_interaction_id(context_file).is_none()
+                {
+                    if let Some(bridge) = native_interaction_bridge.clone() {
+                        self.request_claude_workspace_trust(
+                            session_id,
+                            provider_run_id,
+                            provider_run,
+                            context_file,
+                            bridge,
+                        )?;
+                    }
+                }
                 return Ok(());
             }
             if claude_headless_bypass_confirmation_visible(&recent) {
@@ -1035,6 +1073,35 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
+        if claude_headless_workspace_trust_denied(context_file) {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "submit Claude headless prompt",
+                message: CLAUDE_WORKSPACE_TRUST_DENIED.to_string(),
+            });
+        }
+        if provider_run.provider() == "claude-headless"
+            && provider_run.pty_target().is_some()
+            && !crate::app::ProviderLaunchProcessRuntime::new(self.app)
+                .poll_running(provider_run_id)?
+        {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "submit Claude headless prompt",
+                message: CLAUDE_HEADLESS_EARLY_EXIT.to_string(),
+            });
+        }
+        if let Some(resolution) =
+            self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
+        {
+            if resolution == ClaudeWorkspaceTrustResolution::Denied {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "submit Claude headless prompt",
+                    message: CLAUDE_WORKSPACE_TRUST_DENIED.to_string(),
+                });
+            }
+        }
         let prompt = ClaudeNativePromptInjection {
             id: &dispatch.prompt_id,
             prompt: &dispatch.prompt,
@@ -1147,10 +1214,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         prompt: &ClaudeNativePromptInjection<'_>,
     ) -> Result<(), DaemonError> {
         let mut marker = claude_native_marker(context_file);
-        if marker
-            .as_deref()
-            .is_some_and(|value| value.starts_with("permission:"))
-        {
+        if marker.as_deref().is_some_and(|value| {
+            value.starts_with("permission:")
+                || claude_headless_workspace_trust_interaction_marker(value)
+        }) {
             return Ok(());
         }
         let force_post_stop_ready = provider_run.provider() == "claude-headless"
@@ -1245,13 +1312,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if claude_headless_workspace_trust_visible(&recent) {
                 append_claude_headless_debug(
                     context_file,
-                    "inject_auto_confirm",
+                    "startup_wait_interaction",
                     "workspace_trust",
                 );
-                self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-                write_claude_headless_startup_wait_marker(context_file);
-                clear_claude_permission_recent(context_file);
                 return Ok(());
             }
             if claude_headless_bypass_confirmation_visible(&recent) {
@@ -1437,6 +1500,105 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             append_claude_headless_debug(context_file, "inject_empty", prompt.id);
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
         }
+        Ok(())
+    }
+
+    fn process_pending_claude_workspace_trust(
+        &mut self,
+        provider_run_id: &str,
+        context_file: &str,
+    ) -> Result<Option<ClaudeWorkspaceTrustResolution>, DaemonError> {
+        let Some(interaction_id) = claude_headless_workspace_trust_interaction_id(context_file)
+        else {
+            return Ok(None);
+        };
+        let Some(input) = take_claude_permission_inputs(context_file)
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        self.app
+            .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
+        if input == b"\r" {
+            write_claude_headless_startup_wait_marker(context_file);
+            clear_claude_permission_recent(context_file);
+            Ok(Some(ClaudeWorkspaceTrustResolution::Approved))
+        } else {
+            write_claude_headless_workspace_trust_denied_marker(context_file, &interaction_id);
+            clear_claude_permission_recent(context_file);
+            Ok(Some(ClaudeWorkspaceTrustResolution::Denied))
+        }
+    }
+
+    fn request_claude_workspace_trust(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        context_file: &str,
+        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+    ) -> Result<(), DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
+            return Ok(());
+        };
+        let interaction_id = format!(
+            "claude-workspace-trust-{provider_run_id}-{}",
+            timestamp_millis()
+        );
+        write_claude_headless_workspace_trust_interaction_marker(context_file, &interaction_id);
+        clear_claude_permission_recent(context_file);
+        let interaction = RuntimeInteraction::new(
+            interaction_id.clone(),
+            agent_id,
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            Some("Trust this Claude Code workspace?".to_string()),
+            "Claude Code is waiting for explicit approval to trust this workspace. The queued task will not be sent until you approve it.",
+            vec![
+                RuntimeInteractionChoice::new(
+                    "allow_once",
+                    "Trust workspace",
+                    "allow",
+                    Some(RuntimeInteractionChoiceStyle::Primary),
+                ),
+                RuntimeInteractionChoice::new(
+                    "deny",
+                    "Deny",
+                    "deny",
+                    Some(RuntimeInteractionChoiceStyle::Danger),
+                ),
+            ],
+            None,
+            Some(300),
+            Some("deny".to_string()),
+        );
+        let session_id = session_id.to_string();
+        let context_file = context_file.to_string();
+        std::thread::spawn(move || {
+            let input = match bridge.request_blocking(&session_id, interaction) {
+                Ok(resolution)
+                    if resolution.reply.as_deref() == Some("allow")
+                        || resolution.choice_id.as_deref() == Some("allow_once") =>
+                {
+                    b"\r".to_vec()
+                }
+                Ok(_) => vec![0x03],
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider_output",
+                        "Claude workspace trust interaction failed",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "interaction_id": interaction_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    vec![0x03]
+                }
+            };
+            write_claude_permission_input(&context_file, &interaction_id, &input);
+        });
         Ok(())
     }
 }
