@@ -474,9 +474,6 @@ impl KernelRuntimeState {
                     crate::session::unix_epoch_ms(),
                 )
             });
-        let terminal_failure = provider_termination
-            .as_ref()
-            .map(|termination| termination.reason.clone());
         project_terminal_failure_chunk(&mut poll_result, terminal_failure.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         if let Some(message) = terminal_failure.as_ref() {
