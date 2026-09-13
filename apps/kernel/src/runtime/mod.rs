@@ -54,6 +54,7 @@ pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
 pub(crate) mod pairing_invite_executor;
 pub mod process_health;
+pub(crate) mod project_environment_setup_utility;
 pub mod projection;
 pub(crate) mod prompt_settings_executor;
 pub mod prompt_state;

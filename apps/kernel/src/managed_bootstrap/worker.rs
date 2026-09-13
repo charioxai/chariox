@@ -59,6 +59,24 @@ pub(crate) fn activity_allocation(
     Ok(receipt.allocation_id)
 }
 
+/// Project-environment commands require the worker's Cloud allocation to be
+/// confirmed. An exchanged receipt binds identity, but it is not yet evidence
+/// that the dedicated VM is admitted for project execution.
+pub(crate) fn confirmed_activity_allocation(
+    path: &Path,
+    config: &crate::config::DaemonConfig,
+    profile: &PersistedCloudRelayProfile,
+) -> Result<String, DaemonError> {
+    let receipt = WorkerReceipt::read(path)?
+        .ok_or_else(|| worker_error("worker activity receipt is missing"))?;
+    if receipt.status != WorkerReceiptStatus::Confirmed {
+        return Err(worker_error(
+            "worker Cloud allocation is not confirmed for project execution",
+        ));
+    }
+    activity_allocation(path, config, profile)
+}
+
 #[derive(Debug, Clone)]
 struct WorkerConfig {
     chariox_home: PathBuf,
@@ -991,10 +1009,15 @@ mod tests {
             activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
         );
+        assert!(confirmed_activity_allocation(&path, &runtime, &profile).is_err());
         let mut confirmed = receipt.clone();
         confirmed.status = WorkerReceiptStatus::Confirmed;
         confirmed.confirmed_at = Some("2026-09-13T11:00:00Z".to_string());
         confirmed.persist(&path).unwrap();
+        assert_eq!(
+            confirmed_activity_allocation(&path, &runtime, &profile).unwrap(),
+            "worker-1"
+        );
         assert_eq!(
             confirmed.binding_digest().unwrap(),
             "sha256:3341e3d7f98f947c0c37ff9923923cffce466d4a632ca6f238439df6e23109c7"

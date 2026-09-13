@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::unix_epoch_ms;
+use super::ProjectEnvironmentDefinition;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +48,8 @@ pub struct RuntimeProject {
     updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    environment_definition: Option<ProjectEnvironmentDefinition>,
 }
 
 impl RuntimeProject {
@@ -70,6 +73,7 @@ impl RuntimeProject {
             created_at_ms: now,
             updated_at_ms: now,
             archived_at_ms: None,
+            environment_definition: None,
         }
     }
 
@@ -126,8 +130,17 @@ impl RuntimeProject {
         self.archived_at_ms
     }
 
+    pub fn environment_definition(&self) -> Option<&ProjectEnvironmentDefinition> {
+        self.environment_definition.as_ref()
+    }
+
     pub(crate) fn rename(&mut self, name: String) {
         self.name = name;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub(crate) fn set_environment_definition(&mut self, definition: ProjectEnvironmentDefinition) {
+        self.environment_definition = Some(definition);
         self.updated_at_ms = unix_epoch_ms();
     }
 

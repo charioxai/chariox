@@ -123,6 +123,12 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
         LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
         LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
+        LocalDaemonRequest::StartProjectEnvironmentSetup(_) => "project.environment_setup.start",
+        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
+            "project.environment_setup.status"
+        }
+        LocalDaemonRequest::CancelProjectEnvironmentSetup(_) => "project.environment_setup.cancel",
+        LocalDaemonRequest::RetryProjectEnvironmentSetup(_) => "project.environment_setup.retry",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",

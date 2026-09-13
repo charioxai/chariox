@@ -214,6 +214,16 @@ impl CommandRouter {
                 .await
                 .map(Some);
             }
+            request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
+            | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
+            | LocalDaemonRequest::CancelProjectEnvironmentSetup(_)
+            | LocalDaemonRequest::RetryProjectEnvironmentSetup(_)) => {
+                return self
+                    .runtime_state
+                    .execute_project_environment_setup_request(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
+            }
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
                 return execute_provider_catalog_request(

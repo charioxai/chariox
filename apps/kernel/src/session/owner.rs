@@ -137,6 +137,16 @@ impl SessionStateStore {
             .update_project_workspaces(project_id, workspace_ids, caller_user_id)
     }
 
+    pub(crate) fn update_project_environment_definition(
+        &self,
+        project_id: &str,
+        definition: super::ProjectEnvironmentDefinition,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .update_project_environment_definition(project_id, definition, caller_user_id)
+    }
+
     pub(crate) fn archive_project(
         &self,
         project_id: &str,
