@@ -263,6 +263,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 return Ok(outcome);
             }
         }
+        // A trust reply can arrive after the specialized mailbox read above.
+        // Leave it there for the next pass, rather than consuming it below as
+        // generic permission input and losing the denial's terminal outcome.
+        if claude_headless_workspace_trust_interaction_id(context_file).is_some() {
+            return Ok(outcome);
+        }
 
         let resolving_permission = claude_native_marker(context_file)
             .as_deref()
