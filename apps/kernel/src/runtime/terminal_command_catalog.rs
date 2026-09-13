@@ -257,6 +257,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "/room status",
+                "/room bind ",
                 "/room start ",
                 "/room stop",
                 "/room retry",
@@ -268,6 +269,36 @@ mod tests {
                 "/room release ",
                 "/room cancel ",
                 "/room save ",
+            ]
+        );
+        let bind = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-bind")
+            .expect("Room environment slice binding command should be present");
+        assert_eq!(
+            bind.description,
+            "Bind a headed slice to this Room Environment without starting or restarting the worker"
+        );
+        assert_eq!(bind.value, "/room bind ");
+        assert_eq!(bind.kind, TerminalCommandCatalogNodeKind::Group);
+        assert_eq!(
+            bind.execution_target,
+            TerminalCommandCatalogExecutionTarget::Kernel
+        );
+        assert_eq!(bind.surfaces, vec![TerminalCommandCatalogSurface::Session]);
+        assert_eq!(
+            bind.examples,
+            vec!["/room bind desktop", "/room bind slice-7"]
+        );
+        assert_eq!(
+            bind.search_aliases,
+            vec![
+                "bind slice",
+                "room slice",
+                "environment slice",
+                "reserve slice",
+                "slice binding",
             ]
         );
         let cancel = room

@@ -694,7 +694,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
