@@ -1758,7 +1758,8 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let bridge = StartupTrustBridge::default();
     let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
         std::sync::Arc::new(bridge.clone());
-    app.providers().set_native_interaction_bridge(bridge_ref);
+    app.providers()
+        .set_native_interaction_bridge(bridge_ref.clone());
     crate::app::provider_output::ProviderOutputPump::new(&mut app)
         .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
             session_id: session.id(),
