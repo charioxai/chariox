@@ -46,6 +46,10 @@ A Path 1 worker starts the ordinary kernel with
 sessions, session-invite joins, external-provider imports, and managed-context
 imports. It admits one reserved execution lease, keeps its backing session
 private, and advertises no spare capacity until that lease is destroyed.
+The worker journals its hidden backing Room and agent, and stores the reservation
+and authorized home-kernel caller in private runtime state. After a restart it
+restores the reservation before advertising capacity and reattaches the backing
+agent for new prompts. Releasing the lease deletes the backing Room.
 Lease requests require a relay-authenticated home kernel with a sender-bound
 key. The worker retains that kernel, realm, user, and key binding for the lease,
 its agents, and deletion retries. A lease or agent ID alone grants no access.

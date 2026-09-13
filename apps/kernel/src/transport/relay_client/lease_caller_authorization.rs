@@ -3,13 +3,15 @@
 use std::collections::BTreeMap;
 
 use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayError};
+use serde::{Deserialize, Serialize};
 
+use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::request_errors::relay_error;
 use super::sender_identity::require_bound_kernel_sender;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct LeaseCaller {
     home_kernel_id: String,
     realm_id: String,
@@ -17,20 +19,20 @@ pub(super) struct LeaseCaller {
     sender_key_thumbprint: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LeaseRecord {
     caller: LeaseCaller,
     destroyed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentRecord {
     lease_id: String,
     destroyed: bool,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct LeaseCallerAuthorization {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct LeaseCallerAuthorization {
     leases: BTreeMap<String, LeaseRecord>,
     agents: BTreeMap<String, AgentRecord>,
 }
@@ -58,6 +60,34 @@ enum Target<'a> {
 }
 
 impl LeaseCallerAuthorization {
+    pub(crate) fn matches_runtime_state(
+        &self,
+        leases: &BTreeMap<String, ExecutionLease>,
+        agents: &BTreeMap<String, LeasedAgent>,
+    ) -> bool {
+        leases.iter().all(|(id, lease)| {
+            self.leases.get(id).is_some_and(|record| {
+                !record.destroyed
+                    && record.caller.home_kernel_id == lease.home_kernel_id
+                    && record.caller.owner_user_id == lease.owner_user_id
+            })
+        }) && self
+            .leases
+            .iter()
+            .all(|(id, record)| record.destroyed || leases.contains_key(id))
+            && agents.iter().all(|(id, agent)| {
+                self.agents.get(id).is_some_and(|record| {
+                    !record.destroyed
+                        && record.lease_id == agent.lease_id
+                        && leases.contains_key(&record.lease_id)
+                })
+            })
+            && self
+                .agents
+                .iter()
+                .all(|(id, record)| record.destroyed || agents.contains_key(id))
+    }
+
     pub(super) fn authorize(
         &self,
         request: &RelayPeerRequest,
@@ -181,6 +211,11 @@ impl LeaseCallerAuthorization {
             RelayPeerResponse::ExecutionLeaseDestroyed { lease_id } => {
                 if let Some(record) = self.leases.get_mut(lease_id) {
                     record.destroyed = true;
+                }
+                for agent in self.agents.values_mut() {
+                    if agent.lease_id == *lease_id {
+                        agent.destroyed = true;
+                    }
                 }
             }
             _ => {}

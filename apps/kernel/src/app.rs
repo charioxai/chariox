@@ -14,6 +14,7 @@ mod history_event_context;
 mod kernel_agent;
 mod kernel_api_facade;
 mod kernel_session;
+mod lease_worker_state;
 mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
@@ -351,6 +352,7 @@ impl DaemonApp {
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        app.restore_lease_worker_state()?;
         if app.config.lease_worker_capacity.is_some() {
             if app.managed_kernel_registration.is_some()
                 || app

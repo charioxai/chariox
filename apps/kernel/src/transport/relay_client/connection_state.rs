@@ -85,6 +85,10 @@ impl PendingManagedSliceActivationConfirmation {
 }
 
 impl RelayClientState {
+    pub(crate) fn restore_lease_callers(&mut self, callers: LeaseCallerAuthorization) {
+        self.lease_callers = callers;
+    }
+
     pub fn connected(&self) -> bool {
         self.connected
     }

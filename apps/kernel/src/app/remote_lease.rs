@@ -78,14 +78,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         lease_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
-        self.app
-            .leased_agents
-            .retain(|_, agent| agent.lease_id != lease_id);
-        self.app.execution_leases.remove(lease_id).ok_or_else(|| {
-            DaemonError::ExecutionLeaseNotFound {
+        let lease = self
+            .app
+            .execution_leases
+            .get(lease_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: lease_id.to_string(),
-            }
-        })
+            })?;
+        let leased_agent_ids = self
+            .app
+            .leased_agents
+            .values()
+            .filter(|agent| agent.lease_id == lease_id)
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>();
+        for leased_agent_id in leased_agent_ids {
+            self.destroy_leased_agent(&leased_agent_id)?;
+        }
+        self.app.execution_leases.remove(lease_id);
+        Ok(lease)
     }
 
     pub(crate) fn create_leased_agent(
@@ -199,19 +211,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && session.worktree_id() == worktree
                     && session.owner_user_id() == lease.owner_user_id
             });
-        let session = match existing_session {
+        let (session, new_session) = match existing_session {
             Some(session) => {
                 if let Some(mode) = workspace_live_sync_mode {
                     if session.workspace_live_sync_mode() != Some(mode) {
-                        self.app
-                            .sessions
-                            .write()
-                            .set_workspace_live_sync_mode(session.id(), mode)?
+                        (
+                            self.app
+                                .sessions
+                                .write()
+                                .set_workspace_live_sync_mode(session.id(), mode)?,
+                            false,
+                        )
                     } else {
-                        session
+                        (session, false)
                     }
                 } else {
-                    session
+                    (session, false)
                 }
             }
             None => {
@@ -221,7 +236,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 if let Some(mode) = workspace_live_sync_mode {
                     request = request.with_workspace_live_sync_mode(mode);
                 }
-                self.app.sessions.create_ephemeral_session(request)?
+                if self.app.config.lease_worker_capacity.is_some() {
+                    (self.app.sessions.create_session(request)?, true)
+                } else {
+                    (self.app.sessions.create_ephemeral_session(request)?, true)
+                }
             }
         };
         let session_store = self.app.session_state_store();
@@ -258,6 +277,25 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .app
                 .agents_mut()
                 .activate_agent_meta_mode(backing_agent.id(), None)?;
+        }
+        if self.app.config.lease_worker_capacity.is_some() {
+            if new_session {
+                let session = self.app.sessions.get_session(session.id())?;
+                self.app.durable_state_store().append_event(
+                    "session.created",
+                    Some(session.id().to_string()),
+                    serde_json::json!({
+                        "session": &session,
+                        "default_agent": &backing_agent,
+                    }),
+                )?;
+            } else {
+                self.app.durable_state_store().append_event(
+                    "agent.created",
+                    Some(backing_agent.id().to_string()),
+                    serde_json::json!({ "agent": &backing_agent }),
+                )?;
+            }
         }
         self.app.next_leased_agent_number = self.app.next_leased_agent_number.wrapping_add(1);
         let agent_id = format!(
@@ -335,15 +373,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .attachments
                 .detach(&mut sessions, &agent.backing_attachment_id)
         };
-        let _ = {
+        let destroyed_backing_agent = {
             let mut sessions = session_store.write();
             self.app
                 .agents
                 .destroy_agent(&agent.backing_agent_id, &mut sessions)
         };
+        if self.app.config.lease_worker_capacity.is_some() {
+            let destroyed_backing_agent = destroyed_backing_agent?;
+            self.app.durable_state_store().append_event(
+                "agent.deleted",
+                Some(destroyed_backing_agent.id().to_string()),
+                serde_json::json!({ "agent": &destroyed_backing_agent }),
+            )?;
+        }
         if !backing_session_still_used {
             let _ = self.app.sessions.end_session(&agent.backing_session_id);
-            let _ = self.app.sessions.delete_session(&agent.backing_session_id);
+            let deleted_session = self.app.sessions.delete_session(&agent.backing_session_id);
+            if self.app.config.lease_worker_capacity.is_some() {
+                let deleted_session = deleted_session?;
+                self.app.durable_state_store().append_event(
+                    "session.deleted",
+                    Some(deleted_session.id().to_string()),
+                    serde_json::json!({ "session": &deleted_session }),
+                )?;
+            }
         }
         Ok(agent)
     }
