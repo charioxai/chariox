@@ -34,6 +34,7 @@ fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
 fn lease_worker_counts_reservations_and_reopens_after_release() {
     let mut config = DaemonConfig::for_tests();
     config.lease_worker_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller::for_tests());
     let mut app = DaemonApp::bootstrap(config).expect("lease worker should boot");
     assert!(app.relay_registration().accepting_remote_leases);
     let first = RemoteLeaseRuntime::new(&mut app)
@@ -84,7 +85,15 @@ fn lease_worker_rejects_invalid_capacity_and_preexisting_public_state() {
     ));
 
     config.accept_remote_leases = true;
+    assert!(matches!(
+        config.validate(),
+        Err(DaemonError::InvalidConfig {
+            field: "lease_worker_home_caller",
+            ..
+        })
+    ));
     config.lease_worker_capacity = None;
+    config.lease_worker_home_caller = None;
     let mut regular = DaemonApp::bootstrap(config.clone()).expect("regular kernel should boot");
     regular
         .create_session(crate::session::CreateSessionRequest::new(
@@ -97,6 +106,7 @@ fn lease_worker_rejects_invalid_capacity_and_preexisting_public_state() {
         .expect("public session should persist");
     drop(regular);
     config.lease_worker_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller::for_tests());
     assert!(matches!(
         DaemonApp::bootstrap(config),
         Err(DaemonError::InvalidConfig {
@@ -107,10 +117,29 @@ fn lease_worker_rejects_invalid_capacity_and_preexisting_public_state() {
 }
 
 #[test]
+fn lease_worker_accepts_cloud_home_caller_shape() {
+    let relay_public_key = crate::config::LeaseWorkerHomeCaller::for_tests().relay_public_key;
+    let home: crate::config::LeaseWorkerHomeCaller = serde_json::from_value(serde_json::json!({
+        "accountId": "account-1",
+        "userId": "owner-1",
+        "realmId": "realm-1",
+        "machineId": "machine-1",
+        "kernelId": "home-kernel",
+        "relayPublicKey": relay_public_key
+    }))
+    .expect("Cloud home caller should decode");
+    let mut config = DaemonConfig::for_tests();
+    config.lease_worker_capacity = Some(1);
+    config.lease_worker_home_caller = Some(home);
+    config.validate().expect("selected home caller is valid");
+}
+
+#[test]
 fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     config.lease_worker_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller::for_tests());
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease(

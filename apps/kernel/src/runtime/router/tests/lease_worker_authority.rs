@@ -4,6 +4,7 @@ use super::*;
 async fn lease_worker_rejects_public_session_invites_and_imports_before_dispatch() {
     let mut config = DaemonConfig::for_tests();
     config.lease_worker_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller::for_tests());
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config).expect("lease worker should boot"),
     ));
@@ -59,6 +60,7 @@ async fn lease_worker_rejects_public_session_invites_and_imports_before_dispatch
 async fn lease_worker_rejects_relay_managed_context_import() {
     let mut config = DaemonConfig::for_tests();
     config.lease_worker_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller::for_tests());
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config).expect("lease worker should boot"),
     ));

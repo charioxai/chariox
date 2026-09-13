@@ -60,6 +60,29 @@ pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
 pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseWorkerHomeCaller {
+    pub kernel_id: String,
+    pub realm_id: String,
+    pub user_id: String,
+    pub relay_public_key: String,
+}
+
+#[cfg(test)]
+impl LeaseWorkerHomeCaller {
+    pub(crate) fn for_tests() -> Self {
+        let private_key = relay_crypto::generate_private_key_base64();
+        Self {
+            kernel_id: "home-kernel".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-home".to_string(),
+            relay_public_key: relay_crypto::public_key_from_private_key_base64(&private_key)
+                .expect("test home public key"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorManagementTargetCredential {
     pub url: String,
     pub token: String,
@@ -113,6 +136,8 @@ pub struct DaemonConfig {
     /// When set, this kernel accepts only remote execution leases and their
     /// private backing sessions. Path 1 provisions one worker per VM.
     pub lease_worker_capacity: Option<u32>,
+    /// Cloud selects this caller before a disposable worker accepts its first lease.
+    pub lease_worker_home_caller: Option<LeaseWorkerHomeCaller>,
     pub event_delivery_url: Option<String>,
     pub event_delivery_token: Option<String>,
     pub event_delivery_environment_id: String,
@@ -217,6 +242,7 @@ impl DaemonConfig {
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: true,
             lease_worker_capacity: None,
+            lease_worker_home_caller: None,
             event_delivery_url: None,
             event_delivery_token: None,
             event_delivery_environment_id: daemon_id.clone(),

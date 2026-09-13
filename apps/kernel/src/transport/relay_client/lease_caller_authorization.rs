@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayError};
 use serde::{Deserialize, Serialize};
 
+use crate::config::LeaseWorkerHomeCaller;
 use crate::execution_lease::{ExecutionLease, LeasedAgent};
+use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::request_errors::relay_error;
@@ -88,12 +90,35 @@ impl LeaseCallerAuthorization {
                 .all(|(id, record)| record.destroyed || agents.contains_key(id))
     }
 
+    #[cfg(test)]
     pub(super) fn authorize(
         &self,
         request: &RelayPeerRequest,
         identity: Option<&RelayCallerIdentity>,
         encrypted_request: &EncryptedRelayPayload,
         source_kernel_id: &str,
+    ) -> Result<LeaseCallerDecision, RelayError> {
+        self.authorize_for_home(
+            request,
+            identity,
+            encrypted_request,
+            source_kernel_id,
+            &LeaseWorkerHomeCaller {
+                kernel_id: "home-kernel".to_string(),
+                realm_id: "realm-1".to_string(),
+                user_id: "owner-1".to_string(),
+                relay_public_key: "home-public-key".to_string(),
+            },
+        )
+    }
+
+    pub(super) fn authorize_for_home(
+        &self,
+        request: &RelayPeerRequest,
+        identity: Option<&RelayCallerIdentity>,
+        encrypted_request: &EncryptedRelayPayload,
+        source_kernel_id: &str,
+        expected_home: &LeaseWorkerHomeCaller,
     ) -> Result<LeaseCallerDecision, RelayError> {
         let target = target(request);
         if matches!(target, Target::Ping) {
@@ -124,6 +149,14 @@ impl LeaseCallerAuthorization {
                 .clone()
                 .expect("bound kernel sender has a thumbprint"),
         };
+        if expected_home.kernel_id != caller.home_kernel_id
+            || expected_home.realm_id != caller.realm_id
+            || expected_home.user_id != caller.owner_user_id
+            || public_key_thumbprint(&expected_home.relay_public_key)
+                != caller.sender_key_thumbprint
+        {
+            return Err(unauthorized("lease caller is not the selected home kernel"));
+        }
         match target {
             Target::Reserve {
                 home_kernel_id,
@@ -453,6 +486,42 @@ mod tests {
         assert!(authorization
             .authorize(&request, Some(&identity()), &encrypted, "other-kernel")
             .is_err());
+    }
+
+    #[test]
+    fn reservation_rejects_every_non_selected_home_identity() {
+        let authorization = LeaseCallerAuthorization::default();
+        let selected = LeaseWorkerHomeCaller {
+            kernel_id: "home-kernel".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "owner-1".to_string(),
+            relay_public_key: "home-public-key".to_string(),
+        };
+        let reserve = |home: &LeaseWorkerHomeCaller| {
+            authorization.authorize_for_home(
+                &reserve_request(),
+                Some(&identity()),
+                &encrypted_request(),
+                "home-kernel",
+                home,
+            )
+        };
+        assert!(matches!(
+            reserve(&selected),
+            Ok(LeaseCallerDecision::Continue(Some(_)))
+        ));
+        let mut other = selected.clone();
+        other.kernel_id = "other-kernel".to_string();
+        assert!(reserve(&other).is_err());
+        let mut other = selected.clone();
+        other.realm_id = "other-realm".to_string();
+        assert!(reserve(&other).is_err());
+        let mut other = selected.clone();
+        other.user_id = "other-user".to_string();
+        assert!(reserve(&other).is_err());
+        let mut other = selected;
+        other.relay_public_key = "other-public-key".to_string();
+        assert!(reserve(&other).is_err());
     }
 
     #[test]

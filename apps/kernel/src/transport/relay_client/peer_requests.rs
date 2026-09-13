@@ -78,11 +78,12 @@ pub(super) async fn handle_daemon_peer_request(
         )
     };
     let lease_caller = if router.is_lease_worker() {
-        match state.read().await.lease_callers.authorize(
+        match state.read().await.lease_callers.authorize_for_home(
             &request,
             caller_identity.as_ref(),
             &encrypted_request,
             stable_peer_daemon_id(from_daemon_id),
+            &router.lease_worker_home_caller(),
         ) {
             Ok(LeaseCallerDecision::Continue(caller)) => caller,
             Ok(LeaseCallerDecision::Replay(response)) => {
@@ -1489,6 +1490,15 @@ mod tests {
     async fn lease_worker_binds_reserve_and_destroy_to_the_same_relay_caller() {
         let mut config = DaemonConfig::for_tests();
         config.lease_worker_capacity = Some(1);
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "source-kernel-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: home_public_key.clone(),
+        });
         let app = DaemonApp::bootstrap(config).expect("lease worker should boot");
         let worker_public_key = app.config().relay_public_key.clone();
         let app = Arc::new(Mutex::new(app));
@@ -1498,9 +1508,6 @@ mod tests {
         ));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
-        let home_private_key = relay_crypto::generate_private_key_base64();
-        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
-            .expect("home public key");
         let identity =
             scoped_kernel_identity(Some(public_key_thumbprint(&home_public_key)), u64::MAX);
         let reserve = RelayPeerRequest::CreateExecutionLease {
@@ -1546,6 +1553,31 @@ mod tests {
         .await;
         assert_eq!(
             unbound.error.as_ref().map(|error| error.code.as_str()),
+            Some("unauthorized")
+        );
+
+        let other_private_key = relay_crypto::generate_private_key_base64();
+        let other_public_key = relay_crypto::public_key_from_private_key_base64(&other_private_key)
+            .expect("other public key");
+        let other_identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&other_public_key)), u64::MAX);
+        let other_request = relay_crypto::encrypt_payload_for_peer(
+            &other_private_key,
+            &worker_public_key,
+            &serde_json::to_vec(&reserve).expect("serialize other reservation"),
+        )
+        .expect("encrypt other reservation");
+        let other = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            Some(other_identity),
+            other_request,
+        )
+        .await;
+        assert_eq!(
+            other.error.as_ref().map(|error| error.code.as_str()),
             Some("unauthorized")
         );
 
@@ -1634,6 +1666,15 @@ mod tests {
     async fn lease_worker_restores_reservation_and_caller_after_snapshot_restart() {
         let mut config = DaemonConfig::for_tests();
         config.lease_worker_capacity = Some(1);
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "source-kernel-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: home_public_key.clone(),
+        });
         let worker = DaemonApp::bootstrap(config.clone()).expect("lease worker should boot");
         let worker_public_key = worker.config().relay_public_key.clone();
         let state = worker.relay_client_state();
@@ -1643,9 +1684,6 @@ mod tests {
             1,
         ));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
-        let home_private_key = relay_crypto::generate_private_key_base64();
-        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
-            .expect("home public key");
         let identity =
             scoped_kernel_identity(Some(public_key_thumbprint(&home_public_key)), u64::MAX);
         let reserve = RelayPeerRequest::CreateExecutionLease {
@@ -1757,6 +1795,15 @@ mod tests {
     async fn lease_worker_restores_agent_config_and_prompt_after_restart_async() {
         let mut config = DaemonConfig::for_tests();
         config.lease_worker_capacity = Some(1);
+        let home_private_key = relay_crypto::generate_private_key_base64();
+        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
+            .expect("home public key");
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "source-kernel-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: home_public_key.clone(),
+        });
         let worker = DaemonApp::bootstrap(config.clone()).expect("lease worker should boot");
         let worker_public_key = worker.config().relay_public_key.clone();
         let state = worker.relay_client_state();
@@ -1766,9 +1813,6 @@ mod tests {
             1,
         ));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
-        let home_private_key = relay_crypto::generate_private_key_base64();
-        let home_public_key = relay_crypto::public_key_from_private_key_base64(&home_private_key)
-            .expect("home public key");
         let identity =
             scoped_kernel_identity(Some(public_key_thumbprint(&home_public_key)), u64::MAX);
         let harness = ManagedPeerRequestHarness {
