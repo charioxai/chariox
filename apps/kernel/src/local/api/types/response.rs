@@ -31,6 +31,10 @@ pub enum LocalDaemonResponse {
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectDeleted { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectRestored { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
+    ProjectEnvironmentSetupStarted { status: ProjectEnvironmentSetupStatus, },
+    ProjectEnvironmentSetupStatus { status: ProjectEnvironmentSetupStatus, },
+    ProjectEnvironmentSetupCancelled { status: ProjectEnvironmentSetupStatus, },
+    ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
     SessionState {

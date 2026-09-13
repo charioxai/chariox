@@ -67,6 +67,15 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ListSessionMembers(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

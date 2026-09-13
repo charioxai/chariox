@@ -92,6 +92,8 @@ const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
     include_str!("provider/workspace_commit_message_instructions.md");
 const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
     include_str!("provider/semantic_recall_search_instructions.md");
+const UTILITY_PROJECT_ENVIRONMENT_SETUP: &str =
+    include_str!("provider/project_environment_setup_instructions.md");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
@@ -1066,6 +1068,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             "utility/semantic-recall-search",
             UTILITY_SEMANTIC_RECALL_SEARCH,
         ),
+        BundledPromptTemplate::new(
+            "utility/project-environment-setup",
+            UTILITY_PROJECT_ENVIRONMENT_SETUP,
+        ),
     ]
 }
 
@@ -1121,6 +1127,7 @@ fn prompt_component_tag(template_id: &str) -> String {
         }
         "utility/workspace-commit-message" => "workspace-commit-message-instructions",
         "utility/semantic-recall-search" => "semantic-recall-search-instructions",
+        "utility/project-environment-setup" => "project-environment-setup-instructions",
         _ => return template_id.replace('/', "-"),
     }
     .to_string()

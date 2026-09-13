@@ -115,6 +115,22 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
+        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
+            LocalRequestMetadata::new("project.environment_setup.start", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
+            LocalRequestMetadata::new("project.environment_setup.status", Normal)
+        }
+        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => {
+            LocalRequestMetadata::new("project.environment_setup.cancel", Normal)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
+            LocalRequestMetadata::new("project.environment_setup.retry", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::AttachToSession(request) => {
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
         }
@@ -477,6 +493,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
         LocalDaemonRequest::DeleteProject(_) => "project.delete",
         LocalDaemonRequest::RestoreProject(_) => "project.restore",
+        LocalDaemonRequest::StartProjectEnvironmentSetup(_) => "project.environment_setup.start",
+        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
+            "project.environment_setup.status"
+        }
+        LocalDaemonRequest::CancelProjectEnvironmentSetup(_) => "project.environment_setup.cancel",
+        LocalDaemonRequest::RetryProjectEnvironmentSetup(_) => "project.environment_setup.retry",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
         LocalDaemonRequest::LaunchProviderRuns(_) => "provider_runs.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
