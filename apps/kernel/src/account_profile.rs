@@ -2478,11 +2478,54 @@ impl ProviderAccountProfileRegistry {
     }
 
     #[cfg(unix)]
+    pub(crate) fn legacy_replica_root_identity(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<Option<(u64, u64)>, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        if !self.is_legacy_unpinned_replica(owner_user_id, provider, profile_id)? {
+            return Err(registry_error(
+                "inspect legacy account profile",
+                "profile is not an unpinned legacy replica",
+            ));
+        }
+        let Some(parent) = managed_fs::ManagedProviderParent::open_if_exists(
+            &self.path,
+            &safe_path_component(owner_user_id),
+            provider,
+        )?
+        else {
+            return Ok(None);
+        };
+        if !parent.exists(profile_id)? {
+            return Ok(None);
+        }
+        parent.identity(profile_id).map(Some)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn legacy_replica_root_identity(
+        &self,
+        _owner_user_id: &str,
+        _provider: &str,
+        _profile_id: &str,
+    ) -> Result<Option<(u64, u64)>, DaemonError> {
+        Err(registry_error(
+            "inspect legacy account profile",
+            "remote replica validation requires a supported Unix managed host",
+        ))
+    }
+
+    #[cfg(unix)]
     pub(crate) fn pin_validated_legacy_replica(
         &self,
         owner_user_id: &str,
         provider: &str,
         profile_id: &str,
+        observed_identity: (u64, u64),
     ) -> Result<(), DaemonError> {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
@@ -2512,14 +2555,14 @@ impl ProviderAccountProfileRegistry {
                 "legacy account locator does not match its managed root",
             ));
         }
-        let identity = managed_fs::ManagedProviderParent::open(
+        let parent = managed_fs::ManagedProviderParent::open(
             &self.path,
             &safe_path_component(owner_user_id),
             provider,
-        )?
-        .identity(profile_id)?;
+        )?;
+        require_replica_root_identity(&parent, profile_id, observed_identity)?;
         let original = document.clone();
-        document.profiles[index].replica_root_identity = Some(identity);
+        document.profiles[index].replica_root_identity = Some(observed_identity);
         document.profiles[index].pending_native_validation = false;
         document.profiles[index].legacy_unpinned_replica = false;
         if let Err(error) = self.persist_locked(&document) {
@@ -2535,6 +2578,7 @@ impl ProviderAccountProfileRegistry {
         _owner_user_id: &str,
         _provider: &str,
         _profile_id: &str,
+        _observed_identity: (u64, u64),
     ) -> Result<(), DaemonError> {
         Err(registry_error(
             "validate legacy account profile",
@@ -2548,6 +2592,7 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         provider: &str,
         profile_id: &str,
+        observed_identity: Option<(u64, u64)>,
     ) -> Result<Option<PathBuf>, DaemonError> {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
@@ -2580,9 +2625,9 @@ impl ProviderAccountProfileRegistry {
             &safe_path_component(owner_user_id),
             provider,
         )?;
-        let retained = match parent {
-            Some(parent) if parent.exists(profile_id)? => {
-                let identity = parent.identity(profile_id)?;
+        let retained = match (parent, observed_identity) {
+            (Some(parent), Some(identity)) => {
+                require_replica_root_identity(&parent, profile_id, identity)?;
                 let retained_root = unique_sibling_path(&managed_root, "legacy-retained");
                 let retained_name = retained_root
                     .file_name()
@@ -2603,6 +2648,18 @@ impl ProviderAccountProfileRegistry {
                 require_replica_root_identity(&parent, retained_name, identity)?;
                 parent.sync()?;
                 Some((retained_root, identity, parent))
+            }
+            (Some(parent), None) if parent.exists(profile_id)? => {
+                return Err(registry_error(
+                    "retain failed legacy account profile",
+                    "legacy account root appeared after authentication observation",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(registry_error(
+                    "retain failed legacy account profile",
+                    "legacy account root disappeared after authentication observation",
+                ));
             }
             _ => None,
         };
@@ -2658,6 +2715,7 @@ impl ProviderAccountProfileRegistry {
         _owner_user_id: &str,
         _provider: &str,
         _profile_id: &str,
+        _observed_identity: Option<(u64, u64)>,
     ) -> Result<Option<PathBuf>, DaemonError> {
         Err(registry_error(
             "retain failed legacy account profile",
@@ -4815,8 +4873,11 @@ mod tests {
         reopened
             .get("owner-a", "codex", "legacy-failed")
             .expect("old worker data must remain registered until native validation");
+        let observed_identity = reopened
+            .legacy_replica_root_identity("owner-a", "codex", "legacy-failed")
+            .expect("inspect old root");
         let retained = reopened
-            .retain_failed_legacy_replica("owner-a", "codex", "legacy-failed")
+            .retain_failed_legacy_replica("owner-a", "codex", "legacy-failed", observed_identity)
             .expect("failed old replica should be retained")
             .expect("old root should exist");
         assert_eq!(
@@ -4830,6 +4891,71 @@ mod tests {
         reopened
             .materialize_replica_with_rollback_state("owner-a", &original)
             .expect("corrected materialization should retry");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_failed_replica_does_not_retain_a_root_swapped_after_observation() {
+        let (root, registry) = fixture();
+        let registry_path = root.join("accounts.json");
+        registry
+            .materialize_replica_with_rollback_state(
+                "owner-a",
+                &codex_replica_materialization("legacy-failed", false),
+            )
+            .expect("old materialization should commit");
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "legacy-failed",
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("native observation should record failure");
+        drop(registry);
+        remove_current_replica_fields(&registry_path);
+        let reopened = ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("old registry should reopen");
+        let parent = managed_fs::ManagedProviderParent::open(&registry_path, "owner-a", "codex")
+            .expect("provider parent should exist");
+        let observed_identity = parent.identity("legacy-failed").expect("pin old root");
+        reopened
+            .update_observation(
+                "owner-a",
+                "codex",
+                "legacy-failed",
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("fresh native observation should complete");
+        let provider_root = root.join("provider-accounts/owner-a/codex");
+        let old_root = provider_root.join("legacy-failed");
+        fs::rename(&old_root, provider_root.join("spare")).expect("move observed root away");
+        fs::create_dir_all(&old_root).expect("install another real directory");
+        fs::write(old_root.join("marker"), b"sibling").expect("mark replacement root");
+
+        assert!(
+            reopened
+                .retain_failed_legacy_replica(
+                    "owner-a",
+                    "codex",
+                    "legacy-failed",
+                    Some(observed_identity),
+                )
+                .is_err(),
+            "retention must reject a root that changed after observation"
+        );
+        assert_ne!(parent.identity("legacy-failed").unwrap(), observed_identity);
+        assert_eq!(fs::read(old_root.join("marker")).unwrap(), b"sibling");
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4861,8 +4987,16 @@ mod tests {
 
         let reopened = ProviderAccountProfileRegistry::open(&registry_path)
             .expect("legacy failed OpenCode replica should reconcile");
+        let observed_identity = reopened
+            .legacy_replica_root_identity("owner-a", "opencode", "legacy-opencode")
+            .expect("inspect old root");
         let retained = reopened
-            .retain_failed_legacy_replica("owner-a", "opencode", "legacy-opencode")
+            .retain_failed_legacy_replica(
+                "owner-a",
+                "opencode",
+                "legacy-opencode",
+                observed_identity,
+            )
             .expect("failed old OpenCode replica should be retained")
             .expect("old root should exist");
         assert_eq!(
@@ -4915,8 +5049,12 @@ mod tests {
         reopened
             .get("owner-a", "codex", "legacy-valid")
             .expect("worker profile should remain registered");
+        let observed_identity = reopened
+            .legacy_replica_root_identity("owner-a", "codex", "legacy-valid")
+            .expect("inspect old root")
+            .expect("old root should exist");
         reopened
-            .pin_validated_legacy_replica("owner-a", "codex", "legacy-valid")
+            .pin_validated_legacy_replica("owner-a", "codex", "legacy-valid", observed_identity)
             .expect("authenticated old worker profile should be pinned without replacement");
         assert_eq!(
             fs::read(&credential).unwrap(),
