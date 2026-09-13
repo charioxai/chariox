@@ -151,3 +151,19 @@ duplicate-bootstrap implementation gap, not the live VM acceptance gates below.
 
 Local type-checking is not proof of those live lifecycle requirements. No local
 daemon or relay serialized shape is changed by this HTTP reporter connection.
+
+## Provider bootstrap environment isolation
+
+PR #318's reviewer identified that provider launches inherited
+`CHARIOX_DISPOSABLE_WORKER_RECEIPT`. A provider's nested kernel or repository test
+could consequently mistake itself for the allocation reporter. A real child-shell
+regression reproduced the leak on the original rented Linux machine before the
+fix. The shared provider control-environment scrubber now removes both the worker
+receipt and `CHARIOX_MANAGED_BOOTSTRAP_RECEIPT`, covering ordinary and isolated
+launch paths without changing the parent kernel's reporter binding.
+
+After the fix, all seven provider launch policy tests and all eleven managed
+isolation tests passed remotely. The test build used one compiler job, a 12 GiB
+memory cap, and a 150% CPU quota, finishing in 3 minutes 20 seconds. Formatting
+and diff checks passed locally. No live service was restarted and no GitHub CI
+was triggered. This is source-level validation, not proof of a deployed fix.
