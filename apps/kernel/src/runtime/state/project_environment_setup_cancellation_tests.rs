@@ -4,6 +4,17 @@ use super::*;
 #[cfg(unix)]
 #[tokio::test]
 async fn cancel_request_stops_in_flight_worker_validation() {
+    exercise_cancel_request(false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retry_request_cannot_revive_cancelled_worker_validation() {
+    exercise_cancel_request(true).await;
+}
+
+#[cfg(unix)]
+async fn exercise_cancel_request(retry_immediately: bool) {
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
     use crate::runtime::router::CommandRouter;
 
@@ -155,6 +166,23 @@ async fn cancel_request_stops_in_flight_worker_validation() {
             "user-1",
         )
         .await;
+    let retry_response = if retry_immediately {
+        Some(
+            runtime
+                .execute_project_environment_setup_request(
+                    LocalDaemonRequest::RetryProjectEnvironmentSetup(
+                        RetryProjectEnvironmentSetupRequest {
+                            operation_id: "setup-1".into(),
+                            session_id: "session-1".into(),
+                        },
+                    ),
+                    "user-1",
+                )
+                .await,
+        )
+    } else {
+        None
+    };
     // Always join the bounded command before asserting, including on the red path.
     let result = validation.await.unwrap();
     let elapsed = cancelled_at.elapsed();
@@ -163,6 +191,12 @@ async fn cancel_request_stops_in_flight_worker_validation() {
         response,
         Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { .. })
     ));
+    if let Some(response) = retry_response {
+        assert!(matches!(
+            response,
+            Ok(LocalDaemonResponse::ProjectEnvironmentSetupRetried { .. })
+        ));
+    }
     assert!(
         !workspace.join("should-not-exist").exists(),
         "cancelled validation still mutated the workspace"
