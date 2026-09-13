@@ -92,22 +92,23 @@ impl KernelRuntimeState {
                     .owned
                     .project_environment_setups
                     .get_entry(&request.operation_id, caller_user_id)?;
-                let status = self.owned.project_environment_setups.cancel(
+                self.owned.project_environment_setups.request_cancel(
                     &request.operation_id,
                     &request.session_id,
                     caller_user_id,
+                    execution.remote_leased_agent_id.is_some(),
                 )?;
                 if execution.remote_leased_agent_id.is_some() {
-                    if let Ok(setup) = cancel_remote_setup(self, &execution).await {
-                        if let Ok(reconciled) =
-                            self.reconcile_remote_project_environment_setup(&execution, setup)
-                        {
-                            return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled {
-                                status: reconciled,
-                            });
-                        }
-                    }
+                    let setup = cancel_remote_setup(self, &execution).await?;
+                    let status =
+                        self.reconcile_remote_project_environment_setup(&execution, setup)?;
+                    return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status });
                 }
+                let status = self
+                    .owned
+                    .project_environment_setups
+                    .wait_for_cancellation(&request.operation_id, caller_user_id)
+                    .await?;
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status })
             }
             LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
@@ -224,11 +225,16 @@ impl KernelRuntimeState {
             .remote_status(operation_id, leased_agent_id)?;
         let config = self.owned.config_projection.snapshot();
         ensure_worker_setup_status_target(&target, &current_status, &config)?;
-        let status = self.owned.project_environment_setups.cancel(
+        self.owned.project_environment_setups.cancel(
             operation_id,
             &target.home_session_id,
             &target.owner_user_id,
         )?;
+        let status = self
+            .owned
+            .project_environment_setups
+            .wait_for_cancellation(operation_id, &target.owner_user_id)
+            .await?;
         ensure_worker_setup_status_target(&target, &status, &config)?;
         Ok(RelayProjectEnvironmentSetupStatus { status, definition })
     }
@@ -487,8 +493,16 @@ impl KernelRuntimeState {
     }
 
     fn spawn_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        let Some(guard) = self
+            .owned
+            .project_environment_setups
+            .begin_execution(&execution.operation_id, attempt)
+        else {
+            return;
+        };
         let runtime_state = self.clone();
         tokio::spawn(async move {
+            let _guard = guard;
             runtime_state
                 .run_project_environment_setup(execution, attempt)
                 .await;
@@ -768,7 +782,12 @@ impl KernelRuntimeState {
         }
         let environment = worker_validation_environment(provider_run);
         let cancellation = self.owned.project_environment_setups.clone();
+        let guard = cancellation
+            .begin_execution(&operation_id, attempt)
+            .ok_or_else(|| setup_error("setup attempt is no longer executing"))?;
         let validation = tokio::task::spawn_blocking(move || {
+            // The blocking command owns this guard even if its async waiter exits.
+            let _guard = guard;
             let started = Instant::now();
             let mut results = Vec::with_capacity(commands.len());
             for command in commands {
@@ -777,12 +796,10 @@ impl KernelRuntimeState {
                 {
                     break;
                 }
-                let result = run_worker_validation_command(
-                    &command,
-                    &workspace_root,
-                    &environment,
-                    || cancellation.is_cancelled(&operation_id, attempt),
-                );
+                let result =
+                    run_worker_validation_command(&command, &workspace_root, &environment, || {
+                        cancellation.is_cancelled(&operation_id, attempt)
+                    });
                 match result {
                     Ok((exit_code, stdout_bytes, stderr_bytes)) => {
                         results.push(ProjectEnvironmentCommandResult {
