@@ -20,9 +20,16 @@ existing endpoint and signature contract.
 Paired Cloud implementation: chariox-cloud PR #92, head
 `f7bc768c4117a1e42c112de3f2408eca145bbf65`.
 
+## Local validation
+
+At source revision `c573e5ccb0bb4840d05a64a21ac9bbf431ae8bf4`, the kernel and
+test targets type-checked. All 13 reporter tests, two worker bootstrap tests,
+and four shared activity-state tests passed. The latter cover queued prompts,
+unresolved interactions, and active-turn settlement. Compilation used one job,
+no incremental cache, and no debug information. GitHub CI was not run.
+
 ## Validation still required before deployment acceptance
 
-- Execute the focused reporter and worker-bootstrap Rust tests.
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.
 - Verify queued prompts and unresolved permissions prevent idle release.
