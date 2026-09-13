@@ -1239,6 +1239,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "timestamp_ms": 1_239,
             },
         ])
+        .as_array()
+        .expect("provider termination snapshot should be an array")
+        .clone()
     );
 
     let serialized =

@@ -458,8 +458,8 @@ async fn opencode_empty_idle_failure_retires_resume_without_explicit_termination
     assert!(settled_session
         .active_prompt_for_agent(agent.id())
         .is_none());
-    let agent_activity = runtime
-        .agent_activity_for_session(&settled_session)
+    let agent_activities = runtime.agent_activity_for_session(&settled_session);
+    let agent_activity = agent_activities
         .get(agent.id())
         .expect("agent activity should be projected");
     let completed_turn = agent_activity
