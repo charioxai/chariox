@@ -448,3 +448,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod terminal_diagnostic_loss;
