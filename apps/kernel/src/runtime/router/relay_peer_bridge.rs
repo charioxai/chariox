@@ -518,6 +518,87 @@ impl CommandRouter {
         relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn relay_start_leased_project_environment_setup(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        definition: Option<crate::session::ProjectEnvironmentDefinition>,
+        validation_commands: Vec<String>,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
+        relay_peer_runtime::start_relay_leased_project_environment_setup(
+            &self.runtime_state,
+            leased_agent_id,
+            operation_id,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            workspace_id,
+            target_worker_id,
+            target_platform,
+            definition,
+            validation_commands,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_get_leased_project_environment_setup_status(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
+        relay_peer_runtime::get_relay_leased_project_environment_setup_status(
+            &self.runtime_state,
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_cancel_leased_project_environment_setup(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
+        relay_peer_runtime::cancel_relay_leased_project_environment_setup(
+            &self.runtime_state,
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_retry_leased_project_environment_setup(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
+        relay_peer_runtime::retry_relay_leased_project_environment_setup(
+            &self.runtime_state,
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_observe_leased_git_after(
         &self,
         leased_agent_id: &str,

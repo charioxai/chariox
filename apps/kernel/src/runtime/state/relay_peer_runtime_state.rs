@@ -5,9 +5,10 @@ use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime_transport::WatchResult;
 use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
-    RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability,
-    RemoteMcpCheckContext, RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
+    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayProjectedCompletion,
+    RelayProjectedOutputChunk, RelayProjectedPrompt, RelayPromptAttachment, RemoteGitObservation,
+    RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
+    RemoteSkillSyncContext, RequiredRemoteMcp,
 };
 
 use super::*;
@@ -622,6 +623,142 @@ impl KernelRuntimeState {
             runtime.complete_leased_prompt(&leased_agent_id)
         })
         .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_relay_leased_project_environment_setup(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        definition: Option<crate::session::ProjectEnvironmentDefinition>,
+        validation_commands: Vec<String>,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let authorization_id = leased_agent_id.to_string();
+        let target_leased_agent_id = authorization_id.clone();
+        let worker_leased_agent_id = target_leased_agent_id.clone();
+        let target_home_session_id = home_session_id.clone();
+        let target_home_agent_id = home_agent_id.clone();
+        let target_workspace_id = workspace_id.clone();
+        let target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&authorization_id)?;
+                let requested_workspace_id = (!target_workspace_id.trim().is_empty())
+                    .then_some(target_workspace_id.as_str());
+                runtime.project_environment_setup_target(
+                    &worker_leased_agent_id,
+                    &target_home_session_id,
+                    &target_home_agent_id,
+                    requested_workspace_id,
+                )
+            })
+            .await?;
+        self.start_leased_project_environment_setup(
+            target,
+            target_leased_agent_id,
+            operation_id,
+            project_id,
+            workspace_id,
+            target_worker_id,
+            target_platform,
+            definition,
+            validation_commands,
+        )
+        .await
+    }
+
+    pub(crate) async fn get_relay_leased_project_environment_setup_status(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let authorization_id = leased_agent_id.to_string();
+        let target_leased_agent_id = authorization_id.clone();
+        let worker_leased_agent_id = target_leased_agent_id.clone();
+        let target_home_session_id = home_session_id.clone();
+        let target_home_agent_id = home_agent_id.clone();
+        let target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&authorization_id)?;
+                runtime.project_environment_setup_target(
+                    &worker_leased_agent_id,
+                    &target_home_session_id,
+                    &target_home_agent_id,
+                    None,
+                )
+            })
+            .await?;
+        self.get_leased_project_environment_setup_status(
+            target,
+            &target_leased_agent_id,
+            &operation_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn cancel_relay_leased_project_environment_setup(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let authorization_id = leased_agent_id.to_string();
+        let target_leased_agent_id = authorization_id.clone();
+        let worker_leased_agent_id = target_leased_agent_id.clone();
+        let target_home_session_id = home_session_id.clone();
+        let target_home_agent_id = home_agent_id.clone();
+        let target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&authorization_id)?;
+                runtime.project_environment_setup_target(
+                    &worker_leased_agent_id,
+                    &target_home_session_id,
+                    &target_home_agent_id,
+                    None,
+                )
+            })
+            .await?;
+        self.cancel_leased_project_environment_setup(target, &target_leased_agent_id, &operation_id)
+            .await
+    }
+
+    pub(crate) async fn retry_relay_leased_project_environment_setup(
+        &self,
+        leased_agent_id: &str,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let authorization_id = leased_agent_id.to_string();
+        let target_leased_agent_id = authorization_id.clone();
+        let worker_leased_agent_id = target_leased_agent_id.clone();
+        let target_home_session_id = home_session_id.clone();
+        let target_home_agent_id = home_agent_id.clone();
+        let target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&authorization_id)?;
+                runtime.project_environment_setup_target(
+                    &worker_leased_agent_id,
+                    &target_home_session_id,
+                    &target_home_agent_id,
+                    None,
+                )
+            })
+            .await?;
+        self.retry_leased_project_environment_setup(target, &target_leased_agent_id, &operation_id)
+            .await
     }
 
     pub(crate) async fn observe_relay_leased_git_after(

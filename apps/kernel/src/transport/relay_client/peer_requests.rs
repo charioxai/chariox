@@ -1026,6 +1026,114 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+            leased_agent_id,
+            operation_id,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            workspace_id,
+            target_worker_id,
+            target_platform,
+            definition,
+            validation_commands,
+        } => {
+            let setup = router
+                .relay_start_leased_project_environment_setup(
+                    &leased_agent_id,
+                    operation_id,
+                    project_id,
+                    home_session_id,
+                    home_agent_id,
+                    workspace_id,
+                    target_worker_id,
+                    target_platform,
+                    definition,
+                    validation_commands,
+                )
+                .await;
+            match setup {
+                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        } => {
+            let setup = router
+                .relay_get_leased_project_environment_setup_status(
+                    &leased_agent_id,
+                    operation_id,
+                    home_session_id,
+                    home_agent_id,
+                )
+                .await;
+            match setup {
+                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupStatus { setup },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        } => {
+            let setup = router
+                .relay_cancel_leased_project_environment_setup(
+                    &leased_agent_id,
+                    operation_id,
+                    home_session_id,
+                    home_agent_id,
+                )
+                .await;
+            match setup {
+                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        } => {
+            let setup = router
+                .relay_retry_leased_project_environment_setup(
+                    &leased_agent_id,
+                    operation_id,
+                    home_session_id,
+                    home_agent_id,
+                )
+                .await;
+            match setup {
+                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ForwardWorkflowRuntimeTool {
             context,
             tool_name,
@@ -1740,9 +1848,19 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::ObserveLeasedGitAfter {
             leased_agent_id, ..
         }
-        | RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
-            Some(LeaseResource::LeasedAgent(leased_agent_id))
+        | RelayPeerRequest::CancelLeasedPrompt { leased_agent_id }
+        | RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+            leased_agent_id, ..
         }
+        | RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+            leased_agent_id, ..
+        } => Some(LeaseResource::LeasedAgent(leased_agent_id)),
         RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
             Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
         }
