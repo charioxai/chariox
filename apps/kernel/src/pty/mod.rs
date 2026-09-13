@@ -1,5 +1,4 @@
 mod manager;
-mod spawn_owner;
 
 #[cfg(all(test, target_os = "linux"))]
 mod sandbox_lifetime_tests;

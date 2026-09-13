@@ -328,7 +328,7 @@ impl PtyManager {
         }
 
         let mut child =
-            super::spawn_owner::spawn(pair.slave, command)
+            crate::process_spawn::spawn_pty(pair.slave, command)
                 .map_err(|error| DaemonError::PtySpawn {
                     provider_run_id: request.provider_run_id.clone(),
                     message: error.to_string(),
