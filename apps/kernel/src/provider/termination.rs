@@ -229,7 +229,7 @@ fn is_sensitive_key(key: &str) -> bool {
         || key == "stdin"
         || key == "stdout"
         || key == "stderr"
-        || key.contains("tool");
+        || key.contains("tool")
 }
 
 fn sensitive_value_can_contain_spaces(key: &str) -> bool {
