@@ -24,6 +24,16 @@ current_link=$chariox_root/current
 slice_build_context_link=$chariox_root/slice-build-context
 signed_slice_build_context_target=current/usr/lib/chariox/slice-build-context
 receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/home/managed/bootstrap-receipt.json}
+if [ -z "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
+  worker_receipt_path=$install_root/var/lib/chariox/home/disposable-worker/bootstrap-receipt.json
+  if [ -e "$worker_receipt_path" ] || [ -L "$worker_receipt_path" ]; then
+    if [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; then
+      echo "both managed and allocation worker receipts exist; select the receipt explicitly" >&2
+      exit 1
+    fi
+    receipt_path=$worker_receipt_path
+  fi
+fi
 release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
 transaction_root=$chariox_root/.managed-kernel-upgrade
 terminal_transaction=$chariox_root/.managed-kernel-upgrade.terminal
@@ -496,6 +506,8 @@ require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade author
 require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
+
+service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" supervisor-service "$receipt_path" "$release_override_path")
 
 upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
 exec 9>"$upgrade_lock"

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::{
     load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity,
@@ -251,11 +252,14 @@ fn prepare(
     } else {
         None
     };
-    let expected_digest = envelope
+    let installed_digest = receipt
         .as_ref()
-        .map(|value| value.runtime_release_digest.as_str())
+        .map(|value| value.effective_release_digest(&config.receipt_path))
+        .transpose()?;
+    let expected_digest = installed_digest
+        .as_deref()
         .or_else(|| {
-            receipt
+            envelope
                 .as_ref()
                 .map(|value| value.runtime_release_digest.as_str())
         })
@@ -617,6 +621,36 @@ impl WorkerEnvelope {
 }
 
 impl WorkerReceipt {
+    fn binding_digest(&self) -> Result<String, DaemonError> {
+        let binding = serde_json::json!({
+            "allocationId": self.allocation_id,
+            "homeCaller": self.home_caller,
+            "kernelId": self.kernel_id,
+            "machineId": self.machine_id,
+            "relayPublicKey": self.relay_public_key,
+            "runtimeReleaseDigest": self.runtime_release_digest,
+            "schemaVersion": self.schema_version,
+        });
+        let bytes = serde_json::to_vec(&binding)
+            .map_err(|error| worker_error(format!("encode worker binding: {error}")))?;
+        Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+    }
+
+    fn effective_release_digest(&self, receipt_path: &Path) -> Result<String, DaemonError> {
+        let release_override = super::state::DisposableWorkerReleaseOverride::read_for_receipt(
+            receipt_path,
+            &self.binding_digest()?,
+        )?;
+        if release_override.is_some() && self.status != WorkerReceiptStatus::Confirmed {
+            return Err(worker_error(
+                "unconfirmed worker cannot use a release override",
+            ));
+        }
+        Ok(release_override
+            .map(|value| value.runtime_release_digest)
+            .unwrap_or_else(|| self.runtime_release_digest.clone()))
+    }
+
     fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
         if !path.exists() {
             return Ok(None);
@@ -802,6 +836,27 @@ mod tests {
         confirmed.status = WorkerReceiptStatus::Confirmed;
         confirmed.confirmed_at = Some("2026-09-13T11:00:00Z".to_string());
         confirmed.persist(&path).unwrap();
+        assert_eq!(
+            confirmed.binding_digest().unwrap(),
+            "sha256:3341e3d7f98f947c0c37ff9923923cffce466d4a632ca6f238439df6e23109c7"
+        );
+        let upgraded_digest = format!("sha256:{}", "e".repeat(64));
+        let override_bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "disposable_worker_release",
+            "bindingDigest": confirmed.binding_digest().unwrap(),
+            "runtimeReleaseDigest": upgraded_digest,
+        }))
+        .unwrap();
+        write_private_file(&root.join("release-override.json"), &override_bytes).unwrap();
+        assert_eq!(
+            confirmed.effective_release_digest(&path).unwrap(),
+            upgraded_digest
+        );
+        assert!(receipt.effective_release_digest(&path).is_err());
+        let mut wrong_home = confirmed.clone();
+        wrong_home.home_caller.kernel_id = "wrong-home".into();
+        assert!(wrong_home.effective_release_digest(&path).is_err());
         assert_eq!(
             activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"

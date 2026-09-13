@@ -70,13 +70,32 @@ or restart occurred. All 17 packaging/build-context tests also passed with the
 final verifier changes. Packaging fixtures still use synthetic binaries and
 the committed source base, so these results do not attest a new release image.
 
-The additional `allocation worker upgrade` regression is currently RED on the
+The additional `allocation worker upgrade` regression initially failed on the
 original Linux machine: `managed bootstrap receipt contains unsupported fields`.
 It uses the active `worker.rs` receipt shape with allocationId/homeCaller, rather
-than the older binding/enrollmentReceipt fixture. The earlier green worker tests
-therefore do not prove active worker upgrade compatibility. Consolidation must
-cover the actual receipt path, supervisor service, signed-release selection on
-restart, and activity reporting, not merely make the JSON parser accept it.
+than the older binding/enrollmentReceipt fixture. The updated regression passes
+for upgrade and rollback at the actual default worker receipt path. It checks
+selection of the worker supervisor and byte-for-byte preservation of the receipt
+and persistent state. All 41 upgrade tests passed remotely in 180 seconds.
+Three additional local JavaScript tests pass for the shared binding digest,
+identity-bound release override, and malformed receipt rejection.
+
+The worker bootstrap now reads the shared release override while retaining the
+original enrollment receipt. Both worker bootstrap Rust tests passed on the
+original machine after a 5m04s build with one Cargo job, a 12 GiB memory limit,
+and a 150% CPU quota. The observed cgroup peak was at least 10,063,929,344 bytes;
+this is a sampled high-water mark, not a retained final accounting result. These
+changes are not deployed, and fixture success does not establish live restart
+or activity-reporting acceptance. The maintenance scripts must be distributed
+with their new sibling module, `allocation-worker-receipt.mjs`.
+
+The broader `managed_bootstrap::` run executed 39 tests: 38 passed and one failed.
+`managed_rootless_docker_unit_never_exposes_the_rootful_socket` still expects a
+direct `dockerd-rootless.sh` ExecStart and `RestrictSUIDSGID=false`. The checked-in
+service instead uses `managed-rootless-service.sh` lifecycle hooks and
+`RestrictSUIDSGID=true`, introduced by `722c73d88a`. Neither file was changed by
+the allocation-worker upgrade fix. Reconcile that contract test with the lifecycle
+implementation before treating the integration's bootstrap suite as green.
 
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.

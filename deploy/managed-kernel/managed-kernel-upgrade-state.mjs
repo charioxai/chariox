@@ -5,6 +5,7 @@ import { constants } from "node:fs"
 import { lstat, open, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import { allocationWorkerBindingDigest } from "./allocation-worker-receipt.mjs"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
 const REQUIRED_RECEIPT_KEYS = [
@@ -199,14 +200,21 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
     fail("managed bootstrap receipt is invalid")
   }
+  if (Object.hasOwn(receipt, "allocationId")) {
+    const bindingDigest = allocationWorkerBindingDigest(receipt)
+    const releaseOverride = await readOptionalReleaseOverride(releaseOverridePath, bindingDigest)
+    const effectiveDigest = releaseOverride?.runtimeReleaseDigest ?? receipt.runtimeReleaseDigest
+    if (expectedDigest && effectiveDigest !== expectedDigest) fail("allocation worker release does not pin the expected release")
+    return { kind: "allocation_worker", receipt, bytes: receiptBytes, releaseOverride, bindingDigest }
+  }
   if (receipt.kind === "disposable_worker") {
     validateDisposableWorkerReceipt(receipt)
     const releaseOverride = await readOptionalReleaseOverride(releaseOverridePath, receipt.bindingDigest)
     const effectiveDigest = releaseOverride?.runtimeReleaseDigest ?? receipt.binding.runtimeReleaseDigest
-    if (effectiveDigest !== expectedDigest) {
+    if (expectedDigest && effectiveDigest !== expectedDigest) {
       fail("disposable worker release state does not pin the expected release")
     }
-    return { kind: "disposable_worker", receipt, bytes: receiptBytes, releaseOverride }
+    return { kind: "disposable_worker", receipt, bytes: receiptBytes, releaseOverride, bindingDigest: receipt.bindingDigest }
   }
   if (releaseOverridePath && await lstat(releaseOverridePath).then(() => true, (error) => {
     if (error.code === "ENOENT") return false
@@ -234,7 +242,7 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
   ) {
     fail("managed bootstrap receipt is not a confirmed registered-kernel receipt")
   }
-  if (receipt.runtimeReleaseDigest !== expectedDigest) {
+  if (expectedDigest && receipt.runtimeReleaseDigest !== expectedDigest) {
     fail("managed bootstrap receipt does not pin the expected release")
   }
   return { kind: "managed_environment", receipt, bytes: receiptBytes, releaseOverride: null }
@@ -431,6 +439,12 @@ async function atomicSymlink(target, destination) {
 
 async function run(args) {
   const [operation, ...values] = args
+  if (operation === "supervisor-service" && values.length === 2) {
+    const state = await readReceipt(resolve(values[0]), null, resolve(values[1]))
+    process.stdout.write(state.kind === "allocation_worker"
+      ? "chariox-disposable-worker-bootstrap.service\n" : "chariox-managed-bootstrap.service\n")
+    return
+  }
   if (operation === "prepare-receipt" && values.length === 6) {
     const [source, expectedCurrent, target, destination, releaseOverridePath, targetOverridePath] =
       values.map((value, index) => index === 1 || index === 2 ? value : resolve(value))
@@ -446,7 +460,7 @@ async function run(args) {
       await writeFile(targetOverridePath, `${JSON.stringify({
         schemaVersion: 1,
         kind: "disposable_worker_release",
-        bindingDigest: state.receipt.bindingDigest,
+        bindingDigest: state.bindingDigest,
         runtimeReleaseDigest: target,
       }, null, 2)}\n`, { flag: "wx", mode: 0o600 })
     }

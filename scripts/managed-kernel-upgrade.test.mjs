@@ -144,6 +144,7 @@ async function makeHarness(context, {
   currentTransitionPolicy = null,
   targetTransitionPolicy = null,
   receiptKind = "managed_environment",
+  workerCapableCurrent = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -151,7 +152,7 @@ async function makeHarness(context, {
   const trustedKey = join(root, "trusted-release-public-key")
   await put(trustedKey, rawPublicKey(publicKey).toString("base64"), 0o600)
   const current = await makeRelease(
-    root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
+    root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy, workerCapableCurrent,
   )
   const target = await makeRelease(
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true,
@@ -525,7 +526,7 @@ test("managed kernel recovery restores a hotpatch facade after interrupted activ
 })
 
 test("allocation worker upgrade preserves the receipt written by the active bootstrap", async (context) => {
-  const harness = await makeHarness(context)
+  const harness = await makeHarness(context, { workerCapableCurrent: true })
   // Keep this shape aligned with WorkerReceipt in managed_bootstrap/worker.rs,
   // not the disabled pre-allocation bootstrap's binding/enrollmentReceipt shape.
   const receipt = {
@@ -544,10 +545,20 @@ test("allocation worker upgrade preserves the receipt written by the active boot
   }
   const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`
   await put(harness.receiptPath, receiptBytes, 0o640)
+  const activeReceiptPath = join(harness.installRoot, "var/lib/chariox/home/disposable-worker/bootstrap-receipt.json")
+  await mkdir(dirname(activeReceiptPath), { recursive: true })
+  await rename(harness.receiptPath, activeReceiptPath)
   const before = await persistentSnapshot(harness.persistent)
   const result = harness.run()
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBytes)
+  assert.equal(await readFile(activeReceiptPath, "utf8"), receiptBytes)
+  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
+  const serviceLog = await readFile(join(harness.state, "systemctl.log"), "utf8")
+  assert.match(serviceLog, /start chariox-disposable-worker-bootstrap.service/)
+  assert.doesNotMatch(serviceLog, /(?:start|stop) chariox-managed-bootstrap.service/)
+  const rollback = harness.run({}, [harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey])
+  assert.equal(rollback.status, 0, rollback.stderr)
+  assert.equal(await readFile(activeReceiptPath, "utf8"), receiptBytes)
   assert.deepEqual(await persistentSnapshot(harness.persistent), before)
 })
 
