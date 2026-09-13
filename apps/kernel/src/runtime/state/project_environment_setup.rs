@@ -30,9 +30,13 @@ use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
 };
 
+#[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
+#[path = "project_environment_setup_policy.rs"]
 mod project_environment_setup_policy;
+#[path = "project_environment_setup_storage.rs"]
 mod project_environment_setup_storage;
+#[path = "project_environment_setup_validation.rs"]
 mod project_environment_setup_validation;
 use project_environment_setup_dispatch::*;
 use project_environment_setup_policy::*;
@@ -467,10 +471,10 @@ impl KernelRuntimeState {
             owner_user_id: caller_user_id.to_string(),
             operation_id: request.operation_id,
             project_id: request.project_id,
-            session_id: request.session_id,
-            agent_id: request.agent_id,
-            execution_session_id: request.session_id.clone(),
-            execution_agent_id: request.agent_id.clone(),
+            session_id: request.session_id.clone(),
+            agent_id: request.agent_id.clone(),
+            execution_session_id: request.session_id,
+            execution_agent_id: request.agent_id,
             workspace_id,
             target_worker_id: request.target_worker_id,
             target_platform: request.target_platform,
