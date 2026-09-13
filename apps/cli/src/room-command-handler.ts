@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import {
+  bindRoomEnvironmentSliceRequest,
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentSliceRequest,
   getRoomEnvironmentStateRequest,
@@ -87,7 +88,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "actions", "start", "stop", "retry", "reconnect", "view", "screenshot", "browser", "takeover", "release", "cancel", "save", "bind"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -97,7 +98,12 @@ export async function handleRoomSlashCommand(
   let actionHistory: { limit: number; beforeSequence: number | null } | undefined
   let browserCommand: RoomBrowserCommand | undefined
   let saveMode: "restart_agents" | "shutdown" | undefined
-  if (subcommand === "start") {
+  if (subcommand === "bind") {
+    if (command.args.length !== 2 || !command.args[1]?.trim()) {
+      deps.flashFooter("usage: /room bind SLICE", "error")
+      return
+    }
+  } else if (subcommand === "start") {
     const parsedViewport = parseStartViewport(command.args.slice(1))
     if (typeof parsedViewport === "string") {
       deps.flashFooter(parsedViewport, "error")
@@ -146,6 +152,27 @@ export async function handleRoomSlashCommand(
     return
   }
   const sessionId = deps.sessionId()
+  if (subcommand === "bind") {
+    const response = await sendWithProtocolMinimum<RoomEnvironmentSliceResponse>(
+      deps.send,
+      bindRoomEnvironmentSliceRequest(sessionId, command.args[1]!),
+      {
+        capability: "Room slice binding",
+        requestVariant: "BindRoomEnvironmentSlice",
+        minimumProtocolVersion: roomEnvironmentSliceBindingMinimumProtocolVersion,
+      },
+    )
+    const binding = response?.RoomEnvironmentSlice?.binding
+    if (!binding || binding.session_id !== sessionId || !binding.slice_id) {
+      throw new Error("Room Environment binding response is malformed or belongs to another Room")
+    }
+    deps.appendNotice([
+      `Room Environment bound to ${binding.slice_id}.`,
+      "The worker was not started or restarted.",
+      `Start a stopped slice with /slice start ${binding.slice_id}; an already-running worker needs a saved-state restart through /room save restart before viewing.`,
+    ].join("\n"))
+    return
+  }
   if (subcommand === "reconnect") {
     if (!deps.reconnectEventStream) {
       deps.flashFooter("Room reconnect is unavailable in this client", "error")
@@ -498,7 +525,7 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|bind SLICE|actions [LIMIT] [BEFORE_SEQUENCE]|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|browser back|forward|reload|close [TAB_ID]|activate TAB_ID|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomActionsUsage(): string {
