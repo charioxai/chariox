@@ -9,9 +9,18 @@ role. Selected-home admission additionally pins kernel, realm, user, and sender
 key before the existing lease-ownership checks. The account-profile and remote
 binding implementations are unchanged from that newer base.
 
-The focused results below apply to the earlier isolated reporter revision, not
-this combined runtime. Combined type-checking and executable validation are
-pending. Do not use the old results as deployment approval.
+At combined source revision `c3d6f629c98377b0706873145fa82b20e803c795`, kernel
+and test targets type-checked and 62 focused test executions passed, covering
+60 distinct tests. These comprise 13 reporter, two bootstrap, four activity-state,
+one selected-home identity, five role configuration, three lease-authority,
+eight remote provider-account, and 26 replica-filter executions. Two account
+tests occur in both final groups. All groups ran serially using the same compiled
+test binary. No GitHub CI ran. These results do not constitute deployment approval.
+
+Release-packaging test completion is unverified: the earlier process handle is
+no longer available, so its partial output is not counted as a passing suite.
+The older disabled bootstrap contract and the allocation exchange/confirm path
+still need consolidation before this combined worker implementation is deployed.
 
 The disposable worker supervisor passes its enrollment receipt to the ordinary
 kernel activity reporter. The reporter validates the worker Machine, kernel,
