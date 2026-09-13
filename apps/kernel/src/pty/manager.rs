@@ -150,6 +150,10 @@ struct PtyProcessExit {
 }
 
 fn observe_pty_process_exit(status: portable_pty::ExitStatus) -> PtyProcessExit {
+    // portable-pty 0.8.1 keeps ExitStatus::signal private and exposes only
+    // success/exit_code; use its Display form ("Terminated by ...") for the
+    // signal detail available to this integration. The real-PTY signal
+    // regression below guards this dependency assumption during upgrades.
     let display = status.to_string();
     if let Some(signal) = display.strip_prefix("Terminated by ") {
         return PtyProcessExit {

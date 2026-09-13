@@ -1679,12 +1679,19 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-    let (other_session, other_agent) = crate::app::KernelSessionService::new(&mut app)
+    let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unrelated-agent",
             "worktree-unrelated-agent",
         ))
         .expect("unrelated session should be created");
+    let other_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(other_session.id(), "dev-stub")
+                .with_alias("unrelated-test-agent")
+                .with_model("test-model"),
+        )
+        .expect("self-contained unrelated test agent should be created");
     let other_attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             other_session.id(),
