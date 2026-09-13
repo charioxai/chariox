@@ -2,6 +2,8 @@
 
 mod stdio;
 mod streamable_http;
+#[cfg(all(test, target_os = "linux"))]
+mod sandbox_lifetime_tests;
 
 use std::collections::BTreeMap;
 #[cfg(test)]
