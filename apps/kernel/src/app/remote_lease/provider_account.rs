@@ -829,4 +829,97 @@ exit 2
             .is_ok());
         assert_eq!(std::fs::read(&transient_auth).unwrap(), worker_owned_auth);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_format_opencode_replica_without_provider_parent_can_retry() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-old-format-opencode-missing-parent-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_opencode_auth_fixture(&root);
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        let registry_path = config.account_profile_registry_path();
+        let old = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "opencode".to_string(),
+                profile_id: "old-worker".to_string(),
+                label: "Old worker".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: Vec::new(),
+            generated_at_ms: 1,
+        };
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(&registry_path)
+            .expect("old registry should open");
+        registry
+            .materialize_replica_with_rollback_state("owner-a", &old)
+            .expect("old worker profile should materialize");
+        registry
+            .update_observation(
+                "owner-a",
+                "opencode",
+                "old-worker",
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("old unauthenticated observation should persist");
+        drop(registry);
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let profile = &mut document["profiles"][0];
+        for field in [
+            "pending_native_validation",
+            "legacy_unpinned_replica",
+            "replica_root_identity",
+            "replica_previous_default_profile_id",
+        ] {
+            profile.as_object_mut().unwrap().remove(field);
+        }
+        std::fs::write(&registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let provider_parent = root.join("provider-accounts/owner-a/opencode");
+        std::fs::remove_dir_all(&provider_parent).expect("simulate absent old provider parent");
+
+        let mut app = crate::DaemonApp::bootstrap(config).expect("old worker should reopen");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "owner-a",
+            )
+            .unwrap();
+        let context = RemoteProviderAccountSyncContext {
+            home_kernel_id: "home-kernel".to_string(),
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            execution_lease_id: lease.id,
+        };
+        let corrected = ProviderAccountMaterialization {
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".to_string(),
+                contents_base64: "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiemVuLXNlY3JldCJ9fQ=="
+                    .to_string(),
+            }],
+            ..old
+        };
+        let profile = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, corrected)
+            .expect("successful unauthenticated probe should allow corrected materialization");
+        assert_eq!(profile.auth_state, ProviderAccountAuthState::Authenticated);
+        assert!(provider_parent
+            .join("old-worker/data/opencode/auth.json")
+            .is_file());
+    }
 }

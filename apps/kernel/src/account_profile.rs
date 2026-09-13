@@ -2575,35 +2575,36 @@ impl ProviderAccountProfileRegistry {
                 "refusing to replace an authoritative or authenticated worker account",
             ));
         }
-        let parent = managed_fs::ManagedProviderParent::open(
+        let parent = managed_fs::ManagedProviderParent::open_if_exists(
             &self.path,
             &safe_path_component(owner_user_id),
             provider,
         )?;
-        let retained = if parent.exists(profile_id)? {
-            let identity = parent.identity(profile_id)?;
-            let retained_root = unique_sibling_path(&managed_root, "legacy-retained");
-            let retained_name = retained_root
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| {
-                    registry_error(
+        let retained = match parent {
+            Some(parent) if parent.exists(profile_id)? => {
+                let identity = parent.identity(profile_id)?;
+                let retained_root = unique_sibling_path(&managed_root, "legacy-retained");
+                let retained_name = retained_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| {
+                        registry_error(
+                            "retain failed legacy account profile",
+                            "invalid retained path",
+                        )
+                    })?;
+                if parent.exists(retained_name)? {
+                    return Err(registry_error(
                         "retain failed legacy account profile",
-                        "invalid retained path",
-                    )
-                })?;
-            if parent.exists(retained_name)? {
-                return Err(registry_error(
-                    "retain failed legacy account profile",
-                    "retained account path is occupied",
-                ));
+                        "retained account path is occupied",
+                    ));
+                }
+                parent.rename(profile_id, retained_name)?;
+                require_replica_root_identity(&parent, retained_name, identity)?;
+                parent.sync()?;
+                Some((retained_root, identity, parent))
             }
-            parent.rename(profile_id, retained_name)?;
-            require_replica_root_identity(&parent, retained_name, identity)?;
-            parent.sync()?;
-            Some((retained_root, identity))
-        } else {
-            None
+            _ => None,
         };
         let original = document.clone();
         let removed = document.profiles.remove(index);
@@ -2617,7 +2618,7 @@ impl ProviderAccountProfileRegistry {
         if let Err(error) = self.persist_locked(&document) {
             *document = original;
             let registry_restore_error = self.persist_locked(&document).err();
-            let root_restore_error = retained.as_ref().and_then(|(root, identity)| {
+            let root_restore_error = retained.as_ref().and_then(|(root, identity, parent)| {
                 let name = root.file_name()?.to_str()?;
                 require_replica_root_identity(&parent, name, *identity)
                     .and_then(|_| {
@@ -2648,7 +2649,7 @@ impl ProviderAccountProfileRegistry {
             }
             return Err(error);
         }
-        Ok(retained.map(|(root, _)| root))
+        Ok(retained.map(|(root, _, _)| root))
     }
 
     #[cfg(not(unix))]
