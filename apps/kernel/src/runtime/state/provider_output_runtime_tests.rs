@@ -156,6 +156,7 @@ mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
 mod structured_output;
+mod structured_exit_diagnostic;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {

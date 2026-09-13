@@ -80,6 +80,15 @@ impl KernelRuntimeState {
                 crate::app::ProviderLaunchProcessRuntime::new(app).poll_exit(provider_run_id)
             })
             .await?;
+        let terminal_diagnostic = process_exit
+            .as_ref()
+            .and_then(|exit| exit.terminal_diagnostic.clone());
+        if let Some(diagnostic) = terminal_diagnostic.as_deref() {
+            let run = owned
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, diagnostic.to_string())?;
+            owned.provider_run_projection.update(run);
+        }
         let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
             session_id,
             provider_run_id,
@@ -119,11 +128,12 @@ impl KernelRuntimeState {
             crate::session::unix_epoch_ms(),
         );
         let session_outcome = self
-            .settle_unexpected_provider_run_exit(
+            .settle_unexpected_provider_run_exit_with_diagnostic(
                 session_id,
                 provider_run_id,
                 agent_id,
                 termination.clone(),
+                terminal_diagnostic.as_deref(),
             )
             .await?;
         if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
@@ -158,6 +168,24 @@ impl KernelRuntimeState {
         agent_id: &str,
         termination: crate::provider::ProviderRunTermination,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        self.settle_unexpected_provider_run_exit_with_diagnostic(
+            session_id,
+            provider_run_id,
+            agent_id,
+            termination,
+            None,
+        )
+        .await
+    }
+
+    async fn settle_unexpected_provider_run_exit_with_diagnostic(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        termination: crate::provider::ProviderRunTermination,
+        terminal_diagnostic: Option<&str>,
+    ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
         let provider_run = self
             .owned
             .ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -187,10 +215,16 @@ impl KernelRuntimeState {
                 .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
                 .await;
         }
-        let message = format!(
-            "Provider run `{provider_run_id}` ended unexpectedly: {}.",
-            termination.reason
-        );
+        let message = match terminal_diagnostic {
+            Some(diagnostic) if !diagnostic.trim().is_empty() => format!(
+                "Provider run `{provider_run_id}` ended unexpectedly: {}. Provider terminal diagnostic: {diagnostic}",
+                termination.reason
+            ),
+            _ => format!(
+                "Provider run `{provider_run_id}` ended unexpectedly: {}.",
+                termination.reason
+            ),
+        };
         self.fail_owned_provider_prompt_with_termination(
             session_id,
             provider_run_id,

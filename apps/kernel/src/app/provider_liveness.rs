@@ -63,6 +63,7 @@ struct ProviderRunLivenessProcesses;
 pub(crate) struct ProviderProcessExit {
     pub(crate) exit_code: Option<u32>,
     pub(crate) signal: Option<String>,
+    pub(crate) terminal_diagnostic: Option<String>,
 }
 
 impl ProviderRunLivenessProcesses {
@@ -80,11 +81,25 @@ impl ProviderRunLivenessProcesses {
         match app.pty.poll_process_state(provider_run_id) {
             Ok(PtyProcessState::Running) => Ok(None),
             Ok(PtyProcessState::Exited { exit_code, signal }) => {
-                Ok(Some(ProviderProcessExit { exit_code, signal }))
+                let terminal_diagnostic = app
+                    .pty
+                    .drain_output(provider_run_id)?
+                    .into_iter()
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
+                    .collect::<String>();
+                let terminal_diagnostic =
+                    crate::provider::sanitize_provider_diagnostic(&terminal_diagnostic);
+                Ok(Some(ProviderProcessExit {
+                    exit_code,
+                    signal,
+                    terminal_diagnostic: (!terminal_diagnostic.is_empty())
+                        .then_some(terminal_diagnostic),
+                }))
             }
             Err(DaemonError::PtyProcessNotFound { .. }) => Ok(Some(ProviderProcessExit {
                 exit_code: None,
                 signal: None,
+                terminal_diagnostic: None,
             })),
             Err(error) => Err(error),
         }
