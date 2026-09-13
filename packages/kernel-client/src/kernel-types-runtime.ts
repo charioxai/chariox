@@ -82,7 +82,13 @@ export type CompletedGitTurnActionProjection = {
 }
 
 export type ProviderRunTermination = {
-  category: "process_exit" | "runtime_failure" | "transport_failure" | "unknown"
+  category:
+    | "process_exit"
+    | "signal"
+    | "explicit_provider_error"
+    | "runtime_failure"
+    | "transport_failure"
+    | "unknown"
   reason: string
   timestamp_ms: number
 }

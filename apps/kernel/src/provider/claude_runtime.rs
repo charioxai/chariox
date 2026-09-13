@@ -636,6 +636,10 @@ mod tests {
                 "Provider reported a substitutable resource limit: You've hit your usage limit. Your limit will reset later."
             )
         );
+        assert!(
+            !batch.explicit_provider_error,
+            "stderr classifiers must not become durable explicit provider errors"
+        );
     }
 
     #[test]

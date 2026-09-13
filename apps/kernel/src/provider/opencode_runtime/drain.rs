@@ -37,6 +37,7 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut completions = Vec::new();
     let mut prompt_completed = false;
     let mut terminal_failure = None;
+    let mut explicit_provider_error = false;
     let mut notices = Vec::new();
     let mut resolved_model = None;
     let mut resolved_model_source = None;
@@ -83,6 +84,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             &mut completions,
                             &mut notices,
                             &mut terminal_failure,
+                            &mut explicit_provider_error,
+                            true,
                             &mut prompt_completed,
                             drain_active_user_message_id.as_deref(),
                         );
@@ -167,6 +170,8 @@ pub(in crate::provider) fn drain_opencode_events(
                         &mut completions,
                         &mut notices,
                         &mut terminal_failure,
+                        &mut explicit_provider_error,
+                        true,
                         &mut prompt_completed,
                         drain_active_user_message_id.as_deref(),
                     );
@@ -208,6 +213,8 @@ pub(in crate::provider) fn drain_opencode_events(
                                     &mut completions,
                                     &mut notices,
                                     &mut terminal_failure,
+                                    &mut explicit_provider_error,
+                                    true,
                                     &mut prompt_completed,
                                     drain_active_user_message_id.as_deref(),
                                 );
@@ -307,6 +314,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             &mut completions,
                             &mut notices,
                             &mut terminal_failure,
+                            &mut explicit_provider_error,
+                            true,
                             &mut prompt_completed,
                             drain_active_user_message_id.as_deref(),
                         );
@@ -394,6 +403,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             &mut completions,
                             &mut notices,
                             &mut terminal_failure,
+                            &mut explicit_provider_error,
+                            true,
                             &mut prompt_completed,
                             drain_active_user_message_id.as_deref(),
                         );
@@ -416,6 +427,8 @@ pub(in crate::provider) fn drain_opencode_events(
                         &mut completions,
                         &mut notices,
                         &mut terminal_failure,
+                        &mut explicit_provider_error,
+                        false,
                         &mut prompt_completed,
                         drain_active_user_message_id.as_deref(),
                     );
@@ -442,6 +455,7 @@ pub(in crate::provider) fn drain_opencode_events(
         completions,
         prompt_completed,
         terminal_failure,
+        explicit_provider_error,
         notices,
         resolved_model,
         resolved_model_source,
@@ -458,12 +472,21 @@ fn record_terminal_failure(
     completions: &mut Vec<OpenCodeAssistantCompletion>,
     notices: &mut Vec<String>,
     terminal_failure: &mut Option<String>,
+    explicit_provider_error: &mut bool,
+    is_explicit_provider_error: bool,
     prompt_completed: &mut bool,
     drain_active_user_message_id: Option<&str>,
 ) {
     if terminal_failure.is_some() || drain_active_user_message_id.is_none() {
         return;
     }
+    let message = crate::provider::sanitize_provider_diagnostic(&message);
+    let message = if message.is_empty() {
+        "provider reported an explicit error".to_string()
+    } else {
+        message
+    };
+    *explicit_provider_error = is_explicit_provider_error;
     completions.clear();
     chunks.push(OpenCodeOutputChunk {
         kind: TerminalOutputKind::ProviderError,

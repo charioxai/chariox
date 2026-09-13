@@ -77,7 +77,13 @@ export type AgentRuntimeCompletedTurnActionProjection = {
 }
 
 export type AgentRuntimeProviderTerminationProjection = {
-  readonly category: "process_exit" | "runtime_failure" | "transport_failure" | "unknown"
+  readonly category:
+    | "process_exit"
+    | "signal"
+    | "explicit_provider_error"
+    | "runtime_failure"
+    | "transport_failure"
+    | "unknown"
   readonly reason: string
   readonly timestampMs: number
 }
@@ -353,6 +359,8 @@ function readProviderRunTermination(
   const timestampMs = readNonNegativeIntegerField(termination, "timestamp_ms")
   if (
     (category !== "process_exit"
+      && category !== "signal"
+      && category !== "explicit_provider_error"
       && category !== "runtime_failure"
       && category !== "transport_failure"
       && category !== "unknown")

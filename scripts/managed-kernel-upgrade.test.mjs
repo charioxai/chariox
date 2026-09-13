@@ -140,8 +140,8 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
 }
 
 async function makeHarness(context, {
-  currentProtocol = 323,
-  targetProtocol = 323,
+  currentProtocol = 324,
+  targetProtocol = 324,
   currentTransitionPolicy = null,
   targetTransitionPolicy = null,
   receiptKind = "managed_environment",
@@ -991,12 +991,12 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
 
 test("managed kernel upgrade accepts only a signed explicitly supported newer protocol", async (context) => {
   const harness = await makeHarness(context, {
-    targetProtocol: 324,
+    targetProtocol: 325,
     targetTransitionPolicy: {
       schemaVersion: 1,
-      protocol: 324,
-      upgradeFrom: [323, 324],
-      rollbackTo: [323, 324],
+      protocol: 325,
+      upgradeFrom: [324, 325],
+      rollbackTo: [324, 325],
     },
   })
   const result = harness.run()
