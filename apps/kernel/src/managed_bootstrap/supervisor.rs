@@ -193,6 +193,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
+        .env_remove(super::worker::ACTIVITY_RECEIPT_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

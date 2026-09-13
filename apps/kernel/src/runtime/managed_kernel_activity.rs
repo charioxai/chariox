@@ -458,10 +458,54 @@ mod tests {
         assert_eq!(payload["allocationId"], "env-1");
         assert!(payload.get("environmentId").is_none());
         assert!(payload.get("machineCredential").is_none());
+        assert_eq!(
+            activity_signature(&worker, 7, 1).unwrap(),
+            "sha256:85ce51ad1381fe5a17ad342797ee93c5a2856afded22390253fff9e0878e606a"
+        );
         assert_ne!(
             activity_signature(&worker, 7, 1).unwrap(),
             activity_signature(&binding(), 7, 1).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn worker_report_posts_signed_allocation_to_worker_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("POST /v1/disposable-workers/activity HTTP/1.1"));
+            let payload = http_request_body(&request);
+            assert_eq!(payload["allocationId"], "worker-1");
+            assert!(payload.get("environmentId").is_none());
+            let mut expected = binding();
+            expected.worker = true;
+            expected.resource_id = "worker-1".to_string();
+            assert_eq!(
+                payload["signature"],
+                activity_signature(&expected, 7, 1).unwrap()
+            );
+            assert_eq!(payload["machineCredential"], expected.machine_credential);
+            write_http_response(
+                &mut stream,
+                &serde_json::json!({
+                    "acceptedSequence": 7, "runningAgentCount": 1,
+                }),
+            );
+        });
+        let mut worker = binding();
+        worker.worker = true;
+        worker.resource_id = "worker-1".to_string();
+        worker.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: worker,
+            confirmation_wait_started: None,
+        };
+        let response = reporter.report(7, 1).await.unwrap();
+        assert_eq!(response.accepted_sequence, 7);
+        assert_eq!(response.running_agent_count, 1);
+        fixture.join().unwrap();
     }
 
     #[test]
