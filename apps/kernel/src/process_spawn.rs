@@ -62,7 +62,11 @@ where
                 .name("chariox-process-spawn-owner".into())
                 .spawn(move || {
                     for job in receiver {
-                        job();
+                        // A backend panic must not kill this thread: existing
+                        // sandboxes depend on its lifetime, and later callers
+                        // must still be able to spawn. Unwinding drops the
+                        // failed job's reply sender, returning an error to it.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                     }
                 })
                 .map_err(|error| format!("could not start process spawn owner: {error}"))?;
