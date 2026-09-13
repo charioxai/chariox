@@ -51,6 +51,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 name = "chariox_kernel"
 path = "src/lib.rs"
 
+[dev-dependencies]
+anyhow = "1"
+
 [[bin]]
 name = "chariox-kernel"
 path = "src/main.rs"

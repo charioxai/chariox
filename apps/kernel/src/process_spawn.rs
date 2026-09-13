@@ -3,6 +3,10 @@ use portable_pty::{CommandBuilder, SlavePty};
 use std::io;
 use std::process::{Child, Command};
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "process_spawn_tests.rs"]
+mod tests;
+
 pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
     on_owner(
         move || command.spawn(),
