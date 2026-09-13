@@ -108,7 +108,7 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
 }
 
 impl HttpBootstrapCloudClient {
-    fn post<T: DeserializeOwned>(
+    pub(super) fn post<T: DeserializeOwned>(
         &self,
         api_url: &str,
         path: &str,
