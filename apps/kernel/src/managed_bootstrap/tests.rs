@@ -714,17 +714,17 @@ fn managed_systemd_unit_remains_eligible_after_one_time_envelope_removal() {
     assert!(!unit.contains("ConditionPathExists=/var/lib/chariox/managed-bootstrap.json"));
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
-    config: BootstrapConfig,
+    pub(super) config: BootstrapConfig,
     now: chrono::DateTime<Utc>,
-    release_digest: String,
+    pub(super) release_digest: String,
     token: String,
     kernel_started_marker: PathBuf,
 }
 
 impl Fixture {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-bootstrap-{label}-{}-{}",
             std::process::id(),
@@ -854,7 +854,7 @@ impl Fixture {
         format!("sha256:{:x}", Sha256::digest(&manifest))
     }
 
-    fn cleanup(self) {
+    pub(super) fn cleanup(self) {
         let _ = fs::remove_dir_all(self.root);
     }
 }

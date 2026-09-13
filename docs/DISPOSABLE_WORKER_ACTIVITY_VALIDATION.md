@@ -100,6 +100,24 @@ rerun passed all 39 bootstrap tests on the original machine after a 3m12s build;
 the focused JavaScript Docker-authority contract test also passed. No production
 service configuration was changed for this correction.
 
+The active allocation-worker path now has a preparation lifecycle regression,
+using the shared signed-release fixture and the actual `worker::prepare` entry.
+A simulated lost exchange response must retry the identical serialized request,
+including the generated machine/kernel/key identity. After a confirmed receipt
+is installed, preparation a day after token expiry must preserve the selected
+home, remove the spent envelope, and make no additional exchange call. All three
+active-worker tests passed remotely after a 3m20s build. This test seeds the
+confirmed receipt; it does not claim to exercise live Cloud confirmation.
+
+Consolidation audit: the active Cloud exchange derives the selected home from
+the allocation and pins repeated requests by digest. The older ordinary-entry
+worker route calls deliberately unavailable exchange/recovery endpoints. Its
+fake-client recovery tests are not evidence for the active allocation route.
+Before deleting that route, cover confirmation retry on the active implementation.
+Then remove the duplicate runtime dispatch and unavailable client methods while
+retaining explicit rejection or migration of old on-disk records. No old receipt
+should silently become an ordinary managed-machine registration.
+
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.
 - Verify queued prompts and unresolved permissions prevent idle release.

@@ -724,6 +724,88 @@ fn worker_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn active_bootstrap_retries_same_identity_and_resumes_confirmed_without_exchange() {
+        use std::sync::Mutex;
+        struct Cloud(Mutex<Vec<serde_json::Value>>);
+        impl WorkerCloudClient for Cloud {
+            fn exchange(
+                &self,
+                api: &str,
+                request: &ExchangeRequest,
+            ) -> Result<ExchangeResponse, DaemonError> {
+                let mut calls = self.0.lock().unwrap();
+                calls.push(serde_json::to_value(request).unwrap());
+                if calls.len() == 1 {
+                    return Err(worker_error("simulated lost exchange response"));
+                }
+                assert_eq!(
+                    calls[0], calls[1],
+                    "retry must retain the grant-bound worker identity"
+                );
+                let mut result = response();
+                result.kernel_id = request.kernel_id.clone();
+                result.runtime_release_digest = request.runtime_release_digest.clone();
+                result.cloud_relay.machine_id = request.machine_id.clone();
+                result.cloud_relay.api_url = api.into();
+                Ok(result)
+            }
+            fn confirm(&self, _: &str, _: &ConfirmRequest) -> Result<ConfirmResponse, DaemonError> {
+                panic!("preparation must not confirm before the child starts")
+            }
+        }
+        let _lock = crate::env_lock::lock();
+        let fixture = super::super::tests::Fixture::new("active-worker-recovery");
+        let base = &fixture.config;
+        let config = WorkerConfig {
+            chariox_home: base.chariox_home.clone(),
+            envelope_path: base.envelope_path.clone(),
+            receipt_path: base
+                .chariox_home
+                .join("disposable-worker/bootstrap-receipt.json"),
+            manifest_path: base.manifest_path.clone(),
+            signature_path: base.signature_path.clone(),
+            public_key_path: base.public_key_path.clone(),
+            kernel_binary: base.kernel_binary.clone(),
+            kernel_host: base.kernel_host.clone(),
+            kernel_port: base.kernel_port,
+        };
+        let prior_home = env::var_os("CHARIOX_HOME");
+        env::set_var("CHARIOX_HOME", &config.chariox_home);
+        let now = DateTime::parse_from_rfc3339("2026-09-13T11:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let envelope = serde_json::json!({
+            "schemaVersion": 1, "cloudApiUrl": "https://cloud.example.test",
+            "allocationId": "worker-1", "token": format!("mboot_{}", "a".repeat(40)),
+            "expiresAt": "2026-09-13T12:00:00Z", "runtimeReleaseDigest": fixture.release_digest,
+        });
+        write_private_file(
+            &config.envelope_path,
+            &serde_json::to_vec(&envelope).unwrap(),
+        )
+        .unwrap();
+        let cloud = Cloud(Mutex::new(Vec::new()));
+        assert!(prepare(&config, &cloud, now).is_err());
+        assert!(!config.receipt_path.exists());
+        let prepared = prepare(&config, &cloud, now).unwrap();
+        assert!(prepared.pending.is_some());
+        let mut receipt = prepared.receipt;
+        receipt.status = WorkerReceiptStatus::Confirmed;
+        receipt.confirmed_at = Some(now.to_rfc3339());
+        receipt.persist(&config.receipt_path).unwrap();
+        let resumed = prepare(&config, &cloud, now + chrono::Duration::days(1)).unwrap();
+        assert!(resumed.pending.is_none());
+        assert_eq!(resumed.receipt.home_caller, receipt.home_caller);
+        assert_eq!(cloud.0.lock().unwrap().len(), 2);
+        assert!(!config.envelope_path.exists());
+        match prior_home {
+            Some(value) => env::set_var("CHARIOX_HOME", value),
+            None => env::remove_var("CHARIOX_HOME"),
+        }
+        fixture.cleanup();
+    }
+
     fn envelope() -> WorkerEnvelope {
         WorkerEnvelope {
             schema_version: 1,
