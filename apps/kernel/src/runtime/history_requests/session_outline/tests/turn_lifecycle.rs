@@ -2,8 +2,9 @@ use super::*;
 
 #[tokio::test]
 async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
-    let directory = tempfile::tempdir().expect("temporary history directory");
-    let path = directory.path().join("history.db");
+    let path = std::env::temp_dir().join(format!(
+        "chariox-failed-history-{}-{}.db", std::process::id(), rand::random::<u64>()
+    ));
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".into()),
         agent_id: Some("agent-1".into()),
@@ -33,13 +34,16 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
         );
         store.append_many(&[prompt, settlement]).expect("persist failed turn");
     }
-    let store = OperationalHistoryStore::open(path).expect("reopen history");
+    let store = OperationalHistoryStore::open(path.clone()).expect("reopen history");
     let response = execute_session_history_outline_request(store, GetSessionHistoryOutlineRequest {
         session_id: "session-1".into(),
         agent_ids: Some(vec!["agent-1".into()]),
         latest_prompt_count: Some(4),
         cursor: None,
     }).await.expect("history response");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
     let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
         panic!("expected history outline");
     };
