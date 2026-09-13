@@ -639,6 +639,40 @@ test("agent activity projection exposes completed turn action metadata", () => {
   }), null)
 })
 
+test("agent activity projection accepts every provider termination category", () => {
+  const categories = [
+    "process_exit",
+    "signal",
+    "explicit_provider_error",
+    "runtime_failure",
+    "transport_failure",
+    "unknown",
+  ] as const
+
+  for (const [index, category] of categories.entries()) {
+    const reason = `termination-${category}`
+    assert.deepEqual(readAgentRuntimeCompletedTurn({
+      last_completed_turn: {
+        turn_id: `turn-${category}`,
+        prompt_id: `prompt-${category}`,
+        provider_run_id: `run-${category}`,
+        agent_id: "agent-1",
+        completed_at_ms: 800 + index,
+        settlement_status: "failed",
+        provider_termination: {
+          category,
+          reason,
+          timestamp_ms: 799 + index,
+        },
+      },
+    })?.providerTermination, {
+      category,
+      reason,
+      timestampMs: 799 + index,
+    })
+  }
+})
+
 test("completed turn reconciliation preserves local already-undone state for the same turn", () => {
   const alreadyUndone = completedTurnAction({
     undoAvailable: false,
