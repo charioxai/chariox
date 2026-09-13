@@ -104,7 +104,7 @@ fn sandboxed_pty_dies_with_owning_process() {
             .lines()
             .map_while(Result::ok)
         {
-            if let Some(pid) = line.strip_prefix("SANDBOX_PID=") {
+            if let Some((_, pid)) = line.split_once("SANDBOX_PID=") {
                 let _ = sender.send(pid.parse::<i32>().unwrap());
                 break;
             }
