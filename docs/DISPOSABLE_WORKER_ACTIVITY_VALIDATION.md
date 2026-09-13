@@ -17,8 +17,13 @@ eight remote provider-account, and 26 replica-filter executions. Two account
 tests occur in both final groups. All groups ran serially using the same compiled
 test binary. No GitHub CI ran. These results do not constitute deployment approval.
 
-Release-packaging test completion is unverified: the earlier process handle is
-no longer available, so its partial output is not counted as a passing suite.
+Linux release packaging and build-context suites passed together, 17/17, on the
+temporary Hetzner builder with Node 22.22.1. The tested export was from
+`2c9e550723b2f644c501775b02e065f73dcba0b6`; its temporary Git fixture tree was
+verified equal to `d4f354ca90256293c724282b7859b2d73bc98f30`. The first archive-only
+attempt failed the build-context test because Git metadata was absent; the
+complete rerun followed fixture correction. These tests use synthetic binaries
+and test signing keys, not a new compiled or deployed Linux release.
 The older disabled bootstrap contract and the allocation exchange/confirm path
 still need consolidation before this combined worker implementation is deployed.
 
