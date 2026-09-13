@@ -59,9 +59,10 @@ pub(crate) struct ProviderRunExitSessionSummary {
 
 struct ProviderRunLivenessProcesses;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderProcessExit {
     pub(crate) exit_code: Option<u32>,
+    pub(crate) signal: Option<String>,
 }
 
 impl ProviderRunLivenessProcesses {
@@ -78,12 +79,13 @@ impl ProviderRunLivenessProcesses {
     ) -> Result<Option<ProviderProcessExit>, DaemonError> {
         match app.pty.poll_process_state(provider_run_id) {
             Ok(PtyProcessState::Running) => Ok(None),
-            Ok(PtyProcessState::Exited { exit_code }) => Ok(Some(ProviderProcessExit {
-                exit_code: Some(exit_code),
-            })),
-            Err(DaemonError::PtyProcessNotFound { .. }) => {
-                Ok(Some(ProviderProcessExit { exit_code: None }))
+            Ok(PtyProcessState::Exited { exit_code, signal }) => {
+                Ok(Some(ProviderProcessExit { exit_code, signal }))
             }
+            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(Some(ProviderProcessExit {
+                exit_code: None,
+                signal: None,
+            })),
             Err(error) => Err(error),
         }
     }

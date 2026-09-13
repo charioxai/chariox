@@ -36,6 +36,12 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
+        let safe_message = crate::provider::sanitize_provider_diagnostic(message);
+        let safe_message = if safe_message.is_empty() {
+            "provider reported an error".to_string()
+        } else {
+            safe_message
+        };
 
         self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
@@ -67,7 +73,12 @@ impl KernelRuntimeState {
             return Ok(());
         }
         if project_failure_output {
-            owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
+            owned.record_provider_failure_output(
+                session_id,
+                provider_run_id,
+                &agent_id,
+                &safe_message,
+            );
         }
         self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
             .await;
@@ -76,7 +87,7 @@ impl KernelRuntimeState {
             &agent_id,
             &active_prompt,
             Some(provider_run_id),
-            message,
+            &safe_message,
         );
         let workflow_failed = active_prompt.workflow_run_id().is_some();
         if workflow_failed {
@@ -84,7 +95,7 @@ impl KernelRuntimeState {
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),
-                message,
+                &safe_message,
             )?;
         }
         let completion = owned.fail_local_prompt_without_advance_with_termination(

@@ -1084,6 +1084,38 @@ mod tests {
     }
 
     #[test]
+    fn leased_completion_provider_termination_categories_are_wire_distinct() {
+        let cases = [
+            (
+                crate::provider::ProviderRunTermination::signal("SIGTERM", 1_234),
+                "signal",
+            ),
+            (
+                crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "provider rejected request",
+                    1_235,
+                ),
+                "explicit_provider_error",
+            ),
+        ];
+
+        for (provider_termination, category) in cases {
+            let completion = RelayProjectedCompletion {
+                message_id: "assistant-msg-1".to_string(),
+                completed_at_ms: provider_termination.timestamp_ms,
+                home_prompt_id: Some("home-prompt-1".to_string()),
+                provider_termination: Some(provider_termination),
+            };
+            let snapshot = serde_json::to_value(completion)
+                .expect("termination category completion should serialize");
+            assert_eq!(
+                snapshot.pointer("/provider_termination/category"),
+                Some(&serde_json::json!(category)),
+            );
+        }
+    }
+
+    #[test]
     fn retired_workflow_failure_forwarding_is_not_an_accepted_peer_protocol_path() {
         let request = serde_json::json!({
             "kind": "forward_workflow_provider_failure",

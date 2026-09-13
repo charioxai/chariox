@@ -426,6 +426,7 @@ impl RuntimeProviderRun {
 
     pub fn set_terminal_diagnostic(&mut self, diagnostic: impl Into<String>) {
         let diagnostic = diagnostic.into();
+        let diagnostic = super::termination::sanitize_provider_diagnostic(&diagnostic);
         if !diagnostic.trim().is_empty() {
             self.terminal_diagnostic = Some(diagnostic);
         }
@@ -662,6 +663,39 @@ mod tests {
         run.clear_terminal_diagnostic();
 
         assert!(run.terminal_diagnostic().is_none());
+    }
+
+    #[test]
+    fn runtime_provider_run_redacts_secret_bearing_diagnostic_fields() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+
+        run.set_terminal_diagnostic(
+            "provider error stderr=raw-stderr api_key=sk-live-secret prompt=private prompt command=rm -rf",
+        );
+
+        let diagnostic = run
+            .terminal_diagnostic()
+            .expect("sanitized provider diagnostic should remain available");
+        assert!(diagnostic.contains("provider error"));
+        assert!(diagnostic.contains("[redacted]"));
+        assert!(!diagnostic.contains("raw-stderr"));
+        assert!(!diagnostic.contains("sk-live-secret"));
+        assert!(!diagnostic.contains("private prompt"));
+        assert!(!diagnostic.contains("rm -rf"));
+        assert!(diagnostic.chars().count() <= 256);
     }
 
     #[test]

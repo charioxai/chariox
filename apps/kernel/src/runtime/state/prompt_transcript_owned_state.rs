@@ -33,6 +33,10 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         message: &str,
     ) {
+        let message = crate::provider::sanitize_provider_diagnostic(message);
+        if message.is_empty() {
+            return;
+        }
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
         self.fan_out_terminal_outputs(

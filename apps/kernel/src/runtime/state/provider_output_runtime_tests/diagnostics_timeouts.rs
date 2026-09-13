@@ -183,6 +183,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             crate::provider::ProviderPromptSignalBatch {
                 notices: vec![raw_error.to_string(), raw_error.to_string()],
                 terminal_failure: Some(raw_error.to_string()),
+                explicit_provider_error: true,
                 prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
@@ -259,6 +260,17 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             .settlement_status,
         crate::git_observer::CompletedTurnSettlementStatus::Failed
     );
+    let termination = agent_activity
+        .last_completed_turn
+        .as_ref()
+        .and_then(|turn| turn.provider_termination.as_ref())
+        .expect("structured provider error should retain termination evidence");
+    assert_eq!(
+        termination.category,
+        crate::provider::ProviderRunTerminationCategory::ExplicitProviderError
+    );
+    assert!(termination.reason.contains("Unsupported parameter"));
+    assert!(termination.timestamp_ms > 0);
 }
 
 #[tokio::test]
@@ -322,6 +334,7 @@ async fn opencode_network_terminal_failure_retires_the_failed_resume_session() {
             vec![attachment.id().to_string()],
             crate::provider::ProviderPromptSignalBatch {
                 terminal_failure: Some("Provider finish_reason: network_error".to_string()),
+                explicit_provider_error: true,
                 prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
