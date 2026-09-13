@@ -41,6 +41,7 @@ pub(crate) fn activity_allocation(
 ) -> Result<String, DaemonError> {
     let receipt = WorkerReceipt::read(path)?
         .ok_or_else(|| worker_error("worker activity receipt is missing"))?;
+    validate_cloud_url(&profile.api_url)?;
     validate_profile(&receipt, profile)?;
     if !config.accept_remote_leases
         || config.lease_worker_capacity != Some(1)
