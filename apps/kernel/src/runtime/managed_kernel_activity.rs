@@ -25,7 +25,8 @@ pub(crate) struct ManagedKernelActivityReporter {
 struct ManagedKernelActivityBinding {
     api_url: String,
     account_id: String,
-    environment_id: String,
+    resource_id: String,
+    worker: bool,
     machine_id: String,
     kernel_id: String,
     machine_credential: String,
@@ -68,7 +69,36 @@ impl ManagedKernelActivityReporter {
         registration: Option<&ConfirmedManagedKernelRegistration>,
     ) -> Result<Option<Self>, DaemonError> {
         let Some(registration) = registration else {
-            return Ok(None);
+            let Some(path) =
+                std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
+            else {
+                return Ok(None);
+            };
+            let profile = config
+                .cloud_relay
+                .as_ref()
+                .ok_or_else(|| activity_error("disposable worker has no Cloud relay profile"))?;
+            let allocation_id = crate::managed_bootstrap::worker::activity_allocation(
+                std::path::Path::new(&path),
+                config,
+                profile,
+            )?;
+            return Ok(Some(Self {
+                binding: ManagedKernelActivityBinding {
+                    api_url: profile.api_url.trim_end_matches('/').to_string(),
+                    account_id: profile.account_id.clone(),
+                    resource_id: allocation_id,
+                    worker: true,
+                    machine_id: config.host_machine_id.clone(),
+                    kernel_id: config.daemon_id.clone(),
+                    machine_credential: profile
+                        .machine_credential
+                        .clone()
+                        .ok_or_else(|| activity_error("worker Machine credential is missing"))?,
+                },
+                #[cfg(test)]
+                confirmation_wait_started: None,
+            }));
         };
         let profile = config
             .cloud_relay
@@ -108,7 +138,8 @@ impl ManagedKernelActivityReporter {
                             "managed_kernel.activity",
                             "managed kernel activity accepted",
                             serde_json::json!({
-                                "environment_id": self.binding.environment_id,
+                                "resource_id": self.binding.resource_id,
+                                "disposable_worker": self.binding.worker,
                                 "machine_id": self.binding.machine_id,
                                 "kernel_id": self.binding.kernel_id,
                                 "sequence": accepted.sequence,
@@ -123,7 +154,8 @@ impl ManagedKernelActivityReporter {
                                 "managed_kernel.activity",
                                 "Cloud activity cursor remains ahead; confirmation will be delayed",
                                 serde_json::json!({
-                                    "environment_id": self.binding.environment_id,
+                                    "resource_id": self.binding.resource_id,
+                                    "disposable_worker": self.binding.worker,
                                     "machine_id": self.binding.machine_id,
                                     "kernel_id": self.binding.kernel_id,
                                     "sequence": accepted.sequence,
@@ -170,7 +202,8 @@ impl ManagedKernelActivityReporter {
                             "managed_kernel.activity",
                             "managed kernel activity report failed; reporter will retry",
                             serde_json::json!({
-                                "environment_id": self.binding.environment_id,
+                                "resource_id": self.binding.resource_id,
+                                "disposable_worker": self.binding.worker,
                                 "machine_id": self.binding.machine_id,
                                 "kernel_id": self.binding.kernel_id,
                                 "sequence": report.sequence,
@@ -228,19 +261,17 @@ impl ManagedKernelActivityReporter {
         running_agent_count: u8,
     ) -> Result<ReportActivityResponse, DaemonError> {
         let signature = activity_signature(&self.binding, sequence, running_agent_count)?;
+        let mut payload = signed_activity_value(&self.binding, sequence, running_agent_count)?;
+        payload["machineCredential"] = self.binding.machine_credential.clone().into();
+        payload["signature"] = signature.into();
         post_cloud_json(
             self.binding.api_url.clone(),
-            ACTIVITY_ENDPOINT,
-            serde_json::json!({
-                "accountId": self.binding.account_id,
-                "environmentId": self.binding.environment_id,
-                "machineId": self.binding.machine_id,
-                "kernelId": self.binding.kernel_id,
-                "machineCredential": self.binding.machine_credential,
-                "sequence": sequence,
-                "runningAgentCount": running_agent_count,
-                "signature": signature,
-            }),
+            if self.binding.worker {
+                "/v1/disposable-workers/activity"
+            } else {
+                ACTIVITY_ENDPOINT
+            },
+            payload,
         )
         .await
     }
@@ -273,7 +304,8 @@ impl ManagedKernelActivityBinding {
         Ok(Self {
             api_url: profile.api_url.trim_end_matches('/').to_string(),
             account_id: profile.account_id.clone(),
-            environment_id: registration.environment_id.clone(),
+            resource_id: registration.environment_id.clone(),
+            worker: false,
             machine_id: machine_id.to_string(),
             kernel_id: registration.kernel_id.clone(),
             machine_credential: machine_credential.to_string(),
@@ -336,20 +368,46 @@ impl ActivityCursor {
     }
 }
 
-fn activity_signature(
+fn signed_activity_value(
     binding: &ManagedKernelActivityBinding,
     sequence: u32,
     running_agent_count: u8,
-) -> Result<String, DaemonError> {
-    let canonical = serde_json::to_string(&SignedActivity {
+) -> Result<serde_json::Value, DaemonError> {
+    let mut value = serde_json::to_value(&SignedActivity {
         account_id: &binding.account_id,
-        environment_id: &binding.environment_id,
+        environment_id: &binding.resource_id,
         kernel_id: &binding.kernel_id,
         machine_id: &binding.machine_id,
         running_agent_count,
         sequence,
     })
     .map_err(|error| activity_error(format!("could not encode managed activity: {error}")))?;
+    if binding.worker {
+        let fields = value
+            .as_object_mut()
+            .expect("activity serializes as an object");
+        let id = fields
+            .remove("environmentId")
+            .expect("activity contains environmentId");
+        fields.insert("allocationId".to_string(), id);
+    }
+    Ok(value)
+}
+
+fn activity_signature(
+    binding: &ManagedKernelActivityBinding,
+    sequence: u32,
+    running_agent_count: u8,
+) -> Result<String, DaemonError> {
+    let value = signed_activity_value(binding, sequence, running_agent_count)?;
+    // Sort explicitly so the signature does not depend on serde_json's map feature flags.
+    let fields: std::collections::BTreeMap<_, _> = value
+        .as_object()
+        .expect("activity is an object")
+        .iter()
+        .collect();
+    let canonical = serde_json::to_string(&fields)
+        .map_err(|error| activity_error(format!("could not encode managed activity: {error}")))?;
     let mut mac = Hmac::<Sha256>::new_from_slice(binding.machine_credential.as_bytes())
         .map_err(|error| activity_error(format!("could not sign managed activity: {error}")))?;
     mac.update(canonical.as_bytes());
@@ -384,11 +442,26 @@ mod tests {
         ManagedKernelActivityBinding {
             api_url: "https://cloud.example.test".to_string(),
             account_id: "acct-1".to_string(),
-            environment_id: "env-1".to_string(),
+            resource_id: "env-1".to_string(),
+            worker: false,
             machine_id: "machine-1".to_string(),
             kernel_id: "kernel-1".to_string(),
             machine_credential: "mcred_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN".to_string(),
         }
+    }
+
+    #[test]
+    fn worker_activity_uses_allocation_without_managed_environment_identity() {
+        let mut worker = binding();
+        worker.worker = true;
+        let payload = signed_activity_value(&worker, 7, 1).unwrap();
+        assert_eq!(payload["allocationId"], "env-1");
+        assert!(payload.get("environmentId").is_none());
+        assert!(payload.get("machineCredential").is_none());
+        assert_ne!(
+            activity_signature(&worker, 7, 1).unwrap(),
+            activity_signature(&binding(), 7, 1).unwrap()
+        );
     }
 
     #[test]
