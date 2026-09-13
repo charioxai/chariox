@@ -490,6 +490,7 @@ fn confirm_when_relay_ready(
         }
         let profile = load_managed_cloud_relay_profile()
             .ok_or_else(|| worker_error("worker Cloud profile is missing"))?;
+        validate_profile(receipt, &profile)?;
         let credential = profile
             .machine_credential
             .ok_or_else(|| worker_error("worker machine credential is missing"))?;
@@ -723,6 +724,82 @@ fn worker_error(message: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn confirmation_retry_revalidates_the_installed_worker_profile() {
+        use std::sync::Mutex;
+        struct Cloud {
+            calls: Mutex<usize>,
+            replace_profile: bool,
+        }
+        impl WorkerCloudClient for Cloud {
+            fn exchange(
+                &self,
+                _: &str,
+                _: &ExchangeRequest,
+            ) -> Result<ExchangeResponse, DaemonError> {
+                panic!("confirmation must not exchange credentials")
+            }
+            fn confirm(&self, _: &str, _: &ConfirmRequest) -> Result<ConfirmResponse, DaemonError> {
+                let mut calls = self.calls.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    if self.replace_profile {
+                        let mut profile = load_managed_cloud_relay_profile().unwrap();
+                        profile.machine_id = Some("different-worker".into());
+                        persist_managed_cloud_relay_profile(profile).unwrap();
+                    }
+                    return Err(worker_error("simulated lost confirmation response"));
+                }
+                Ok(ConfirmResponse {
+                    confirmed: true,
+                    observed_state: "ready".into(),
+                })
+            }
+        }
+        let _lock = crate::env_lock::lock();
+        for replace_profile in [false, true] {
+            let fixture = super::super::tests::Fixture::new("worker-confirm-retry");
+            let prior_home = env::var_os("CHARIOX_HOME");
+            env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+            let response = response();
+            let receipt = WorkerReceipt {
+                schema_version: 1,
+                status: WorkerReceiptStatus::Exchanged,
+                allocation_id: response.allocation_id,
+                machine_id: "worker-machine".into(),
+                kernel_id: response.kernel_id,
+                relay_public_key: "worker-public-key".into(),
+                runtime_release_digest: response.runtime_release_digest,
+                home_caller: response.home_caller,
+                confirmed_at: None,
+            };
+            persist_managed_cloud_relay_profile(persisted_profile(response.cloud_relay)).unwrap();
+            let cloud = Cloud {
+                calls: Mutex::new(0),
+                replace_profile,
+            };
+            let mut child = Command::new("sleep").arg("15").spawn().unwrap();
+            let result = confirm_when_relay_ready(&mut child, &receipt, &envelope(), &cloud);
+            stop_child(&mut child).unwrap();
+            match prior_home {
+                Some(value) => env::set_var("CHARIOX_HOME", value),
+                None => env::remove_var("CHARIOX_HOME"),
+            }
+            fixture.cleanup();
+            if replace_profile {
+                assert!(
+                    result.is_err(),
+                    "must reject a replaced worker profile before retrying"
+                );
+                assert_eq!(*cloud.calls.lock().unwrap(), 1);
+            } else {
+                result.unwrap();
+                assert_eq!(*cloud.calls.lock().unwrap(), 2);
+            }
+        }
+    }
 
     #[test]
     fn active_bootstrap_retries_same_identity_and_resumes_confirmed_without_exchange() {

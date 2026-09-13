@@ -113,8 +113,17 @@ Consolidation audit: the active Cloud exchange derives the selected home from
 the allocation and pins repeated requests by digest. The older ordinary-entry
 worker route calls deliberately unavailable exchange/recovery endpoints. Its
 fake-client recovery tests are not evidence for the active allocation route.
-Before deleting that route, cover confirmation retry on the active implementation.
-Then remove the duplicate runtime dispatch and unavailable client methods while
+Confirmation retry coverage exposed a missing identity recheck: the active loop
+reloaded a Cloud profile between retries but sent its credential without verifying
+that it still matched the worker receipt. The regression failed remotely with
+`must reject a replaced worker profile before retrying`. The loop now reuses
+`validate_profile` immediately after each reload. An unchanged profile successfully
+retries a simulated lost confirmation response; a replaced machine profile fails
+before the next Cloud request. All 41 bootstrap tests passed remotely after the
+fix, with a 3m19s one-job build. The test stops its child and removes its temporary
+state before checking the result, including in the failing pre-fix run.
+
+Next remove the duplicate runtime dispatch and unavailable client methods while
 retaining explicit rejection or migration of old on-disk records. No old receipt
 should silently become an ordinary managed-machine registration.
 
