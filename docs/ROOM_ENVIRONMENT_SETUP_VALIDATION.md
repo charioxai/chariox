@@ -34,11 +34,33 @@ validation, not a full TypeScript compilation.
 
 ## Open acceptance
 
-- Add the matching explicit setup control to Web using the same kernel request.
-- Exercise create, bind, provision and display through a real kernel and worker
-  without preconfiguring worker authority in a fixture.
+- Deploy and click-test the matching Web setup control, implemented in Cloud
+  draft PR 97, using the same kernel request.
 - Verify saved-state restart of a legacy slice and live viewer/input/reconnect.
 - Complete exact-head review and the remaining Browser/Computer plan gates.
 
 The live missing-Environment-binding defect is not declared fixed by these
 command tests. No existing live slice or agent was modified at this checkpoint.
+
+## Real provisioning checkpoint, September 13
+
+The public create → bind → provision → display-admission sequence passed on the
+original Linux development machine with isolated kernel state. It used installed
+kernel source `5e9898ce1a2dfcdde5222a00ce4d45f630b5b4c2` and a separately tagged
+worker image built from that release's verified signed context and prebuilt
+binaries. No worker Room binding was injected and no Rust rebuild was needed.
+
+The kernel returned a Selkies endpoint with `access=tunnel` and
+`stream_protocol=chariox-display-v1`. StopSlice, DeleteSlice,
+DetachFromSession, and DeleteSession succeeded, the isolated kernel exited zero,
+and no drill container, volume or listener remained. Existing agents and slices
+were not touched. The worker had a 2 GiB memory and one-CPU limit.
+
+Image: `sha256:5b395e45ba2849d8f34c8bbe04bc24d4647f145ccc3bcdd76f7ba9cdeafdb100`.
+Signed context: `sha256:cf5fb8450ae5afd2f36c8a332e766d9910afe246da9ab9d4c4b56b146bd30ad7`.
+Evidence is retained outside Git under
+`/Users/miguel/.codex/evidence/browser-computer-use/room-setup/public-provision-signed-report.json`.
+
+This closes only the fresh provisioning/admission check. It does not prove a
+rendered frame, live input, reconnect, legacy saved-state restart, the Web button,
+provider execution, Cloud VM Path 1, or active/idle soak acceptance.
