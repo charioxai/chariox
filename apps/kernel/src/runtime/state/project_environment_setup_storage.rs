@@ -37,7 +37,7 @@ struct PersistedSetupEntry {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ProjectEnvironmentSetupStore {
+pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
     durable_state_store: Option<DurableKernelStateStore>,
 }
@@ -52,7 +52,7 @@ impl Default for ProjectEnvironmentSetupStore {
 }
 
 impl ProjectEnvironmentSetupStore {
-    pub(super) fn restore_from_durable_state(
+    pub(in crate::runtime::state) fn restore_from_durable_state(
         durable_state_store: &DurableKernelStateStore,
     ) -> Self {
         let store = Self {
