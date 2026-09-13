@@ -433,7 +433,10 @@ pub(super) fn remove_receipt(path: &Path) -> Result<(), DaemonError> {
     fs::remove_file(path).map_err(|error| state_error(&error.to_string()))
 }
 
-fn read_bounded_json<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T, DaemonError> {
+pub(super) fn read_bounded_json<T: DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<T, DaemonError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| state_error(&format!("{label}: {error}")))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_STATE_BYTES
@@ -446,7 +449,7 @@ fn read_bounded_json<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T,
     serde_json::from_slice(&bytes).map_err(|_| state_error(&format!("{label} is invalid")))
 }
 
-fn validate_cloud_url(value: &str) -> Result<(), DaemonError> {
+pub(super) fn validate_cloud_url(value: &str) -> Result<(), DaemonError> {
     let url =
         Url::parse(value).map_err(|_| state_error("managed bootstrap Cloud URL is invalid"))?;
     if url.username() != ""
@@ -490,7 +493,7 @@ pub(super) fn valid_secret(value: &str, prefix: &str) -> bool {
     })
 }
 
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
         && value[7..]

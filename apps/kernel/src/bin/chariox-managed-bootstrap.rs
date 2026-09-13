@@ -10,5 +10,9 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             serde_json::json!({ "log_path": log_path.display().to_string() }),
         );
     }
-    chariox_kernel::managed_bootstrap::run_from_env()
+    if std::env::args().any(|arg| arg == "--disposable-worker") {
+        chariox_kernel::managed_bootstrap::worker::run_from_env()
+    } else {
+        chariox_kernel::managed_bootstrap::run_from_env()
+    }
 }

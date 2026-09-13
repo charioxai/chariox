@@ -14,6 +14,7 @@ const builder = join(repositoryRoot, "scripts/build-managed-kernel-release.mjs")
 const installer = join(repositoryRoot, "deploy/managed-kernel/install-image.sh")
 const verifier = join(repositoryRoot, "deploy/managed-kernel/verify-image-release.mjs")
 const service = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
+const workerService = join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")
 const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chariox-rootless-docker.service")
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
 const sourceDateEpoch = "946684800"
@@ -205,6 +206,7 @@ async function makeFixture(root, variant = "") {
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
     ["deploy/managed-kernel/chariox-managed-bootstrap.service", await readFile(service)],
+    ["deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", await readFile(workerService)],
     ["deploy/managed-kernel/chariox-rootless-docker.service", await readFile(rootlessDockerService)],
     ["deploy/managed-kernel/chariox-slice-broker.service", await readFile(sliceBrokerService)],
     ["examples/workflow-code/example.md", "workflow fixture\n"],
@@ -281,6 +283,7 @@ async function makeFixture(root, variant = "") {
     sourceCommit,
     sourceTree,
     serviceBytes: sourceFiles.get("deploy/managed-kernel/chariox-managed-bootstrap.service"),
+    workerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"),
     rootlessDockerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-rootless-docker.service"),
     sliceBrokerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-slice-broker.service"),
   }
@@ -313,6 +316,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const packagedPaths = snapshot.filter((entry) => entry.type === "file").map((entry) => entry.path)
   for (const requiredPath of [
     "etc/systemd/system/chariox-managed-bootstrap.service",
+    "etc/systemd/system/chariox-disposable-worker-bootstrap.service",
     "etc/systemd/system/chariox-rootless-docker.service",
     "etc/systemd/system/chariox-slice-broker.service",
     "usr/lib/chariox/release-manifest.json",
@@ -359,6 +363,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         sha256: digest(fixture.serviceBytes),
       },
       {
+        name: "chariox-disposable-worker-bootstrap.service",
+        path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service",
+        sha256: digest(fixture.workerServiceBytes),
+      },
+      {
         name: "chariox-rootless-docker.service",
         path: "/etc/systemd/system/chariox-rootless-docker.service",
         sha256: digest(fixture.rootlessDockerServiceBytes),
@@ -401,6 +410,10 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   assert.deepEqual(
     await readFile(join(releaseRoot, "etc/systemd/system/chariox-managed-bootstrap.service")),
     fixture.serviceBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")),
+    fixture.workerServiceBytes,
   )
   assert.match(
     await readFile(
@@ -990,6 +1003,9 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     await readFile(join(harness.installRoot, "etc/systemd/system/chariox-managed-bootstrap.service"), "utf8"),
     fixture.serviceBytes.toString("utf8"),
   )
+  const installedWorkerService = join(harness.installRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")
+  assert.equal((await lstat(installedWorkerService)).isSymbolicLink(), true)
+  assert.equal(await readFile(installedWorkerService, "utf8"), fixture.workerServiceBytes.toString("utf8"))
   const installedBrokerService = join(harness.installRoot, "etc/systemd/system/chariox-slice-broker.service")
   assert.equal((await lstat(installedBrokerService)).isSymbolicLink(), true)
   assert.equal(await readFile(installedBrokerService, "utf8"), fixture.sliceBrokerServiceBytes.toString("utf8"))

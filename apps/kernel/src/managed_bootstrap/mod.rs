@@ -3,6 +3,7 @@ mod context_plan;
 mod release;
 mod state;
 mod supervisor;
+pub mod worker;
 
 use std::thread;
 use std::time::Duration;
