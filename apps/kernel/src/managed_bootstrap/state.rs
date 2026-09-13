@@ -203,13 +203,6 @@ impl BootstrapEnvelope {
         }
         Ok(envelope)
     }
-
-    pub(super) fn runtime_release_digest(&self) -> &str {
-        match self {
-            Self::ManagedEnvironment(value) => &value.runtime_release_digest,
-            Self::DisposableWorker(value) => &value.binding.runtime_release_digest,
-        }
-    }
 }
 
 impl ManagedBootstrapEnvelope {
@@ -374,17 +367,6 @@ impl DisposableWorkerBootstrapReceipt {
         }
         Ok(())
     }
-
-    pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
-        let bytes =
-            serde_json::to_vec_pretty(self).map_err(|error| state_error(&error.to_string()))?;
-        if bytes.len() as u64 > MAX_STATE_BYTES {
-            return Err(state_error(
-                "disposable worker bootstrap receipt is too large",
-            ));
-        }
-        write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
-    }
 }
 
 impl DisposableWorkerReleaseOverride {
@@ -422,16 +404,6 @@ pub(super) fn remove_envelope(path: &Path) -> Result<(), DaemonError> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(state_error(
             "managed bootstrap envelope is not a regular file",
-        ));
-    }
-    fs::remove_file(path).map_err(|error| state_error(&error.to_string()))
-}
-
-pub(super) fn remove_receipt(path: &Path) -> Result<(), DaemonError> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| state_error(&error.to_string()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(state_error(
-            "managed bootstrap receipt is not a regular file",
         ));
     }
     fs::remove_file(path).map_err(|error| state_error(&error.to_string()))

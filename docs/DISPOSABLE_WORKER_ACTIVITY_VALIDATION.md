@@ -24,8 +24,9 @@ verified equal to `d4f354ca90256293c724282b7859b2d73bc98f30`. The first archive-
 attempt failed the build-context test because Git metadata was absent; the
 complete rerun followed fixture correction. These tests use synthetic binaries
 and test signing keys, not a new compiled or deployed Linux release.
-The older disabled bootstrap contract and the allocation exchange/confirm path
-still need consolidation before this combined worker implementation is deployed.
+The older disabled bootstrap runtime has now been removed. Allocation exchange
+and confirmation use the active worker service; legacy records are rejected
+without mutation. Live deployment and lifecycle acceptance remain outstanding.
 
 The disposable worker supervisor passes its enrollment receipt to the ordinary
 kernel activity reporter. The reporter validates the worker Machine, kernel,
@@ -123,9 +124,23 @@ before the next Cloud request. All 41 bootstrap tests passed remotely after the
 fix, with a 3m19s one-job build. The test stops its child and removes its temporary
 state before checking the result, including in the failing pre-fix run.
 
-Next remove the duplicate runtime dispatch and unavailable client methods while
-retaining explicit rejection or migration of old on-disk records. No old receipt
-should silently become an ordinary managed-machine registration.
+The duplicate runtime dispatch, unavailable client methods, and separate bound
+identity initializer have been removed. Strict legacy record parsing remains
+only for explicit rejection, without rewriting or deleting the files. The
+ordinary entry point never turns an old worker receipt into a managed-machine
+registration. The upgrade and health tools also reject that legacy format.
+
+The rejection regression failed before removal by reaching the unavailable Cloud
+exchange path. After removal, all 25 remaining bootstrap tests and all 14 runtime
+identity tests passed remotely. The reduced bootstrap count replaces obsolete
+fake-client tests with the legacy rejection guard; all active worker recovery
+tests remain. The upgrade rejection test also failed before the tooling change
+because the fixture upgrade succeeded. Worker rollback, interruption recovery,
+and authority-binding tests now use the active allocation receipt and its actual
+default state path. All 42 upgrade/rollback tests passed remotely in 181 seconds;
+the three allocation receipt binding tests also passed. No live kernel, agent,
+slice, or service was restarted during these validations. This closes the
+duplicate-bootstrap implementation gap, not the live VM acceptance gates below.
 
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.

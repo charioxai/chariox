@@ -53,10 +53,6 @@ function validIdentifier(value) {
   return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value)
 }
 
-function validDisposableIdentifier(value) {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
-}
-
 async function matchingPresence(receiptPath, releaseOverridePath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs) {
   const receipt = await readBoundedJson(receiptPath, MAX_RECEIPT_BYTES)
   let kernelId
@@ -69,21 +65,7 @@ async function matchingPresence(receiptPath, releaseOverridePath, presenceRoot, 
     kernelId = receipt.kernelId
     machineId = receipt.machineId
   } else if (receipt?.kind === "disposable_worker") {
-    const releaseOverride = await readBoundedJson(releaseOverridePath, MAX_RECEIPT_BYTES)
-    if (
-      receipt.schemaVersion !== 1 ||
-      receipt.status !== "exchanged" ||
-      !validDisposableIdentifier(receipt.binding?.workerKernelId) ||
-      !validDisposableIdentifier(receipt.binding?.workerMachineId) ||
-      (releaseOverride
-        ? releaseOverride.schemaVersion !== 1
-          || releaseOverride.kind !== "disposable_worker_release"
-          || releaseOverride.bindingDigest !== receipt.bindingDigest
-          || releaseOverride.runtimeReleaseDigest !== releaseDigest
-        : receipt.binding.runtimeReleaseDigest !== releaseDigest)
-    ) return false
-    kernelId = receipt.binding.workerKernelId
-    machineId = receipt.binding.workerMachineId
+    return false
   } else {
     if (
       receipt?.schemaVersion !== 1 ||

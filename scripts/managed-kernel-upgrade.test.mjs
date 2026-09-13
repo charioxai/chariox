@@ -21,6 +21,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { test } from "node:test"
+import { allocationWorkerBindingDigest } from "../deploy/managed-kernel/allocation-worker-receipt.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const upgrade = join(repositoryRoot, "deploy/managed-kernel/upgrade-image.sh")
@@ -152,7 +153,7 @@ async function makeHarness(context, {
   const trustedKey = join(root, "trusted-release-public-key")
   await put(trustedKey, rawPublicKey(publicKey).toString("base64"), 0o600)
   const current = await makeRelease(
-    root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy, workerCapableCurrent,
+    root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy, workerCapableCurrent || receiptKind === "allocation_worker",
   )
   const target = await makeRelease(
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true,
@@ -169,7 +170,9 @@ async function makeHarness(context, {
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
-  const receiptPath = join(installRoot, "var/lib/chariox/home/managed/bootstrap-receipt.json")
+  const receiptPath = join(installRoot, receiptKind === "allocation_worker"
+    ? "var/lib/chariox/home/disposable-worker/bootstrap-receipt.json"
+    : "var/lib/chariox/home/managed/bootstrap-receipt.json")
   const binding = {
     allocationId: "allocation-1",
     expectedHomeKernelId: "home-kernel-1",
@@ -184,8 +187,14 @@ async function makeHarness(context, {
     managerRequestDigest: `sha256:${"b".repeat(64)}`,
     senderKeyThumbprint: `sha256:${"c".repeat(64)}`,
   }
-  const bindingDigest = `sha256:${createHash("sha256").update(JSON.stringify(binding)).digest("hex")}`
-  const receipt = receiptKind === "disposable_worker" ? {
+  let bindingDigest = `sha256:${createHash("sha256").update(JSON.stringify(binding)).digest("hex")}`
+  const receipt = receiptKind === "allocation_worker" ? {
+    schemaVersion: 1, status: "confirmed", allocationId: "allocation-1",
+    machineId: "machine-1", kernelId: "kernel-1", relayPublicKey: "relay-public-key",
+    runtimeReleaseDigest: current.digest, confirmedAt: "2026-09-11T00:00:00Z",
+    homeCaller: { accountId: "account-1", userId: "owner-1", realmId: "realm-1",
+      machineId: "home-machine-1", kernelId: "home-kernel-1", relayPublicKey: "home-key" },
+  } : receiptKind === "disposable_worker" ? {
     schemaVersion: 1,
     kind: "disposable_worker",
     status: "exchanged",
@@ -226,6 +235,7 @@ async function makeHarness(context, {
     confirmedAt: "2026-09-11T00:00:00Z",
     contextPlan: { schemaVersion: 1, repositories: [{ id: "repo-1", url: "ssh://example.invalid/repo" }] },
   }
+  if (receiptKind === "allocation_worker") bindingDigest = allocationWorkerBindingDigest(receipt)
   await put(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
   const persistent = {
     credential: join(installRoot, "var/lib/chariox/home/.chariox/vault/vault.json"),
@@ -562,8 +572,18 @@ test("allocation worker upgrade preserves the receipt written by the active boot
   assert.deepEqual(await persistentSnapshot(harness.persistent), before)
 })
 
-test("managed kernel upgrade preserves an exact disposable worker receipt and persistent state", async (context) => {
+test("legacy worker upgrade is rejected before service mutation", async (context) => {
   const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+  const receipt = await readFile(harness.receiptPath, "utf8")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /legacy disposable worker bootstrap is unsupported/)
+  assert.equal(await readFile(harness.receiptPath, "utf8"), receipt)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+test("managed kernel upgrade preserves an exact disposable worker receipt and persistent state", async (context) => {
+  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
   const before = await persistentSnapshot(harness.persistent)
   const receiptBefore = await readFile(harness.receiptPath, "utf8")
   const result = harness.run()
@@ -601,24 +621,28 @@ test("ordinary managed upgrade rejects a worker release override before service 
 
 test("disposable worker upgrade rejects altered Cloud authority before service mutation", async (context) => {
   for (const mutate of [
-    (receipt) => { receipt.binding.managerOperationFence = 8 },
-    (receipt) => { receipt.enrollmentReceipt.runtimeReleaseDigest = `sha256:${"f".repeat(64)}` },
-    (receipt) => { receipt.cloudRelay.machineId = "machine-other" },
+    (receipt) => { receipt.homeCaller.kernelId = "other-home" },
+    (receipt) => { receipt.status = "exchanged" },
+    (receipt) => { receipt.homeCaller.accountId = "other-account" },
     (receipt) => { receipt.unexpected = true },
   ]) {
-    const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+    const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
     const receipt = JSON.parse(await readFile(harness.receiptPath, "utf8"))
+    await put(join(dirname(harness.receiptPath), "release-override.json"), JSON.stringify({
+      schemaVersion: 1, kind: "disposable_worker_release", bindingDigest: harness.bindingDigest,
+      runtimeReleaseDigest: harness.current.digest,
+    }), 0o640)
     mutate(receipt)
     await put(harness.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
     const result = harness.run()
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /disposable worker bootstrap receipt is invalid/)
+    assert.match(result.stderr, /allocation worker bootstrap receipt is invalid|disposable worker release override is invalid/)
     assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
   }
 })
 
 test("disposable worker rollback restores its prior signed-release override", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
   const overridePath = join(dirname(harness.receiptPath), "release-override.json")
   await put(overridePath, `${JSON.stringify({
     schemaVersion: 1,
@@ -635,7 +659,7 @@ test("disposable worker rollback restores its prior signed-release override", as
 })
 
 test("disposable worker rollback removes a newly staged release override", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
   const receiptBefore = await readFile(harness.receiptPath, "utf8")
   const overridePath = join(dirname(harness.receiptPath), "release-override.json")
   await put(join(harness.state, "fail-health-once"), "fail\n")
@@ -647,7 +671,7 @@ test("disposable worker rollback removes a newly staged release override", async
 })
 
 test("disposable worker upgrade recovers an interruption without rewriting Cloud authority", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
+  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
   const receiptBefore = await readFile(harness.receiptPath, "utf8")
   await put(join(harness.state, "crash-before-symlink"), "crash\n")
   const interrupted = harness.run()

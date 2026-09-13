@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto"
 import { constants } from "node:fs"
 import { lstat, open, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
@@ -19,23 +18,6 @@ const REQUIRED_RECEIPT_KEYS = [
   "status",
 ]
 const OPTIONAL_RECEIPT_KEYS = ["contextPlan"]
-const WORKER_RECEIPT_KEYS = [
-  "binding", "bindingDigest", "cloudApiUrl", "cloudRelay", "enrollmentReceipt",
-  "kind", "relayPublicKey", "schemaVersion", "status",
-]
-const WORKER_BINDING_KEYS = [
-  "allocationId", "expectedHomeKernelId", "userId", "realmId", "workerMachineId",
-  "workerKernelId", "imageDigest", "runtimeReleaseDigest", "managerOperationId",
-  "managerOperationFence", "managerRequestDigest", "senderKeyThumbprint",
-]
-const WORKER_ENROLLMENT_KEYS = [
-  "grantId", "allocationId", "workerMachineId", "workerKernelId", "imageDigest",
-  "runtimeReleaseDigest", "exchangedAt",
-]
-const WORKER_RELAY_KEYS = [
-  "apiUrl", "email", "accountId", "userId", "accountSlug", "realmId", "relayUrl",
-  "issuerId", "machineId", "machineAlias", "machineCredential",
-]
 const RELEASE_OVERRIDE_KEYS = ["bindingDigest", "kind", "runtimeReleaseDigest", "schemaVersion"]
 const TRANSITION_POLICY_KEYS = ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"]
 const TRANSITION_POLICY_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
@@ -52,97 +34,12 @@ function validIdentifier(value) {
   return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value)
 }
 
-function validDisposableIdentifier(value) {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
-}
-
 function exactKeys(value, expected) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const actual = Object.keys(value).sort()
   const sortedExpected = [...expected].sort()
   return actual.length === sortedExpected.length
     && actual.every((key, index) => key === sortedExpected[index])
-}
-
-function validSecret(value, prefix) {
-  return typeof value === "string"
-    && value.startsWith(prefix)
-    && value.length >= prefix.length + 40
-    && /^[A-Za-z0-9_-]+$/.test(value.slice(prefix.length))
-}
-
-function validCloudUrl(value) {
-  try {
-    const url = new URL(value)
-    return !url.username && !url.password && !url.search && !url.hash
-      && (url.protocol === "https:"
-        || (url.protocol === "http:" && new Set(["127.0.0.1", "localhost", "[::1]"]).has(url.hostname)))
-  } catch {
-    return false
-  }
-}
-
-function validRelayUrl(value) {
-  try {
-    const url = new URL(value)
-    return !url.username && !url.password && !url.search && !url.hash
-      && (url.protocol === "wss:"
-        || (url.protocol === "ws:" && new Set(["127.0.0.1", "localhost", "[::1]"]).has(url.hostname)))
-  } catch {
-    return false
-  }
-}
-
-function canonicalWorkerBinding(binding) {
-  return Object.fromEntries(WORKER_BINDING_KEYS.map((key) => [key, binding[key]]))
-}
-
-function validateDisposableWorkerReceipt(receipt) {
-  const binding = receipt?.binding
-  const enrollment = receipt?.enrollmentReceipt
-  const relay = receipt?.cloudRelay
-  const bindingDigest = exactKeys(binding, WORKER_BINDING_KEYS)
-    ? `sha256:${createHash("sha256").update(JSON.stringify(canonicalWorkerBinding(binding))).digest("hex")}`
-    : null
-  if (
-    !exactKeys(receipt, WORKER_RECEIPT_KEYS)
-    || receipt.schemaVersion !== 1
-    || receipt.kind !== "disposable_worker"
-    || receipt.status !== "exchanged"
-    || !validCloudUrl(receipt.cloudApiUrl)
-    || typeof receipt.relayPublicKey !== "string"
-    || !receipt.relayPublicKey.trim()
-    || !validDigest(receipt.bindingDigest)
-    || bindingDigest !== receipt.bindingDigest
-    || !WORKER_BINDING_KEYS.filter((key) => key !== "managerOperationFence")
-      .every((key) => new Set([
-        "imageDigest", "runtimeReleaseDigest", "managerRequestDigest", "senderKeyThumbprint",
-      ]).has(key)
-        ? validDigest(binding[key])
-        : validDisposableIdentifier(binding[key]))
-    || !Number.isSafeInteger(binding.managerOperationFence)
-    || binding.managerOperationFence < 1
-    || !exactKeys(enrollment, WORKER_ENROLLMENT_KEYS)
-    || !validDisposableIdentifier(enrollment.grantId)
-    || enrollment.allocationId !== binding.allocationId
-    || enrollment.workerMachineId !== binding.workerMachineId
-    || enrollment.workerKernelId !== binding.workerKernelId
-    || enrollment.imageDigest !== binding.imageDigest
-    || enrollment.runtimeReleaseDigest !== binding.runtimeReleaseDigest
-    || typeof enrollment.exchangedAt !== "string"
-    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(enrollment.exchangedAt)
-    || !Number.isFinite(Date.parse(enrollment.exchangedAt))
-    || !exactKeys(relay, WORKER_RELAY_KEYS)
-    || relay.apiUrl !== receipt.cloudApiUrl
-    || relay.userId !== binding.userId
-    || relay.realmId !== binding.realmId
-    || relay.machineId !== binding.workerMachineId
-    || !validRelayUrl(relay.relayUrl)
-    || !validSecret(relay.machineCredential, "mcred_")
-    || ![relay.accountId, relay.accountSlug, relay.issuerId].every(validIdentifier)
-    || typeof relay.email !== "string" || !relay.email.trim() || relay.email.length > 320
-    || typeof relay.machineAlias !== "string" || !relay.machineAlias.trim() || relay.machineAlias.length > 256
-  ) fail("disposable worker bootstrap receipt is invalid")
 }
 
 async function readOptionalReleaseOverride(path, bindingDigest) {
@@ -208,13 +105,7 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
     return { kind: "allocation_worker", receipt, bytes: receiptBytes, releaseOverride, bindingDigest }
   }
   if (receipt.kind === "disposable_worker") {
-    validateDisposableWorkerReceipt(receipt)
-    const releaseOverride = await readOptionalReleaseOverride(releaseOverridePath, receipt.bindingDigest)
-    const effectiveDigest = releaseOverride?.runtimeReleaseDigest ?? receipt.binding.runtimeReleaseDigest
-    if (expectedDigest && effectiveDigest !== expectedDigest) {
-      fail("disposable worker release state does not pin the expected release")
-    }
-    return { kind: "disposable_worker", receipt, bytes: receiptBytes, releaseOverride, bindingDigest: receipt.bindingDigest }
+    fail("legacy disposable worker bootstrap is unsupported; reprovision through the allocation-worker service")
   }
   if (releaseOverridePath && await lstat(releaseOverridePath).then(() => true, (error) => {
     if (error.code === "ENOENT") return false

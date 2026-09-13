@@ -34,8 +34,7 @@ pub use credentials::{
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{
-    load_or_create_managed_runtime_identity, load_or_initialize_disposable_worker_identity,
-    ManagedRuntimeIdentity,
+    load_or_create_managed_runtime_identity, ManagedRuntimeIdentity,
 };
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
