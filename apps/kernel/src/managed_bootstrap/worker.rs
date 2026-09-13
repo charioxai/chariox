@@ -29,6 +29,34 @@ const MAX_RETRY: Duration = Duration::from_secs(60);
 const CONFIRM_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const STABLE_RUNTIME: Duration = Duration::from_secs(30);
 
+pub(crate) const ACTIVITY_RECEIPT_ENV: &str = "CHARIOX_DISPOSABLE_WORKER_RECEIPT";
+
+/// Read the supervisor's enrollment binding without creating or refreshing identity.
+/// An exchanged receipt is usable: the child starts before Cloud confirmation,
+/// and the activity reporter retries until Cloud admits the confirmed worker.
+pub(crate) fn activity_allocation(
+    path: &Path,
+    config: &crate::config::DaemonConfig,
+    profile: &PersistedCloudRelayProfile,
+) -> Result<String, DaemonError> {
+    let receipt = WorkerReceipt::read(path)?
+        .ok_or_else(|| worker_error("worker activity receipt is missing"))?;
+    validate_cloud_url(&profile.api_url)?;
+    validate_profile(&receipt, profile)?;
+    if !config.accept_remote_leases
+        || config.lease_worker_capacity != Some(1)
+        || config.lease_worker_home_caller.as_ref() != Some(&receipt.home_caller.lease_binding())
+        || config.host_machine_id != receipt.machine_id
+        || config.daemon_id != receipt.kernel_id
+        || config.relay_public_key != receipt.relay_public_key
+    {
+        return Err(worker_error(
+            "worker activity identity conflicts with its receipt",
+        ));
+    }
+    Ok(receipt.allocation_id)
+}
+
 #[derive(Debug, Clone)]
 struct WorkerConfig {
     chariox_home: PathBuf,
@@ -423,6 +451,7 @@ fn spawn_kernel(
         .env("CHARIOX_ACCEPT_REMOTE_LEASES", "1")
         .env("CHARIOX_LEASE_WORKER_CAPACITY", "1")
         .env("CHARIOX_LEASE_WORKER_HOME_CALLER", home_caller)
+        .env(ACTIVITY_RECEIPT_ENV, &config.receipt_path)
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_PATH")
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
         .env_remove("CHARIOX_MANAGED_PROVIDER_ISOLATION")
@@ -756,6 +785,32 @@ mod tests {
         restored
             .validate_identity(&identity())
             .expect("receipt binds local identity");
+        let mut runtime =
+            crate::config::DaemonConfig::new("worker-kernel", "worker-machine", "worker");
+        runtime.relay_public_key = identity().relay_public_key;
+        runtime.lease_worker_capacity = Some(1);
+        runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
+        let profile = persisted_profile(response().cloud_relay);
+        assert_eq!(
+            activity_allocation(&path, &runtime, &profile).unwrap(),
+            "worker-1"
+        );
+        let mut confirmed = receipt.clone();
+        confirmed.status = WorkerReceiptStatus::Confirmed;
+        confirmed.confirmed_at = Some("2026-09-13T11:00:00Z".to_string());
+        confirmed.persist(&path).unwrap();
+        assert_eq!(
+            activity_allocation(&path, &runtime, &profile).unwrap(),
+            "worker-1"
+        );
+        runtime.lease_worker_capacity = None;
+        assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        runtime.lease_worker_capacity = Some(1);
+        runtime.lease_worker_home_caller = None;
+        assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
+        runtime.daemon_id = "other-kernel".to_string();
+        assert!(activity_allocation(&path, &runtime, &profile).is_err());
         let mut changed = identity();
         changed.kernel_id = "other-kernel".to_string();
         assert!(restored.validate_identity(&changed).is_err());
