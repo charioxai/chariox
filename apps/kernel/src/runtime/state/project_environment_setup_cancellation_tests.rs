@@ -103,7 +103,8 @@ async fn exercise_cancel_request(retry_immediately: bool) {
     execution.target_platform = actual_worker_platform();
     let mut definition = execution.definition.clone().unwrap();
     definition.target_platform = execution.target_platform.clone();
-    definition.validation_commands = vec!["touch started; sleep 2; touch should-not-exist".into()];
+    definition.validation_commands =
+        vec!["echo $$ > command-pid; touch started; sleep 2; touch should-not-exist".into()];
     execution.definition = Some(definition.clone());
     let request = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
         .with_agent_id("agent-1")
@@ -166,6 +167,17 @@ async fn exercise_cancel_request(retry_immediately: bool) {
             "user-1",
         )
         .await;
+    let command_alive_at_acknowledgement = if started {
+        let pid = std::fs::read_to_string(workspace.join("command-pid"))
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        // Signal zero observes only; the normal cancellation path owns cleanup.
+        unsafe { libc::kill(pid, 0) == 0 }
+    } else {
+        false
+    };
     let retry_response = if retry_immediately {
         Some(
             runtime
@@ -191,6 +203,10 @@ async fn exercise_cancel_request(retry_immediately: bool) {
         response,
         Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { .. })
     ));
+    assert!(
+        !command_alive_at_acknowledgement,
+        "kernel acknowledged cancellation before the worker command settled"
+    );
     if let Some(response) = retry_response {
         assert!(matches!(
             response,
