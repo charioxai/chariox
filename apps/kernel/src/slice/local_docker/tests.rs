@@ -234,6 +234,55 @@ fn test_root(label: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 #[test]
+fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
+    let _lock = crate::env_lock::lock();
+    let previous_path = std::env::var_os("PATH");
+    let previous_required = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+    struct Restore {
+        path: Option<std::ffi::OsString>,
+        required: Option<std::ffi::OsString>,
+        root: std::path::PathBuf,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.path.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+            match self.required.take() {
+                Some(required) => {
+                    std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", required)
+                }
+                None => std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED"),
+            }
+            let _ = std::fs::remove_dir(&self.root);
+        }
+    }
+    let empty_path = test_root("managed-broker-no-docker");
+    std::fs::create_dir_all(&empty_path).unwrap();
+    let _restore = Restore {
+        path: previous_path,
+        required: previous_required,
+        root: empty_path.clone(),
+    };
+    std::env::set_var("PATH", &empty_path);
+    std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "1");
+
+    assert!(broker::configured());
+    let error = ensure_host_docker_ready().expect_err("missing broker must fail closed");
+    assert!(
+        error.to_string().contains("managed slice Docker broker is unavailable"),
+        "the managed kernel must report the missing broker, not require its own Docker binary: {error}"
+    );
+    std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+    let local_error = ensure_host_docker_ready().expect_err("local Docker is still required");
+    assert!(local_error
+        .to_string()
+        .contains("docker is required for local Docker slices"));
+}
+
+#[cfg(unix)]
+#[test]
 fn disk_pressure_admission_fault_probe() {
     use std::os::unix::fs::PermissionsExt;
 
