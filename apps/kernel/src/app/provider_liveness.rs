@@ -67,13 +67,6 @@ pub(crate) struct ProviderProcessExit {
 }
 
 impl ProviderRunLivenessProcesses {
-    fn poll_process_running(
-        app: &mut DaemonApp,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        Ok(Self::poll_process_exit(app, provider_run_id)?.is_none())
-    }
-
     fn poll_process_exit(
         app: &mut DaemonApp,
         provider_run_id: &str,
@@ -324,13 +317,23 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             ProviderRunLivenessReconciliation::StillRunning(_) => {}
         }
 
-        let process_running =
-            ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)?;
+        let process_exit =
+            ProviderRunLivenessProcesses::poll_process_exit(self.app, provider_run_id)?;
+        if let Some(diagnostic) = process_exit
+            .as_ref()
+            .and_then(|exit| exit.terminal_diagnostic.as_deref())
+        {
+            let run = self
+                .app
+                .providers
+                .record_terminal_diagnostic(provider_run_id, diagnostic.to_string())?;
+            self.app.update_provider_run_projection(run);
+        }
         let ended_run = match ProviderRunLivenessState::reconcile_run_liveness(
             self.app,
             session_id,
             provider_run_id,
-            Some(process_running),
+            Some(process_exit.is_none()),
         )? {
             ProviderRunLivenessReconciliation::AlreadyEnded(run)
             | ProviderRunLivenessReconciliation::NewlyEnded(run) => run,

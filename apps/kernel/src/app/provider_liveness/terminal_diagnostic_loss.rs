@@ -1,5 +1,3 @@
-use super::*;
-
 use crate::app::KernelSessionService;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::{
@@ -8,6 +6,8 @@ use crate::provider::{
 use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
 
 const TERMINAL_DIAGNOSTIC: &str = "app liveness terminal diagnostic";
+const SYNTHETIC_API_KEY: &str = "sk-app-liveness-secret";
+const SYNTHETIC_TOKEN: &str = "app-liveness-token";
 
 #[test]
 fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
@@ -44,7 +44,9 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
                 "-lc".to_string(),
-                format!("printf '%s\\n' '{TERMINAL_DIAGNOSTIC}'; exit 1"),
+                format!(
+                    "printf '%s\\n' '{TERMINAL_DIAGNOSTIC} api_key={SYNTHETIC_API_KEY} token={SYNTHETIC_TOKEN}'; exit 1"
+                ),
             ],
             pty_env: std::collections::BTreeMap::new(),
             pty_env_remove: Vec::new(),
@@ -68,6 +70,7 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         "exercise app liveness reconciliation",
         PromptStatus::Queued,
     );
+    let prompt_id = prompt.id().to_string();
     app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
         .expect("prompt should start");
 
@@ -94,12 +97,66 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         ),
         "liveness reconciliation should settle the exited run before resize: {resize_result:?}"
     );
-    let provider_run = app
+    let diagnostic = {
+        let provider_run = app
+            .providers()
+            .get_run(run.id())
+            .expect("provider run should remain queryable");
+        provider_run
+            .terminal_diagnostic()
+            .expect("app-level liveness reconciliation should retain the PTY diagnostic")
+            .to_string()
+    };
+    assert!(diagnostic.contains(TERMINAL_DIAGNOSTIC), "{diagnostic}");
+    assert!(diagnostic.contains("api_key"), "{diagnostic}");
+    assert!(diagnostic.contains("token"), "{diagnostic}");
+    assert_eq!(diagnostic.matches("[redacted]").count(), 2, "{diagnostic}");
+    assert!(!diagnostic.contains(SYNTHETIC_API_KEY), "{diagnostic}");
+    assert!(!diagnostic.contains(SYNTHETIC_TOKEN), "{diagnostic}");
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should remain available");
+    assert!(
+        session_state.active_prompt_for_agent(agent.id()).is_none(),
+        "the app liveness path must settle the prompt exactly once"
+    );
+    let completed_turn = app
+        .completed_git_turn_snapshot_store()
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("app liveness settlement should remain projected");
+    assert_eq!(completed_turn.prompt_id, prompt_id);
+    assert_eq!(
+        completed_turn.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Completed
+    );
+
+    let repeated_input_result = app.send_terminal_input(
+        session.id(),
+        attachment.id(),
+        Some(run.id()),
+        b"repeated input observation",
+    );
+    assert!(
+        matches!(
+            &repeated_input_result,
+            Err(crate::error::DaemonError::InvalidProviderRunState { .. })
+        ),
+        "a repeated public input observation must not revive the ended run: {repeated_input_result:?}"
+    );
+    let diagnostic_after_input = app
         .providers()
         .get_run(run.id())
-        .expect("provider run should remain queryable");
-    let diagnostic = provider_run
+        .expect("provider run should remain queryable after repeated observation")
         .terminal_diagnostic()
-        .expect("app-level liveness reconciliation should retain the PTY diagnostic");
-    assert!(diagnostic.contains(TERMINAL_DIAGNOSTIC), "{diagnostic}");
+        .expect("terminal diagnostic should remain after repeated observation");
+    assert_eq!(diagnostic_after_input, diagnostic);
+    assert_eq!(
+        app.terminal()
+            .drain_completion_records(session.id(), attachment.id())
+            .len(),
+        1,
+        "repeated liveness observation must not settle the prompt twice"
+    );
 }
