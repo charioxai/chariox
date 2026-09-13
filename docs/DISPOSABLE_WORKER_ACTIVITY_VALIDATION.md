@@ -1,5 +1,18 @@
 # Disposable worker activity reporting
 
+## Integration status
+
+The runtime integration branch starts from account-recovery head `3b76570ba7`
+and ports bootstrap/reporter changes from PRs #317/#318. It uses the existing
+`RemoteLeaseWorker` role and `remote_lease_capacity`, not a second capacity-based
+role. Selected-home admission additionally pins kernel, realm, user, and sender
+key before the existing lease-ownership checks. The account-profile and remote
+binding implementations are unchanged from that newer base.
+
+The focused results below apply to the earlier isolated reporter revision, not
+this combined runtime. Combined type-checking and executable validation are
+pending. Do not use the old results as deployment approval.
+
 The disposable worker supervisor passes its enrollment receipt to the ordinary
 kernel activity reporter. The reporter validates the worker Machine, kernel,
 relay public key, Cloud profile, capacity, and home caller before reporting.

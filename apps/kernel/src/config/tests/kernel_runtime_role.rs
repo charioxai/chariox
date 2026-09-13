@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn selected_home_binding_requires_worker_role_and_valid_fields() {
+    let mut config = DaemonConfig::for_tests();
+    config.lease_worker_home_caller = Some(LeaseWorkerHomeCaller {
+        kernel_id: "home".into(),
+        realm_id: "realm".into(),
+        user_id: "owner".into(),
+        relay_public_key: "key".into(),
+    });
+    assert!(config.validate().is_err());
+    config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
+    config.validate().unwrap();
+    config
+        .lease_worker_home_caller
+        .as_mut()
+        .unwrap()
+        .kernel_id
+        .clear();
+    assert!(config.validate().is_err());
+    config.lease_worker_home_caller = None;
+    config.lease_worker_home_caller_parse_error = true;
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn general_kernel_role_is_the_default() {
     let config = DaemonConfig::for_tests();
     assert_eq!(config.kernel_runtime_role, KernelRuntimeRole::General);

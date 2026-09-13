@@ -44,7 +44,8 @@ pub(crate) fn activity_allocation(
     validate_cloud_url(&profile.api_url)?;
     validate_profile(&receipt, profile)?;
     if !config.accept_remote_leases
-        || config.lease_worker_capacity != Some(1)
+        || config.kernel_runtime_role != crate::config::KernelRuntimeRole::RemoteLeaseWorker
+        || config.remote_lease_capacity != Some(1)
         || config.lease_worker_home_caller.as_ref() != Some(&receipt.home_caller.lease_binding())
         || config.host_machine_id != receipt.machine_id
         || config.daemon_id != receipt.kernel_id
@@ -789,7 +790,8 @@ mod tests {
         let mut runtime =
             crate::config::DaemonConfig::new("worker-kernel", "worker-machine", "worker");
         runtime.relay_public_key = identity().relay_public_key;
-        runtime.lease_worker_capacity = Some(1);
+        runtime.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
         let profile = persisted_profile(response().cloud_relay);
         assert_eq!(
@@ -804,9 +806,9 @@ mod tests {
             activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
         );
-        runtime.lease_worker_capacity = None;
+        runtime.remote_lease_capacity = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
-        runtime.lease_worker_capacity = Some(1);
+        runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
