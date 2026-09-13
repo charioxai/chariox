@@ -30,9 +30,13 @@ use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
 };
 
+#[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
+#[path = "project_environment_setup_policy.rs"]
 mod project_environment_setup_policy;
+#[path = "project_environment_setup_storage.rs"]
 mod project_environment_setup_storage;
+#[path = "project_environment_setup_validation.rs"]
 mod project_environment_setup_validation;
 use project_environment_setup_dispatch::*;
 use project_environment_setup_policy::*;
