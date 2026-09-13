@@ -646,16 +646,18 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
         "Environment=HOME=/var/lib/chariox-docker/home",
         "Environment=XDG_RUNTIME_DIR=/run/chariox-docker",
         "Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock",
-        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh",
+        "ExecStartPre=+/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh prepare",
+        "ExecStart=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh start",
+        "ExecStartPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh ready",
+        "ExecStopPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh stop",
         "RuntimeDirectory=chariox-docker",
         "RuntimeDirectoryMode=0700",
         "StateDirectory=chariox-docker",
         "StateDirectoryMode=0700",
-        "Delegate=yes",
         "ProtectSystem=strict",
-        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs",
         "ProtectKernelTunables=false",
-        "RestrictSUIDSGID=false",
+        "RestrictSUIDSGID=true",
+        "NoNewPrivileges=true",
         "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker",
     ] {
         assert!(
@@ -667,7 +669,12 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
     assert!(!unit.contains("User=root"));
     assert!(!unit.contains("SupplementaryGroups=chariox-slice"));
     assert!(!unit.contains("/var/lib/chariox/home"));
-    assert!(!unit.contains("RestrictSUIDSGID=true"));
+    let engine = include_str!("../../slice-linux-docker/chariox-rootless-engine.service");
+    assert!(engine.contains("ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=systemd"));
+    assert!(engine.contains("Delegate=cpu cpuset io memory pids"));
+    assert!(engine.contains("Restart=no"));
+    assert!(!engine.contains("/var/run/docker.sock"));
+    assert!(!engine.lines().any(|line| line.starts_with("User=")));
 }
 
 #[test]

@@ -94,8 +94,11 @@ The broader `managed_bootstrap::` run executed 39 tests: 38 passed and one faile
 direct `dockerd-rootless.sh` ExecStart and `RestrictSUIDSGID=false`. The checked-in
 service instead uses `managed-rootless-service.sh` lifecycle hooks and
 `RestrictSUIDSGID=true`, introduced by `722c73d88a`. Neither file was changed by
-the allocation-worker upgrade fix. Reconcile that contract test with the lifecycle
-implementation before treating the integration's bootstrap suite as green.
+the allocation-worker upgrade fix. The test now checks the lifecycle hooks,
+the hardened adapter, and the user engine's systemd resource delegation. The
+rerun passed all 39 bootstrap tests on the original machine after a 3m12s build;
+the focused JavaScript Docker-authority contract test also passed. No production
+service configuration was changed for this correction.
 
 - Exercise bootstrap confirmation delay, restart cursor recovery, and
   busy-to-idle reporting against the paired Cloud service.
