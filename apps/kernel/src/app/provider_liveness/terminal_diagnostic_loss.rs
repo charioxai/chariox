@@ -145,12 +145,16 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         ),
         "a repeated public input observation must not revive the ended run: {repeated_input_result:?}"
     );
-    let diagnostic_after_input = app
-        .providers()
-        .get_run(run.id())
-        .expect("provider run should remain queryable after repeated observation")
-        .terminal_diagnostic()
-        .expect("terminal diagnostic should remain after repeated observation");
+    let diagnostic_after_input = {
+        let provider_run = app
+            .providers()
+            .get_run(run.id())
+            .expect("provider run should remain queryable after repeated observation");
+        provider_run
+            .terminal_diagnostic()
+            .expect("terminal diagnostic should remain after repeated observation")
+            .to_string()
+    };
     assert_eq!(diagnostic_after_input, diagnostic);
     assert_eq!(
         app.terminal()
