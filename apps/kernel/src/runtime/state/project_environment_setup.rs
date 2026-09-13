@@ -811,6 +811,10 @@ impl KernelRuntimeState {
 }
 
 #[cfg(test)]
+#[path = "project_environment_setup_cancellation_tests.rs"]
+mod cancellation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::local::{
@@ -819,7 +823,7 @@ mod tests {
     };
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
-    fn execution() -> SetupExecution {
+    pub(super) fn execution() -> SetupExecution {
         SetupExecution {
             owner_user_id: "user-1".to_string(),
             operation_id: "setup-1".to_string(),
