@@ -4,15 +4,39 @@ use crate::transport::relay_peer::{RelayPeerEvent, RemoteGitTurnContext};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn leased_worker_failure_settles_and_retains_completion_while_home_is_offline() {
-    assert_offline_worker_failure_settlement(false).await;
+    assert_offline_worker_failure_settlement(
+        false,
+        "You've hit your session limit",
+        crate::provider::ProviderRunTermination::process_exit(17, 42),
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn leased_worker_launch_failure_settles_without_contacting_home() {
-    assert_offline_worker_failure_settlement(true).await;
+    assert_offline_worker_failure_settlement(
+        true,
+        "You've hit your session limit",
+        crate::provider::ProviderRunTermination::process_exit(17, 42),
+    )
+    .await;
 }
 
-async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leased_worker_signal_termination_survives_failed_turn_reconnect() {
+    assert_offline_worker_failure_settlement(
+        false,
+        "provider process was interrupted",
+        crate::provider::ProviderRunTermination::signal("SIGTERM", 43),
+    )
+    .await;
+}
+
+async fn assert_offline_worker_failure_settlement(
+    launch_failure: bool,
+    diagnostic: &str,
+    provider_termination: crate::provider::ProviderRunTermination,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncWriteExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -34,8 +58,6 @@ async fn assert_offline_worker_failure_settlement(launch_failure: bool) {
     config.relay_url = Some(format!("ws://{address}"));
     config.relay_token = Some("offline-relay".to_string());
     let (app, runtime, _, _) = agent_config_runtime_with_config(config).await;
-    let diagnostic = "You've hit your session limit";
-    let provider_termination = crate::provider::ProviderRunTermination::process_exit(17, 42);
     let (leased_agent, provider_run_id) = {
         let mut app = app.lock().await;
         let lease = RemoteLeaseRuntime::new(&mut app)

@@ -295,6 +295,7 @@ fn apply_result_message(
         .and_then(Value::as_bool)
         .unwrap_or(subtype != "success");
     if is_error {
+        batch.explicit_provider_error = true;
         batch.terminal_failure = Some(
             value
                 .get("error")
