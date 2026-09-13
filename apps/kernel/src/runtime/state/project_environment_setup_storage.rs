@@ -29,6 +29,8 @@ pub(super) struct SetupEntry {
     pub(super) status: ProjectEnvironmentSetupStatus,
     pub(super) fingerprint: String,
     pub(super) cancel_requested: bool,
+    #[serde(skip)]
+    active_executions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,20 @@ struct PersistedSetupEntry {
 pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
     durable_state_store: Option<DurableKernelStateStore>,
+    execution_settled: Arc<tokio::sync::Notify>,
+}
+
+pub(super) struct SetupExecutionGuard {
+    store: ProjectEnvironmentSetupStore,
+    operation_id: String,
+    attempt: u32,
+}
+
+impl Drop for SetupExecutionGuard {
+    fn drop(&mut self) {
+        self.store
+            .finish_execution(&self.operation_id, self.attempt);
+    }
 }
 
 impl Default for ProjectEnvironmentSetupStore {
@@ -47,6 +63,7 @@ impl Default for ProjectEnvironmentSetupStore {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
             durable_state_store: None,
+            execution_settled: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -58,6 +75,7 @@ impl ProjectEnvironmentSetupStore {
         let store = Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
             durable_state_store: Some(durable_state_store.clone()),
+            execution_settled: Arc::new(tokio::sync::Notify::new()),
         };
         let events =
             match durable_state_store.load_events_by_kind("project.environment_setup.updated") {
@@ -153,6 +171,7 @@ impl ProjectEnvironmentSetupStore {
             status: status.clone(),
             fingerprint,
             cancel_requested: false,
+            active_executions: 0,
         };
         entries.insert(status.operation_id.clone(), entry.clone());
         drop(entries);
@@ -174,10 +193,12 @@ impl ProjectEnvironmentSetupStore {
             .get_mut(operation_id)
             .ok_or_else(|| setup_error("setup operation was not found"))?;
         ensure_entry_owner(entry, session_id, caller_user_id)?;
-        if !matches!(
-            entry.status.phase,
-            ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
-        ) {
+        if entry.active_executions != 0
+            || !matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
             return Err(setup_error(
                 "only failed or cancelled setup operations can be retried",
             ));
@@ -317,6 +338,16 @@ impl ProjectEnvironmentSetupStore {
         session_id: &str,
         caller_user_id: &str,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        self.request_cancel(operation_id, session_id, caller_user_id, false)
+    }
+
+    pub(super) fn request_cancel(
+        &self,
+        operation_id: &str,
+        session_id: &str,
+        caller_user_id: &str,
+        requires_worker_acknowledgement: bool,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let mut entries = self
             .entries
             .lock()
@@ -332,11 +363,13 @@ impl ProjectEnvironmentSetupStore {
                 | ProjectEnvironmentSetupPhase::Cancelled
         ) {
             entry.cancel_requested = true;
-            entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+            if entry.active_executions == 0 && !requires_worker_acknowledgement {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+            }
             entry.status.message = Some("setup cancellation requested".to_string());
             entry.status.failure_code = None;
             entry.status.failure_message = None;
-            entry.status.retryable = true;
+            entry.status.retryable = entry.status.phase == ProjectEnvironmentSetupPhase::Cancelled;
             entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         }
         let status = entry.status.clone();
@@ -344,6 +377,89 @@ impl ProjectEnvironmentSetupStore {
         drop(entries);
         self.persist(&persisted);
         Ok(status)
+    }
+
+    pub(super) fn begin_execution(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+    ) -> Option<SetupExecutionGuard> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries.get_mut(operation_id)?;
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return None;
+        }
+        entry.active_executions += 1;
+        Some(SetupExecutionGuard {
+            store: self.clone(),
+            operation_id: operation_id.to_owned(),
+            attempt,
+        })
+    }
+
+    fn finish_execution(&self, operation_id: &str, attempt: u32) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get_mut(operation_id) else {
+            return;
+        };
+        if entry.status.attempt != attempt {
+            return;
+        }
+        entry.active_executions = entry.active_executions.saturating_sub(1);
+        if entry.active_executions == 0 && entry.cancel_requested {
+            entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+            entry.status.message = Some("setup cancellation completed on the worker".to_owned());
+            entry.status.retryable = true;
+            entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+            let persisted = entry.clone();
+            drop(entries);
+            self.persist(&persisted);
+        } else {
+            drop(entries);
+        }
+        self.execution_settled.notify_waiters();
+    }
+
+    pub(super) async fn wait_for_cancellation(
+        &self,
+        operation_id: &str,
+        caller_user_id: &str,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let settled = self.execution_settled.notified();
+                tokio::pin!(settled);
+                settled.as_mut().enable();
+                let status = self.get(operation_id, caller_user_id)?;
+                if matches!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Ready
+                        | ProjectEnvironmentSetupPhase::Failed
+                        | ProjectEnvironmentSetupPhase::Cancelled
+                ) {
+                    return Ok(status);
+                }
+                settled.await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            setup_error("setup cancellation is still waiting for worker execution to settle")
+        })?
     }
 
     pub(super) fn is_cancelled(&self, operation_id: &str, attempt: u32) -> bool {
@@ -371,6 +487,7 @@ impl ProjectEnvironmentSetupStore {
             return false;
         };
         if entry.status.attempt != attempt
+            || entry.cancel_requested
             || matches!(
                 entry.status.phase,
                 ProjectEnvironmentSetupPhase::Ready
@@ -397,6 +514,7 @@ impl ProjectEnvironmentSetupStore {
             return;
         };
         if entry.status.attempt != attempt
+            || entry.cancel_requested
             || matches!(
                 entry.status.phase,
                 ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Cancelled
