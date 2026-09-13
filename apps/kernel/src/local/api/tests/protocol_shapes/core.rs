@@ -907,10 +907,15 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
+        "2f099df9e0c18c28bb8c4ae95bcbc27533ae749936d9bd1c49516c90462fe92e"
+    );
+    // Only the advertised peer version differs from these historical bindings.
+    snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
+        serde_json::json!(46);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())),
         "7b756e3eb67f1d580dbd31a4bed1ef9ec852c519565e8ac8ae8ef9c481f6396c"
     );
-    // The peer advertisement changes to v46; the existing remote binding
-    // remains byte-compatible when advertising the preceding peer version.
     snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
         serde_json::json!(45);
     let previous = serde_json::to_string(&snapshot).unwrap();
