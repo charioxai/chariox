@@ -64,3 +64,22 @@ Evidence is retained outside Git under
 This closes only the fresh provisioning/admission check. It does not prove a
 rendered frame, live input, reconnect, legacy saved-state restart, the Web button,
 provider execution, Cloud VM Path 1, or active/idle soak acceptance.
+
+## Public screenshot and input checkpoint
+
+A subsequent fresh worker passed StartRoomEnvironment, screenshot capture and
+chunk retrieval through the home kernel. The PNG checksum matched the kernel's
+artifact metadata, and visual inspection showed the real Chromium desktop.
+
+Submitting input before desktop takeover returned
+`environment_input_takeover_required`, as intended. After the public takeover
+request, pointer click and keyboard text actions both completed. The retrieved
+desktop PNG visibly contained `CHARIOX_PUBLIC_INPUT_VERIFIED` in Chromium's
+address bar. No navigation or external request was submitted.
+
+Evidence: `public-input-report.json` and `public-input-screenshot.png` in the
+same external evidence directory. StopSlice, DeleteSlice and DeleteSession
+succeeded, with no remaining drill container, volume or listener. Detach returned
+`attachment_not_found`; its cause remains unverified and is not counted as a
+successful detach. These observations still do not prove encrypted video frame
+decoding or reconnect in the Web viewer.
