@@ -29,6 +29,20 @@ const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
+test("repository release policy permits protocol 324 to 325 upgrade and rollback", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const current = join(root, "current")
+  const target = join(root, "target")
+  const policyPath = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
+  await mkdir(current)
+  await put(join(target, policyPath), await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json")))
+  for (const args of [[current, "324", target, "325"], [target, "325", current, "324"]]) {
+    const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition", ...args], { encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr)
+  }
+})
+
 function rawPublicKey(publicKey) {
   const der = publicKey.export({ format: "der", type: "spki" })
   return der.subarray(der.length - 32)
