@@ -952,8 +952,8 @@ mod tests {
         use crate::app::DaemonApp;
         use crate::config::KernelRuntimeRole;
         use crate::local::{
-            GetManagedContextLaunchTargetRequest, GetManagedContextTransferStatusRequest,
-            StartManagedContextTransferRequest, UpdateProjectWorkspacesRequest,
+            GetManagedContextTransferStatusRequest, StartManagedContextTransferRequest,
+            UpdateProjectWorkspacesRequest,
         };
         use crate::managed_context::development::DevelopmentRepositoryRole;
         use crate::managed_context::outbound_service::{
@@ -1378,16 +1378,14 @@ mod tests {
             .is_some_and(|status| status.phase == ManagedContextOutboundOperationPhase::Completed)
         {
             Some(
-                dispatch_public(
-                    &worker_router,
-                    LocalDaemonRequest::GetManagedContextLaunchTarget(
-                        GetManagedContextLaunchTargetRequest {
-                            context_id: ticket.context_plan.context_id().to_string(),
-                            plan_digest: ticket.context_plan.package_binding().plan_digest,
-                        },
+                worker_app
+                    .lock()
+                    .await
+                    .managed_context_transfer_store()
+                    .launch_target(
+                        ticket.context_plan.context_id(),
+                        &ticket.context_plan.package_binding().plan_digest,
                     ),
-                )
-                .await,
             )
         } else {
             None
@@ -1448,9 +1446,8 @@ mod tests {
         assert_eq!(ticket_request.1["machineId"], home_machine_id);
         assert_eq!(ticket_request.1["kernelId"], home_kernel_id);
         assert_eq!(ticket_request.1["relayRealmId"], "default");
-        let Some(Ok(LocalDaemonResponse::ManagedContextLaunchTarget { target })) = launch_result
-        else {
-            panic!("worker should expose the completed public launch target: {launch_result:?}");
+        let Some(Ok(target)) = launch_result else {
+            panic!("worker should retain the completed launch target: {launch_result:?}");
         };
         let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
             repositories, ..
