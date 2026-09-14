@@ -1839,6 +1839,25 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     empty_worker_task
         .await
         .expect("empty external worker should stop");
+    let empty_worker_disconnected = async {
+        for _ in 0..200 {
+            if registry
+                .read()
+                .await
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+                .is_none()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+    .await;
+    assert!(
+        empty_worker_disconnected,
+        "empty replacement worker should be absent before the withheld-retry worker registers"
+    );
 
     // Exercise the distinct stale-attempt path through the authenticated
     // public Start/Cancel/Retry/Get seam. The retained worker keeps its
