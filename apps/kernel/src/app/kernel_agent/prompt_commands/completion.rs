@@ -46,6 +46,7 @@ impl<'a> KernelAgentService<'a> {
             provider_run_id,
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            None,
         )
     }
 
@@ -61,6 +62,24 @@ impl<'a> KernelAgentService<'a> {
             provider_run_id,
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            None,
+        )
+    }
+
+    pub(crate) fn fail_active_prompt_with_termination(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        self.complete_active_prompt_for_kernel(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            provider_termination,
         )
     }
 
@@ -71,6 +90,7 @@ impl<'a> KernelAgentService<'a> {
         provider_run_id: Option<&str>,
         next_queued_prompt: Option<&PromptQueueItem>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<PromptCompletion, DaemonError> {
         let admission = self.prepare_prompt_completion_admission(
             session_id,
@@ -82,11 +102,13 @@ impl<'a> KernelAgentService<'a> {
             KernelPromptCompletionAdmission::Remote { .. } => {
                 let mut completed = self.complete_remote_prompt_from_admission(admission)?;
                 completed.settlement_status = settlement_status;
+                completed.provider_termination = provider_termination.clone();
                 self.finish_remote_prompt_completion(completed)?
             }
             KernelPromptCompletionAdmission::Local { .. } => {
                 let mut completed = self.complete_local_prompt_from_admission(admission)?;
                 completed.settlement_status = settlement_status;
+                completed.provider_termination = provider_termination;
                 self.finish_local_prompt_completion(completed)?
             }
         };
@@ -190,7 +212,7 @@ impl<'a> KernelAgentService<'a> {
             );
         self.app
             .completed_git_turn_snapshot_store()
-            .record_prompt_settlement(
+            .record_prompt_settlement_with_termination(
                 &completion.session_id,
                 &completion.agent_id,
                 completion_provider_run_id
@@ -200,6 +222,7 @@ impl<'a> KernelAgentService<'a> {
                 settled_at_ms,
                 started_at_ms,
                 completion.settlement_status,
+                completion.provider_termination.clone(),
             );
         if !flow_control::prompt_completion_recorded(
             self.app,
