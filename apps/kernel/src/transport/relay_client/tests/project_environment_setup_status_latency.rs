@@ -388,8 +388,8 @@ async fn authenticated_public_concurrent_missing_setup_polls_share_a_bounded_rec
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some("secret".to_string());
     config_home.relay_heartbeat_ms = 50;
-    // Keep the RED fast; the production setup-status budget is selected by
-    // the shared kernel policy, not by this test deadline.
+    // Keep the public regression fast with the existing lower relay timeout;
+    // production's dedicated setup-status policy defaults to five seconds.
     config_home.relay_request_timeout_ms = 100;
 
     let mut config_worker = DaemonConfig::for_tests();

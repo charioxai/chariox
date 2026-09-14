@@ -38,9 +38,30 @@ struct PersistedSetupEntry {
     entry: SetupEntry,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteSetupRecoveryDecision {
+    Dispatch,
+    InFlight,
+    Unknown,
+    Acknowledged,
+    Cancelled,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RemoteSetupRecoveryState {
+    InFlight { attempt: u32 },
+    Unknown { attempt: u32 },
+    Acknowledged { attempt: u32 },
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
+    // Recovery reservations are deliberately process-local: an uncertain
+    // replay must fence same-attempt duplicate Starts until a worker status,
+    // explicit cancellation, or a new retry attempt resolves it.
+    remote_recoveries: Arc<Mutex<BTreeMap<String, RemoteSetupRecoveryState>>>,
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
 }
@@ -62,6 +83,7 @@ impl Default for ProjectEnvironmentSetupStore {
     fn default() -> Self {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
+            remote_recoveries: Arc::new(Mutex::new(BTreeMap::new())),
             durable_state_store: None,
             execution_settled: Arc::new(tokio::sync::Notify::new()),
         }
@@ -74,6 +96,7 @@ impl ProjectEnvironmentSetupStore {
     ) -> Self {
         let store = Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
+            remote_recoveries: Arc::new(Mutex::new(BTreeMap::new())),
             durable_state_store: Some(durable_state_store.clone()),
             execution_settled: Arc::new(tokio::sync::Notify::new()),
         };
@@ -253,6 +276,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.clear_remote_recovery(operation_id);
         Ok((execution, attempt, status))
     }
 
@@ -307,6 +331,138 @@ impl ProjectEnvironmentSetupStore {
             entry.status.clone(),
             entry.cancel_requested,
         ))
+    }
+
+    pub(super) fn begin_remote_recovery(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+    ) -> RemoteSetupRecoveryDecision {
+        let entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get(operation_id) else {
+            return RemoteSetupRecoveryDecision::Stale;
+        };
+        if entry.status.attempt != attempt {
+            return RemoteSetupRecoveryDecision::Stale;
+        }
+        if entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return RemoteSetupRecoveryDecision::Cancelled;
+        }
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        match remote_recoveries.get(operation_id).copied() {
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt,
+            }) if current_attempt == attempt => RemoteSetupRecoveryDecision::InFlight,
+            Some(RemoteSetupRecoveryState::Unknown {
+                attempt: current_attempt,
+            }) if current_attempt == attempt => RemoteSetupRecoveryDecision::Unknown,
+            Some(RemoteSetupRecoveryState::Acknowledged {
+                attempt: current_attempt,
+            }) if current_attempt == attempt => RemoteSetupRecoveryDecision::Acknowledged,
+            Some(_) => RemoteSetupRecoveryDecision::Stale,
+            None => {
+                remote_recoveries.insert(
+                    operation_id.to_owned(),
+                    RemoteSetupRecoveryState::InFlight { attempt },
+                );
+                RemoteSetupRecoveryDecision::Dispatch
+            }
+        }
+    }
+
+    pub(super) fn remote_recovery_dispatch_allowed(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+    ) -> bool {
+        let entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get(operation_id) else {
+            return false;
+        };
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || !matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Requested
+                    | ProjectEnvironmentSetupPhase::Preparing
+                    | ProjectEnvironmentSetupPhase::Validating
+            )
+        {
+            return false;
+        }
+        let remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        matches!(
+            remote_recoveries.get(operation_id),
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt
+            }) if *current_attempt == attempt
+        )
+    }
+
+    pub(super) fn mark_remote_recovery_unknown(&self, operation_id: &str, attempt: u32) {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        if matches!(
+            remote_recoveries.get(operation_id),
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt
+            }) if *current_attempt == attempt
+        ) {
+            remote_recoveries.insert(
+                operation_id.to_owned(),
+                RemoteSetupRecoveryState::Unknown { attempt },
+            );
+        }
+    }
+
+    pub(super) fn mark_remote_recovery_observed(&self, operation_id: &str, attempt: u32) {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        let should_acknowledge = matches!(
+            remote_recoveries.get(operation_id),
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt
+            })
+                | Some(RemoteSetupRecoveryState::Unknown {
+                    attempt: current_attempt
+                }) if *current_attempt == attempt
+        );
+        if should_acknowledge {
+            remote_recoveries.insert(
+                operation_id.to_owned(),
+                RemoteSetupRecoveryState::Acknowledged { attempt },
+            );
+        }
+    }
+
+    pub(super) fn clear_remote_recovery(&self, operation_id: &str) {
+        self.remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned")
+            .remove(operation_id);
     }
 
     pub(super) fn remote_status(
@@ -366,11 +522,19 @@ impl ProjectEnvironmentSetupStore {
         if let Some(definition) = definition {
             entry.execution.definition = Some(definition);
         }
+        let cancellation_requested = entry.cancel_requested;
         entry.status = status.clone();
-        entry.cancel_requested = status.phase == ProjectEnvironmentSetupPhase::Cancelled;
+        entry.cancel_requested = match status.phase {
+            ProjectEnvironmentSetupPhase::Cancelled => true,
+            ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Failed => false,
+            ProjectEnvironmentSetupPhase::Requested
+            | ProjectEnvironmentSetupPhase::Preparing
+            | ProjectEnvironmentSetupPhase::Validating => cancellation_requested,
+        };
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.mark_remote_recovery_observed(operation_id, status.attempt);
         Ok(status)
     }
 
@@ -418,6 +582,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.clear_remote_recovery(operation_id);
         Ok(status)
     }
 
