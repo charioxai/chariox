@@ -45,6 +45,9 @@ use crate::runtime::router::CommandRouter;
 use crate::session::CreateSessionRequest;
 
 #[cfg(unix)]
+const MAX_PROVIDER_FIXTURE_TRACE_ENTRIES: usize = 64;
+
+#[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
@@ -262,7 +265,8 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 status.phase,
                 ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
             ),
-            "setup failed before cancellation: {status:?}"
+            "setup failed before cancellation: {status:?}; provider trace: {}",
+            provider_fixture.diagnostics()
         );
         assert!(
             Instant::now() < validation_deadline,
@@ -389,6 +393,7 @@ fn response_status(response: LocalDaemonResponse) -> crate::local::ProjectEnviro
 struct UtilityProviderFixture {
     address: String,
     stop: Arc<AtomicBool>,
+    state: Arc<Mutex<UtilityProviderState>>,
     join: Option<thread::JoinHandle<()>>,
 }
 
@@ -398,6 +403,16 @@ struct UtilityProviderState {
     next_session: u64,
     session_id: Option<String>,
     prompt_id: Option<String>,
+    trace: Vec<String>,
+}
+
+#[cfg(unix)]
+impl UtilityProviderState {
+    fn record(&mut self, entry: impl Into<String>) {
+        if self.trace.len() < MAX_PROVIDER_FIXTURE_TRACE_ENTRIES {
+            self.trace.push(entry.into());
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -433,12 +448,24 @@ impl UtilityProviderFixture {
         Self {
             address,
             stop,
+            state,
             join: Some(join),
         }
     }
 
     fn address(&self) -> String {
         self.address.clone()
+    }
+
+    fn diagnostics(&self) -> String {
+        let state = self
+            .state
+            .lock()
+            .expect("provider fixture state should not poison");
+        if state.trace.is_empty() {
+            return "<no requests observed>".to_string();
+        }
+        state.trace.join(" -> ")
     }
 }
 
@@ -465,6 +492,10 @@ fn serve_provider_request(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
+    state
+        .lock()
+        .expect("provider fixture state should not poison")
+        .record(format!("{method} {path}"));
     match (method, path) {
         ("GET", "/global/health") => {
             write_json_response(&mut stream, 200, &serde_json::json!({"healthy": true}));
@@ -480,6 +511,19 @@ fn serve_provider_request(
             write_json_response(&mut stream, 200, &serde_json::json!({"id": session_id}));
         }
         ("GET", "/event") => {
+            let headers =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n";
+            if stream
+                .write_all(headers.as_bytes())
+                .and_then(|_| stream.flush())
+                .is_err()
+            {
+                return;
+            }
+            state
+                .lock()
+                .expect("provider fixture state should not poison")
+                .record("GET /event:headers");
             let deadline = Instant::now() + Duration::from_secs(3);
             let (session_id, prompt_id) = loop {
                 let state = state
@@ -500,16 +544,16 @@ fn serve_provider_request(
                 "type": "session.status",
                 "properties": {
                     "sessionID": session_id,
-                    "status": {"type": "idle"}
+                "status": {"type": "idle"}
                 }
             });
             let body = format!("data: {event}\n\n");
-            let headers = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
-            );
-            let _ = stream.write_all(headers.as_bytes());
             let _ = stream.write_all(body.as_bytes());
             let _ = stream.flush();
+            state
+                .lock()
+                .expect("provider fixture state should not poison")
+                .record("GET /event:event");
             let _ = prompt_id;
             while !stop.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(10));
@@ -593,8 +637,13 @@ fn read_provider_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let header_text = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
     let content_length = header_text
         .lines()
-        .find_map(|line| line.strip_prefix("Content-Length:"))
-        .and_then(|value| value.trim().parse::<usize>().ok())
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     let body_start = header_end + 4;
     while bytes.len() < body_start + content_length {
