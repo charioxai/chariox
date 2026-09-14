@@ -480,6 +480,7 @@ test("real public create binds and starts the home-owned slice before attach use
   let deleteSliceRequest;
   let detachFromSessionRequest;
   let getRoomEnvironmentStateRequest;
+  let getSliceRequest;
   let getSliceDisplayEndpointRequest;
   let relayStatusRequest;
   let startSliceRequest;
@@ -495,6 +496,7 @@ test("real public create binds and starts the home-owned slice before attach use
       deleteSliceRequest,
       detachFromSessionRequest,
       getRoomEnvironmentStateRequest,
+      getSliceRequest,
       getSliceDisplayEndpointRequest,
       relayStatusRequest,
       startSliceRequest,
@@ -562,17 +564,6 @@ test("real public create binds and starts the home-owned slice before attach use
                 worker_machine_id: null,
                 created_at_ms: 1,
                 updated_at_ms: 1,
-                display_endpoint: {
-                  slice_id: "slice-1",
-                  kind: "selkies",
-                  url: "http://127.0.0.1:1234/",
-                  access: "local",
-                  expires_at_ms: null,
-                  capabilities: ["view", "websocket", "h264", "software_encoding"],
-                  stream_protocol: null,
-                  stream_id: null,
-                  peer_public_key: null,
-                },
               },
             },
           };
@@ -606,6 +597,40 @@ test("real public create binds and starts the home-owned slice before attach use
                 worker_kernel_ref: "worker-ref-1",
                 worker_kernel_id: "daemon-1",
                 worker_machine_id: "machine-1",
+                created_at_ms: 1,
+                updated_at_ms: 2,
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "GetSlice")) {
+          assert.deepEqual(envelope.request, getSliceRequest("slice-1"));
+          response = {
+            Slice: {
+              slice: {
+                id: "slice-1",
+                name: "managed-parity-run-1-selkies",
+                owner_kernel_id: "daemon-1",
+                owner_machine_id: "machine-1",
+                environment_session_id: "room-1",
+                session_id: "room-1",
+                backend: "ssh_docker",
+                os: "linux",
+                display_mode: "headed",
+                status: "running",
+                worker_kernel_ref: "worker-ref-1",
+                worker_kernel_id: "daemon-1",
+                worker_machine_id: "machine-1",
+                display_endpoint: {
+                  slice_id: "slice-1",
+                  kind: "selkies",
+                  url: "http://127.0.0.1:1234/",
+                  access: "local",
+                  expires_at_ms: null,
+                  capabilities: ["view", "websocket", "h264", "software_encoding"],
+                  stream_protocol: null,
+                  stream_id: null,
+                  peer_public_key: null,
+                },
                 created_at_ms: 1,
                 updated_at_ms: 2,
               },
@@ -732,6 +757,7 @@ test("real public create binds and starts the home-owned slice before attach use
       deleteSliceRequest,
       detachFromSessionRequest,
       getRoomEnvironmentStateRequest,
+      getSliceRequest,
       getSliceDisplayEndpointRequest,
       relayStatusRequest,
       startSliceRequest,
@@ -782,6 +808,8 @@ test("real public create binds and starts the home-owned slice before attach use
       displayBackend: "selkies",
       sliceId: "slice-1",
     });
+    assert.equal(Object.hasOwn(created, "display_endpoint"), false,
+      "stopped CreateSlice must not be treated as the backend observation");
     for (const field of ["roomCount", "browserCount", "profileCount"]) {
       assert.equal(Object.hasOwn(created, field), false, `${field} must not be manufactured`);
     }
@@ -827,6 +855,7 @@ test("real public create binds and starts the home-owned slice before attach use
       "CreateSlice",
       "BindRoomEnvironmentSlice",
       "StartSlice",
+      "GetSlice",
       "RelayStatus",
       "GetRoomEnvironmentState",
       "RelayStatus",
