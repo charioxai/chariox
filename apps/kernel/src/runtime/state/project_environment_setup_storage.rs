@@ -493,7 +493,7 @@ impl ProjectEnvironmentSetupStore {
         matches!(
             remote_recoveries.recoveries.get(operation_id),
             Some(RemoteSetupRecoveryState::InFlight {
-                attempt: current_attempt
+                attempt: current_attempt,
                 ..
             }) if *current_attempt == attempt
         )
@@ -563,11 +563,12 @@ impl ProjectEnvironmentSetupStore {
             _ => false,
         };
         if should_acknowledge {
+            let observed_through = remote_recoveries.next_observation_generation;
             remote_recoveries.recoveries.insert(
                 operation_id.to_owned(),
                 RemoteSetupRecoveryState::Acknowledged {
                     attempt,
-                    observed_through: remote_recoveries.next_observation_generation,
+                    observed_through,
                     binding_id: binding_id.to_owned(),
                 },
             );
