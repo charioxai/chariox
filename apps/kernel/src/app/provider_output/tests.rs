@@ -190,7 +190,11 @@ fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_erro
         .providers()
         .get_run(run.id())
         .expect("provider run should remain available");
-    assert!(run.terminal_diagnostic().is_none());
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "ordinary reviewer output gained a diagnostic: {:?}",
+        run.terminal_diagnostic()
+    );
 }
 
 #[test]
