@@ -206,6 +206,7 @@ test("managed parity selkies attach propagates public-client errors and rejects 
               status: {
                 configured: true,
                 connected: true,
+                relay_token_configured: true,
                 daemon_id: "other-kernel",
                 machine_id: "machine-1",
               },

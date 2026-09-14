@@ -14,6 +14,7 @@ import { runManagedBrowserComputerParityHarness } from "./lib/managed-browser-co
 const repoRoot = path.resolve(import.meta.dirname, "../../..")
 
 let incompleteRunDir = null
+let transport = null
 const interruption = new AbortController()
 const interrupt = () => interruption.abort()
 process.once("SIGINT", interrupt)
@@ -31,7 +32,7 @@ try {
   }
   incompleteRunDir = runDir
   await mkdir(runDir, { recursive: true, mode: 0o700 })
-  const transport = await imported.createManagedBrowserComputerParityTransport({
+  transport = await imported.createManagedBrowserComputerParityTransport({
     evidenceRoot: runDir,
   })
   const report = await runManagedBrowserComputerParityHarness({ config, transport, signal: interruption.signal })
@@ -57,6 +58,7 @@ try {
   process.stderr.write("managed browser/computer parity harness failed before producing validated evidence\n")
   process.exitCode = 1
 } finally {
+  await transport?.close?.().catch(() => {})
   process.removeListener("SIGINT", interrupt)
   process.removeListener("SIGTERM", interrupt)
 }

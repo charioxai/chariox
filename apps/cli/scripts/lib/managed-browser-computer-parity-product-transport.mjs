@@ -112,7 +112,9 @@ async function runSelkiesAttach({ client, requestApi, request }) {
 
   const relayResponse = await client.send(requestApi.relayStatusRequest())
   const relayStatus = responseVariant(relayResponse, "RelayStatus", "selkies.attach").status
-  if (relayStatus?.configured !== true || relayStatus.connected !== true) {
+  if (relayStatus?.configured !== true
+    || relayStatus.connected !== true
+    || relayStatus.relay_token_configured !== true) {
     throw new Error("managed parity selkies.attach requires a connected configured relay")
   }
   const environmentResponse = await client.send(
