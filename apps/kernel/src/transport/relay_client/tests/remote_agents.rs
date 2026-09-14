@@ -1,5 +1,239 @@
 #![allow(unused_imports)]
 use super::support::*;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+#[test]
+fn public_remote_completion_preserves_worker_termination() {
+    run_async_with_large_test_stack(
+        "public-remote-completion-worker-termination",
+        public_remote_completion_preserves_worker_termination_async,
+    );
+}
+
+async fn public_remote_completion_preserves_worker_termination_async() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("termination-test-token".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("relay listener should have address");
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = server_shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+
+    let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let mut worker_config = DaemonConfig::for_tests();
+    worker_config.daemon_id = "termination-worker".to_string();
+    worker_config.daemon_alias = Some("termination-worker".to_string());
+    worker_config.host_machine_id = "termination-machine".to_string();
+    let worker_private_key = worker_config.relay_private_key.clone();
+    let worker_public_key = worker_config.relay_public_key.clone();
+    let (mut worker_socket, _) = connect_async(&relay_url)
+        .await
+        .expect("worker fixture should connect to relay");
+    worker_socket
+        .send(Message::Text(
+            serde_json::to_string(&chariox_relay::protocol::RelayEnvelope::DaemonRegister {
+                registration: chariox_relay::protocol::DaemonRegistration {
+                    auth_token: "termination-test-token".to_string(),
+                    daemon_id: worker_config.daemon_id.clone(),
+                    machine_id: worker_config.host_machine_id.clone(),
+                    machine_alias: Some("termination-machine".to_string()),
+                    os_name: Some("Linux".to_string()),
+                    kernel_started_at_ms: crate::session::unix_epoch_ms(),
+                    daemon_alias: worker_config.daemon_alias.clone(),
+                    kernel_alias: Some("termination-worker".to_string()),
+                    public_key: worker_public_key.clone(),
+                    capabilities: vec!["kernel_ws".to_string()],
+                    available_providers: vec!["managed-dev-stub".to_string()],
+                    provider_accounts: Vec::new(),
+                    accepting_remote_leases: true,
+                    leased_agent_count: 1,
+                    local_session_count: 0,
+                },
+            })
+            .expect("worker registration should serialize")
+            .into(),
+        ))
+        .await
+        .expect("worker registration should send");
+    wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
+
+    let mut home_config = DaemonConfig::for_tests();
+    home_config.daemon_id = "termination-home".to_string();
+    home_config.host_machine_id = "termination-home-machine".to_string();
+    home_config.relay_url = Some(relay_url);
+    home_config.relay_token = Some("termination-test-token".to_string());
+    home_config.relay_request_timeout_ms = 2_000;
+    let mut app = DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap");
+    let (session_id, agent_id, prompt_id, active_prompt) = {
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-remote-termination",
+                "worktree-remote-termination",
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "remote-termination-client",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("home attachment should be created");
+        app.agents()
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: worker_config.daemon_id.clone(),
+                    worker_machine_id: worker_config.host_machine_id.clone(),
+                    execution_lease_id: "termination-lease".to_string(),
+                    leased_agent_id: "termination-leased-agent".to_string(),
+                    active_worker_provider_run_id: Some("worker-provider-run".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to worker");
+        let PromptSubmissionOutcome::Started { prompt } = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "remote prompt with worker termination",
+                Vec::new(),
+            )
+            .expect("remote prompt should start")
+        else {
+            panic!("remote prompt should be active");
+        };
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            prompt.id().to_string(),
+            prompt,
+        )
+    };
+
+    let termination = crate::provider::ProviderRunTermination::process_exit(23, 17_600);
+    let worker_response = tokio::spawn(async move {
+        let (relay_request_id, home_public_key) = loop {
+            let message = timeout(Duration::from_secs(2), worker_socket.next())
+                .await
+                .expect("worker should receive completion request before timeout")
+                .expect("worker relay socket should remain open")
+                .expect("worker relay frame should decode");
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let envelope = serde_json::from_str::<chariox_relay::protocol::RelayEnvelope>(&text)
+                .expect("worker relay envelope should decode");
+            let chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerRequest {
+                relay_request_id,
+                encrypted_request,
+                ..
+            } = envelope
+            else {
+                continue;
+            };
+            let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                &worker_private_key,
+                &encrypted_request,
+            )
+            .expect("worker should decrypt completion request");
+            assert!(matches!(
+                serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
+                    .expect("completion request should decode"),
+                RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id }
+                    if leased_agent_id == "termination-leased-agent"
+            ));
+            break (relay_request_id, decrypted.sender_public_key);
+        };
+        let response = RelayPeerResponse::LeasedPromptCompleted {
+            provider_run_id: Some("worker-provider-run".to_string()),
+            provider_diagnostic: None,
+            provider_termination: Some(termination),
+            git_observations: Vec::new(),
+            workspace_live_sync_change: None,
+            completion: crate::session::PromptCompletion {
+                completed: active_prompt,
+                started_next: None,
+            },
+        };
+        let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &worker_private_key,
+            &home_public_key,
+            &serde_json::to_vec(&response).expect("worker response should serialize"),
+        )
+        .expect("worker response should encrypt");
+        worker_socket
+            .send(Message::Text(
+                serde_json::to_string(
+                    &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
+                        relay_request_id,
+                        encrypted_response: Some(encrypted_response),
+                        error: None,
+                    },
+                )
+                .expect("worker response envelope should serialize")
+                .into(),
+            ))
+            .await
+            .expect("worker response should send");
+        let _ = worker_socket.close(None).await;
+    });
+
+    let completion =
+        crate::transport::TransportService::complete_active_prompt(&mut app, &session_id)
+            .expect("public remote completion should succeed");
+    worker_response
+        .await
+        .expect("worker response task should join");
+    assert_eq!(completion.completed.id(), prompt_id);
+    let projected = app
+        .completed_git_turn_snapshot_store()
+        .latest_projection_for_agent(&session_id, &agent_id)
+        .expect("remote completion should be projected");
+    assert_eq!(
+        projected.provider_termination,
+        Some(crate::provider::ProviderRunTermination::process_exit(
+            23, 17_600
+        )),
+        "normal public completion must retain the worker-reported termination"
+    );
+    assert_eq!(
+        projected.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+    );
+    assert_eq!(
+        app.agents()
+            .get_agent(&agent_id)
+            .expect("remote agent should remain available")
+            .state(),
+        crate::agent::AgentState::Error,
+    );
+
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("relay server task should join");
+}
 
 #[test]
 fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
