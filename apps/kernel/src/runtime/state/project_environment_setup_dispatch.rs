@@ -198,6 +198,7 @@ pub(super) async fn refresh_remote_setup_binding(
     state: &KernelRuntimeState,
     execution: &SetupExecution,
     attempt: u32,
+    observation_generation: u64,
 ) -> Result<SetupExecution, DaemonError> {
     let stale_leased_agent_id = remote_leased_agent_id(execution)?;
     let current_agent = state.owned.agent_store.get_agent(&execution.agent_id)?;
@@ -234,6 +235,7 @@ pub(super) async fn refresh_remote_setup_binding(
             attempt,
             &stale_leased_agent_id,
             rebound_execution.leased_agent_id.clone(),
+            observation_generation,
         )?;
     Ok(rebound_execution)
 }

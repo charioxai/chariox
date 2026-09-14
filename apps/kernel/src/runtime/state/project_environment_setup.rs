@@ -195,10 +195,7 @@ impl KernelRuntimeState {
                                     return Err(error);
                                 }
                                 Err(error) => {
-                                    recovery_reservation.disarm();
-                                    self.owned
-                                        .project_environment_setups
-                                        .clear_remote_recovery(&execution.operation_id);
+                                    recovery_reservation.clear_if_matches();
                                     self.settle_remote_setup_recovery_rejection(
                                         &execution,
                                         status.attempt,
@@ -394,10 +391,7 @@ impl KernelRuntimeState {
                                     return Err(error);
                                 }
                                 Err(error) => {
-                                    recovery_reservation.disarm();
-                                    self.owned
-                                        .project_environment_setups
-                                        .clear_remote_recovery(&execution.operation_id);
+                                    recovery_reservation.clear_if_matches();
                                     if let DaemonError::RelayTransport {
                                         code,
                                         retryable: false,
@@ -565,7 +559,14 @@ impl KernelRuntimeState {
                 &stale_binding_id,
                 observation_generation,
             );
-            let result = match refresh_remote_setup_binding(&state, &execution, attempt).await {
+            let result = match refresh_remote_setup_binding(
+                &state,
+                &execution,
+                attempt,
+                observation_generation,
+            )
+            .await
+            {
                 Ok(rebound_execution) => match rebound_execution.remote_leased_agent_id.clone() {
                     Some(rebound_binding_id) => {
                         recovery_reservation.rebind(&rebound_binding_id);
@@ -577,8 +578,7 @@ impl KernelRuntimeState {
                             &execution.owner_user_id,
                         ) {
                             Ok(Some(status)) => {
-                                recovery_reservation.disarm();
-                                store.clear_remote_recovery(&execution.operation_id);
+                                recovery_reservation.clear_if_matches();
                                 Ok(status)
                             }
                             Ok(None) => {
@@ -615,8 +615,7 @@ impl KernelRuntimeState {
             };
             let result = match result {
                 Err(error) if remote_setup_recovery_permanent_rejection_code(&error).is_some() => {
-                    recovery_reservation.disarm();
-                    store.clear_remote_recovery(&execution.operation_id);
+                    recovery_reservation.clear_if_matches();
                     state.settle_remote_setup_recovery_rejection(&execution, attempt, &error);
                     Err(error)
                 }
@@ -1654,6 +1653,7 @@ mod tests {
                 1,
                 "leased-agent-other",
                 "leased-agent-new".to_string(),
+                0,
             )
             .expect_err("home binding refresh must not overwrite a changed binding");
         assert!(changed.to_string().contains("binding changed"));
@@ -1827,6 +1827,7 @@ mod tests {
                 1,
                 "leased-agent-old",
                 "leased-agent-new".to_string(),
+                observation_generation,
             )
             .expect("the active recovery should rebind to the fresh lease");
         reservation.rebind("leased-agent-new");
@@ -1891,6 +1892,7 @@ mod tests {
                 new_attempt,
                 "leased-agent-old",
                 "leased-agent-new".to_string(),
+                old_observation_generation,
             )
             .expect("the newer attempt should use the fresh lease");
         let new_observation_generation = store.begin_remote_observation();
@@ -1904,9 +1906,14 @@ mod tests {
             RemoteSetupRecoveryDecision::Dispatch
         );
 
-        // This is the current late-continuation clear_remote_recovery call.
-        // It must not erase the newer attempt-two reservation.
-        store.clear_remote_recovery("setup-1");
+        // This is the old continuation's identity-scoped cleanup. It must
+        // not erase the newer attempt-two reservation.
+        assert!(!store.clear_remote_recovery_if_matches(
+            "setup-1",
+            1,
+            "leased-agent-old",
+            old_observation_generation,
+        ));
         let later_observation_generation = store.begin_remote_observation();
         assert_eq!(
             store.begin_remote_recovery(
@@ -1917,6 +1924,64 @@ mod tests {
             ),
             RemoteSetupRecoveryDecision::InFlight,
             "a late old rejection must not release the newer recovery reservation"
+        );
+    }
+
+    #[test]
+    fn late_recovery_rebind_cannot_mutate_a_newer_observation_reservation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let old_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                old_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        assert!(store.clear_remote_recovery_if_matches(
+            "setup-1",
+            1,
+            "leased-agent-old",
+            old_observation_generation,
+        ));
+
+        let new_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                new_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+
+        // The old refresh continuation arrives after the newer observation
+        // has reserved the same attempt. Its binding update must be fenced by
+        // the old generation as well as attempt and binding.
+        store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                "leased-agent-new".to_string(),
+                old_observation_generation,
+            )
+            .expect("the old refresh still updates the home binding CAS");
+        assert!(
+            !store.remote_recovery_dispatch_allowed(
+                "setup-1",
+                1,
+                "leased-agent-new",
+                new_observation_generation,
+            ),
+            "an old refresh must not make a newer reservation dispatchable under its replacement binding"
         );
     }
 

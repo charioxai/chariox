@@ -139,6 +139,16 @@ impl RemoteSetupRecoveryReservationGuard {
     pub(super) fn rebind(&mut self, binding_id: &str) {
         self.binding_id = binding_id.to_owned();
     }
+
+    pub(super) fn clear_if_matches(&mut self) {
+        self.store.clear_remote_recovery_if_matches(
+            &self.operation_id,
+            self.attempt,
+            &self.binding_id,
+            self.observation_generation,
+        );
+        self.disarm();
+    }
 }
 
 impl Drop for RemoteSetupRecoveryReservationGuard {
@@ -414,6 +424,7 @@ impl ProjectEnvironmentSetupStore {
         attempt: u32,
         expected_leased_agent_id: &str,
         replacement_leased_agent_id: String,
+        observation_generation: u64,
     ) -> Result<SetupExecution, DaemonError> {
         if replacement_leased_agent_id.trim().is_empty() {
             return Err(setup_error(
@@ -469,6 +480,7 @@ impl ProjectEnvironmentSetupStore {
             attempt,
             expected_leased_agent_id,
             &replacement_leased_agent_id,
+            observation_generation,
         );
         Ok(execution)
     }
@@ -479,6 +491,7 @@ impl ProjectEnvironmentSetupStore {
         attempt: u32,
         expected_leased_agent_id: &str,
         replacement_leased_agent_id: &str,
+        observation_generation: u64,
     ) {
         let mut remote_recoveries = self
             .remote_recoveries
@@ -490,19 +503,29 @@ impl ProjectEnvironmentSetupStore {
         match recovery {
             RemoteSetupRecoveryState::InFlight {
                 attempt: current_attempt,
+                observation_generation: current_generation,
                 binding_id,
                 ..
             }
             | RemoteSetupRecoveryState::Unknown {
                 attempt: current_attempt,
+                observation_generation: current_generation,
                 binding_id,
                 ..
+            } if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && binding_id == expected_leased_agent_id =>
+            {
+                *binding_id = replacement_leased_agent_id.to_owned();
             }
-            | RemoteSetupRecoveryState::Acknowledged {
+            RemoteSetupRecoveryState::Acknowledged {
                 attempt: current_attempt,
+                observed_through,
                 binding_id,
-                ..
-            } if *current_attempt == attempt && binding_id == expected_leased_agent_id => {
+            } if *current_attempt == attempt
+                && *observed_through == observation_generation
+                && binding_id == expected_leased_agent_id =>
+            {
                 *binding_id = replacement_leased_agent_id.to_owned();
             }
             _ => {}
@@ -806,6 +829,40 @@ impl ProjectEnvironmentSetupStore {
             .expect("remote setup recovery lock should not be poisoned")
             .recoveries
             .remove(operation_id);
+    }
+
+    pub(super) fn clear_remote_recovery_if_matches(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) -> bool {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        let matches = matches!(
+            remote_recoveries.recoveries.get(operation_id),
+            Some(
+                RemoteSetupRecoveryState::InFlight {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                }
+                | RemoteSetupRecoveryState::Unknown {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                },
+            ) if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && current_binding_id == binding_id
+        );
+        if matches {
+            remote_recoveries.recoveries.remove(operation_id);
+        }
+        matches
     }
 
     pub(super) fn remote_status(
