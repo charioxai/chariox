@@ -477,6 +477,8 @@ test("real public create binds and starts the home-owned slice before attach use
   let attachToSessionRequest;
   let bindRoomEnvironmentSliceRequest;
   let createSliceRequest;
+  let deleteSliceRequest;
+  let detachFromSessionRequest;
   let getRoomEnvironmentStateRequest;
   let getSliceDisplayEndpointRequest;
   let relayStatusRequest;
@@ -490,6 +492,8 @@ test("real public create binds and starts the home-owned slice before attach use
       attachToSessionRequest,
       bindRoomEnvironmentSliceRequest,
       createSliceRequest,
+      deleteSliceRequest,
+      detachFromSessionRequest,
       getRoomEnvironmentStateRequest,
       getSliceDisplayEndpointRequest,
       relayStatusRequest,
@@ -651,6 +655,39 @@ test("real public create binds and starts the home-owned slice before attach use
               },
             },
           };
+        } else if (Object.hasOwn(envelope.request, "DetachFromSession")) {
+          assert.deepEqual(envelope.request, detachFromSessionRequest("attachment-web-1"));
+          response = {
+            SessionDetached: {
+              attachment: {
+                id: "attachment-web-1",
+                session_id: "room-1",
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "DeleteSlice")) {
+          assert.deepEqual(envelope.request, deleteSliceRequest("slice-1"));
+          response = {
+            SliceDeleted: {
+              slice: {
+                id: "slice-1",
+                name: "managed-parity-run-1-selkies",
+                owner_kernel_id: "daemon-1",
+                owner_machine_id: "machine-1",
+                environment_session_id: "room-1",
+                session_id: "room-1",
+                backend: "ssh_docker",
+                os: "linux",
+                display_mode: "headed",
+                status: "stopped",
+                worker_kernel_ref: "worker-ref-1",
+                worker_kernel_id: null,
+                worker_machine_id: null,
+                created_at_ms: 1,
+                updated_at_ms: 3,
+              },
+            },
+          };
         } else {
           throw new Error(`unexpected managed create request ${JSON.stringify(envelope.request)}`);
         }
@@ -682,6 +719,8 @@ test("real public create binds and starts the home-owned slice before attach use
       attachToSessionRequest,
       bindRoomEnvironmentSliceRequest,
       createSliceRequest,
+      deleteSliceRequest,
+      detachFromSessionRequest,
       getRoomEnvironmentStateRequest,
       getSliceDisplayEndpointRequest,
       relayStatusRequest,
@@ -744,6 +783,12 @@ test("real public create binds and starts the home-owned slice before attach use
     assert.equal(attached.attachmentId, "attachment-web-1");
     assert.equal(opened.sliceId, "slice-1");
     assert.equal(opened.attachmentId, "attachment-web-1");
+    const cleaned = await transport.run("cleanup.perform", { scope: "run_owned_resources" });
+    assert.deepEqual(cleaned, {
+      cleaned: true,
+      sliceId: "slice-1",
+      attachmentIds: ["attachment-web-1"],
+    });
     assert.deepEqual(receivedRequests.map((request) => Object.keys(request)[0]), [
       "CreateSlice",
       "BindRoomEnvironmentSlice",
@@ -753,6 +798,8 @@ test("real public create binds and starts the home-owned slice before attach use
       "GetRoomEnvironmentState",
       "AttachToSession",
       "GetSliceDisplayEndpoint",
+      "DetachFromSession",
+      "DeleteSlice",
     ]);
     assert.ifError(serverError);
   } finally {
