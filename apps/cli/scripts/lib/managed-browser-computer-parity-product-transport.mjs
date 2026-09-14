@@ -314,6 +314,7 @@ async function runSelkiesCreate({
     displayClient,
     requestApi,
     roomId,
+    environmentId: binding.environmentId,
     sliceId: ownedResources.sliceId,
     signal,
     step: "selkies.create",
@@ -509,6 +510,7 @@ async function observeAuthoritativeResourceCounts({
   displayClient,
   requestApi,
   roomId,
+  environmentId,
   sliceId,
   signal,
   step,
@@ -544,11 +546,54 @@ async function observeAuthoritativeResourceCounts({
   if (!environmentSlices.some((slice) => slice?.id === sliceId)) {
     throw new Error(`${step} inventory did not return the created environment slice`)
   }
+  const getResourceInventoryRequest = requireRequestConstructor(
+    requestApi,
+    "getRoomEnvironmentResourceInventoryRequest",
+  )
+  const inventoryResponse = await sendWithAbortSignal(
+    displayClient,
+    getResourceInventoryRequest(roomId, sliceId),
+    signal,
+    `${step} worker resource inventory`,
+  )
+  const inventory = responseVariant(
+    inventoryResponse,
+    "RoomEnvironmentResourceInventory",
+    `${step} worker resource inventory`,
+  ).inventory
+  if (!inventory || typeof inventory !== "object"
+    || inventory.session_id !== roomId
+    || inventory.environment_id !== environmentId
+    || inventory.slice_id !== sliceId) {
+    throw new Error(`${step} worker resource inventory returned the wrong Room, Environment, or slice`)
+  }
+  const browserIds = requireUniqueIdentityArray(
+    inventory.browser_ids,
+    `${step} worker resource inventory.browser_ids`,
+  )
+  const profileIds = requireUniqueIdentityArray(
+    inventory.profile_ids,
+    `${step} worker resource inventory.profile_ids`,
+  )
+  if (browserIds.length !== 1 || profileIds.length !== 1) {
+    throw new Error(
+      `${step} worker resource inventory requires exactly one worker browser and profile identity`,
+    )
+  }
   return {
     roomCount,
-    browserCount: environmentSlices.length,
-    profileCount: environmentSlices.length,
+    browserCount: browserIds.length,
+    profileCount: profileIds.length,
   }
+}
+
+function requireUniqueIdentityArray(value, label) {
+  const values = requireArray(value, label)
+  const ids = values.map((value) => requireText(value, `${label} identity`).trim())
+  if (new Set(ids).size !== ids.length) {
+    throw new Error(`managed parity response requires unique ${label} identities`)
+  }
+  return ids
 }
 
 function resolveOwnedSliceId(request, ownedResources, step, { requireOwned = false } = {}) {

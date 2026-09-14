@@ -8,12 +8,22 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { BrowserActionError } from "./browser-controller-actions.mjs";
+import {
+  BrowserResourceInventoryError,
+  observeBrowserResources,
+  validateBrowserResourceInventory,
+} from "./browser-controller-resources.mjs";
 
 let browserImportModule;
 
 export async function handleBrowserControllerRequest(
   request,
-  { processId = process.pid, browser = new BrowserCdpClient(), signal } = {},
+  {
+    processId = process.pid,
+    browser = new BrowserCdpClient(),
+    resourceInventory = observeBrowserResources,
+    signal,
+  } = {},
 ) {
   if (!request || !Number.isSafeInteger(request.id) || request.id <= 0) {
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
@@ -27,9 +37,15 @@ export async function handleBrowserControllerRequest(
       });
     }
     if (request.method === "browser.reconcile") {
+      const reconciled = await browser.reconcile(request.params?.viewport);
+      const observedInventory = reconciled?.resource_inventory
+        ?? await resourceInventory();
       return successResponse(
         request.id,
-        await browser.reconcile(request.params?.viewport),
+        {
+          ...reconciled,
+          resource_inventory: validateBrowserResourceInventory(observedInventory),
+        },
       );
     }
     if (request.method === "browser.snapshot") {
@@ -132,7 +148,9 @@ export async function handleBrowserControllerRequest(
     );
   } catch (error) {
     const code =
-      error instanceof BrowserControllerError || error instanceof BrowserActionError
+      error instanceof BrowserControllerError
+        || error instanceof BrowserActionError
+        || error instanceof BrowserResourceInventoryError
         ? error.code
         : "browser_controller_internal";
     return errorResponse(
@@ -149,11 +167,13 @@ export class BrowserControllerStdioServer {
     output = process.stdout,
     processId = process.pid,
     browser = new BrowserCdpClient(),
+    resourceInventory = observeBrowserResources,
   } = {}) {
     this.input = input;
     this.output = output;
     this.processId = processId;
     this.browser = browser;
+    this.resourceInventory = resourceInventory;
   }
 
   async run() {
@@ -218,6 +238,7 @@ export class BrowserControllerStdioServer {
           const response = await handleBrowserControllerRequest(request, {
             processId: this.processId,
             browser: this.browser,
+            resourceInventory: this.resourceInventory,
             signal: action?.controller.signal,
           });
           if (action) action.response = response;
