@@ -471,3 +471,292 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("real public create binds and starts the home-owned slice before attach uses returned identities", async () => {
+  let LocalIpcClient;
+  let attachToSessionRequest;
+  let bindRoomEnvironmentSliceRequest;
+  let createSliceRequest;
+  let getRoomEnvironmentStateRequest;
+  let getSliceDisplayEndpointRequest;
+  let relayStatusRequest;
+  let startSliceRequest;
+  let decryptRelayPayload;
+  let encryptRelayPayload;
+  let WebSocketServer;
+  try {
+    ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
+    ({
+      attachToSessionRequest,
+      bindRoomEnvironmentSliceRequest,
+      createSliceRequest,
+      getRoomEnvironmentStateRequest,
+      getSliceDisplayEndpointRequest,
+      relayStatusRequest,
+      startSliceRequest,
+    } = await import(kernelRequestsDistUrl.href));
+    ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
+    ({ WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `real managed Selkies create regression requires the built kernel-client dist and existing ws dependency; ${detail}`,
+      { cause: error },
+    );
+  }
+
+  const worker = createECDH("prime256v1");
+  const workerPublicKey = worker.generateKeys().toString("base64");
+  const server = new WebSocketServer({ port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const endpoint = `ws://127.0.0.1:${address.port}`;
+  const receivedRequests = [];
+  let serverError;
+  server.on("connection", (socket) => {
+    socket.on("message", (raw) => {
+      try {
+        const frame = JSON.parse(raw.toString());
+        if (frame.kind === "client_connect") {
+          assert.equal(frame.auth_token, "operator-test-token");
+          assert.deepEqual(frame.target, { daemon_id: "daemon-1", daemon_alias: null });
+          socket.send(JSON.stringify({
+            kind: "client_connected",
+            target: frame.target,
+            daemon_public_key: workerPublicKey,
+          }));
+          return;
+        }
+        if (frame.kind !== "client_request") return;
+        const envelope = JSON.parse(decryptRelayPayload(worker.getPrivateKey(), frame.encrypted_request));
+        receivedRequests.push(envelope.request);
+        let response;
+        if (Object.hasOwn(envelope.request, "CreateSlice")) {
+          assert.deepEqual(envelope.request, createSliceRequest({
+            name: "managed-parity-run-1-selkies",
+            backend: "ssh_docker",
+            displayMode: "headed",
+            displayBackend: "selkies",
+            workerKernelRef: "worker-ref-1",
+            base: "clean",
+          }));
+          response = {
+            SliceCreated: {
+              slice: {
+                id: "slice-1",
+                name: "managed-parity-run-1-selkies",
+                owner_kernel_id: "daemon-1",
+                owner_machine_id: "machine-1",
+                environment_session_id: "room-1",
+                session_id: "room-1",
+                backend: "ssh_docker",
+                os: "linux",
+                display_mode: "headed",
+                status: "stopped",
+                worker_kernel_ref: "worker-ref-1",
+                worker_kernel_id: null,
+                worker_machine_id: null,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "BindRoomEnvironmentSlice")) {
+          assert.deepEqual(envelope.request, bindRoomEnvironmentSliceRequest("room-1", "slice-1"));
+          response = {
+            RoomEnvironmentSlice: {
+              binding: {
+                session_id: "room-1",
+                slice_id: "slice-1",
+                owner_kernel_id: "daemon-1",
+                worker_kernel_ref: "worker-ref-1",
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "StartSlice")) {
+          assert.deepEqual(envelope.request, startSliceRequest("slice-1"));
+          response = {
+            SliceStarted: {
+              slice: {
+                id: "slice-1",
+                name: "managed-parity-run-1-selkies",
+                owner_kernel_id: "daemon-1",
+                owner_machine_id: "machine-1",
+                environment_session_id: "room-1",
+                session_id: "room-1",
+                backend: "ssh_docker",
+                os: "linux",
+                display_mode: "headed",
+                status: "running",
+                worker_kernel_ref: "worker-ref-1",
+                worker_kernel_id: "daemon-1",
+                worker_machine_id: "machine-1",
+                created_at_ms: 1,
+                updated_at_ms: 2,
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentState")) {
+          assert.deepEqual(envelope.request, getRoomEnvironmentStateRequest("room-1"));
+          response = {
+            RoomEnvironmentState: {
+              environment: {
+                session_id: "room-1",
+                environment_id: "environment-1",
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "RelayStatus")) {
+          assert.deepEqual(envelope.request, relayStatusRequest());
+          response = {
+            RelayStatus: {
+              status: {
+                configured: true,
+                connected: true,
+                daemon_id: "daemon-1",
+                machine_id: "machine-1",
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "AttachToSession")) {
+          const requestValue = envelope.request.AttachToSession;
+          assert.equal(requestValue.session_id, "room-1");
+          assert.match(requestValue.client_id, /^managed-parity-web-/);
+          assert.deepEqual(requestValue, attachToSessionRequest("room-1", requestValue.client_id));
+          response = {
+            SessionAttached: {
+              attachment: {
+                id: "attachment-web-1",
+                session_id: "room-1",
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "GetSliceDisplayEndpoint")) {
+          assert.deepEqual(envelope.request, getSliceDisplayEndpointRequest("slice-1", {
+            sessionId: "room-1",
+            attachmentId: "attachment-web-1",
+            viewerPublicKey: "viewer-public-key-1",
+          }));
+          response = {
+            SliceDisplayEndpoint: {
+              endpoint: {
+                slice_id: "slice-1",
+                kind: "selkies",
+                url: "wss://display.example/stream-1",
+                access: "tunnel",
+                stream_protocol: "chariox-display-v1",
+                stream_id: "stream-1",
+                peer_public_key: "peer-key-1",
+              },
+            },
+          };
+        } else {
+          throw new Error(`unexpected managed create request ${JSON.stringify(envelope.request)}`);
+        }
+        const encryptedResponse = encryptRelayPayload(
+          frame.encrypted_request.sender_public_key,
+          Buffer.from(JSON.stringify(response), "utf8"),
+        ).payload;
+        socket.send(JSON.stringify({
+          kind: "client_response",
+          request_id: frame.request_id,
+          encrypted_response: encryptedResponse,
+        }));
+      } catch (error) {
+        serverError = error;
+        socket.close();
+      }
+    });
+  });
+
+  const client = new LocalIpcClient(endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: "daemon-1",
+  });
+  const imported = await importProductTransport();
+  let opened;
+  const transport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
+    client,
+    requestApi: {
+      attachToSessionRequest,
+      bindRoomEnvironmentSliceRequest,
+      createSliceRequest,
+      getRoomEnvironmentStateRequest,
+      getSliceDisplayEndpointRequest,
+      relayStatusRequest,
+      startSliceRequest,
+    },
+    displayTransport: {
+      async openSelkiesDisplayStream(options) {
+        opened = options;
+        return {
+          endpoint: {
+            stream_protocol: "chariox-display-v1",
+            stream_id: "stream-1",
+          },
+          async sendControl() {},
+          async receive() {
+            return { kind: "binary", data: Uint8Array.from([4, 1, 2, 3]) };
+          },
+          async close() {},
+        };
+      },
+    },
+  });
+  try {
+    const created = await transport.run("selkies.create", {
+      runId: "managed-parity-run-1",
+      binding: {
+        kernelId: "daemon-1",
+        machineId: "machine-1",
+        roomId: "room-1",
+        environmentId: "environment-1",
+      },
+      displayBackend: null,
+      kernelOwnedDefault: true,
+    });
+    assert.deepEqual(created, {
+      kernelId: "daemon-1",
+      machineId: "machine-1",
+      roomId: "room-1",
+      environmentId: "environment-1",
+      displayBackend: "selkies",
+      roomCount: 1,
+      browserCount: 1,
+      profileCount: 1,
+      sliceId: "slice-1",
+    });
+
+    const attached = await transport.run("selkies.attach", {
+      runId: "managed-parity-run-1",
+      binding: {
+        kernelId: "daemon-1",
+        machineId: "machine-1",
+        roomId: "room-1",
+        environmentId: "environment-1",
+      },
+      client: "web",
+      displayBackend: "selkies",
+    });
+    assert.equal(attached.attached, true);
+    assert.equal(attached.sliceId, "slice-1");
+    assert.equal(attached.attachmentId, "attachment-web-1");
+    assert.equal(opened.sliceId, "slice-1");
+    assert.equal(opened.attachmentId, "attachment-web-1");
+    assert.deepEqual(receivedRequests.map((request) => Object.keys(request)[0]), [
+      "CreateSlice",
+      "BindRoomEnvironmentSlice",
+      "StartSlice",
+      "GetRoomEnvironmentState",
+      "RelayStatus",
+      "GetRoomEnvironmentState",
+      "AttachToSession",
+      "GetSliceDisplayEndpoint",
+    ]);
+    assert.ifError(serverError);
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
