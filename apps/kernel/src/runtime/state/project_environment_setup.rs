@@ -76,8 +76,74 @@ impl KernelRuntimeState {
                 if execution.remote_leased_agent_id.is_some() {
                     let setup = get_remote_setup_status(self, &execution).await;
                     let status = match setup {
+                        Ok(setup)
+                            if !cancel_requested
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                )
+                                && is_replayable_stale_remote_setup_status(
+                                    &status,
+                                    &setup.status,
+                                ) =>
+                        {
+                            // A retained worker may still report a retryable
+                            // terminal record from the previous attempt after
+                            // home accepted Retry. Reuse the authenticated
+                            // public retry request; do not accept that stale
+                            // record as the current attempt.
+                            match retry_remote_setup(self, &execution).await {
+                                Ok(setup) => self.reconcile_remote_project_environment_setup(
+                                    &execution, setup,
+                                )?,
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
                         Ok(setup) => {
                             self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        }
+                        Err(error)
+                            if is_stale_remote_setup_binding_error(&error)
+                                && !cancel_requested
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                ) =>
+                        {
+                            // A worker restart clears its ephemeral lease
+                            // authorization. Refresh the home binding through
+                            // the normal lease provisioning path, rebind the
+                            // retained worker operation through the
+                            // authenticated Retry request, and reconcile only
+                            // the current home attempt.
+                            match refresh_remote_setup_binding_and_retry(
+                                self,
+                                &execution,
+                                status.attempt,
+                            )
+                            .await
+                            {
+                                Ok((rebound_execution, setup)) => self
+                                    .reconcile_remote_project_environment_setup(
+                                        &rebound_execution,
+                                        setup,
+                                    )?,
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
+                                Err(error) => return Err(error),
+                            }
                         }
                         Err(error)
                             if is_missing_remote_setup_operation(&error)
@@ -326,22 +392,24 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
         operation_id: &str,
     ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let target_platform = actual_worker_platform();
         let (current_status, definition) = self
             .owned
             .project_environment_setups
-            .remote_status(operation_id, leased_agent_id)?;
-        let config = self.owned.config_projection.snapshot();
+            .rebind_remote_worker_target(
+                operation_id,
+                leased_agent_id,
+                &target,
+                &config.host_machine_id,
+                &target_platform,
+            )?;
         ensure_worker_setup_status_target(&target, &current_status, &config)?;
         let (execution, attempt, status) = self.owned.project_environment_setups.retry(
             operation_id,
             &target.home_session_id,
             &target.owner_user_id,
         )?;
-        if execution.remote_leased_agent_id.as_deref() != Some(leased_agent_id) {
-            return Err(setup_error(
-                "setup operation is not bound to this leased agent",
-            ));
-        }
         ensure_worker_setup_status_target(&target, &status, &config)?;
         self.spawn_project_environment_setup(execution, attempt);
         Ok(RelayProjectEnvironmentSetupStatus { status, definition })
@@ -1027,6 +1095,125 @@ mod tests {
             .begin_at_attempt(execution(), 0)
             .expect_err("worker recovery must reject an invalid attempt");
         assert!(zero.to_string().contains("attempt must be positive"));
+    }
+
+    #[test]
+    fn stale_remote_setup_recovery_is_narrow_and_rejects_stale_ready() {
+        let stale_binding = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: false,
+        };
+        assert!(is_stale_remote_setup_binding_error(&stale_binding));
+
+        let business_unauthorized = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "provider rejected the business request".to_string(),
+            retryable: false,
+        };
+        assert!(!is_stale_remote_setup_binding_error(&business_unauthorized));
+        let retryable_ownership_error = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: true,
+        };
+        assert!(!is_stale_remote_setup_binding_error(
+            &retryable_ownership_error
+        ));
+
+        let mut current = ProjectEnvironmentSetupStatus {
+            operation_id: "setup-1".to_string(),
+            project_id: "project-1".to_string(),
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            worker_id: "machine-1".to_string(),
+            platform: "linux-x86_64".to_string(),
+            phase: ProjectEnvironmentSetupPhase::Requested,
+            attempt: 2,
+            progress_percent: 0,
+            definition_digest: None,
+            validation: None,
+            message: None,
+            failure_code: None,
+            failure_message: None,
+            retryable: true,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        let mut stale = current.clone();
+        stale.attempt = 1;
+        stale.phase = ProjectEnvironmentSetupPhase::Cancelled;
+        stale.retryable = true;
+        assert!(is_replayable_stale_remote_setup_status(&current, &stale));
+
+        stale.phase = ProjectEnvironmentSetupPhase::Ready;
+        stale.retryable = false;
+        assert!(!is_replayable_stale_remote_setup_status(&current, &stale));
+        let expected = execution();
+        let stale_ready = validate_remote_setup_status(&expected, 2, &stale, None)
+            .expect_err("stale Ready must fail the unchanged identity/attempt validator");
+        assert!(stale_ready.to_string().contains("identity or attempt"));
+
+        current.agent_id = "different-agent".to_string();
+        assert!(!is_replayable_stale_remote_setup_status(&current, &stale));
+    }
+
+    #[test]
+    fn remote_setup_binding_rebind_is_compare_and_swap_and_updates_worker_target() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let changed = store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                1,
+                "leased-agent-other",
+                "leased-agent-new".to_string(),
+            )
+            .expect_err("home binding refresh must not overwrite a changed binding");
+        assert!(changed.to_string().contains("binding changed"));
+
+        store
+            .cancel("setup-1", "session-1", "user-1")
+            .expect("worker setup cancellation should be recorded");
+        let target = crate::app::LeasedProjectEnvironmentSetupTarget {
+            owner_user_id: "user-1".to_string(),
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-1".to_string(),
+            backing_session_id: "worker-session-2".to_string(),
+            backing_agent_id: "worker-agent-2".to_string(),
+            workspace_id: "/worker/project".to_string(),
+        };
+        let (worker_status, _) = store
+            .rebind_remote_worker_target(
+                "setup-1",
+                "leased-agent-new",
+                &target,
+                "machine-1",
+                "linux-x86_64",
+            )
+            .expect("retryable worker state should accept the authenticated fresh binding");
+        assert_eq!(worker_status.phase, ProjectEnvironmentSetupPhase::Cancelled);
+        let (restarted_execution, attempt, restarted_status) = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect("rebound worker setup should retry");
+        assert_eq!(attempt, 2);
+        assert_eq!(
+            restarted_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+        );
+        assert_eq!(
+            restarted_execution.remote_leased_agent_id.as_deref(),
+            Some("leased-agent-new")
+        );
+        assert_eq!(restarted_execution.execution_session_id, "worker-session-2");
+        assert_eq!(restarted_execution.execution_agent_id, "worker-agent-2");
+        assert_eq!(restarted_execution.workspace_id, "/worker/project");
     }
 
     #[test]

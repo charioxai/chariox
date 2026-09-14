@@ -104,6 +104,45 @@ pub(super) fn is_missing_remote_setup_operation(error: &DaemonError) -> bool {
     ) && code == crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE
 }
 
+pub(super) fn is_stale_remote_setup_binding_error(error: &DaemonError) -> bool {
+    if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(
+        error,
+    ) {
+        return true;
+    }
+    matches!(
+        error,
+        DaemonError::RelayTransport {
+            operation,
+            code,
+            message,
+            retryable: false,
+        } if matches!(
+            *operation,
+            "read relay peer response" | "read temporary relay peer response"
+        ) && code == "unauthorized"
+            && message == "authenticated home kernel does not own the leased resource"
+    )
+}
+
+pub(super) fn is_replayable_stale_remote_setup_status(
+    current: &ProjectEnvironmentSetupStatus,
+    remote: &ProjectEnvironmentSetupStatus,
+) -> bool {
+    current.operation_id == remote.operation_id
+        && current.project_id == remote.project_id
+        && current.session_id == remote.session_id
+        && current.agent_id == remote.agent_id
+        && current.worker_id == remote.worker_id
+        && current.platform == remote.platform
+        && remote.attempt.saturating_add(1) == current.attempt
+        && remote.retryable
+        && matches!(
+            remote.phase,
+            ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+        )
+}
+
 pub(super) fn actual_worker_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }

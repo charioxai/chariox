@@ -309,6 +309,129 @@ impl ProjectEnvironmentSetupStore {
         ))
     }
 
+    pub(super) fn rebind_remote_leased_agent(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        expected_leased_agent_id: &str,
+        replacement_leased_agent_id: String,
+    ) -> Result<SetupExecution, DaemonError> {
+        if replacement_leased_agent_id.trim().is_empty() {
+            return Err(setup_error(
+                "replacement remote setup binding must have a leased agent",
+            ));
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        if entry.status.attempt != attempt {
+            return Err(setup_error(
+                "setup attempt changed before its remote binding could be refreshed",
+            ));
+        }
+        if entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return Err(setup_error(
+                "terminal setup cannot refresh its remote binding",
+            ));
+        }
+        match entry.execution.remote_leased_agent_id.as_deref() {
+            Some(current) if current != expected_leased_agent_id => {
+                return Err(setup_error(
+                    "remote setup binding changed before it could be refreshed",
+                ));
+            }
+            Some(current) if current == replacement_leased_agent_id => {
+                return Ok(entry.execution.clone())
+            }
+            Some(_) => {}
+            None => {
+                return Err(setup_error("local setup has no remote binding to refresh"));
+            }
+        }
+        entry.execution.remote_leased_agent_id = Some(replacement_leased_agent_id);
+        entry.fingerprint = setup_fingerprint(&entry.execution)?;
+        let execution = entry.execution.clone();
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        Ok(execution)
+    }
+
+    pub(super) fn rebind_remote_worker_target(
+        &self,
+        operation_id: &str,
+        leased_agent_id: &str,
+        target: &crate::app::LeasedProjectEnvironmentSetupTarget,
+        target_worker_id: &str,
+        target_platform: &str,
+    ) -> Result<
+        (
+            ProjectEnvironmentSetupStatus,
+            Option<ProjectEnvironmentDefinition>,
+        ),
+        DaemonError,
+    > {
+        if leased_agent_id.trim().is_empty() {
+            return Err(setup_error("remote setup is missing its leased agent"));
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        if entry.execution.owner_user_id != target.owner_user_id
+            || entry.execution.session_id != target.home_session_id
+            || entry.execution.agent_id != target.home_agent_id
+            || entry.execution.target_worker_id != target_worker_id
+            || entry.execution.target_platform != target_platform
+        {
+            return Err(setup_error(
+                "remote setup status does not match the worker target",
+            ));
+        }
+        if entry.execution.remote_leased_agent_id.as_deref() == Some(leased_agent_id) {
+            return Ok((entry.status.clone(), entry.execution.definition.clone()));
+        }
+        if entry.execution.remote_leased_agent_id.is_none() {
+            return Err(setup_error(
+                "worker setup is not bound to a remote leased agent",
+            ));
+        }
+        if !matches!(
+            entry.status.phase,
+            ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+        ) || !entry.status.retryable
+        {
+            return Err(setup_error(
+                "worker setup binding cannot be replaced outside a retryable terminal attempt",
+            ));
+        }
+        entry.execution.remote_leased_agent_id = Some(leased_agent_id.to_string());
+        entry.execution.execution_session_id = target.backing_session_id.clone();
+        entry.execution.execution_agent_id = target.backing_agent_id.clone();
+        entry.execution.workspace_id = target.workspace_id.clone();
+        entry.fingerprint = setup_fingerprint(&entry.execution)?;
+        let status = entry.status.clone();
+        let definition = entry.execution.definition.clone();
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        Ok((status, definition))
+    }
+
     pub(super) fn remote_status(
         &self,
         operation_id: &str,
