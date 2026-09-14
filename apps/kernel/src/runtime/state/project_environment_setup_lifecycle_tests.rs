@@ -958,7 +958,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             Arc::clone(&worker_router),
             state_worker,
             shutdown_worker_rx,
-            relay_url,
+            relay_url.clone(),
             worker_relay_token,
         ),
     );
@@ -1053,7 +1053,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     let replayed = runtime
         .execute_project_environment_setup_request(
-            LocalDaemonRequest::StartProjectEnvironmentSetup(start_request),
+            LocalDaemonRequest::StartProjectEnvironmentSetup(start_request.clone()),
             "user-1",
         )
         .await
