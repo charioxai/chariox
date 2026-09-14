@@ -105,9 +105,9 @@ pub(super) fn is_missing_remote_setup_operation(error: &DaemonError) -> bool {
 }
 
 pub(super) fn is_stale_remote_setup_binding_error(error: &DaemonError) -> bool {
-    if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(
-        error,
-    ) {
+    if crate::runtime::state::remote_prompt_worker_submission_runtime::
+        remote_prompt_error_should_refresh_binding(error)
+    {
         return true;
     }
     matches!(
