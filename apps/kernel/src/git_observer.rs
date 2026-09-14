@@ -237,6 +237,9 @@ impl CompletedGitTurnSnapshotStore {
                 && projection.settlement_status == CompletedTurnSettlementStatus::Completed
         }) {
             projection.settlement_status = existing.settlement_status;
+            if projection.provider_termination.is_none() {
+                projection.provider_termination = existing.provider_termination.clone();
+            }
         }
         let replace = settled_turns
             .get(&key)
