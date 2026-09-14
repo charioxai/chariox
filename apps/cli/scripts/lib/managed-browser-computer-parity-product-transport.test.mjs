@@ -26,6 +26,40 @@ test("managed parity product factory fails closed without an operator kernel end
   }
 })
 
+test("managed parity product factory requires the standard local-auth configuration", async () => {
+  const evidenceRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-auth-"))
+  const names = [
+    "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL",
+    "CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF",
+    "CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF",
+    "CHARIOX_MANAGED_PARITY_CLIENT_ID",
+    "CHARIOX_MANAGED_PARITY_SESSION_ID",
+    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
+    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+  ]
+  const previous = new Map(names.map((name) => [name, process.env[name]]))
+  try {
+    const imported = await import(productTransportModule.href)
+    process.env.CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL = "ws://127.0.0.1:43118/"
+    process.env.CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF = "kernel-ref"
+    process.env.CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF = "machine-ref"
+    process.env.CHARIOX_MANAGED_PARITY_CLIENT_ID = "client-id"
+    process.env.CHARIOX_MANAGED_PARITY_SESSION_ID = "session-id"
+    delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN
+    delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+    await assert.rejects(
+      () => imported.createManagedBrowserComputerParityTransport({ evidenceRoot }),
+      /requires CHARIOX_KERNEL_LOCAL_AUTH_TOKEN or CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE/,
+    )
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    await rm(evidenceRoot, { recursive: true, force: true })
+  }
+})
+
 test("managed parity selkies attach uses authenticated public responses and rejects unsupported steps", async (t) => {
   const imported = await import(productTransportModule.href)
   assert.equal(typeof imported.createManagedBrowserComputerParityTransportFromPublicClient, "function")
