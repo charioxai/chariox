@@ -3161,13 +3161,16 @@ mod tests {
             arm_request(context_plan.package_binding(), " "),
         )
         .await;
-        assert!(matches!(
-            invalid_target,
-            RelayPeerResponse::ManagedContextImportFailed {
-                ref code,
-                retryable: false,
-            } if code == "invalid_managed_context"
-        ));
+        assert!(
+            matches!(
+                &invalid_target,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code,
+                    retryable: false,
+                } if code == "invalid_request"
+            ),
+            "invalid target arm response: {invalid_target:?}"
+        );
 
         let mut invalid_digest = context_plan.package_binding();
         invalid_digest.plan_digest = "not-a-digest".to_string();
@@ -3180,13 +3183,16 @@ mod tests {
             arm_request(invalid_digest, "environment-peer"),
         )
         .await;
-        assert!(matches!(
-            invalid_digest_response,
-            RelayPeerResponse::ManagedContextImportFailed {
-                ref code,
-                retryable: false,
-            } if code == "invalid_managed_context"
-        ));
+        assert!(
+            matches!(
+                &invalid_digest_response,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code,
+                    retryable: false,
+                } if code == "invalid_request"
+            ),
+            "invalid digest arm response: {invalid_digest_response:?}"
+        );
 
         let armed = send_managed_peer_request(
             &peer_harness,
