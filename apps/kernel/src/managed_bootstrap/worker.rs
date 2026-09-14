@@ -1018,6 +1018,7 @@ mod tests {
         let home_public_key = home_app_config.relay_public_key.clone();
         let exchange_response = {
             let mut response = response();
+            response.allocation_id = "allocation-disposable-project".to_string();
             response.kernel_id = "worker-kernel".to_string();
             response.runtime_release_digest = fixture.release_digest.clone();
             response.home_caller = CloudHomeCaller {
