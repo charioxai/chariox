@@ -310,11 +310,20 @@ async function runSelkiesCreate({
     step: "selkies.create",
   })
   assertBinding(identity, binding, "selkies.create")
+  const resourceCounts = await observeAuthoritativeResourceCounts({
+    displayClient,
+    requestApi,
+    roomId,
+    sliceId: ownedResources.sliceId,
+    signal,
+    step: "selkies.create",
+  })
   ownedResources.identity = identity
   return {
     ...identity,
     displayBackend,
     sliceId: ownedResources.sliceId,
+    ...resourceCounts,
   }
 }
 
@@ -493,6 +502,52 @@ function validateSessionAttachment(attachment, expectedId, roomId, step) {
 function validateDeletedSlice(slice, sliceId, step) {
   if (!slice || typeof slice !== "object" || slice.id !== sliceId) {
     throw new Error(`managed parity ${step} returned a different deleted slice identity`)
+  }
+}
+
+async function observeAuthoritativeResourceCounts({
+  displayClient,
+  requestApi,
+  roomId,
+  sliceId,
+  signal,
+  step,
+}) {
+  // The home kernel's public inventories are the authority for these counts.
+  // A Room-bound SliceRecord is the durable reservation for one physical
+  // browser/profile. Filter to this Room; never count the shared host or
+  // assume `1`.
+  const sessionsResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "listSessionsRequest")(),
+    signal,
+    `${step} Room inventory`,
+  )
+  const sessions = requireArray(
+    responseVariant(sessionsResponse, "SessionsListed", `${step} Room inventory`).sessions,
+    `${step} SessionsListed.sessions`,
+  )
+  const slicesResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "listSlicesRequest")(),
+    signal,
+    `${step} browser/profile inventory`,
+  )
+  const slices = requireArray(
+    responseVariant(slicesResponse, "SlicesListed", `${step} browser/profile inventory`).slices,
+    `${step} SlicesListed.slices`,
+  )
+  const roomCount = sessions.filter((session) => session?.id === roomId).length
+  const environmentSlices = slices.filter(
+    (slice) => slice?.environment_session_id === roomId,
+  )
+  if (!environmentSlices.some((slice) => slice?.id === sliceId)) {
+    throw new Error(`${step} inventory did not return the created environment slice`)
+  }
+  return {
+    roomCount,
+    browserCount: environmentSlices.length,
+    profileCount: environmentSlices.length,
   }
 }
 
@@ -840,6 +895,13 @@ function requireStandardLocalAuthConfiguration() {
 
 function requireText(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`managed parity response requires ${label}`)
+  }
+  return value
+}
+
+function requireArray(value, label) {
+  if (!Array.isArray(value)) {
     throw new Error(`managed parity response requires ${label}`)
   }
   return value

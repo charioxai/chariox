@@ -482,6 +482,8 @@ test("real public create binds and starts the home-owned slice before attach use
   let getRoomEnvironmentStateRequest;
   let getSliceRequest;
   let getSliceDisplayEndpointRequest;
+  let listSessionsRequest;
+  let listSlicesRequest;
   let relayStatusRequest;
   let startSliceRequest;
   let decryptRelayPayload;
@@ -498,6 +500,8 @@ test("real public create binds and starts the home-owned slice before attach use
       getRoomEnvironmentStateRequest,
       getSliceRequest,
       getSliceDisplayEndpointRequest,
+      listSessionsRequest,
+      listSlicesRequest,
       relayStatusRequest,
       startSliceRequest,
     } = await import(kernelRequestsDistUrl.href));
@@ -646,6 +650,23 @@ test("real public create binds and starts the home-owned slice before attach use
               },
             },
           };
+        } else if (Object.hasOwn(envelope.request, "ListSessions")) {
+          assert.deepEqual(envelope.request, listSessionsRequest());
+          response = {
+            SessionsListed: {
+              sessions: [{ id: "room-1" }, { id: "other-room" }],
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "ListSlices")) {
+          assert.deepEqual(envelope.request, listSlicesRequest());
+          response = {
+            SlicesListed: {
+              slices: [
+                { id: "slice-1", environment_session_id: "room-1" },
+                { id: "foreign-slice", environment_session_id: "other-room" },
+              ],
+            },
+          };
         } else if (Object.hasOwn(envelope.request, "RelayStatus")) {
           assert.deepEqual(envelope.request, relayStatusRequest());
           response = {
@@ -759,6 +780,8 @@ test("real public create binds and starts the home-owned slice before attach use
       getRoomEnvironmentStateRequest,
       getSliceRequest,
       getSliceDisplayEndpointRequest,
+      listSessionsRequest,
+      listSlicesRequest,
       relayStatusRequest,
       startSliceRequest,
     },
@@ -807,12 +830,12 @@ test("real public create binds and starts the home-owned slice before attach use
       environmentId: "environment-1",
       displayBackend: "selkies",
       sliceId: "slice-1",
+      roomCount: 1,
+      browserCount: 1,
+      profileCount: 1,
     });
     assert.equal(Object.hasOwn(created, "display_endpoint"), false,
       "stopped CreateSlice must not be treated as the backend observation");
-    for (const field of ["roomCount", "browserCount", "profileCount"]) {
-      assert.equal(Object.hasOwn(created, field), false, `${field} must not be manufactured`);
-    }
 
     await assert.rejects(
       () => transport.run("selkies.create", {
@@ -858,6 +881,8 @@ test("real public create binds and starts the home-owned slice before attach use
       "GetSlice",
       "RelayStatus",
       "GetRoomEnvironmentState",
+      "ListSessions",
+      "ListSlices",
       "RelayStatus",
       "GetRoomEnvironmentState",
       "AttachToSession",
