@@ -102,6 +102,19 @@ impl KernelRuntimeState {
                                 .structured_output_records
                                 .schedule_after_poll_failure(&finished_run_id, now_ms);
                             if retry_attempt.is_none() {
+                                let failure_session_id = owned
+                                    .provider_store
+                                    .get_run(&finished_run_id)
+                                    .map(|run| run.session_id().to_string())
+                                    .unwrap_or_else(|_| session_id.to_string());
+                                let _ = self
+                                    .settle_repeated_structured_poll_failure_if_matches(
+                                        &failure_session_id,
+                                        &finished_run_id,
+                                        polled_prompt_id.as_deref(),
+                                        &error,
+                                    )
+                                    .await?;
                                 crate::logging::error_with_fields(
                                     "daemon.app",
                                     "structured output polling abandoned after repeated failures",
@@ -142,6 +155,21 @@ impl KernelRuntimeState {
                             let retry_attempt = owned
                                 .structured_output_records
                                 .schedule_after_poll_failure(&finished_run_id, now_ms);
+                            if retry_attempt.is_none() {
+                                let failure_session_id = owned
+                                    .provider_store
+                                    .get_run(&finished_run_id)
+                                    .map(|run| run.session_id().to_string())
+                                    .unwrap_or_else(|_| session_id.to_string());
+                                let _ = self
+                                    .settle_repeated_structured_poll_failure_if_matches(
+                                        &failure_session_id,
+                                        &finished_run_id,
+                                        polled_prompt_id.as_deref(),
+                                        &reconcile_error,
+                                    )
+                                    .await?;
+                            }
                             let message = if retry_attempt.is_some() {
                                 "background structured output poll reconciliation failed; retry scheduled"
                             } else {
