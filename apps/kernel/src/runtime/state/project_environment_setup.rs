@@ -30,6 +30,8 @@ use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
 };
 
+use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport;
+
 #[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
 #[path = "project_environment_setup_policy.rs"]
@@ -76,6 +78,13 @@ impl KernelRuntimeState {
                     let status = match setup {
                         Ok(setup) => {
                             self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        }
+                        Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                            // A relay disconnect is transport uncertainty, not
+                            // a worker-authoritative terminal result. Preserve
+                            // the current operation so a later Get can
+                            // reconcile the worker's actual status.
+                            return Err(error);
                         }
                         Err(error) => {
                             self.owned.project_environment_setups.mark_failed(
