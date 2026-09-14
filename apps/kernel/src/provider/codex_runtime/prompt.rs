@@ -250,12 +250,15 @@ mod prompt_tests {
     use crate::error::DaemonError;
     use crate::prompt_assembly::{PromptEnvelope, PromptManifest};
     use crate::provider::{
-        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeMcpBinding,
+        RuntimeProviderRun,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
     #[test]
@@ -450,6 +453,196 @@ mod prompt_tests {
         }));
 
         drop(state);
+        server.join().expect("join Codex websocket fixture");
+    }
+
+    #[test]
+    fn resumed_prompt_diagnostic_exposes_blocking_server_request_before_large_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
+        let address = listener
+            .local_addr()
+            .expect("resolve Codex websocket fixture");
+        let mcp_listener = TcpListener::bind("127.0.0.1:0").expect("bind runtime MCP fixture");
+        let mcp_address = mcp_listener
+            .local_addr()
+            .expect("resolve runtime MCP fixture");
+        let (mcp_request_seen_tx, mcp_request_seen_rx) = std::sync::mpsc::channel();
+        let (release_mcp_tx, release_mcp_rx) = std::sync::mpsc::channel();
+        let (turn_start_seen_tx, turn_start_seen_rx) = std::sync::mpsc::channel();
+        let (submit_finished_tx, submit_finished_rx) = std::sync::mpsc::channel();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Codex websocket client");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .expect("bound Codex fixture writes");
+            let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
+
+            let resume_request = read_json_request(&mut socket, "thread/resume");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 91,
+                        "method": "item/tool/call",
+                        "params": {
+                            "tool": "diagnostic_tool",
+                            "arguments": {}
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send blocking server request");
+
+            // This is intentionally sent before the runtime-MCP response. If the adapter is
+            // waiting inside respond_to_server_request, the large resume result remains queued
+            // in the socket until the controlled MCP response is released.
+            let large_history = "resume-history".repeat(220_000);
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": resume_request["id"],
+                        "result": {
+                            "thread": {"id": "thread-reused"},
+                            "model": "gpt-5.5",
+                            "history": large_history
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send large resume response");
+
+            let turn_request = read_json_request(&mut socket, "turn/start");
+            turn_start_seen_tx
+                .send(())
+                .expect("report turn admission after release");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": turn_request["id"],
+                        "result": {"turn": {"id": "turn-after-resume"}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send turn admission response");
+        });
+
+        let mcp_server = thread::spawn(move || {
+            let (mut stream, _) = mcp_listener.accept().expect("accept runtime MCP client");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).expect("read runtime MCP request");
+                assert!(read > 0, "runtime MCP client closed before headers");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            assert!(
+                request.contains("Authorization: Bearer test-token"),
+                "runtime MCP request should carry its configured auth"
+            );
+            mcp_request_seen_tx
+                .send(())
+                .expect("report runtime MCP request");
+            release_mcp_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("release bounded runtime MCP response");
+            let body = r#"{"result":{"content":[{"text":"diagnostic result"}]}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write runtime MCP response");
+        });
+
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let request = LaunchProviderRequest::new(
+            "session-resume-submit-diagnostic",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        )
+        .with_agent_id("agent-resume-submit-diagnostic")
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            format!("http://{mcp_address}/mcp"),
+            "test-token",
+        ));
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex-test".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = RuntimeProviderRun::new(
+            "provider-run-resume-submit-diagnostic",
+            &request,
+            launch_result,
+        );
+        let state = super::super::state::CodexRuntimeState::pending(
+            endpoint,
+            Some("thread-reused".to_string()),
+            socket,
+            1,
+        );
+        let submit_thread = thread::spawn(move || {
+            let mut state = state;
+            let result = super::super::prompt::submit_codex_prompt(
+                &run,
+                &mut state,
+                &PromptEnvelope::new(
+                    "continue after the failed prompt",
+                    "",
+                    Vec::new(),
+                    PromptManifest::current(),
+                ),
+            );
+            submit_finished_tx
+                .send(result)
+                .expect("report resumed prompt result");
+        });
+
+        mcp_request_seen_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("resumed prompt should reach the controlled runtime MCP call");
+        assert!(
+            submit_finished_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "resume admission must still be waiting while the server request is unresolved"
+        );
+        assert!(
+            turn_start_seen_rx.try_recv().is_err(),
+            "turn/start must not be admitted before thread/resume completes"
+        );
+
+        release_mcp_tx
+            .send(())
+            .expect("release controlled runtime MCP response");
+        submit_finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("resume admission should complete after MCP release")
+            .expect("resumed prompt should succeed after MCP release");
+        turn_start_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("turn/start should follow the released resume response");
+
+        submit_thread.join().expect("join resumed prompt fixture");
+        mcp_server.join().expect("join runtime MCP fixture");
         server.join().expect("join Codex websocket fixture");
     }
 
