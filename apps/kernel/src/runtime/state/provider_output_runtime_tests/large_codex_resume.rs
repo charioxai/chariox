@@ -404,4 +404,41 @@ async fn stale_oversized_codex_poll_cannot_settle_replacement_prompt() {
         history_after, history_before,
         "a stale poll must not append failure history for the replacement prompt"
     );
+
+    assert!(
+        output_store.poll_due(run.id(), u64::MAX),
+        "a stale poll failure must not exhaust the replacement prompt's poll budget"
+    );
+    output_store.mark_poll_enqueued(run.id(), Some(replacement_prompt_id.clone()));
+    let replacement_output = b"replacement Codex poll output".to_vec();
+    app.lock()
+        .await
+        .providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("replacement-codex-poll".to_string()),
+                    bytes: replacement_output.clone(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let records = runtime
+        .pump_owned_structured_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+        )
+        .await
+        .expect("the replacement poll should be admitted and delivered");
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.clone())
+            .collect::<Vec<_>>(),
+        vec![replacement_output],
+        "the replacement prompt must receive output after the stale poll"
+    );
 }
