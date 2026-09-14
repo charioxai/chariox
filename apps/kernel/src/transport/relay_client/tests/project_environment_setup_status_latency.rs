@@ -453,9 +453,13 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         let app = app_home.lock().await;
         app.relay_client_state()
     };
-    let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
-    let connector_home = tokio::spawn(run_daemon_relay_connector(
+    let home_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app_home),
+        1,
+    ));
+    let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+    let connector_home = tokio::spawn(run_daemon_relay_connector_with_router(
+        Arc::clone(&home_router),
         Arc::clone(&state_home),
         shutdown_home_rx,
     ));
@@ -561,11 +565,10 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         .expect("initial Start barrier should remain available");
 
     if drop_inflight_get {
-        // This is the public request entry point used by the authenticated
-        // relay client. Abort only after the worker has received the replay
-        // Start, so the observation is definitely waiting on its response.
-        let runtime = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1)
-            .runtime_state();
+        // This internal cancellation probe uses the same runtime coordinator
+        // as the relay connector, but is not a client-socket disconnect. The
+        // public relay path is exercised separately below.
+        let runtime = home_router.runtime_state();
         let dropped_get = tokio::spawn({
             let runtime = runtime.clone();
             let operation_id = operation_id.clone();
@@ -591,17 +594,16 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         dropped_get.abort();
         let dropped_result = dropped_get
             .await
-            .expect_err("the in-flight public Get must be cancelled by the observer");
+            .expect_err("the in-flight setup Get must be cancelled by the observer");
         assert!(
             dropped_result.is_cancelled(),
-            "the dropped public Get must not settle after its observer is gone"
+            "the dropped setup Get must not settle after its observer is gone"
         );
 
-        // A fresh authenticated poll must not be trapped behind the cancelled
-        // caller's process-local InFlight reservation. The fixture accepts
-        // only another Start for authoritative attempt one; any attempt-two
-        // Start is treated as obsolete dispatch.
-        let fresh_get_private_key = send_client_request(
+        // A fresh authenticated poll may remain bounded and unresolved while
+        // the accepted replay response is still withheld, but it must not
+        // retain the cancelled caller's InFlight state.
+        let _ = send_client_request(
             &mut first_client,
             "setup-status-dropped-get-fresh-poll",
             &config_home.daemon_id,
@@ -613,44 +615,51 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
             ),
         )
         .await;
-        let fresh_get_response = tokio::time::timeout(
+        let fresh_get_error = tokio::time::timeout(
             PUBLIC_STATUS_RESPONSE_DEADLINE,
-            expect_client_response(
-                &mut first_client,
-                "setup-status-dropped-get-fresh-poll",
-                &fresh_get_private_key,
-            ),
+            expect_client_response_error(&mut first_client, "setup-status-dropped-get-fresh-poll"),
         )
         .await
-        .expect("fresh public polling must recover after the dropped observation");
-        let fresh_status = match fresh_get_response {
-            LocalDaemonResponse::ProjectEnvironmentSetupStatus { status } => status,
-            other => panic!("unexpected fresh setup response: {other:?}"),
-        };
-        assert_eq!(fresh_status.operation_id, operation_id);
-        assert_eq!(fresh_status.attempt, 1);
-        assert_eq!(fresh_status.phase, ProjectEnvironmentSetupPhase::Requested);
-        assert!(fresh_status.retryable);
+        .expect("fresh public polling must remain bounded after the dropped observation");
+        assert_eq!(fresh_get_error.code, "local_transport_error");
+        assert!(fresh_get_error.retryable);
+        assert!(
+            fresh_get_error
+                .message
+                .ends_with("same-attempt replay result is unresolved"),
+            "a dropped observation must become explicit unresolved state, not stale InFlight: {fresh_get_error:?}"
+        );
         assert_eq!(
             worker_start_count.load(Ordering::Acquire),
-            3,
-            "fresh polling must issue one current-attempt replay after the dropped observation"
+            2,
+            "bounded unresolved polling must not duplicate the withheld Start"
         );
 
-        // Resolve the old held response before exercising public control
-        // operations. It is intentionally late and must not overwrite the
-        // home operation after Cancel advances the authoritative state.
-        let _ = release_replay_tx.send(());
-        tokio::time::timeout(Duration::from_secs(2), release_replay_applied)
+        // Disconnect this public client and reconnect through the same
+        // authenticated relay target. This verifies that socket loss is a
+        // separate concern from the internal observation cancellation above.
+        let _ = first_client.close(None).await;
+        let (mut recovery_client, _) = connect_async(&relay_url)
             .await
-            .expect("the old replay response should be released")
-            .expect("old replay release barrier should remain available");
+            .expect("recovery public client should connect to relay");
+        send_client_envelope(
+            &mut recovery_client,
+            &RelayEnvelope::ClientConnect {
+                auth_token: "secret".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some(config_home.daemon_id.clone()),
+                    daemon_alias: None,
+                },
+            },
+        )
+        .await;
+        let recovery_home_public_key = expect_client_connected(&mut recovery_client).await;
 
         let cancel_private_key = send_client_request(
-            &mut first_client,
+            &mut recovery_client,
             "setup-status-dropped-get-cancel",
             &config_home.daemon_id,
-            &first_home_public_key,
+            &recovery_home_public_key,
             LocalDaemonRequest::CancelProjectEnvironmentSetup(
                 CancelProjectEnvironmentSetupRequest {
                     operation_id: operation_id.clone(),
@@ -662,7 +671,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         let cancel_response = tokio::time::timeout(
             PUBLIC_STATUS_RESPONSE_DEADLINE,
             expect_client_response(
-                &mut first_client,
+                &mut recovery_client,
                 "setup-status-dropped-get-cancel",
                 &cancel_private_key,
             ),
@@ -682,10 +691,10 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         assert!(cancelled_status.retryable);
 
         let retry_private_key = send_client_request(
-            &mut first_client,
+            &mut recovery_client,
             "setup-status-dropped-get-retry",
             &config_home.daemon_id,
-            &first_home_public_key,
+            &recovery_home_public_key,
             LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
                 operation_id: operation_id.clone(),
                 session_id: session_id.clone(),
@@ -695,7 +704,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         let retry_response = tokio::time::timeout(
             PUBLIC_STATUS_RESPONSE_DEADLINE,
             expect_client_response(
-                &mut first_client,
+                &mut recovery_client,
                 "setup-status-dropped-get-retry",
                 &retry_private_key,
             ),
@@ -718,11 +727,20 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
             .expect("fixture worker should observe the public Retry")
             .expect("Retry barrier should remain available");
 
+        // The accepted attempt-one replay resolves only after the home has
+        // advanced to attempt two. Its late response must not overwrite the
+        // authoritative retry state or worker attempt.
+        let _ = release_replay_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), release_replay_applied)
+            .await
+            .expect("the old replay response should be released after Retry")
+            .expect("old replay release barrier should remain available");
+
         let final_get_private_key = send_client_request(
-            &mut first_client,
+            &mut recovery_client,
             "setup-status-dropped-get-final-poll",
             &config_home.daemon_id,
-            &first_home_public_key,
+            &recovery_home_public_key,
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                 GetProjectEnvironmentSetupStatusRequest { operation_id },
             ),
@@ -731,7 +749,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         let final_get_response = tokio::time::timeout(
             PUBLIC_STATUS_RESPONSE_DEADLINE,
             expect_client_response(
-                &mut first_client,
+                &mut recovery_client,
                 "setup-status-dropped-get-final-poll",
                 &final_get_private_key,
             ),
@@ -751,10 +769,10 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         assert!(final_status.retryable);
         assert_eq!(
             worker_start_count.load(Ordering::Acquire),
-            3,
-            "Retry must not dispatch an obsolete Start for either attempt"
+            2,
+            "Cancel and Retry must not dispatch an obsolete Start"
         );
-        let _ = first_client.close(None).await;
+        let _ = recovery_client.close(None).await;
 
         let _ = shutdown_worker_tx.send(());
         worker_task
@@ -1022,7 +1040,12 @@ async fn run_missing_then_withheld_replay_worker(
                 if held_replay.is_some() && !replay_released =>
             {
                 if let Some((relay_request_id, setup)) = held_replay.take() {
-                    held_setup = Some(setup.clone());
+                    // If a later public Retry already advanced the worker,
+                    // releasing this old response must not rewind its
+                    // authoritative record.
+                    if held_setup.is_none() {
+                        held_setup = Some(setup.clone());
+                    }
                     let response = RelayEnvelope::DaemonIncomingPeerResponse {
                         relay_request_id,
                         encrypted_response: Some(encrypt_worker_response(
@@ -1147,18 +1170,6 @@ async fn run_missing_then_withheld_replay_worker(
                             }
                             held_replay = Some((relay_request_id, setup));
                             continue;
-                        } else if start_number == 3 && attempt == 1 {
-                            held_setup = Some(setup.clone());
-                            (
-                                Some(encrypt_worker_response(
-                                    &worker_private_key,
-                                    &home_public_key,
-                                    RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
-                                        setup,
-                                    },
-                                )),
-                                None,
-                            )
                         } else {
                             (
                                 None,
