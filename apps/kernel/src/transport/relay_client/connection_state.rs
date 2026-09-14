@@ -9,6 +9,8 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::runtime::router::CommandRouter;
+#[cfg(test)]
+use crate::transport::relay_peer::RelayPeerRequest;
 
 use chariox_relay::protocol::{
     RelayDisplayTunnelRegistration, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
@@ -39,9 +41,26 @@ pub struct RelayClientState {
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
     #[cfg(test)]
     lose_next_peer_response_payload: Option<bool>,
+    #[cfg(test)]
+    test_authenticated_peer_request_observer:
+        Option<mpsc::UnboundedSender<TestPeerRequestObservation>>,
     managed_slice_activation_expectations: BTreeMap<String, ManagedSliceRelayActivationExpectation>,
     pending_managed_slice_activation_confirmation:
         Option<PendingManagedSliceActivationConfirmation>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) enum TestPeerRequestObservation {
+    StartProjectEnvironmentSetup { operation_id: String },
+    GetProjectEnvironmentSetupStatus {
+        operation_id: String,
+        release: oneshot::Sender<()>,
+    },
+    CancelProjectEnvironmentSetup {
+        operation_id: String,
+        release: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +473,62 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_set_authenticated_peer_request_observer(
+        &mut self,
+        observer: mpsc::UnboundedSender<TestPeerRequestObservation>,
+    ) {
+        self.test_authenticated_peer_request_observer = Some(observer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_clear_authenticated_peer_request_observer(&mut self) {
+        self.test_authenticated_peer_request_observer = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_observe_authenticated_peer_request(
+        &self,
+        request: &RelayPeerRequest,
+    ) -> Option<oneshot::Receiver<()>> {
+        let Some(observer) = self.test_authenticated_peer_request_observer.as_ref() else {
+            return None;
+        };
+        let (observation, release) = match request {
+            RelayPeerRequest::StartLeasedProjectEnvironmentSetup { operation_id, .. } => (
+                TestPeerRequestObservation::StartProjectEnvironmentSetup {
+                    operation_id: operation_id.clone(),
+                },
+                None,
+            ),
+            RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { operation_id, .. } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                        operation_id: operation_id.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
+            RelayPeerRequest::CancelLeasedProjectEnvironmentSetup { operation_id, .. } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                        operation_id: operation_id.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
+            _ => return None,
+        };
+        if observer.send(observation).is_err() {
+            return None;
+        }
+        release
+    }
+
+    #[cfg(test)]
     pub(super) fn test_take_lost_peer_response_payload(&mut self) -> Option<bool> {
         self.lose_next_peer_response_payload.take()
     }
@@ -520,6 +595,8 @@ impl Default for RelayClientState {
             display_streams: BTreeMap::new(),
             #[cfg(test)]
             lose_next_peer_response_payload: None,
+            #[cfg(test)]
+            test_authenticated_peer_request_observer: None,
             managed_slice_activation_expectations: BTreeMap::new(),
             pending_managed_slice_activation_confirmation: None,
         }

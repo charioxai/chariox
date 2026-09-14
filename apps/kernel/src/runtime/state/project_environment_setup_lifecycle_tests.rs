@@ -51,6 +51,8 @@ use crate::provider::{
 #[cfg(unix)]
 use crate::runtime::router::CommandRouter;
 #[cfg(unix)]
+use crate::transport::relay_client::TestPeerRequestObservation;
+#[cfg(unix)]
 use crate::session::CreateSessionRequest;
 
 #[cfg(unix)]
@@ -940,11 +942,17 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         let app = app_worker.lock().await;
         app.relay_client_state()
     };
+    let (worker_request_tx, mut worker_request_rx) =
+        tokio::sync::mpsc::unbounded_channel::<TestPeerRequestObservation>();
+    state_worker
+        .write()
+        .await
+        .test_set_authenticated_peer_request_observer(worker_request_tx);
     let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
     let connector_worker = tokio::spawn(
         crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
             Arc::clone(&worker_router),
-            state_worker,
+            Arc::clone(&state_worker),
             shutdown_worker_rx,
             relay_url,
             worker_relay_token,
@@ -970,12 +978,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         "worker should re-register before recovery is queried"
     );
 
-    // Hold the worker app lock so its authenticated status response is
-    // delayed. Public Get is started first, then public Cancel is allowed to
-    // record intent before the worker boundary is released. The private home
-    // read below is only the deterministic ordering gate; the outcome checks
-    // use the public Cancel/Get responses and the authenticated worker error.
-    let worker_app_guard = app_worker.lock().await;
+    // The worker relay fixture emits an authenticated, operation-scoped
+    // receipt before dispatching each setup request and holds its response
+    // behind the receipt's release channel. This makes the public Get/Cancel
+    // ordering explicit without observing the home setup store.
     let get_runtime = runtime.clone();
     let delayed_status = tokio::spawn(async move {
         get_runtime
@@ -989,9 +995,28 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await
     });
-    for _ in 0..32 {
-        tokio::task::yield_now().await;
-    }
+    let get_release = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match worker_request_rx.recv().await {
+                Some(TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
+                    operation_id,
+                    release,
+                }) if operation_id == cancel_during_missing_status_operation_id => {
+                    break release;
+                }
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup {
+                    operation_id,
+                }) => panic!(
+                    "unexpected worker setup start before cancellation intent: {operation_id}"
+                ),
+                Some(_) => continue,
+                None => panic!("worker request observer closed before public Get was received"),
+            }
+        }
+    })
+    .await
+    .expect("authenticated worker should receive the public Get request");
+
     let cancel_runtime = runtime.clone();
     let cancel_session_id = session_id.clone();
     let cancellation = tokio::spawn(async move {
@@ -1007,31 +1032,68 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await
     });
-    let cancel_intent_deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let (_, _, cancel_requested) = runtime
-            .owned
-            .project_environment_setups
-            .get_entry_with_cancellation(
-                cancel_during_missing_status_operation_id,
-                "user-1",
-            )
-            .expect("cancelled recovery operation should remain caller-owned");
-        if cancel_requested {
-            break;
+
+    let cancel_release = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match worker_request_rx.recv().await {
+                Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
+                    operation_id,
+                    release,
+                }) if operation_id == cancel_during_missing_status_operation_id => {
+                    break release;
+                }
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup {
+                    operation_id,
+                }) => panic!(
+                    "worker setup was redispatched before cancellation response: {operation_id}"
+                ),
+                Some(_) => continue,
+                None => {
+                    panic!("worker request observer closed before public Cancel was received")
+                }
+            }
         }
-        assert!(
-            Instant::now() < cancel_intent_deadline,
-            "public Cancel did not record cancellation intent while worker status was delayed"
-        );
-        tokio::task::yield_now().await;
-    }
+    })
+    .await
+    .expect("authenticated worker should receive the public Cancel request");
     assert!(
         !cancellation.is_finished(),
         "public Cancel should remain at the worker boundary until the delayed status is released"
     );
-    drop(worker_app_guard);
 
+    // Cancel receipt proves the public home request has recorded intent. Let
+    // the worker report the missing operation first, then release Cancel so
+    // no response-order assumption can hide a redispatched Start.
+    get_release
+        .send(())
+        .expect("public Get worker response gate should remain open");
+
+    let delayed_status = delayed_status
+        .await
+        .expect("delayed public status task should join")
+        .expect_err("cancelled missing operation must not return a fabricated worker status");
+    assert!(
+        delayed_status.to_string().contains("project_environment_setup_not_found"),
+        "the public status request should expose the authenticated worker absence: {delayed_status:?}"
+    );
+
+    let mut redispatched_start = None;
+    while let Ok(observation) = worker_request_rx.try_recv() {
+        if let TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id } =
+            observation
+        {
+            redispatched_start = Some(operation_id);
+            break;
+        }
+    }
+    assert_eq!(
+        redispatched_start, None,
+        "public Get must not redispatch Start after public Cancel intent"
+    );
+
+    cancel_release
+        .send(())
+        .expect("public Cancel worker response gate should remain open");
     let cancelled = cancellation
         .await
         .expect("cancellation task should join")
@@ -1042,14 +1104,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Cancelled,
         "cancellation intent must win over missing-status redispatch"
     );
-    let delayed_status = delayed_status
+    state_worker
+        .write()
         .await
-        .expect("delayed public status task should join")
-        .expect_err("cancelled missing operation must not return a fabricated worker status");
-    assert!(
-        delayed_status.to_string().contains("project_environment_setup_not_found"),
-        "the public status request should expose the authenticated worker absence: {delayed_status:?}"
-    );
+        .test_clear_authenticated_peer_request_observer();
 
     let recovered_missing_operation = get_setup_status(
         &runtime,
