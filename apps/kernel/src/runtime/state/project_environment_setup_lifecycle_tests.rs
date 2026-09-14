@@ -918,6 +918,23 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         response_status(started_while_worker_was_disconnected).phase,
         ProjectEnvironmentSetupPhase::Requested
     );
+    let cancel_during_missing_status_operation_id = "setup-cancel-during-missing-status";
+    let started_cancel_during_missing_status = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(
+                StartProjectEnvironmentSetupRequest {
+                    operation_id: cancel_during_missing_status_operation_id.to_string(),
+                    ..start_request.clone()
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("home should retain the setup that will be cancelled during recovery");
+    assert_eq!(
+        response_status(started_cancel_during_missing_status).phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
 
     let state_worker = {
         let app = app_worker.lock().await;
@@ -951,6 +968,87 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
             .is_some(),
         "worker should re-register before recovery is queried"
+    );
+
+    // Hold the worker app lock so its authenticated status response is
+    // delayed. Public Get is started first, then public Cancel is allowed to
+    // record intent before the worker boundary is released. The private home
+    // read below is only the deterministic ordering gate; the outcome checks
+    // use the public Cancel/Get responses and the authenticated worker error.
+    let worker_app_guard = app_worker.lock().await;
+    let get_runtime = runtime.clone();
+    let delayed_status = tokio::spawn(async move {
+        get_runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: cancel_during_missing_status_operation_id.to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await
+    });
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let cancel_runtime = runtime.clone();
+    let cancel_session_id = session_id.clone();
+    let cancellation = tokio::spawn(async move {
+        cancel_runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                    CancelProjectEnvironmentSetupRequest {
+                        operation_id: cancel_during_missing_status_operation_id.to_string(),
+                        session_id: cancel_session_id,
+                    },
+                ),
+                "user-1",
+            )
+            .await
+    });
+    let cancel_intent_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let (_, _, cancel_requested) = runtime
+            .owned
+            .project_environment_setups
+            .get_entry_with_cancellation(
+                cancel_during_missing_status_operation_id,
+                "user-1",
+            )
+            .expect("cancelled recovery operation should remain caller-owned");
+        if cancel_requested {
+            break;
+        }
+        assert!(
+            Instant::now() < cancel_intent_deadline,
+            "public Cancel did not record cancellation intent while worker status was delayed"
+        );
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !cancellation.is_finished(),
+        "public Cancel should remain at the worker boundary until the delayed status is released"
+    );
+    drop(worker_app_guard);
+
+    let cancelled = cancellation
+        .await
+        .expect("cancellation task should join")
+        .expect("missing worker operation should let public cancellation settle safely");
+    let cancelled_status = response_status(cancelled);
+    assert_eq!(
+        cancelled_status.phase,
+        ProjectEnvironmentSetupPhase::Cancelled,
+        "cancellation intent must win over missing-status redispatch"
+    );
+    let delayed_status = delayed_status
+        .await
+        .expect("delayed public status task should join")
+        .expect_err("cancelled missing operation must not return a fabricated worker status");
+    assert!(
+        delayed_status.to_string().contains("project_environment_setup_not_found"),
+        "the public status request should expose the authenticated worker absence: {delayed_status:?}"
     );
 
     let recovered_missing_operation = get_setup_status(
