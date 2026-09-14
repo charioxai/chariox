@@ -15,8 +15,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
 #[cfg(unix)]
 use std::thread;
@@ -267,7 +267,8 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let validation_marker = workspace.join("validation-started");
     let validation_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let response = get_setup_status(&runtime, "setup-lifecycle", "user-1").await;
+        let response =
+            get_setup_status(&runtime, "setup-lifecycle", "user-1", "validation polling").await;
         let status = response_status(response);
         if status.phase == ProjectEnvironmentSetupPhase::Validating && validation_marker.exists() {
             break;
@@ -325,7 +326,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
 
     let ready_deadline = Instant::now() + Duration::from_secs(10);
     let ready = loop {
-        let status = response_status(get_setup_status(&runtime, "setup-lifecycle", "user-1").await);
+        let status = response_status(
+            get_setup_status(&runtime, "setup-lifecycle", "user-1", "retry polling").await,
+        );
         match status.phase {
             ProjectEnvironmentSetupPhase::Ready => break status,
             ProjectEnvironmentSetupPhase::Failed => {
@@ -435,7 +438,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
     config_home.daemon_id = "home-kernel-transport-recovery".to_string();
     config_home.host_machine_id = "home-machine-transport-recovery".to_string();
     config_home.relay_url = Some(relay_url.clone());
-    config_home.relay_token = Some(home_relay_token);
+    config_home.relay_token = Some(home_relay_token.clone());
     config_home.relay_heartbeat_ms = 50;
 
     let mut config_worker = DaemonConfig::for_tests();
@@ -596,7 +599,12 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
                     leased_agent_id: leased_agent_id.clone(),
                     active_worker_provider_run_id: None,
                     relay_url: Some(relay_url.clone()),
-                    relay_token: Some("secret".to_string()),
+                    // Remote setup status uses the home daemon's relay
+                    // identity for metadata discovery and its temporary peer
+                    // registration. The listener seed's `secret` is not an
+                    // accepted scoped token; the verifier below intentionally
+                    // knows only the home and worker tokens.
+                    relay_token: Some(home_relay_token.clone()),
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
@@ -720,7 +728,13 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         response_status(started).phase,
         ProjectEnvironmentSetupPhase::Requested
     );
-    let initial = get_setup_status(&runtime, "setup-transport-recovery", "user-1").await;
+    let initial = get_setup_status(
+        &runtime,
+        "setup-transport-recovery",
+        "user-1",
+        "post-registration status before interruption",
+    )
+    .await;
     assert_eq!(
         response_status(initial).phase,
         ProjectEnvironmentSetupPhase::Requested,
@@ -845,7 +859,13 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         ProjectEnvironmentSetupPhase::Requested
     );
     assert_eq!(replayed_status.attempt, 1);
-    let ready = get_setup_status(&runtime, "setup-transport-recovery", "user-1").await;
+    let ready = get_setup_status(
+        &runtime,
+        "setup-transport-recovery",
+        "user-1",
+        "status after worker re-registration",
+    )
+    .await;
     let ready = response_status(ready);
     assert_eq!(ready.phase, ProjectEnvironmentSetupPhase::Ready);
     assert_eq!(ready.attempt, 1);
@@ -959,6 +979,7 @@ async fn get_setup_status(
     runtime: &crate::runtime::state::KernelRuntimeState,
     operation_id: &str,
     caller_user_id: &str,
+    phase: &str,
 ) -> LocalDaemonResponse {
     runtime
         .execute_project_environment_setup_request(
@@ -970,7 +991,11 @@ async fn get_setup_status(
             caller_user_id,
         )
         .await
-        .expect("public setup status should be available")
+        .unwrap_or_else(|error| {
+            panic!(
+                "public setup status should be available during {phase} (operation {operation_id}, caller {caller_user_id}): {error}"
+            )
+        })
 }
 
 #[cfg(unix)]
