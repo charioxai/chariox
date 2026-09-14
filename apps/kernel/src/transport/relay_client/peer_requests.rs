@@ -4329,13 +4329,16 @@ mod tests {
             },
         )
         .await;
-        assert!(matches!(
-            rebound,
-            RelayPeerResponse::ManagedContextImportFailed {
-                ref code,
-                retryable: false,
-            } if code == "unauthorized"
-        ));
+        assert!(
+            matches!(
+                &rebound,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code,
+                    retryable: false,
+                } if code == "unauthorized"
+            ),
+            "rebound finalize response: {rebound:?}"
+        );
         assert!(!recovery_capability_root.exists());
         assert!(!recovery_vault_path.exists());
         assert!(!recovery_vault_envelope_path.exists());
