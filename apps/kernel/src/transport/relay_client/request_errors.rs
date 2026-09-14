@@ -44,6 +44,12 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } => relay_error(code, message, *retryable),
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),
@@ -236,6 +242,21 @@ mod tests {
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
         assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn structured_relay_errors_preserve_code_and_retryability() {
+        let error = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "target_disconnected".to_string(),
+            message: "target daemon disconnected from relay".to_string(),
+            retryable: true,
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "target_disconnected");
+        assert_eq!(relay_error.message, "target daemon disconnected from relay");
+        assert!(relay_error.retryable);
     }
 
     #[test]

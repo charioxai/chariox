@@ -343,10 +343,18 @@ fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonE
 fn remote_prompt_dispatch_requires_provider_launch_credential(
     result: &Result<String, DaemonError>,
 ) -> bool {
-    let Err(DaemonError::LocalTransport { message, .. }) = result else {
+    let Err(error) = result else {
         return false;
     };
-    message.contains(crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+    let required_code =
+        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE;
+    match error {
+        DaemonError::LocalTransport { message, .. } => message.contains(required_code),
+        DaemonError::RelayTransport { code, message, .. } => {
+            code == required_code || message.contains(required_code)
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn remote_prompt_error_should_refresh_binding(error: &DaemonError) -> bool {
@@ -360,16 +368,34 @@ pub(super) fn remote_prompt_error_should_refresh_binding(error: &DaemonError) ->
                 || message.contains("leased_agent_not_found")
                 || message.contains("execution_lease_not_found")
         }
+        DaemonError::RelayTransport { code, message, .. } => {
+            code == "leased_agent_not_found"
+                || code == "execution_lease_not_found"
+                || message.contains("leased agent") && message.contains("was not found")
+                || message.contains("execution lease") && message.contains("was not found")
+        }
         _ => false,
     }
 }
 
 pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) -> bool {
-    let DaemonError::LocalTransport { operation, message } = error else {
-        return false;
+    let (operation, message) = match error {
+        DaemonError::RelayTransport {
+            operation,
+            retryable: true,
+            ..
+        } => {
+            return matches!(
+                *operation,
+                "read relay peer response" | "read temporary relay peer response"
+            )
+        }
+        DaemonError::RelayTransport { .. } => return false,
+        DaemonError::LocalTransport { operation, message } => (*operation, message.as_str()),
+        _ => return false,
     };
     if matches!(
-        *operation,
+        operation,
         "connect temporary relay peer socket"
             | "write temporary relay register"
             | "write temporary relay peer request"
@@ -388,6 +414,7 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
         "connection reset",
         "connection refused",
         "connection closed",
+        "relay closed temporary peer connection",
         "closed without",
         "broken pipe",
         "temporarily unavailable",
@@ -397,9 +424,10 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
     .any(|candidate| message.contains(candidate));
     transient_message
         && matches!(
-            *operation,
+            operation,
             "send relay peer request"
                 | "read relay peer response"
+                | "read temporary relay peer response"
                 | "get_live_kernel"
                 | "relay_metadata_query"
                 | "connect relay metadata socket"
@@ -466,6 +494,18 @@ mod tests {
     }
 
     #[test]
+    fn remote_prompt_dispatch_refreshes_binding_for_structured_missing_lease_errors() {
+        let result = Err(DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "leased_agent_not_found".to_string(),
+            message: "the leased agent was not found".to_string(),
+            retryable: false,
+        });
+
+        assert!(remote_prompt_dispatch_should_refresh_binding(&result));
+    }
+
+    #[test]
     fn remote_prompt_dispatch_retries_with_a_credential_only_when_worker_requests_it() {
         let required = Err(DaemonError::LocalTransport {
             operation: "read relay peer response",
@@ -484,6 +524,17 @@ mod tests {
         });
         assert!(!remote_prompt_dispatch_requires_provider_launch_credential(
             &unrelated
+        ));
+
+        let structured = Err(DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                .to_string(),
+            message: "worker requires a launch credential".to_string(),
+            retryable: false,
+        });
+        assert!(remote_prompt_dispatch_requires_provider_launch_credential(
+            &structured
         ));
     }
 
@@ -518,10 +569,34 @@ mod tests {
     }
 
     #[test]
+    fn remote_prompt_dispatch_retries_structured_temporary_relay_responses() {
+        let error = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "target_disconnected".to_string(),
+            message: "target daemon disconnected from relay".to_string(),
+            retryable: true,
+        };
+
+        assert!(remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
     fn remote_prompt_dispatch_does_not_retry_relay_authorization_failures() {
         let error = DaemonError::LocalTransport {
             operation: "read relay peer response",
             message: "invalid relay token".to_string(),
+        };
+
+        assert!(!remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
+    fn remote_prompt_dispatch_does_not_retry_structured_relay_authorization_failures() {
+        let error = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "invalid_relay_token".to_string(),
+            message: "invalid relay token".to_string(),
+            retryable: false,
         };
 
         assert!(!remote_prompt_error_should_retry_transport(&error));

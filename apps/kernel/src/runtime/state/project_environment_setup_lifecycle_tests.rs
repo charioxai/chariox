@@ -812,33 +812,31 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         "a transient worker status error must not manufacture terminal failure"
     );
 
-    let second_interrupted = runtime
-        .execute_project_environment_setup_request(
-            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
-                GetProjectEnvironmentSetupStatusRequest {
-                    operation_id: "setup-transport-recovery".to_string(),
-                },
+    let mut terminal = None;
+    for _ in 0..=super::MAX_REMOTE_SETUP_TRANSPORT_FAILURES {
+        let observation = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: "setup-transport-recovery".to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        match observation {
+            Ok(response) => {
+                terminal = Some(response_status(response));
+                break;
+            }
+            Err(error) => assert!(
+                error.to_string().contains("relay") || error.to_string().contains("transport"),
+                "transport uncertainty should remain observable: {error:?}"
             ),
-            "user-1",
-        )
-        .await;
-    assert!(
-        second_interrupted.is_err(),
-        "the second transport interruption should remain observable: {second_interrupted:?}"
-    );
-
-    let terminal = runtime
-        .execute_project_environment_setup_request(
-            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
-                GetProjectEnvironmentSetupStatusRequest {
-                    operation_id: "setup-transport-recovery".to_string(),
-                },
-            ),
-            "user-1",
-        )
-        .await
-        .expect("a permanently unreachable setup should expose a terminal status");
-    let terminal = response_status(terminal);
+        }
+    }
+    let terminal =
+        terminal.expect("a permanently unreachable setup should expose a terminal status");
     assert_eq!(
         terminal.phase,
         ProjectEnvironmentSetupPhase::Failed,
@@ -851,12 +849,10 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
     assert!(!terminal.retryable);
     let retry = runtime
         .execute_project_environment_setup_request(
-            LocalDaemonRequest::RetryProjectEnvironmentSetup(
-                RetryProjectEnvironmentSetupRequest {
-                    operation_id: "setup-transport-recovery".to_string(),
-                    session_id: session_id.clone(),
-                },
-            ),
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
+                operation_id: "setup-transport-recovery".to_string(),
+                session_id: session_id.clone(),
+            }),
             "user-1",
         )
         .await;
@@ -907,10 +903,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         .await
         .expect("replayed public start should remain idempotent");
     let replayed_status = response_status(replayed);
-    assert_eq!(
-        replayed_status.phase,
-        ProjectEnvironmentSetupPhase::Failed
-    );
+    assert_eq!(replayed_status.phase, ProjectEnvironmentSetupPhase::Failed);
     assert_eq!(replayed_status.attempt, 1);
     let ready = get_setup_status(
         &runtime,

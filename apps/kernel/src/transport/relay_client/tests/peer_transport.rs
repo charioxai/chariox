@@ -398,6 +398,14 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     )
     .await
     .expect_err("the worker should reject an unknown leased agent");
+    let crate::error::DaemonError::RelayTransport {
+        code, retryable, ..
+    } = &missing_lease
+    else {
+        panic!("relay error should retain structured metadata: {missing_lease:?}");
+    };
+    assert_eq!(code, "leased_agent_not_found");
+    assert!(!retryable);
     let diagnostic = missing_lease.to_string();
     assert!(
         diagnostic.contains("leased_agent_not_found"),

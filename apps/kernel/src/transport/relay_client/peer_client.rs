@@ -89,6 +89,15 @@ fn elapsed_ms_u64(started_at: Instant) -> u64 {
     elapsed_ms.min(u128::from(u64::MAX)) as u64
 }
 
+fn relay_transport_error(operation: &'static str, error: RelayError) -> DaemonError {
+    DaemonError::RelayTransport {
+        operation,
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(super) struct RelayPeerResponseEnvelope {
@@ -209,10 +218,7 @@ pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
             Some(&error.message),
             Some(&envelope.from_daemon_id),
         );
-        return Err(DaemonError::LocalTransport {
-            operation: "read relay peer response",
-            message: error.message,
-        });
+        return Err(relay_transport_error("read relay peer response", error));
     }
     let encrypted_response = match envelope.encrypted_response {
         Some(encrypted_response) => encrypted_response,
@@ -503,10 +509,10 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
                                 Some(&error.message),
                                 Some(&from_daemon_id),
                             );
-                            return Err(DaemonError::LocalTransport {
-                                operation: "read temporary relay peer response",
-                                message: error.message,
-                            });
+                            return Err(relay_transport_error(
+                                "read temporary relay peer response",
+                                error,
+                            ));
                         }
                         let encrypted_response = encrypted_response.ok_or_else(|| {
                             let message = "peer returned no response payload".to_string();

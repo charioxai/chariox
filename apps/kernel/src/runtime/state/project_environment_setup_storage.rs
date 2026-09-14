@@ -29,6 +29,8 @@ pub(super) struct SetupEntry {
     pub(super) status: ProjectEnvironmentSetupStatus,
     pub(super) fingerprint: String,
     pub(super) cancel_requested: bool,
+    #[serde(default)]
+    remote_transport_failure_count: u8,
     #[serde(skip)]
     active_executions: usize,
 }
@@ -171,6 +173,7 @@ impl ProjectEnvironmentSetupStore {
             status: status.clone(),
             fingerprint,
             cancel_requested: false,
+            remote_transport_failure_count: 0,
             active_executions: 0,
         };
         entries.insert(status.operation_id.clone(), entry.clone());
@@ -203,6 +206,11 @@ impl ProjectEnvironmentSetupStore {
                 "only failed or cancelled setup operations can be retried",
             ));
         }
+        if !entry.status.retryable {
+            return Err(setup_error(
+                "setup operation is not retryable; reconnect the worker and query status first",
+            ));
+        }
         let attempt = entry.status.attempt.saturating_add(1);
         entry.status.attempt = attempt;
         entry.status.phase = ProjectEnvironmentSetupPhase::Requested;
@@ -219,6 +227,7 @@ impl ProjectEnvironmentSetupStore {
         entry.status.retryable = true;
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
+        entry.remote_transport_failure_count = 0;
         let execution = entry.execution.clone();
         let status = entry.status.clone();
         let persisted = entry.clone();
@@ -293,6 +302,63 @@ impl ProjectEnvironmentSetupStore {
         Ok((entry.status.clone(), entry.execution.definition.clone()))
     }
 
+    pub(super) fn note_remote_transport_failure(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+    ) -> Option<ProjectEnvironmentSetupStatus> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries.get_mut(operation_id)?;
+        if entry.status.attempt != attempt {
+            return None;
+        }
+        if entry.status.phase == ProjectEnvironmentSetupPhase::Failed
+            && entry.status.failure_code.as_deref() == Some("worker_status_unavailable")
+            && !entry.status.retryable
+        {
+            return Some(entry.status.clone());
+        }
+        if entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return None;
+        }
+
+        entry.remote_transport_failure_count =
+            entry.remote_transport_failure_count.saturating_add(1);
+        if entry.remote_transport_failure_count < super::MAX_REMOTE_SETUP_TRANSPORT_FAILURES {
+            let persisted = entry.clone();
+            drop(entries);
+            self.persist(&persisted);
+            return None;
+        }
+
+        let message =
+            "remote worker remained unreachable; reconnect the worker and query status before retrying";
+        entry.status.phase = ProjectEnvironmentSetupPhase::Failed;
+        entry.status.progress_percent = 0;
+        entry.status.validation = None;
+        entry.status.message = Some(message.to_string());
+        entry.status.failure_code = Some("worker_status_unavailable".to_string());
+        entry.status.failure_message = Some(message.to_string());
+        entry.status.retryable = false;
+        entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+        entry.cancel_requested = false;
+        let status = entry.status.clone();
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        Some(status)
+    }
+
     pub(super) fn reconcile_remote(
         &self,
         operation_id: &str,
@@ -320,12 +386,24 @@ impl ProjectEnvironmentSetupStore {
             ));
         }
         validate_remote_setup_status(expected, entry.status.attempt, &status, definition.as_ref())?;
-        validate_remote_setup_transition(entry.status.phase, status.phase)?;
+        let recovering_from_bounded_transport_failure = entry.status.phase
+            == ProjectEnvironmentSetupPhase::Failed
+            && entry.status.failure_code.as_deref() == Some("worker_status_unavailable")
+            && !entry.status.retryable;
+        if recovering_from_bounded_transport_failure {
+            validate_remote_setup_transition_after_transport_recovery(
+                entry.status.phase,
+                status.phase,
+            )?;
+        } else {
+            validate_remote_setup_transition(entry.status.phase, status.phase)?;
+        }
         if let Some(definition) = definition {
             entry.execution.definition = Some(definition);
         }
         entry.status = status.clone();
         entry.cancel_requested = status.phase == ProjectEnvironmentSetupPhase::Cancelled;
+        entry.remote_transport_failure_count = 0;
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
@@ -506,6 +584,27 @@ impl ProjectEnvironmentSetupStore {
     }
 
     pub(super) fn mark_failed(&self, operation_id: &str, attempt: u32, code: &str, message: &str) {
+        self.mark_failed_with_retryability(operation_id, attempt, code, message, true);
+    }
+
+    pub(super) fn mark_failed_non_retryable(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        code: &str,
+        message: &str,
+    ) {
+        self.mark_failed_with_retryability(operation_id, attempt, code, message, false);
+    }
+
+    fn mark_failed_with_retryability(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        code: &str,
+        message: &str,
+        retryable: bool,
+    ) {
         let mut entries = self
             .entries
             .lock()
@@ -527,9 +626,10 @@ impl ProjectEnvironmentSetupStore {
         entry.status.message = Some(message.to_string());
         entry.status.failure_code = Some(code.to_string());
         entry.status.failure_message = Some(message.to_string());
-        entry.status.retryable = true;
+        entry.status.retryable = retryable;
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
+        entry.remote_transport_failure_count = 0;
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);

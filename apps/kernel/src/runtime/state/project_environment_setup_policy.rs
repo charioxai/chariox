@@ -138,6 +138,16 @@ pub(super) fn validate_remote_setup_transition(
     Ok(())
 }
 
+pub(super) fn validate_remote_setup_transition_after_transport_recovery(
+    current: ProjectEnvironmentSetupPhase,
+    next: ProjectEnvironmentSetupPhase,
+) -> Result<(), DaemonError> {
+    if current == ProjectEnvironmentSetupPhase::Failed {
+        return Ok(());
+    }
+    validate_remote_setup_transition(current, next)
+}
+
 pub(super) fn validate_remote_setup_status(
     expected: &SetupExecution,
     current_attempt: u32,

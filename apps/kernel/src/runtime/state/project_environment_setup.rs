@@ -32,6 +32,8 @@ use crate::transport::relay_peer::{
 
 use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport;
 
+pub(super) const MAX_REMOTE_SETUP_TRANSPORT_FAILURES: u8 = 3;
+
 #[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
 #[path = "project_environment_setup_policy.rs"]
@@ -80,19 +82,48 @@ impl KernelRuntimeState {
                             self.reconcile_remote_project_environment_setup(&execution, setup)?
                         }
                         Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                            if let Some(status) = self
+                                .owned
+                                .project_environment_setups
+                                .note_remote_transport_failure(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                )
+                            {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status,
+                                });
+                            }
                             // A relay disconnect is transport uncertainty, not
-                            // a worker-authoritative terminal result. Preserve
+                            // a worker-authoritative terminal result until the
+                            // bounded observation limit is reached. Preserve
                             // the current operation so a later Get can
                             // reconcile the worker's actual status.
                             return Err(error);
                         }
                         Err(error) => {
-                            self.owned.project_environment_setups.mark_failed(
-                                &execution.operation_id,
-                                status.attempt,
-                                "worker_status_unavailable",
-                                "the remote worker status could not be confirmed",
-                            );
+                            if let DaemonError::RelayTransport {
+                                code,
+                                retryable: false,
+                                ..
+                            } = &error
+                            {
+                                self.owned
+                                    .project_environment_setups
+                                    .mark_failed_non_retryable(
+                                        &execution.operation_id,
+                                        status.attempt,
+                                        code,
+                                        "the remote worker rejected setup status",
+                                    );
+                            } else {
+                                self.owned.project_environment_setups.mark_failed(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    "worker_status_unavailable",
+                                    "the remote worker status could not be confirmed",
+                                );
+                            }
                             return Err(error);
                         }
                     };
@@ -326,12 +357,34 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
-                    runtime_state.owned.project_environment_setups.mark_failed(
-                        &execution.operation_id,
-                        attempt,
-                        "worker_dispatch_failed",
-                        "the remote worker could not be reached for environment setup",
-                    );
+                    if remote_prompt_error_should_retry_transport(&error) {
+                        runtime_state
+                            .owned
+                            .project_environment_setups
+                            .note_remote_transport_failure(&execution.operation_id, attempt);
+                    } else if let DaemonError::RelayTransport {
+                        code,
+                        retryable: false,
+                        ..
+                    } = &error
+                    {
+                        runtime_state
+                            .owned
+                            .project_environment_setups
+                            .mark_failed_non_retryable(
+                                &execution.operation_id,
+                                attempt,
+                                code,
+                                "the remote worker rejected project environment setup",
+                            );
+                    } else {
+                        runtime_state.owned.project_environment_setups.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "worker_dispatch_failed",
+                            "the remote worker could not be reached for environment setup",
+                        );
+                    }
                     crate::logging::warn_with_fields(
                         "project.environment_setup",
                         "remote setup dispatch failed",
@@ -360,7 +413,17 @@ impl KernelRuntimeState {
             &setup.status,
             setup.definition.as_ref(),
         )?;
-        validate_remote_setup_transition(current_status.phase, setup.status.phase)?;
+        if current_status.phase == ProjectEnvironmentSetupPhase::Failed
+            && current_status.failure_code.as_deref() == Some("worker_status_unavailable")
+            && !current_status.retryable
+        {
+            validate_remote_setup_transition_after_transport_recovery(
+                current_status.phase,
+                setup.status.phase,
+            )?;
+        } else {
+            validate_remote_setup_transition(current_status.phase, setup.status.phase)?;
+        }
         if setup.status.phase == ProjectEnvironmentSetupPhase::Ready {
             let definition = setup.definition.clone().ok_or_else(|| {
                 setup_error("worker cannot report setup ready without a definition")
@@ -909,6 +972,54 @@ mod tests {
             .begin(changed)
             .expect_err("same id with changed input must fail");
         assert!(error.to_string().contains("different setup request"));
+    }
+
+    #[test]
+    fn bounded_remote_transport_failure_blocks_retry_until_worker_status_recovers() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut setup = execution();
+        setup.remote_leased_agent_id = Some("lease-1".to_string());
+        store.begin(setup).expect("setup should start");
+
+        assert!(store.note_remote_transport_failure("setup-1", 1).is_none());
+        assert!(store.note_remote_transport_failure("setup-1", 1).is_none());
+        let terminal = store
+            .note_remote_transport_failure("setup-1", 1)
+            .expect("bounded transport failure should become observable");
+        assert_eq!(terminal.phase, ProjectEnvironmentSetupPhase::Failed);
+        assert_eq!(
+            terminal.failure_code.as_deref(),
+            Some("worker_status_unavailable")
+        );
+        assert!(!terminal.retryable);
+        assert!(store.retry("setup-1", "session-1", "user-1").is_err());
+
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("lease-1".to_string());
+        let definition = execution.definition.clone();
+        let recovered = ProjectEnvironmentSetupStatus {
+            phase: ProjectEnvironmentSetupPhase::Ready,
+            progress_percent: 100,
+            validation: Some(ProjectEnvironmentValidation {
+                worker_id: "machine-1".to_string(),
+                platform: "linux-x86_64".to_string(),
+                commands: vec![ProjectEnvironmentCommandResult {
+                    command_digest: command_digest("cargo check --workspace --locked"),
+                    exit_code: 0,
+                    stdout_bytes: 1,
+                    stderr_bytes: 0,
+                }],
+            }),
+            message: Some("worker setup is ready".to_string()),
+            failure_code: None,
+            failure_message: None,
+            retryable: false,
+            ..terminal
+        };
+        let reconciled = store
+            .reconcile_remote("setup-1", &execution, recovered, definition)
+            .expect("authenticated worker status should recover the bounded failure");
+        assert_eq!(reconciled.phase, ProjectEnvironmentSetupPhase::Ready);
     }
 
     #[test]
