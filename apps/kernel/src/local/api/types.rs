@@ -81,4 +81,6 @@ pub use workspace::*;
 /// confirmed disposable-worker imports.
 /// Version 328 carries the home-authoritative setup attempt through relay
 /// recovery and the authenticated worker setup boundary.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 328;
+/// Version 329 preserves structured relay retryability in the stable local
+/// transport error projection exposed to clients.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 329;
