@@ -132,10 +132,7 @@ async function exerciseBackend({ backend, run, expected, fullAcceptance }) {
   if (fullAcceptance) {
     const providers = await run(`${prefix}.providers`, { displayBackend: backend })
     validateBoundTarget(providers, expected, backend)
-    validateOfficialProviders(providers.providers, `${prefix}.providers`)
-    if (providers.providerStateCopied !== false) {
-      fail("provider_state_copy_forbidden", `${prefix}.providers`)
-    }
+    validateProviderAcceptanceEvidence(providers, `${prefix}.providers`)
 
     const browser = await run(`${prefix}.browser`, { displayBackend: backend })
     validateBoundTarget(browser, expected, backend)
@@ -228,6 +225,29 @@ function validateOfficialProviders(providers, step) {
   for (const provider of PROVIDERS) {
     if (providers?.[provider] !== "official") {
       fail("official_provider_capability_required", step)
+    }
+  }
+}
+
+function validateProviderAcceptanceEvidence(value, step) {
+  validateOfficialProviders(value.providers, step)
+  const execution = value.providerExecutionEvidence
+  const state = value.providerStateEvidence
+  if (!execution || typeof execution !== "object" || Array.isArray(execution)
+    || !state || typeof state !== "object" || Array.isArray(state)
+    || state.schema !== "chariox.browser_computer.provider_state_evidence.v1"
+    || state.authority !== "worker-provider-runtime"
+    || state.scope !== "public worker runtime and durable history only") {
+    fail("provider_execution_evidence_required", step)
+  }
+  for (const provider of PROVIDERS) {
+    const roundTrip = execution[provider]
+    const thread = state.providerThreads?.[provider]
+    if (!roundTrip || roundTrip.outputObserved !== true || roundTrip.roundTripVerified !== true
+      || !text(roundTrip.promptId) || !text(roundTrip.toolCallId) || !text(roundTrip.finalTurnId)
+      || state.persistedHistory?.[provider] !== true
+      || !thread || thread.continuity !== true || !text(thread.current) || !text(thread.previous)) {
+      fail("provider_execution_evidence_required", step)
     }
   }
 }
