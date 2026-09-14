@@ -76,4 +76,5 @@ pub use workspace::*;
 /// Version 322 makes Selkies the omitted backend for new headed slices.
 /// Version 323 projects bounded provider-run termination metadata with failed turns.
 /// Version 325 preserves failed turn lifecycle in retained history outlines.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 325;
+/// Version 326 adds kernel-owned project environment setup and readiness operations.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 326;

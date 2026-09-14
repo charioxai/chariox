@@ -29,7 +29,7 @@ const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
-test("repository release policy permits protocol 324 to 325 upgrade and rollback", async (context) => {
+test("repository release policy permits protocol 325 to 326 upgrade and rollback", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -37,7 +37,7 @@ test("repository release policy permits protocol 324 to 325 upgrade and rollback
   const policyPath = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
   await mkdir(current)
   await put(join(target, policyPath), await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json")))
-  for (const args of [[current, "324", target, "325"], [target, "325", current, "324"]]) {
+  for (const args of [[current, "325", target, "326"], [target, "326", current, "325"]]) {
     const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition", ...args], { encoding: "utf8" })
     assert.equal(result.status, 0, result.stderr)
   }
@@ -154,8 +154,8 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
 }
 
 async function makeHarness(context, {
-  currentProtocol = 324,
-  targetProtocol = 324,
+  currentProtocol = 325,
+  targetProtocol = 325,
   currentTransitionPolicy = null,
   targetTransitionPolicy = null,
   receiptKind = "managed_environment",
@@ -1005,12 +1005,12 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
 
 test("managed kernel upgrade accepts only a signed explicitly supported newer protocol", async (context) => {
   const harness = await makeHarness(context, {
-    targetProtocol: 325,
+    targetProtocol: 326,
     targetTransitionPolicy: {
       schemaVersion: 1,
-      protocol: 325,
-      upgradeFrom: [324, 325],
-      rollbackTo: [324, 325],
+      protocol: 326,
+      upgradeFrom: [325, 326],
+      rollbackTo: [325, 326],
     },
   })
   const result = harness.run()
