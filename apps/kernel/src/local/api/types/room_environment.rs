@@ -19,6 +19,29 @@ pub struct GetRoomEnvironmentSliceRequest {
     pub session_id: String,
 }
 
+/// Read the home-owned browser/profile identities for a Room-bound worker
+/// environment. The slice id is part of the request so a stale worker or
+/// unrelated slice cannot be projected as this Room's inventory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetRoomEnvironmentResourceInventoryRequest {
+    pub session_id: String,
+    pub slice_id: String,
+}
+
+/// Opaque physical-resource identities observed by the bound worker after the
+/// home kernel reconciles its browser controller. `profile_ids` are worker
+/// observations (never Slice reservation IDs); the actual profile path never
+/// crosses the API. The worker contract is scoped to this Room-bound worker
+/// and must fail closed when its browser/profile inventory is not exactly one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomEnvironmentResourceInventory {
+    pub session_id: String,
+    pub environment_id: String,
+    pub slice_id: String,
+    pub browser_ids: Vec<String>,
+    pub profile_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureRoomEnvironmentScreenshotRequest {
     pub session_id: String,

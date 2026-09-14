@@ -892,7 +892,16 @@ test("timed-out or disconnected dialog replies terminate and do not leak default
   const browser = new BrowserCdpClient({ connectionFactory: async () => new CdpConnection(socket, 100) });
   t.after(() => browser.close());
   let id = 0;
-  const request = (method, params) => handleBrowserControllerRequest({ id: ++id, method, params }, { browser });
+  const request = (method, params) => handleBrowserControllerRequest(
+    { id: ++id, method, params },
+    {
+      browser,
+      resourceInventory: async () => ({
+        browser_ids: ["browser-pid-fixture"],
+        profile_ids: ["profile-sha256-fixture"],
+      }),
+    },
+  );
   const target = { target_id: "target-a", document_id: "loader-a", action: "accept" };
   assert.equal((await request("browser.reconcile", { viewport })).ok, true);
   socket.message({ method: "Page.javascriptDialogOpening", sessionId: "session-a", params: { type: "prompt", defaultPrompt: "old private default" } });

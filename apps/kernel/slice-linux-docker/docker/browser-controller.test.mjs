@@ -96,7 +96,15 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
   const browser = {
     reconcile: async (viewport) => {
       calls.push({ method: "reconcile", viewport });
-      return { tabs: [], focused_target_id: null, viewport };
+      return {
+        tabs: [],
+        focused_target_id: null,
+        viewport,
+        resource_inventory: {
+          browser_ids: ["browser-pid-41"],
+          profile_ids: ["profile-sha256-41"],
+        },
+      };
     },
     snapshot: async (request) => {
       calls.push({ method: "snapshot", request });
@@ -378,6 +386,97 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { method: "close" },
   ]);
+});
+
+test("public reconcile returns the worker-owned browser/profile inventory", async () => {
+  const viewport = {
+    css_width: 1280,
+    css_height: 720,
+    device_scale_factor: 1,
+    desktop_pixel_width: 1280,
+    desktop_pixel_height: 720,
+  };
+  const browser = {
+    reconcile: async (requestedViewport) => ({
+      tabs: [],
+      focused_target_id: null,
+      viewport: requestedViewport,
+    }),
+  };
+
+  const response = await handleBrowserControllerRequest(
+    { id: 1, method: "browser.reconcile", params: { viewport } },
+    {
+      browser,
+      resourceInventory: async () => ({
+        browser_ids: ["browser-pid-41"],
+        profile_ids: ["profile-sha256-41"],
+      }),
+    },
+  );
+
+  assert.equal(response.ok, true, JSON.stringify(response.error));
+  assert.deepEqual(response.result.resource_inventory, {
+    browser_ids: ["browser-pid-41"],
+    profile_ids: ["profile-sha256-41"],
+  });
+});
+
+test("public reconcile rejects a worker with no observed browser or profile", async () => {
+  const response = await handleBrowserControllerRequest(
+    { id: 1, method: "browser.reconcile", params: { viewport: { css_width: 1 } } },
+    {
+      browser: { reconcile: async (viewport) => ({ tabs: [], focused_target_id: null, viewport }) },
+      resourceInventory: async () => ({ browser_ids: [], profile_ids: [] }),
+    },
+  );
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, "browser_resource_inventory_invalid");
+});
+
+test("public reconcile rejects multiple worker browser/profile observations", async () => {
+  const response = await handleBrowserControllerRequest(
+    {
+      id: 1,
+      method: "browser.reconcile",
+      params: {
+        viewport: {
+          css_width: 1280,
+          css_height: 720,
+          device_scale_factor: 1,
+          desktop_pixel_width: 1280,
+          desktop_pixel_height: 720,
+        },
+      },
+    },
+    {
+      browser: { reconcile: async (viewport) => ({ tabs: [], focused_target_id: null, viewport }) },
+      resourceInventory: async () => ({
+        browser_ids: ["browser-pid-41", "browser-pid-42"],
+        profile_ids: ["profile-sha256-41", "profile-sha256-42"],
+      }),
+    },
+  );
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, "browser_resource_inventory_invalid");
+});
+
+test("public reconcile rejects duplicate worker browser/profile identities", async () => {
+  const response = await handleBrowserControllerRequest(
+    { id: 1, method: "browser.reconcile", params: { viewport: { css_width: 1 } } },
+    {
+      browser: { reconcile: async (viewport) => ({ tabs: [], focused_target_id: null, viewport }) },
+      resourceInventory: async () => ({
+        browser_ids: ["browser-pid-41", "browser-pid-41"],
+        profile_ids: ["profile-sha256-41", "profile-sha256-41"],
+      }),
+    },
+  );
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, "browser_resource_inventory_invalid");
 });
 
 test("stdio controller stays private to its owning process and shuts down cleanly", async (context) => {

@@ -5,6 +5,7 @@ import {
   bindRoomEnvironmentSliceRequest,
   captureRoomEnvironmentScreenshotRequest,
   getRoomEnvironmentSliceRequest,
+  getRoomEnvironmentResourceInventoryRequest,
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentEventsRequest,
   getRoomEnvironmentStateRequest,
@@ -22,6 +23,7 @@ import {
   roomEnvironmentInputTakeoverMinimumProtocolVersion,
   roomEnvironmentLifecycleMinimumProtocolVersion,
   roomEnvironmentScreenshotMinimumProtocolVersion,
+  roomEnvironmentResourceInventoryMinimumProtocolVersion,
   roomEnvironmentSliceBindingMinimumProtocolVersion,
   roomEnvironmentStateMinimumProtocolVersion,
   submitRoomEnvironmentBrowserActionRequest,
@@ -38,6 +40,7 @@ import type {
   RoomEnvironmentClipboardReadResponse,
   RoomEnvironmentEventsResponse,
   RoomEnvironmentStateResponse,
+  RoomEnvironmentResourceInventoryResponse,
   RoomEnvironmentUpdatedResponse,
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
@@ -58,6 +61,7 @@ test("Room client capabilities expose their exact protocol minimums", () => {
     history: roomEnvironmentActionHistoryMinimumProtocolVersion,
     sliceBinding: roomEnvironmentSliceBindingMinimumProtocolVersion,
     screenshot: roomEnvironmentScreenshotMinimumProtocolVersion,
+    resourceInventory: roomEnvironmentResourceInventoryMinimumProtocolVersion,
   }, {
     state: 269,
     lifecycle: 270,
@@ -68,6 +72,7 @@ test("Room client capabilities expose their exact protocol minimums", () => {
     history: 279,
     sliceBinding: 282,
     screenshot: 296,
+    resourceInventory: 330,
   })
 })
 
@@ -78,10 +83,37 @@ test("Room Environment placement uses shared requests", () => {
   assert.deepEqual(getRoomEnvironmentSliceRequest("session-1"), {
     GetRoomEnvironmentSlice: { session_id: "session-1" },
   })
+  assert.deepEqual(getRoomEnvironmentResourceInventoryRequest("session-1", "slice-1"), {
+    GetRoomEnvironmentResourceInventory: {
+      session_id: "session-1",
+      slice_id: "slice-1",
+    },
+  })
+})
+
+test("Room Environment resource inventory preserves the home-owned identity response", () => {
+  const response: RoomEnvironmentResourceInventoryResponse = {
+    RoomEnvironmentResourceInventory: {
+      inventory: {
+        session_id: "session-1",
+        environment_id: "environment-1",
+        slice_id: "slice-1",
+        browser_ids: ["browser-pid-7"],
+        profile_ids: ["profile-sha256-41"],
+      },
+    },
+  }
+  assert.deepEqual(response.RoomEnvironmentResourceInventory.inventory, {
+    session_id: "session-1",
+    environment_id: "environment-1",
+    slice_id: "slice-1",
+    browser_ids: ["browser-pid-7"],
+    profile_ids: ["profile-sha256-41"],
+  })
 })
 
 test("Room Environment screenshot transfer uses bounded protocol 296 requests", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(
     captureRoomEnvironmentScreenshotRequest("session-1", "attachment-1"),
     {
@@ -112,7 +144,7 @@ test("Room Environment screenshot transfer uses bounded protocol 296 requests", 
 })
 
 test("Room Environment state request matches protocol 296", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -237,7 +269,7 @@ test("Room Environment state request matches protocol 296", () => {
 })
 
 test("Room Environment event replay request matches protocol 296", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -409,7 +441,7 @@ test("Room Environment viewport update carries only dimensions and observed revi
 })
 
 test("Room Environment pointer update carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(updateRoomEnvironmentPointerRequest("session-1", 3, 7, { x: 320, y: 180 }), {
     UpdateRoomEnvironmentPointer: {
       session_id: "session-1",
@@ -467,7 +499,7 @@ test("Room Environment Action cancellation request cannot forge Actor identity",
 })
 
 test("Room Environment pointer click submission carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(
     submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-1", {
       kind: "pointer_click",
@@ -496,7 +528,7 @@ test("Room Environment pointer click submission carries observed generations but
 })
 
 test("Room Environment browser history uses a stable tab without an Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(
     submitRoomEnvironmentBrowserActionRequest("session-1", 4, "history-back-1", {
       kind: "history",
@@ -519,7 +551,7 @@ test("Room Environment browser history uses a stable tab without an Actor identi
 })
 
 test("Room Environment browser tab lifecycle uses a stable tab without an Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   for (const action of ["activate", "close"] as const) {
     assert.deepEqual(
       submitRoomEnvironmentBrowserActionRequest("session-1", 4, `tab-${action}-1`, {
@@ -658,7 +690,7 @@ test("Room Environment keyboard submissions preserve text, chords, and repeat co
 })
 
 test("Room Environment clipboard requests use protocol 303 without accepting Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 328)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 330)
   assert.deepEqual(
     submitRoomEnvironmentActionRequest("session-1", 4, 9, "clipboard-1", {
       kind: "clipboard_write",

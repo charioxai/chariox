@@ -85,12 +85,19 @@ pub(crate) struct BrowserControllerReconciliation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BrowserControllerResourceInventory {
+    pub(crate) browser_ids: Vec<String>,
+    pub(crate) profile_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerBrowserSnapshot {
     pub(crate) browser_generation: u64,
     #[serde(default)]
     pub(crate) event_cursor: u64,
     pub(crate) tabs: Vec<BrowserControllerTabSnapshot>,
     pub(crate) focused_target_id: Option<String>,
+    pub(crate) resource_inventory: BrowserControllerResourceInventory,
     viewport: BrowserControllerViewport,
 }
 
@@ -1055,6 +1062,7 @@ impl BrowserControllerBrowserSnapshot {
         if self.browser_generation == 0 {
             return Err("browser controller returned zero browser generation".to_string());
         }
+        self.resource_inventory.validate()?;
         if self.viewport.css_width != expected_viewport.css_width
             || self.viewport.css_height != expected_viewport.css_height
             || self.viewport.device_scale_factor != expected_viewport.device_scale_factor
@@ -1086,6 +1094,35 @@ impl BrowserControllerBrowserSnapshot {
         }
         Ok(())
     }
+}
+
+impl BrowserControllerResourceInventory {
+    fn validate(&self) -> Result<(), String> {
+        validate_resource_identities(&self.browser_ids, "browser")?;
+        validate_resource_identities(&self.profile_ids, "profile")?;
+        Ok(())
+    }
+}
+
+fn validate_resource_identities(identities: &[String], kind: &str) -> Result<(), String> {
+    let mut unique = BTreeSet::new();
+    for identity in identities {
+        if identity.trim().is_empty() {
+            return Err(format!("browser controller returned an empty {kind} identity"));
+        }
+        if !unique.insert(identity) {
+            return Err(format!(
+                "browser controller returned duplicate {kind} identity `{identity}`"
+            ));
+        }
+    }
+    if identities.len() != 1 {
+        return Err(format!(
+            "browser controller must observe exactly one {kind} identity, got {}",
+            identities.len()
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1982,7 +2019,8 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        BrowserControllerProcessBackend, BrowserControllerProcessHealth,
+        BrowserControllerBrowserSnapshot, BrowserControllerProcessBackend,
+        BrowserControllerProcessHealth,
         BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
         BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
         CONTROLLER_RESTARTED_BEFORE_OPERATION,
@@ -2398,7 +2436,7 @@ mod tests {
     #[test]
     fn room_lease_reconciles_browser_tabs_and_canonical_viewport_over_stdio() {
         let tool = TestTool::new(
-            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.reconcile\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"tabs\":[{\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"url\":\"https://a.test\",\"title\":\"A\"}],\"focused_target_id\":\"target-a\",\"viewport\":{\"css_width\":1280,\"css_height\":720,\"device_scale_factor\":1,\"desktop_pixel_width\":1280,\"desktop_pixel_height\":720}}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
+            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.reconcile\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"tabs\":[{\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"url\":\"https://a.test\",\"title\":\"A\"}],\"focused_target_id\":\"target-a\",\"resource_inventory\":{\"browser_ids\":[\"browser-pid-41\"],\"profile_ids\":[\"profile-sha256-41\"]},\"viewport\":{\"css_width\":1280,\"css_height\":720,\"device_scale_factor\":1,\"desktop_pixel_width\":1280,\"desktop_pixel_height\":720}}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
         );
         let store = BrowserControllerProcessStore::new(
             tool.path(),
@@ -2425,6 +2463,44 @@ mod tests {
             Some("target-a")
         );
         store.release("room-1").expect("Room releases controller");
+    }
+
+    #[test]
+    fn worker_resource_inventory_rejects_zero_duplicate_and_multiple_observations() {
+        let viewport = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
+        for (browser_ids, profile_ids) in [
+            (vec![], vec!["profile-sha256-41"]),
+            (
+                vec!["browser-pid-41", "browser-pid-41"],
+                vec!["profile-sha256-41", "profile-sha256-41"],
+            ),
+            (
+                vec!["browser-pid-41", "browser-pid-42"],
+                vec!["profile-sha256-41", "profile-sha256-42"],
+            ),
+        ] {
+            let snapshot: BrowserControllerBrowserSnapshot = serde_json::from_value(
+                serde_json::json!({
+                    "browser_generation": 1,
+                    "event_cursor": 1,
+                    "tabs": [],
+                    "focused_target_id": null,
+                    "resource_inventory": {
+                        "browser_ids": browser_ids,
+                        "profile_ids": profile_ids,
+                    },
+                    "viewport": {
+                        "css_width": 1280,
+                        "css_height": 720,
+                        "device_scale_factor": 1,
+                        "desktop_pixel_width": 1280,
+                        "desktop_pixel_height": 720,
+                    },
+                }),
+            )
+            .expect("resource inventory response shape parses");
+            assert!(snapshot.validate(&viewport).is_err());
+        }
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use crate::error::DaemonError;
 use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
-use crate::runtime::browser_controller_process::BrowserControllerProcessSnapshot;
+use crate::local::RoomEnvironmentResourceInventory;
+use crate::runtime::browser_controller_process::{
+    BrowserControllerProcessSnapshot, BrowserControllerProcessState,
+};
 use crate::session::{
     EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle,
     RoomEnvironmentSnapshot,
@@ -249,6 +252,71 @@ impl KernelRuntimeState {
             self.complete_browser_controller_generation_recovery(session_id)?;
         }
         Ok(environment)
+    }
+
+    /// Return the home-authoritative identities for the physical resources
+    /// observed by a Room-bound worker. This deliberately reuses the existing
+    /// authenticated worker-controller reconciliation path; a SliceRecord
+    /// alone is only a reservation and is not a browser/profile observation.
+    pub(crate) async fn room_environment_resource_inventory(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+    ) -> Result<RoomEnvironmentResourceInventory, DaemonError> {
+        let binding = self
+            .room_environment_slice(session_id)?
+            .ok_or_else(|| controller_route_error("Room has no bound environment slice"))?;
+        if binding.slice_id != slice_id {
+            return Err(controller_route_error(
+                "Room environment resource inventory slice identity mismatch",
+            ));
+        }
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("environment.resource_inventory.get", error))?;
+        let RoomBrowserControllerResult::Reconciled {
+            reconciliation: Some(reconciliation),
+        } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Reconcile {
+                    viewport: environment.viewport.clone(),
+                },
+            )
+            .await?
+        else {
+            return Err(controller_route_error(
+                "bound worker did not return browser reconciliation",
+            ));
+        };
+        let process = reconciliation.process;
+        if process.state != BrowserControllerProcessState::Ready {
+            return Err(controller_route_error(
+                "bound worker browser controller is not ready",
+            ));
+        }
+        if process.process_id.is_none() {
+            return Err(controller_route_error(
+                "bound worker browser controller has no process identity",
+            ));
+        }
+        let browser_generation = reconciliation.browser.browser_generation;
+        if browser_generation == 0 {
+            return Err(controller_route_error(
+                "bound worker browser reconciliation has no browser identity",
+            ));
+        }
+
+        let resource_inventory = reconciliation.browser.resource_inventory;
+        Ok(RoomEnvironmentResourceInventory {
+            session_id: binding.session_id,
+            environment_id: environment.environment_id,
+            slice_id: binding.slice_id.clone(),
+            // These are observed by the bound worker controller. They are not
+            // derived from the controller generation or a Slice reservation.
+            browser_ids: resource_inventory.browser_ids,
+            profile_ids: resource_inventory.profile_ids,
+        })
     }
 
     pub(crate) async fn capture_browser_environment_snapshot(

@@ -1,8 +1,9 @@
 use crate::error::DaemonError;
 use crate::local::{
-    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetSessionStateRequest,
-    ListAgentsRequest, ListRoomEnvironmentActionHistoryRequest, ListSessionsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
+    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentResourceInventoryRequest,
+    GetRoomEnvironmentStateRequest, GetSessionStateRequest, ListAgentsRequest,
+    ListRoomEnvironmentActionHistoryRequest, ListSessionsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
@@ -347,6 +348,16 @@ pub(crate) async fn execute_get_room_environment_state_request(
         .map_err(|error| room_environment_read_error("environment.state.get", error))
 }
 
+pub(crate) async fn execute_get_room_environment_resource_inventory_request(
+    runtime_state: &KernelRuntimeState,
+    request: GetRoomEnvironmentResourceInventoryRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_resource_inventory(&request.session_id, &request.slice_id)
+        .await
+        .map(|inventory| LocalDaemonResponse::RoomEnvironmentResourceInventory { inventory })
+}
+
 pub(crate) async fn execute_get_room_environment_events_request(
     runtime_state: &KernelRuntimeState,
     request: GetRoomEnvironmentEventsRequest,
@@ -414,6 +425,9 @@ pub(crate) async fn execute_session_read_request(
         LocalDaemonRequest::GetRoomEnvironmentSlice(request) => runtime_state
             .room_environment_slice(&request.session_id)
             .map(|binding| LocalDaemonResponse::RoomEnvironmentSlice { binding }),
+        LocalDaemonRequest::GetRoomEnvironmentResourceInventory(request) => {
+            execute_get_room_environment_resource_inventory_request(runtime_state, request).await
+        }
         LocalDaemonRequest::GetRoomEnvironmentEvents(request) => {
             execute_get_room_environment_events_request(runtime_state, request).await
         }
