@@ -578,7 +578,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
                         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                             GetProjectEnvironmentSetupStatusRequest { operation_id },
                         ),
-                        "user-1",
+                        crate::session::DEFAULT_LOCAL_USER_ID,
                     )
                     .await
             }
