@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 use super::support::*;
 use futures_util::{SinkExt, StreamExt};
+use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[test]
