@@ -257,6 +257,7 @@ mod prompt_tests {
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::mpsc::{self, Receiver, Sender};
     use std::thread;
     use std::time::Duration;
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
@@ -656,6 +657,217 @@ mod prompt_tests {
         submit_thread.join().expect("join resumed prompt fixture");
         mcp_server.join().expect("join runtime MCP fixture");
         server.join().expect("join Codex websocket fixture");
+    }
+
+    #[test]
+    fn independent_provider_runs_progress_while_one_resume_waits_on_codex() {
+        let listener_a = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture A");
+        let address_a = listener_a
+            .local_addr()
+            .expect("resolve Codex websocket fixture A");
+        let listener_b = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture B");
+        let address_b = listener_b
+            .local_addr()
+            .expect("resolve Codex websocket fixture B");
+        let (resume_a_seen_tx, resume_a_seen_rx) = mpsc::channel();
+        let (release_a_tx, release_a_rx) = mpsc::channel();
+        let (turn_a_seen_tx, turn_a_seen_rx) = mpsc::channel();
+        let (turn_b_seen_tx, turn_b_seen_rx) = mpsc::channel();
+
+        let server_a = thread::spawn(move || {
+            run_resume_submit_server(
+                listener_a,
+                Some(release_a_rx),
+                Some(resume_a_seen_tx),
+                turn_a_seen_tx,
+                true,
+            )
+        });
+        let server_b = thread::spawn(move || {
+            run_resume_submit_server(listener_b, None, None, turn_b_seen_tx, false)
+        });
+
+        let endpoint_a = format!("ws://{address_a}");
+        let (socket_a, _) = connect(&endpoint_a).expect("connect Codex websocket fixture A");
+        let endpoint_b = format!("ws://{address_b}");
+        let (socket_b, _) = connect(&endpoint_b).expect("connect Codex websocket fixture B");
+        let run_a = RuntimeProviderRun::from_control_capability_inference(
+            "provider-run-concurrent-a",
+            "session-concurrent".to_string(),
+            Some("agent-concurrent-a".to_string()),
+            "codex".to_string(),
+        );
+        let run_b = RuntimeProviderRun::from_control_capability_inference(
+            "provider-run-concurrent-b",
+            "session-concurrent".to_string(),
+            Some("agent-concurrent-b".to_string()),
+            "codex".to_string(),
+        );
+        let mailbox = crate::provider::ProviderRunActorMailbox::default();
+        mailbox.insert_codex_runtime(
+            run_a.id().to_string(),
+            super::super::state::CodexRuntimeState::pending(
+                endpoint_a,
+                Some("thread-concurrent-a".to_string()),
+                socket_a,
+                1,
+            ),
+        );
+        mailbox.insert_codex_runtime(
+            run_b.id().to_string(),
+            super::super::state::CodexRuntimeState::pending(
+                endpoint_b,
+                Some("thread-concurrent-b".to_string()),
+                socket_b,
+                1,
+            ),
+        );
+
+        let envelope = || {
+            PromptEnvelope::new(
+                "concurrent resume probe",
+                "",
+                Vec::new(),
+                PromptManifest::current(),
+            )
+        };
+        mailbox
+            .spawn_submit(
+                run_a.session_id().to_string(),
+                run_a.id().to_string(),
+                "agent-concurrent-a".to_string(),
+                "prompt-concurrent-a".to_string(),
+                run_a,
+                envelope(),
+            )
+            .expect("Codex run A submit should enqueue");
+        let resume_a_started = resume_a_seen_rx
+            .recv_timeout(Duration::from_secs(1))
+            .is_ok();
+
+        mailbox
+            .spawn_submit(
+                run_b.session_id().to_string(),
+                run_b.id().to_string(),
+                "agent-concurrent-b".to_string(),
+                "prompt-concurrent-b".to_string(),
+                run_b,
+                envelope(),
+            )
+            .expect("Codex run B submit should enqueue");
+        let run_b_progressed = turn_b_seen_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+
+        // Release A only after the independent run has had a bounded chance to reach its
+        // actual turn/start. A large response is sent for A after the release; no notification
+        // retention or tool-response behavior is part of this assertion.
+        let _ = release_a_tx.send(());
+        let run_a_progressed = turn_a_seen_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+
+        let server_a_result = server_a.join().expect("join Codex websocket fixture A");
+        let server_b_result = server_b.join().expect("join Codex websocket fixture B");
+        mailbox.clear_runtime("provider-run-concurrent-a");
+        mailbox.stop_run("provider-run-concurrent-a");
+        mailbox.clear_runtime("provider-run-concurrent-b");
+        mailbox.stop_run("provider-run-concurrent-b");
+        assert!(
+            resume_a_started,
+            "run A fixture should enter thread/resume before run B is queued: {server_a_result:?}"
+        );
+        assert!(
+            run_b_progressed,
+            "run B should reach turn/start while run A waits for its Codex response: {server_b_result:?}"
+        );
+        assert!(
+            run_a_progressed,
+            "run A should reach turn/start after its controlled response is released: {server_a_result:?}"
+        );
+        assert!(
+            server_a_result.is_ok(),
+            "run A fixture failed: {server_a_result:?}"
+        );
+        assert!(
+            server_b_result.is_ok(),
+            "run B fixture failed: {server_b_result:?}"
+        );
+    }
+
+    fn run_resume_submit_server(
+        listener: TcpListener,
+        release_rx: Option<Receiver<()>>,
+        resume_seen_tx: Option<Sender<()>>,
+        turn_seen_tx: Sender<()>,
+        large_response: bool,
+    ) -> Result<(), String> {
+        let (stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| error.to_string())?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .map_err(|error| error.to_string())?;
+        let mut socket = accept(stream).map_err(|error| error.to_string())?;
+        let resume_request = read_json_request_bounded(&mut socket, "thread/resume")?;
+        if let Some(resume_seen_tx) = resume_seen_tx {
+            resume_seen_tx.send(()).map_err(|error| error.to_string())?;
+        }
+        if let Some(release_rx) = release_rx {
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|error| error.to_string())?;
+        }
+        let history = large_response.then(|| "resume-history".repeat(220_000));
+        let mut resume_result = json!({
+            "thread": {"id": "thread-concurrent"},
+            "model": "gpt-5.5"
+        });
+        if let Some(history) = history {
+            resume_result["history"] = json!(history);
+        }
+        socket
+            .send(Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": resume_request["id"],
+                    "result": resume_result
+                })
+                .to_string()
+                .into(),
+            ))
+            .map_err(|error| error.to_string())?;
+
+        let turn_request = read_json_request_bounded(&mut socket, "turn/start")?;
+        turn_seen_tx.send(()).map_err(|error| error.to_string())?;
+        socket
+            .send(Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": turn_request["id"],
+                    "result": {"turn": {"id": "turn-concurrent"}}
+                })
+                .to_string()
+                .into(),
+            ))
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn read_json_request_bounded(
+        socket: &mut tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>,
+        expected_method: &str,
+    ) -> Result<serde_json::Value, String> {
+        let message = socket.read().map_err(|error| error.to_string())?;
+        let Message::Text(text) = message else {
+            return Err("expected text Codex request".to_string());
+        };
+        let request: serde_json::Value =
+            serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        if request["method"] != expected_method {
+            return Err(format!(
+                "expected Codex method {expected_method}, got {}",
+                request["method"]
+            ));
+        }
+        Ok(request)
     }
 
     fn read_json_request(
