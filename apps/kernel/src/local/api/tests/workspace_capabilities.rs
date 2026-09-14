@@ -1,6 +1,7 @@
 use super::*;
 
 mod claims_screenshot_transfer;
+mod git_free_files;
 mod live_sync;
 mod shell_and_files;
 mod workspace_links;

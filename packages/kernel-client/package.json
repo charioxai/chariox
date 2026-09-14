@@ -17,6 +17,7 @@
     "./interaction-choice": "./dist/interaction-choice.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
+    "./browser-relay-crypto": "./dist/browser-relay-crypto.js",
     "./kernel-transport-requests": "./dist/kernel-transport-requests.js",
     "./kernel-types": "./dist/kernel-types.js",
     "./prompt-origin": "./dist/prompt-origin.js",
@@ -77,6 +78,7 @@
     "./shell-script": "./dist/shell-script.js",
     "./shell-workspace-format": "./dist/shell-workspace-format.js",
     "./slice-format": "./dist/slice-format.js",
+    "./slice-screen-viewer": "./dist/slice-screen-viewer.js",
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js"
   },
   "types": "./dist/index.d.ts",

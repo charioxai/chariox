@@ -391,7 +391,10 @@ impl KernelRuntimeState {
                     "chunks": poll_result.chunks.len(),
                     "completions": poll_result.completions.len(),
                     "prompt_completed": poll_result.prompt_completed,
-                    "terminal_failure": poll_result.terminal_failure,
+                    "terminal_failure": poll_result
+                        .terminal_failure
+                        .as_deref()
+                        .map(crate::provider::sanitize_provider_diagnostic),
                 }),
             );
         }
@@ -458,6 +461,19 @@ impl KernelRuntimeState {
             .terminal_failure
             .as_deref()
             .map(provider_prompt_dispatch_failure_notice);
+        // Only adapter-protocol error frames set this provenance bit. PTY or
+        // stderr text may still fail the prompt, but never becomes durable
+        // provider termination evidence.
+        let provider_termination = poll_result
+            .explicit_provider_error
+            .then(|| terminal_failure.as_deref())
+            .flatten()
+            .map(|message| {
+                crate::provider::ProviderRunTermination::explicit_provider_error(
+                    message,
+                    crate::session::unix_epoch_ms(),
+                )
+            });
         project_terminal_failure_chunk(&mut poll_result, terminal_failure.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         if let Some(message) = terminal_failure.as_ref() {
@@ -569,8 +585,14 @@ impl KernelRuntimeState {
             owned.mark_prompt_completion_recorded(provider_run_id);
         }
         if let Some(message) = terminal_failure {
-            self.fail_owned_provider_prompt(session_id, provider_run_id, &message, false)
-                .await?;
+            self.fail_owned_provider_prompt_with_termination(
+                session_id,
+                provider_run_id,
+                &message,
+                false,
+                provider_termination,
+            )
+            .await?;
             return Ok(records);
         }
         if !self
@@ -661,9 +683,15 @@ fn project_terminal_failure_chunk(
 }
 
 fn provider_notice_message(message: &str) -> String {
-    provider_error_message(message)
+    let rendered = provider_error_message(message)
         .map(|message| format!("Provider prompt dispatch failed: {message}"))
-        .unwrap_or_else(|| message.to_string())
+        .unwrap_or_else(|| message.to_string());
+    let rendered = crate::provider::sanitize_provider_diagnostic(&rendered);
+    if rendered.is_empty() {
+        "provider reported an explicit error".to_string()
+    } else {
+        rendered
+    }
 }
 
 fn provider_error_message(message: &str) -> Option<String> {

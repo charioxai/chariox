@@ -78,7 +78,7 @@ fn exited_pty_is_drained_before_liveness_settlement() {
     for _ in 0..50 {
         if matches!(
             app.pty.poll_process_state(run.id()),
-            Ok(crate::pty::PtyProcessState::Exited)
+            Ok(crate::pty::PtyProcessState::Exited { .. })
         ) {
             break;
         }
@@ -171,7 +171,7 @@ fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_erro
     for _ in 0..50 {
         if matches!(
             app.pty.poll_process_state(run.id()),
-            Ok(crate::pty::PtyProcessState::Exited)
+            Ok(crate::pty::PtyProcessState::Exited { .. })
         ) {
             break;
         }

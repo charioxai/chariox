@@ -582,6 +582,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_peer_without_directory_receipt_protocol_before_upload() {
+        let mut fixture = outbound_fixture(10);
+        let fixture_root = fixture.root.clone();
+        fixture.plan.development = ManagedContextDevelopmentSelection::SourceProject {
+            project_id: "plain-project".to_string(),
+            repositories: vec![
+                crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    workspace_id: "plain-workspace".to_string(),
+                    worktree_id: None,
+                },
+            ],
+        };
+        fixture.package.plan = fixture.plan.clone();
+        let capability = RelayManagedContextCapability::new("capability".to_string());
+        let transport = FakeTransport::new(vec![Ok(armed_with_version(
+            &capability,
+            512,
+            RELAY_PEER_PROTOCOL_VERSION - 1,
+        ))]);
+
+        let error = transfer_managed_context_package(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".to_string(),
+                target_kernel_id: "target-kernel".to_string(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability,
+            },
+            |_| {},
+        )
+        .await
+        .expect_err("a peer without directory receipt support must fail before upload");
+
+        assert!(error
+            .to_string()
+            .contains("does not support the selected managed-context protocol"));
+        assert_eq!(transport.requests().len(), 1, "only arm may be sent");
+        std::fs::remove_dir_all(fixture_root).expect("fixture cleanup");
+    }
+
+    #[tokio::test]
     async fn resumes_from_target_offset_and_recovers_lost_finalize_response() {
         let fixture = outbound_fixture(600_000);
         let fixture_root = fixture.root.clone();
@@ -784,12 +828,20 @@ mod tests {
         capability: &RelayManagedContextCapability,
         max_chunk_bytes: usize,
     ) -> RelayPeerResponse {
+        armed_with_version(capability, max_chunk_bytes, RELAY_PEER_PROTOCOL_VERSION)
+    }
+
+    fn armed_with_version(
+        capability: &RelayManagedContextCapability,
+        max_chunk_bytes: usize,
+        relay_peer_protocol_version: u32,
+    ) -> RelayPeerResponse {
         RelayPeerResponse::ManagedContextImportArmed {
             transfer_id: "transfer-1".to_string(),
             capability: capability.clone(),
             expires_at_ms: u64::MAX,
             max_chunk_bytes,
-            relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            relay_peer_protocol_version,
         }
     }
 

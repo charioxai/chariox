@@ -89,6 +89,8 @@ pub struct LeasedCompletionReplay {
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

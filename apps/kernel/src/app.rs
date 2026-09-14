@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -39,6 +39,7 @@ mod relay_runtime;
 mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
+mod remote_prompt_peer;
 mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
@@ -129,8 +130,11 @@ pub(crate) use provider_launch_policy::{
 pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_processes::{ProviderLaunchProcessRuntime, ProviderProcessReapSummary};
 pub(crate) use provider_run_read::ProviderRunReadService;
+#[cfg(test)]
+pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
-    PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
+    LeaseCallerBinding, LeasedAgentCleanupPhase, PreparedLeasedProviderRun, RemoteLeaseRuntime,
+    RemoteProviderFailure, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
@@ -179,6 +183,22 @@ pub struct DaemonApp {
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    completed_leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    pending_execution_lease_authorizations:
+        BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
+    pending_leased_agent_authorizations:
+        BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
+    completed_leased_agent_deletions: VecDeque<String>,
+    completed_execution_lease_deletions: VecDeque<String>,
+    leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
+    #[cfg(test)]
+    leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
+    #[cfg(test)]
+    leased_agent_provider_cleanup_failures:
+        BTreeMap<String, remote_lease::ProviderCleanupFailurePoint>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -266,6 +286,14 @@ impl DaemonApp {
                 managed_context_root.join("managed-context-transfers"),
                 managed_context_launch_recovery.as_ref(),
             )?;
+        if config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && managed_context_transfers.has_incomplete_import()
+        {
+            return Err(DaemonError::KernelRuntimeRoleDenied {
+                role: config.kernel_runtime_role.as_str(),
+                operation: "startup.managed_context_import",
+            });
+        }
         let managed_context_outbound =
             crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
                 managed_context_root.join("managed-context-outbound"),
@@ -338,6 +366,19 @@ impl DaemonApp {
                 provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            execution_lease_callers: BTreeMap::new(),
+            leased_agent_callers: BTreeMap::new(),
+            completed_execution_lease_callers: BTreeMap::new(),
+            completed_leased_agent_callers: BTreeMap::new(),
+            pending_execution_lease_authorizations: BTreeMap::new(),
+            pending_leased_agent_authorizations: BTreeMap::new(),
+            completed_leased_agent_deletions: VecDeque::new(),
+            completed_execution_lease_deletions: VecDeque::new(),
+            leased_agent_cleanup_phases: BTreeMap::new(),
+            #[cfg(test)]
+            leased_agent_cleanup_failures: BTreeMap::new(),
+            #[cfg(test)]
+            leased_agent_provider_cleanup_failures: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
@@ -346,11 +387,23 @@ impl DaemonApp {
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             started_at_ms: crate::session::unix_epoch_ms(),
-            relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
+            relay_client_state: Arc::new(tokio::sync::RwLock::new(
+                RelayClientState::with_pinned_peer_public_keys(
+                    DaemonConfig::relay_peer_public_key_entries(),
+                ),
+            )),
             config,
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && !app.sessions.list_all_sessions().is_empty()
+        {
+            return Err(DaemonError::KernelRuntimeRoleDenied {
+                role: app.config.kernel_runtime_role.as_str(),
+                operation: "startup.restored_session",
+            });
+        }
         let restored_publication_tunnel_count = {
             let sessions = app.sessions();
             let mut relay_state = app.relay_client_state.try_write().map_err(|error| {
@@ -745,6 +798,7 @@ mod tests {
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),
                         display_mode: crate::slice::SliceDisplayMode::Headed,
+                        display_backend: Default::default(),
                         workspace_id: None,
                         worktree_id: None,
                         workspace_mount: Some("/repo".to_string()),

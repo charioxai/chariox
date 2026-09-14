@@ -1,10 +1,15 @@
 use crate::error::DaemonError;
 use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
-    AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
-    DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
-    LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    UpdateProjectWorkspacesRequest, UpdateSessionConfigRequest,
+    AttachToSessionRequest, CancelRoomEnvironmentActionRequest, CycleAgentFocusRequest,
+    DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
+    FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
+    ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
+    RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
+    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+    SubmitRoomEnvironmentActionRequest, SubmitRoomEnvironmentBrowserActionRequest,
+    UpdateProjectWorkspacesRequest, UpdateRoomEnvironmentPointerRequest,
+    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -22,6 +27,23 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
+    pub(super) fn bind_room_environment_slice(
+        &self,
+        request: crate::local::BindRoomEnvironmentSliceRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        (
+            self.state
+                .bind_room_environment_slice(request, &caller_user_id)
+                .map(|binding| LocalDaemonResponse::RoomEnvironmentSlice {
+                    binding: Some(binding),
+                }),
+            None,
+        )
+    }
     pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
@@ -41,6 +63,364 @@ impl SessionRuntimeStore {
         attachment_id: &str,
     ) -> Result<String, DaemonError> {
         self.state.attachment_session_id(attachment_id).await
+    }
+
+    pub(super) async fn start_room_environment(
+        &self,
+        request: StartRoomEnvironmentRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let viewport = match self.state.room_environment_snapshot(&request.session_id) {
+            Ok(environment) => Ok(environment.viewport),
+            Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => {
+                crate::session::CanonicalViewport::new(
+                    request.viewport.css_width,
+                    request.viewport.css_height,
+                    request.viewport.device_scale_factor,
+                    request.viewport.desktop_pixel_width,
+                    request.viewport.desktop_pixel_height,
+                )
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(|error| room_environment_control_error("environment.start", error));
+        let result = match viewport {
+            Ok(viewport) => self
+                .state
+                .start_room_environment(&request.session_id, viewport)
+                .map_err(|error| room_environment_control_error("environment.start", error)),
+            Err(error) => Err(error),
+        };
+        let result = match result {
+            Ok(_) => self
+                .state
+                .finish_room_environment_controller_start(&request.session_id, "environment.start")
+                .await
+                .and_then(|_| {
+                    self.state
+                        .reconcile_room_environment_actors(
+                            &request.session_id,
+                            Some(&caller_user_id),
+                        )
+                        .map_err(|error| room_environment_control_error("environment.start", error))
+                })
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            Err(error) => Err(error),
+        };
+        (result, None)
+    }
+
+    pub(super) async fn stop_room_environment(
+        &self,
+        request: StopRoomEnvironmentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = if self
+            .state
+            .browser_controller_enabled_for_room(&request.session_id)
+        {
+            self.state
+                .stop_managed_room_environment_runtime(&request.session_id)
+                .await
+        } else {
+            self.state
+                .stop_room_environment(&request.session_id)
+                .map_err(|error| room_environment_control_error("environment.stop", error))
+        }
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
+        (result, None)
+    }
+
+    pub(super) async fn retry_room_environment(
+        &self,
+        request: RetryRoomEnvironmentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .retry_room_environment(&request.session_id)
+            .map_err(|error| room_environment_control_error("environment.retry", error));
+        let result = match result {
+            Ok(_) => self
+                .state
+                .finish_room_environment_controller_start(&request.session_id, "environment.retry")
+                .await
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            Err(error) => Err(error),
+        };
+        (result, None)
+    }
+
+    pub(super) async fn update_room_environment_viewport(
+        &self,
+        request: UpdateRoomEnvironmentViewportRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let viewport = crate::session::CanonicalViewport::new(
+            request.viewport.css_width,
+            request.viewport.css_height,
+            request.viewport.device_scale_factor,
+            request.viewport.desktop_pixel_width,
+            request.viewport.desktop_pixel_height,
+        )
+        .map_err(|error| room_environment_control_error("environment.viewport.update", error));
+        let result = viewport.and_then(|viewport| {
+            let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
+            let display_label = crate::session::human_environment_actor_label(&caller_user_id);
+            self.state
+                .update_room_environment_viewport_as_actor(
+                    &request.session_id,
+                    crate::session::EnvironmentActor::new(
+                        actor_id,
+                        crate::session::EnvironmentActorKind::Human,
+                        display_label,
+                    ),
+                    request.expected_revision,
+                    viewport,
+                )
+                .map_err(|error| {
+                    room_environment_control_error("environment.viewport.update", error)
+                })
+        });
+        let result = match result {
+            Ok(environment)
+                if self
+                    .state
+                    .browser_controller_enabled_for_room(&request.session_id) =>
+            {
+                match self
+                    .state
+                    .reconcile_browser_controller_environment(&request.session_id)
+                    .await
+                {
+                    Ok(_) => self
+                        .state
+                        .update_room_environment_component_health(
+                            &request.session_id,
+                            crate::session::EnvironmentComponent::Browser,
+                            crate::session::EnvironmentComponentHealthState::Ready,
+                            None,
+                        )
+                        .map_err(|error| {
+                            room_environment_control_error("environment.viewport.update", error)
+                        }),
+                    Err(_) => {
+                        let degraded = self
+                            .state
+                            .update_room_environment_component_health(
+                                &request.session_id,
+                                crate::session::EnvironmentComponent::Browser,
+                                crate::session::EnvironmentComponentHealthState::Degraded,
+                                Some("viewport_apply_failed"),
+                            )
+                            .unwrap_or(environment);
+                        if degraded.lifecycle == crate::session::EnvironmentLifecycle::Ready {
+                            self.state
+                                .transition_room_environment(
+                                    &request.session_id,
+                                    crate::session::EnvironmentLifecycle::Degraded,
+                                )
+                                .map_err(|error| {
+                                    room_environment_control_error(
+                                        "environment.viewport.update",
+                                        error,
+                                    )
+                                })
+                        } else {
+                            Ok(degraded)
+                        }
+                    }
+                }
+            }
+            other => other,
+        }
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
+        (result, None)
+    }
+
+    pub(super) async fn update_room_environment_pointer(
+        &self,
+        request: UpdateRoomEnvironmentPointerRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let position = request
+            .pointer
+            .map(|pointer| crate::session::EnvironmentPointerPosition {
+                x: pointer.x,
+                y: pointer.y,
+            });
+        let result = self
+            .state
+            .update_room_environment_pointer_as_actor(
+                &request.session_id,
+                actor,
+                request.runtime_generation,
+                request.viewport_revision,
+                position,
+            )
+            .map_err(|error| room_environment_control_error("environment.pointer.update", error))
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
+        (result, None)
+    }
+
+    pub(super) async fn request_room_environment_input_takeover(
+        &self,
+        request: RequestRoomEnvironmentInputTakeoverRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .request_room_environment_takeover_as_actor(&request.session_id, actor, request.target)
+            .map(
+                |(outcome, environment)| LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+                    outcome,
+                    environment,
+                },
+            )
+            .map_err(|error| room_environment_control_error("environment.input.takeover", error));
+        (result, None)
+    }
+
+    pub(super) async fn release_room_environment_input(
+        &self,
+        request: ReleaseRoomEnvironmentInputRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
+        let result = self
+            .state
+            .release_room_environment_input(&request.session_id, &actor_id, &request.target)
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentInputReleased { environment })
+            .map_err(|error| room_environment_control_error("environment.input.release", error));
+        (result, None)
+    }
+
+    pub(super) async fn cancel_room_environment_action(
+        &self,
+        request: CancelRoomEnvironmentActionRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .cancel_room_environment_action_as_actor(&request.session_id, actor, &request.action_id)
+            .map(|(outcome, environment)| {
+                LocalDaemonResponse::RoomEnvironmentActionCancellationUpdated {
+                    outcome,
+                    environment,
+                }
+            })
+            .map_err(|error| room_environment_control_error("environment.action.cancel", error));
+        (result, None)
+    }
+
+    pub(super) async fn submit_room_environment_action(
+        &self,
+        request: SubmitRoomEnvironmentActionRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .execute_human_room_environment_action(request, actor)
+            .await
+            .map(
+                |(action_id, environment)| LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+                    action_id,
+                    environment,
+                },
+            );
+        (result, None)
+    }
+
+    pub(super) async fn submit_room_environment_browser_action(
+        &self,
+        request: SubmitRoomEnvironmentBrowserActionRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .execute_human_room_environment_browser_action(request, actor)
+            .await
+            .map(
+                |(action_id, environment)| LocalDaemonResponse::RoomEnvironmentActionSubmitted {
+                    action_id,
+                    environment,
+                },
+            );
+        (result, None)
+    }
+
+    pub(super) async fn read_room_environment_clipboard(
+        &self,
+        request: ReadRoomEnvironmentClipboardRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .read_human_room_environment_clipboard(request, actor)
+            .await
+            .map(|content| LocalDaemonResponse::RoomEnvironmentClipboardRead { content });
+        (result, None)
     }
 
     pub(super) async fn verify_metaagent_caller(
@@ -214,11 +594,12 @@ impl SessionRuntimeStore {
             request.capability_level,
             caller_user_id,
         );
-        let result = self
-            .state
-            .attach(attach_request)
-            .await
-            .map(|attachment| LocalDaemonResponse::SessionAttached { attachment });
+        let result = match self.state.attach(attach_request).await {
+            Ok(attachment) => self
+                .reconcile_room_environment_actors_if_started(attachment.session_id())
+                .map(|()| LocalDaemonResponse::SessionAttached { attachment }),
+            Err(error) => Err(error),
+        };
         self.with_session_projection_action_result(result).await
     }
 
@@ -229,11 +610,12 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .detach(&request.attachment_id)
-            .await
-            .map(|attachment| LocalDaemonResponse::SessionDetached { attachment });
+        let result = match self.state.detach(&request.attachment_id).await {
+            Ok(attachment) => self
+                .reconcile_room_environment_actors_if_started(attachment.session_id())
+                .map(|()| LocalDaemonResponse::SessionDetached { attachment }),
+            Err(error) => Err(error),
+        };
         self.with_session_projection_action_result(result).await
     }
 
@@ -428,5 +810,36 @@ impl SessionRuntimeStore {
             .await
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await
+    }
+
+    fn reconcile_room_environment_actors_if_started(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        match self
+            .state
+            .reconcile_room_environment_actors(session_id, None)
+        {
+            Ok(_) | Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => Ok(()),
+            Err(error) => Err(room_environment_control_error(
+                "environment.actors.reconcile",
+                error,
+            )),
+        }
+    }
+}
+
+fn room_environment_control_error(
+    operation: &'static str,
+    error: crate::session::EnvironmentError,
+) -> DaemonError {
+    match error {
+        crate::session::EnvironmentError::RoomNotFound { session_id } => {
+            DaemonError::SessionNotFound { session_id }
+        }
+        other => DaemonError::LocalTransport {
+            operation,
+            message: format!("{}: {other:?}", other.code()),
+        },
     }
 }

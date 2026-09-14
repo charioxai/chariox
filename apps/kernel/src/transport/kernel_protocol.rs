@@ -19,6 +19,15 @@ pub(crate) const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room
 pub(crate) const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
 pub(crate) const MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES: usize = 128 * 1024;
 
+/// Import clients reuse a paired key. Authenticate the exact encrypted request
+/// nonce inside the reply, rather than trusting the relay's outer request ID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrowserImportRelayResponse {
+    pub(crate) request_nonce: String,
+    pub(crate) response: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum KernelIncomingFrame {
@@ -774,6 +783,11 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
+        DaemonError::AgentWorkerCleanup { source, .. } => {
+            let mut mapped = map_kernel_error(source);
+            mapped.message = error.to_string();
+            mapped
+        }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)

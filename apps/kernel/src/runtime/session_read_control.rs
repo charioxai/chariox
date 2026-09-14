@@ -1,13 +1,14 @@
 use crate::error::DaemonError;
 use crate::local::{
-    GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, ResolveSessionRequest,
+    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetSessionStateRequest,
+    ListAgentsRequest, ListRoomEnvironmentActionHistoryRequest, ListSessionsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workflow_projection::{projected_resolve_workflow, projected_workflow_id};
-use crate::session::RuntimeSession;
+use crate::session::{EnvironmentError, RuntimeSession};
 
 fn ensure_projected_workflow_metaagent_scope(
     workflow_metaagent_id: Option<&str>,
@@ -336,6 +337,56 @@ pub(crate) async fn execute_get_session_state_request(
     runtime_state.session_state_response(request)
 }
 
+pub(crate) async fn execute_get_room_environment_state_request(
+    runtime_state: &KernelRuntimeState,
+    request: GetRoomEnvironmentStateRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_snapshot(&request.session_id)
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentState { environment })
+        .map_err(|error| room_environment_read_error("environment.state.get", error))
+}
+
+pub(crate) async fn execute_get_room_environment_events_request(
+    runtime_state: &KernelRuntimeState,
+    request: GetRoomEnvironmentEventsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_events_after(&request.session_id, request.cursor)
+        .map(|replay| LocalDaemonResponse::RoomEnvironmentEvents { replay })
+        .map_err(|error| room_environment_read_error("environment.events.get", error))
+}
+
+pub(crate) async fn execute_list_room_environment_action_history_request(
+    runtime_state: &KernelRuntimeState,
+    request: ListRoomEnvironmentActionHistoryRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_action_history(
+            &request.session_id,
+            request.before_sequence,
+            request.limit.unwrap_or(50) as usize,
+        )
+        .map(|page| LocalDaemonResponse::RoomEnvironmentActionHistoryListed { page })
+        .map_err(|error| room_environment_read_error("environment.history.list", error))
+}
+
+fn room_environment_read_error(operation: &'static str, error: EnvironmentError) -> DaemonError {
+    match error {
+        EnvironmentError::RoomNotFound { session_id } => {
+            DaemonError::SessionNotFound { session_id }
+        }
+        EnvironmentError::EnvironmentNotFound { session_id } => DaemonError::LocalTransport {
+            operation,
+            message: format!("environment_not_found: Room `{session_id}` has no Environment"),
+        },
+        other => DaemonError::LocalTransport {
+            operation,
+            message: format!("environment_state_unavailable: {other:?}"),
+        },
+    }
+}
+
 pub(crate) async fn execute_list_agents_request(
     runtime_state: &KernelRuntimeState,
     request: ListAgentsRequest,
@@ -356,6 +407,18 @@ pub(crate) async fn execute_session_read_request(
         }
         LocalDaemonRequest::GetSessionState(request) => {
             execute_get_session_state_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::GetRoomEnvironmentState(request) => {
+            execute_get_room_environment_state_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::GetRoomEnvironmentSlice(request) => runtime_state
+            .room_environment_slice(&request.session_id)
+            .map(|binding| LocalDaemonResponse::RoomEnvironmentSlice { binding }),
+        LocalDaemonRequest::GetRoomEnvironmentEvents(request) => {
+            execute_get_room_environment_events_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(request) => {
+            execute_list_room_environment_action_history_request(runtime_state, request).await
         }
         LocalDaemonRequest::ListAgents(request) => {
             execute_list_agents_request(runtime_state, request).await

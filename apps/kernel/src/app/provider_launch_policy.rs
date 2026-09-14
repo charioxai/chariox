@@ -242,6 +242,32 @@ fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn provider_child_does_not_inherit_kernel_bootstrap_receipts() {
+        let mut child = std::process::Command::new("/bin/sh");
+        child
+            .env_clear()
+            .env(
+                "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+                "/kernel-only/worker-receipt",
+            )
+            .env(
+                "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+                "/kernel-only/managed-receipt",
+            )
+            .env("CHARIOX_FIXTURE_PUBLIC", "visible");
+        for name in default_provider_env_remove(&DaemonConfig::for_tests()) {
+            child.env_remove(name);
+        }
+        let status = child.args(["-c", "test -z \"${CHARIOX_DISPOSABLE_WORKER_RECEIPT+x}\" && test -z \"${CHARIOX_MANAGED_BOOTSTRAP_RECEIPT+x}\" && test \"$CHARIOX_FIXTURE_PUBLIC\" = visible"])
+            .status().unwrap();
+        assert!(
+            status.success(),
+            "provider child inherited a kernel bootstrap receipt binding"
+        );
+    }
+
     fn opencode_run_with_resume_state() -> RuntimeProviderRun {
         let mut run = RuntimeProviderRun::from_control_capability_inference(
             "provider-run-1",

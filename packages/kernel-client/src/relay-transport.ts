@@ -31,10 +31,11 @@ export function normalizeRelayRequest(
   if (!daemonPublicKey) {
     throw new Error("relay daemon public key is required")
   }
-  const plaintext = Buffer.from(JSON.stringify({
+  const command = relayCommandEnvelope(request) ?? {
     command_id: requestId,
     request,
-  }), "utf8")
+  }
+  const plaintext = Buffer.from(JSON.stringify(command), "utf8")
   const { privateKey, payload } = encryptRelayPayload(daemonPublicKey, plaintext)
   return {
     frame: {
@@ -44,6 +45,24 @@ export function normalizeRelayRequest(
       encrypted_request: payload,
     },
     privateKey,
+  }
+}
+
+function relayCommandEnvelope(value: unknown): { command_id: string; request: unknown } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null
+  }
+  const envelope = value as Record<string, unknown>
+  if (
+    typeof envelope.command_id !== "string"
+    || envelope.command_id.trim() === ""
+    || !Object.prototype.hasOwnProperty.call(envelope, "request")
+  ) {
+    return null
+  }
+  return {
+    command_id: envelope.command_id,
+    request: envelope.request,
   }
 }
 

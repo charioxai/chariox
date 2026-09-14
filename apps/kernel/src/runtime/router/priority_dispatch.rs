@@ -108,9 +108,27 @@ impl CommandRouter {
             LocalDaemonRequest::LaunchProviderRuns(request) => {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }
+            LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
+                let artifact = self
+                    .runtime_state
+                    .capture_room_environment_screenshot(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotCaptured { artifact })
+            }
+            LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => {
+                let chunk = self
+                    .runtime_state
+                    .read_room_environment_screenshot_chunk(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotChunk { chunk })
+            }
             request @ (LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::GetRoomEnvironmentState(_)
+            | LocalDaemonRequest::GetRoomEnvironmentSlice(_)
+            | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
+            | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
             | LocalDaemonRequest::ListAgents(_)) => {
                 execute_session_read_request(&self.runtime_state, request).await
             }
@@ -174,13 +192,14 @@ impl CommandRouter {
             | LocalDaemonRequest::SaveSliceState(_)
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
-            | LocalDaemonRequest::CreateSliceBackup(_)) => {
-                let caller_user_id = command_caller_user_id(&command);
+            | LocalDaemonRequest::CreateSliceBackup(_)
+            | LocalDaemonRequest::RestoreSliceBackup(_)) => {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
-                    &caller_user_id,
+                    &command.caller,
+                    self.managed_kernel_registration.as_ref(),
                     request,
                 )
                 .await
@@ -293,6 +312,7 @@ impl CommandRouter {
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)
+            | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
             | LocalDaemonRequest::ManageCredentialVault(_)) => {

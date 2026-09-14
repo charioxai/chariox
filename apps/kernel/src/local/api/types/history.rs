@@ -61,6 +61,7 @@ pub enum SessionHistoryOutlineTurnLifecycle {
     Open,
     Completed,
     Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

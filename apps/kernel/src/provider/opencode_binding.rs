@@ -371,7 +371,7 @@ pub(super) fn abort_opencode_session(
     let mut idle_since = None;
     loop {
         match client.snapshot(state.session_id()) {
-            Ok(snapshot) if snapshot.status == "idle" => {
+            Ok(snapshot) if snapshot.status.kind == "idle" => {
                 let signature = snapshot
                     .messages
                     .iter()
@@ -418,7 +418,7 @@ pub(super) fn abort_opencode_session(
                     message: format!(
                         "OpenCode session `{}` remained `{}` after abort",
                         state.session_id(),
-                        snapshot.status,
+                        snapshot.status.kind,
                     ),
                 });
             }

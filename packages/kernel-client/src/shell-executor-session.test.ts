@@ -327,6 +327,7 @@ test("executeShellCommand creates manually managed slices scoped to the current 
       backend: "local_docker",
       os: "linux",
       display_mode: "headed",
+      display_backend: "selkies",
       workspace_id: "/repo",
       worktree_id: "/repo/feature",
       workspace_mount: "/repo/feature",
@@ -338,4 +339,75 @@ test("executeShellCommand creates manually managed slices scoped to the current 
     },
   }])
   assert.deepEqual(result.bindings, { sl: "slice-manual" })
+})
+
+test("executeShellCommand forwards explicit headed slice display backends in either option order", async (t) => {
+  for (const testCase of [
+    { backend: "selkies" as const, args: "--display-backend selkies --headed" },
+    { backend: "novnc" as const, args: "--headed --display-backend novnc" },
+  ]) {
+    await t.test(testCase.backend, async () => {
+      const fake = fakeClient((request) => {
+        assert.equal((request.CreateSlice as Record<string, unknown>).display_backend, testCase.backend)
+        assert.equal((request.CreateSlice as Record<string, unknown>).display_mode, "headed")
+        return {
+          SliceCreated: {
+            slice: {
+              id: `slice-${testCase.backend}`,
+              name: `linux-${testCase.backend}`,
+            },
+          },
+        }
+      })
+      const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+
+      const result = await executeShellCommand(
+        parseShellCommand(`slice create linux-${testCase.backend} ${testCase.args}`),
+        context,
+        { client: fake.client },
+      )
+
+      assert.equal(result.ok, true)
+      assert.equal(fake.requests.length, 1)
+    })
+  }
+})
+
+test("executeShellCommand rejects invalid or non-headed slice display backends", async (t) => {
+  for (const testCase of [
+    {
+      name: "missing value",
+      command: "slice create linux-a --headed --display-backend",
+      message: "usage: slice create <name> --headed --display-backend selkies|novnc",
+    },
+    {
+      name: "invalid value",
+      command: "slice create linux-a --display-backend unknown --headed",
+      message: "usage: slice create <name> --headed --display-backend selkies|novnc",
+    },
+    {
+      name: "implicit headless",
+      command: "slice create linux-a --display-backend selkies",
+      message: "--display-backend requires --headed",
+    },
+    {
+      name: "explicit headless after headed",
+      command: "slice create linux-a --display-backend novnc --headed --headless",
+      message: "--display-backend requires --headed",
+    },
+  ]) {
+    await t.test(testCase.name, async () => {
+      const fake = fakeClient(() => {
+        throw new Error("kernel should not be called for an invalid display backend selection")
+      })
+      const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+
+      const result = await executeShellCommand(parseShellCommand(testCase.command), context, {
+        client: fake.client,
+      })
+
+      assert.deepEqual(result, { ok: false, message: testCase.message })
+      assert.equal(fake.requests.length, 0)
+    })
+  }
 })

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Chariox Browser Import</title>
+  <link rel="stylesheet" href="connector.css">
+</head>
+<body>
+  <main>
+    <h1>Import this Chrome session</h1>
+    <p id="source">Checking the source tab…</p>
+    <section id="pairing">
+      <h2>1. Select a trusted Chariox destination</h2>
+      <p>In an authenticated Chariox View, choose Browser Import for the selected session. Pairing credentials are accepted only as encrypted, sender-bound messages from that View.</p>
+    </section>
+    <section id="confirm" hidden>
+      <h2>2. Confirm import</h2>
+      <p id="destination"></p>
+      <p>Chrome will ask for cookie access to only these hosts:</p>
+      <ul id="domains"></ul>
+      <p>Only cookies are transferred. Passwords, browsing history, other profiles, local storage and device keys are not read.</p>
+      <button id="start" type="button">Allow hosts and import</button>
+      <button id="cancel" type="button">Cancel</button>
+    </section>
+    <section id="status" aria-live="polite"><p id="message"></p><ul id="result"></ul></section>
+  </main>
+  <script type="module" src="connector.mjs"></script>
+</body>
+</html>

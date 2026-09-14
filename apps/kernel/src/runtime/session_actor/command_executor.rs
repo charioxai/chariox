@@ -201,6 +201,60 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::UpdateSessionConfig(request) => {
                 self.store.update_session_config(request).await
             }
+            LocalDaemonRequest::StartRoomEnvironment(request) => {
+                self.store
+                    .start_room_environment(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::BindRoomEnvironmentSlice(request) => self
+                .store
+                .bind_room_environment_slice(request, caller_user_id),
+            LocalDaemonRequest::StopRoomEnvironment(request) => {
+                self.store.stop_room_environment(request).await
+            }
+            LocalDaemonRequest::RetryRoomEnvironment(request) => {
+                self.store.retry_room_environment(request).await
+            }
+            LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
+                self.store
+                    .update_room_environment_viewport(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
+                self.store
+                    .update_room_environment_pointer(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
+                self.store
+                    .request_room_environment_input_takeover(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => {
+                self.store
+                    .release_room_environment_input(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => {
+                self.store
+                    .submit_room_environment_action(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => {
+                self.store
+                    .submit_room_environment_browser_action(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => {
+                self.store
+                    .read_room_environment_clipboard(request, caller_user_id)
+                    .await
+            }
+            LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
+                self.store
+                    .cancel_room_environment_action(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
                 self.store.create_agent_prompt_schedule(request).await
             }

@@ -170,7 +170,7 @@ fn plan_claude_launch_unlocked(
         return Ok(launch);
     }
     if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
-        ensure_claude_headless_onboarding_state()?;
+        ensure_claude_headless_onboarding_state(Some(request))?;
         crate::logging::info_with_fields(
             "daemon.provider.claude",
             "preparing Claude headless native bridge files",
@@ -280,9 +280,22 @@ fn plan_claude_launch_unlocked(
     Ok(launch)
 }
 
-fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
-    let state_path = if let Some(config_dir) = env::var_os(CLAUDE_CONFIG_DIR_ENV) {
-        PathBuf::from(config_dir).join(CLAUDE_HEADLESS_STATE_FILE)
+fn ensure_claude_headless_onboarding_state(
+    request: Option<&LaunchProviderRequest>,
+) -> Result<(), DaemonError> {
+    let selected_config_dir = request
+        .and_then(|request| request.provider_account_env.get(CLAUDE_CONFIG_DIR_ENV))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os(CLAUDE_CONFIG_DIR_ENV)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        });
+    let state_path = if let Some(config_dir) = selected_config_dir {
+        config_dir.join(CLAUDE_HEADLESS_STATE_FILE)
     } else {
         let home = env::var_os("HOME").ok_or_else(|| DaemonError::LocalTransport {
             operation: "initialize Claude headless onboarding state",
@@ -889,6 +902,59 @@ mod tests {
     }
 
     #[test]
+    fn plans_claude_headless_onboarding_in_the_selected_account_profile() {
+        let _guard = env_guard();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-selected-profile-onboarding-{}",
+            std::process::id()
+        ));
+        let executable = root.join("claude");
+        let ambient_config_dir = root.join("ambient");
+        let selected_config_dir = root.join("selected");
+        fs::create_dir_all(&ambient_config_dir).expect("ambient config dir should exist");
+        fs::create_dir_all(&selected_config_dir).expect("selected config dir should exist");
+        write_executable_fixture(&executable, "#!/bin/sh\nsleep 60\n");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let previous_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &ambient_config_dir);
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude-headless",
+            "selected",
+            "claude-headless/claude-opus-4-8",
+        )
+        .with_provider_account_env(std::collections::BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            selected_config_dir.display().to_string(),
+        )]));
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
+        if let Some(previous_config_dir) = previous_config_dir {
+            std::env::set_var("CLAUDE_CONFIG_DIR", previous_config_dir);
+        } else {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+
+        assert_eq!(
+            launch.pty_env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            Some(selected_config_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            fs::read_to_string(selected_config_dir.join(".claude.json"))
+                .expect("selected profile onboarding state should exist"),
+            "{\"hasCompletedOnboarding\":true}\n"
+        );
+        assert!(
+            !ambient_config_dir.join(".claude.json").exists(),
+            "launch must not initialize the ambient profile"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn completes_existing_claude_headless_state_without_dropping_fields() {
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
@@ -902,7 +968,7 @@ mod tests {
         let previous_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
 
-        ensure_claude_headless_onboarding_state().expect("existing state should be accepted");
+        ensure_claude_headless_onboarding_state(None).expect("existing state should be accepted");
 
         if let Some(previous_config_dir) = previous_config_dir {
             std::env::set_var("CLAUDE_CONFIG_DIR", previous_config_dir);

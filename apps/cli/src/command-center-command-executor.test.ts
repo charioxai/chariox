@@ -52,6 +52,14 @@ test("command center command executor dispatches launch config commands", async 
   assert.deepEqual(harness.calls, ["mode:plan", "permissions:required"])
 })
 
+test("command center command executor dispatches Room environment commands", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/room status")
+
+  assert.deepEqual(harness.calls, ["room:status"])
+})
+
 test("command center command executor delegates catalog-only kernel commands to shared shell", async () => {
   const harness = createHarness({
     handleSharedShellCommand: async (command) => {
@@ -86,6 +94,7 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onKernel: (command) => calls.push(`kernel:${command.args.join(" ")}`),
     onMachine: (command) => calls.push(`machine:${command.args.join(" ")}`),
     onSlice: (command) => calls.push(`slice:${command.args.join(" ")}`),
+    onRoom: (command) => calls.push(`room:${command.args.join(" ")}`),
     onRelay: (command) => calls.push(`relay:${command.args.join(" ")}`),
     onCloud: (command) => calls.push(`cloud:${command.args.join(" ")}`),
     onCollab: (command) => calls.push(`collab:${command.args.join(" ")}`),

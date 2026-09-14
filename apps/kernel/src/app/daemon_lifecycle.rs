@@ -1,8 +1,11 @@
 use std::net::TcpListener;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::app::{provider_runtime, DaemonApp};
+use crate::app::{provider_runtime, DaemonApp, RemoteLeaseRuntime};
 use crate::error::DaemonError;
+
+const REMOTE_EXECUTION_LEASE_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 
 impl DaemonApp {
     pub fn startup_message(&self) -> String {
@@ -141,6 +144,8 @@ impl DaemonApp {
         let legacy_workflow_history = self.legacy_workflow_history_store();
         let history_migration_store = self.durable_state_store();
         let history_migration_owner = self.config.daemon_id.clone();
+        let reap_remote_execution_leases = self.config.kernel_runtime_role
+            == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let router = std::sync::Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -157,6 +162,12 @@ impl DaemonApp {
                 history_migration_store,
                 history_migration_owner,
                 legacy_workflow_history,
+                shutdown_rx.clone(),
+            ))
+        });
+        let remote_execution_lease_reaper_task = reap_remote_execution_leases.then(|| {
+            tokio::spawn(run_remote_execution_lease_reaper(
+                Arc::clone(&app),
                 shutdown_rx.clone(),
             ))
         });
@@ -257,7 +268,54 @@ impl DaemonApp {
         if let Some(task) = history_migration_task {
             let _ = task.await;
         }
+        if let Some(task) = remote_execution_lease_reaper_task {
+            let _ = task.await;
+        }
         result
+    }
+}
+
+async fn run_remote_execution_lease_reaper(
+    app: Arc<tokio::sync::Mutex<DaemonApp>>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut reconciliation =
+        tokio::time::interval(REMOTE_EXECUTION_LEASE_RECONCILIATION_INTERVAL);
+    reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        tokio::select! {
+            _ = reconciliation.tick() => {
+                let now_ms = crate::session::unix_epoch_ms();
+                let mut app = app.lock().await;
+                let result = RemoteLeaseRuntime::new(&mut app)
+                    .reconcile_expired_execution_leases(now_ms);
+                match result {
+                    Ok(reaped_lease_ids) if !reaped_lease_ids.is_empty() => {
+                        crate::logging::info_with_fields(
+                            "daemon.remote_execution_lease_reconciliation",
+                            "expired remote execution leases reaped",
+                            serde_json::json!({ "lease_ids": reaped_lease_ids }),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_execution_lease_reconciliation",
+                            "expired remote execution lease cleanup failed",
+                            serde_json::json!({ "error": error.to_string() }),
+                        );
+                    }
+                }
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+        }
     }
 }
 

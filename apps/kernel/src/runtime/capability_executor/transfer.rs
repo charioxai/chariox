@@ -40,6 +40,8 @@ pub(super) fn store_transferred_file(
         source_path: result.stored_path.clone(),
         display_name: result.display_name.clone(),
         source_kind: "transfer".to_string(),
+        media_type: None,
+        enqueue_archive: true,
         session_id: Some(request.session_id.clone()),
         attachment_id: Some(request.attachment_id.clone()),
         workspace_id: Some(context.workspace_id.clone()),

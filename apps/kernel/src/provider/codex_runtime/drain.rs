@@ -11,7 +11,6 @@ use super::{CodexPollResult, CodexRuntimeState};
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
 const CODEX_MANAGED_BACKFILL_QUIET_GRACE: Duration = Duration::from_millis(250);
-const CODEX_AUTHORITATIVE_BACKFILL_INTERVAL: Duration = Duration::from_millis(500);
 
 pub fn drain_codex_events(
     run: &RuntimeProviderRun,
@@ -74,25 +73,24 @@ pub fn drain_codex_events(
             })
             .is_none();
     }
-    // A provider can finish a turn while the socket still has unrelated
-    // notifications queued (for example token/telemetry updates).  The
-    // authoritative turns/list reconciliation must not wait for a perfectly
-    // quiet drain, otherwise a terminal provider turn can leave the kernel's
-    // prompt Running forever.  `backfill_completed_turn` still requires the
-    // matching turn id to be terminal and to contain final output/error
-    // evidence, so polling here cannot settle a stale turn.
-    let authoritative_backfill_due = codex_authoritative_backfill_due(
-        state.active_turn_id.is_some(),
-        state.last_authoritative_backfill_at,
-    );
-    if codex_turn_should_backfill(
+    // Reconcile once when a turn starts, then only when provider evidence asks
+    // for completion recovery. This keeps long healthy managed turns from
+    // repeatedly reloading their growing rollout. Pending terminal and legacy
+    // signals do not require a quiet drain; quiet final-assistant or completed-
+    // tool evidence can re-arm the same bounded gate. `backfill_completed_turn`
+    // still requires an authoritative terminal record with settlement evidence.
+    let completion_recovery_evidence = codex_turn_recovery_evidence(
         run.endpoint_mode(),
         state.active_turn_id.is_some(),
         &state.turn_tracker,
         drained_to_quiet,
-    ) || authoritative_backfill_due
-    {
-        state.last_authoritative_backfill_at = Some(std::time::Instant::now());
+    );
+    let authoritative_backfill_due = state.authoritative_backfill_gate.is_due(
+        state.active_turn_id.is_some(),
+        completion_recovery_evidence,
+        std::time::Instant::now(),
+    );
+    if authoritative_backfill_due {
         backfill_completed_turn(
             &client,
             state,
@@ -105,7 +103,7 @@ pub fn drain_codex_events(
         )?;
         if prompt_completed {
             state.turn_tracker.clear_legacy_completion_hint();
-            state.last_authoritative_backfill_at = None;
+            state.authoritative_backfill_gate.reset();
         }
     }
     if drained_to_quiet && !prompt_completed {
@@ -129,28 +127,37 @@ pub fn drain_codex_events(
     })
 }
 
+pub(super) fn codex_turn_recovery_evidence(
+    _endpoint_mode: AgentEndpointMode,
+    has_active_turn: bool,
+    turn_tracker: &super::turn::CodexTurnTracker,
+    drained_to_quiet: bool,
+) -> Option<u64> {
+    let recovery_requested = has_active_turn
+        && (turn_tracker.has_pending_terminal()
+            || turn_tracker.has_legacy_completion_hint()
+            || (drained_to_quiet
+                && (turn_tracker
+                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)
+                    || turn_tracker
+                        .has_quiet_completed_tool_activity(CODEX_MANAGED_BACKFILL_QUIET_GRACE))));
+    recovery_requested
+        .then(|| turn_tracker.completion_recovery_version())
+        .flatten()
+}
+
+#[cfg(test)]
 pub(super) fn codex_turn_should_backfill(
     endpoint_mode: AgentEndpointMode,
     has_active_turn: bool,
     turn_tracker: &super::turn::CodexTurnTracker,
     drained_to_quiet: bool,
 ) -> bool {
-    has_active_turn
-        && (endpoint_mode == AgentEndpointMode::External
-            || turn_tracker.has_pending_terminal()
-            || turn_tracker.has_legacy_completion_hint()
-            || (drained_to_quiet
-                && (turn_tracker
-                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)
-                    || turn_tracker
-                        .has_quiet_completed_tool_activity(CODEX_MANAGED_BACKFILL_QUIET_GRACE))))
-}
-
-pub(super) fn codex_authoritative_backfill_due(
-    has_active_turn: bool,
-    last_backfill_at: Option<std::time::Instant>,
-) -> bool {
-    has_active_turn
-        && last_backfill_at
-            .is_none_or(|last| last.elapsed() >= CODEX_AUTHORITATIVE_BACKFILL_INTERVAL)
+    codex_turn_recovery_evidence(
+        endpoint_mode,
+        has_active_turn,
+        turn_tracker,
+        drained_to_quiet,
+    )
+    .is_some()
 }

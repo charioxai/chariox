@@ -36,12 +36,21 @@ pub use agent_config::{
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use room_environment::{
-    ActionAdmission, CanonicalViewport, EnvironmentAction, EnvironmentActionRequest,
-    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind,
-    EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
-    EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
-    EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
-    InputTarget, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+    agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
+    ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentAction,
+    EnvironmentActionArguments, EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
+    EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
+    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorColor,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
+    EnvironmentPointer, EnvironmentPointerButton, EnvironmentPointerPosition, EnvironmentReplay,
+    EnvironmentTab, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
+    RoomEnvironmentSnapshot, TakeoverOutcome,
+};
+pub(crate) use room_environment::{
+    EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    RoomEnvironmentRegistry,
 };
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,

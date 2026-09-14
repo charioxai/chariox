@@ -183,6 +183,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             crate::provider::ProviderPromptSignalBatch {
                 notices: vec![raw_error.to_string(), raw_error.to_string()],
                 terminal_failure: Some(raw_error.to_string()),
+                explicit_provider_error: true,
                 prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
@@ -259,6 +260,17 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             .settlement_status,
         crate::git_observer::CompletedTurnSettlementStatus::Failed
     );
+    let termination = agent_activity
+        .last_completed_turn
+        .as_ref()
+        .and_then(|turn| turn.provider_termination.as_ref())
+        .expect("structured provider error should retain termination evidence");
+    assert_eq!(
+        termination.category,
+        crate::provider::ProviderRunTerminationCategory::ExplicitProviderError
+    );
+    assert!(termination.reason.contains("Unsupported parameter"));
+    assert!(termination.timestamp_ms > 0);
 }
 
 #[tokio::test]
@@ -322,6 +334,7 @@ async fn opencode_network_terminal_failure_retires_the_failed_resume_session() {
             vec![attachment.id().to_string()],
             crate::provider::ProviderPromptSignalBatch {
                 terminal_failure: Some("Provider finish_reason: network_error".to_string()),
+                explicit_provider_error: true,
                 prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
@@ -353,6 +366,126 @@ async fn opencode_network_terminal_failure_retires_the_failed_resume_session() {
         .expect("session snapshot should exist")
         .active_prompt_for_agent(agent.id())
         .is_none());
+}
+
+#[tokio::test]
+async fn opencode_empty_idle_failure_retires_resume_without_explicit_termination_evidence() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-opencode-empty-idle-error",
+            "worktree-opencode-empty-idle-error",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-opencode-empty-idle-error",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let resume_state = crate::provider::ProviderResumeState::from_opencode_session_id(
+        "empty-idle-opencode-session",
+    );
+    app.agents
+        .set_agent_runtime_profile(
+            agent.id(),
+            "opencode",
+            Some("opencode/x-preview-f-free".to_string()),
+            Some("high".to_string()),
+            resume_state.clone(),
+        )
+        .expect("agent should retain the provider session");
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-opencode-empty-idle-error",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "opencode".to_string(),
+    );
+    run.set_resume_state(resume_state);
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "retry after an empty OpenCode assistant turn\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let terminal_failure =
+        "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.";
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(terminal_failure.to_string()),
+                prompt_completed: true,
+                explicit_provider_error: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("non-explicit empty-idle failure should settle");
+
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should exist")
+            .provider_resume_state()
+            .opencode_session_id(),
+        None,
+        "an empty idle assistant poisons the resumed OpenCode session",
+    );
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(settled_session
+        .active_prompt_for_agent(agent.id())
+        .is_none());
+    let agent_activities = runtime.agent_activity_for_session(&settled_session);
+    let agent_activity = agent_activities
+        .get(agent.id())
+        .expect("agent activity should be projected");
+    let completed_turn = agent_activity
+        .last_completed_turn
+        .as_ref()
+        .expect("failed empty-idle turn should remain visible");
+    assert_eq!(
+        completed_turn.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+    );
+    assert_eq!(
+        completed_turn.provider_termination, None,
+        "non-explicit OpenCode failures settle the prompt without durable provider termination evidence",
+    );
+    let retired_run = runtime
+        .owned
+        .provider_store
+        .get_run(run.id())
+        .expect("provider run should remain inspectable");
+    assert_eq!(
+        retired_run.state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert!(retired_run
+        .terminal_diagnostic()
+        .is_some_and(|diagnostic| diagnostic.contains(terminal_failure)));
 }
 
 #[tokio::test]
