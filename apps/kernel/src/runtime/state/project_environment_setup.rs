@@ -48,6 +48,26 @@ use project_environment_setup_storage::{
 };
 use project_environment_setup_validation::*;
 
+fn remote_setup_recovery_should_dispatch(
+    decision: RemoteSetupRecoveryDecision,
+) -> Result<bool, DaemonError> {
+    match decision {
+        RemoteSetupRecoveryDecision::Dispatch => Ok(true),
+        RemoteSetupRecoveryDecision::Cancelled | RemoteSetupRecoveryDecision::Acknowledged => {
+            Ok(false)
+        }
+        RemoteSetupRecoveryDecision::InFlight => Err(remote_setup_recovery_transport_error(
+            "the same-attempt replay is already in flight",
+        )),
+        RemoteSetupRecoveryDecision::Unknown => Err(remote_setup_recovery_transport_error(
+            "the same-attempt replay result is unresolved",
+        )),
+        RemoteSetupRecoveryDecision::Stale => Err(remote_setup_recovery_transport_error(
+            "the setup attempt or worker binding changed while status was being observed",
+        )),
+    }
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn execute_project_environment_setup_request(
         &self,
@@ -111,14 +131,74 @@ impl KernelRuntimeState {
                             // home accepted Retry. Reuse the authenticated
                             // public retry request; do not accept that stale
                             // record as the current attempt.
-                            match retry_remote_setup(self, &execution).await {
-                                Ok(setup) => self
-                                    .reconcile_remote_project_environment_setup_with_observation(
-                                        &execution,
-                                        setup,
-                                        Some(observation_generation),
-                                    )?,
+                            let recovery_decision =
+                                self.owned.project_environment_setups.begin_remote_recovery(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    binding_id,
+                                    observation_generation,
+                                );
+                            if !remote_setup_recovery_should_dispatch(recovery_decision)? {
+                                let (_, current_status, _) = self
+                                    .owned
+                                    .project_environment_setups
+                                    .get_entry_with_cancellation(
+                                        &execution.operation_id,
+                                        caller_user_id,
+                                    )?;
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            if let Some(current_status) = self.recovery_dispatch_status_if_lost(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                                caller_user_id,
+                            )? {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            let mut recovery_reservation = RemoteSetupRecoveryReservationGuard::new(
+                                &self.owned.project_environment_setups,
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            );
+                            match retry_remote_setup_with_deadline(
+                                self,
+                                &execution,
+                                observation_deadline,
+                            )
+                            .await
+                            {
+                                Ok(setup) => {
+                                    match self
+                                        .reconcile_remote_project_environment_setup_with_observation(
+                                            &execution,
+                                            setup,
+                                            Some(observation_generation),
+                                        ) {
+                                        Ok(status) => {
+                                            recovery_reservation.disarm();
+                                            status
+                                        }
+                                        Err(error) => return Err(error),
+                                    }
+                                }
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
                                 Err(error) => {
+                                    recovery_reservation.disarm();
+                                    self.owned
+                                        .project_environment_setups
+                                        .clear_remote_recovery(&execution.operation_id);
                                     self.settle_remote_setup_recovery_rejection(
                                         &execution,
                                         status.attempt,
@@ -150,28 +230,43 @@ impl KernelRuntimeState {
                             // retained worker operation through the
                             // authenticated Retry request, and reconcile only
                             // the current home attempt.
-                            match refresh_remote_setup_binding_and_retry(
-                                self,
-                                &execution,
-                                status.attempt,
-                            )
-                            .await
-                            {
-                                Ok((rebound_execution, setup)) => self
-                                    .reconcile_remote_project_environment_setup_with_observation(
-                                        &rebound_execution,
-                                        setup,
-                                        Some(observation_generation),
-                                    )?,
-                                Err(error) => {
-                                    self.settle_remote_setup_recovery_rejection(
-                                        &execution,
-                                        status.attempt,
-                                        &error,
-                                    );
-                                    return Err(error);
-                                }
+                            let recovery_decision =
+                                self.owned.project_environment_setups.begin_remote_recovery(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    binding_id,
+                                    observation_generation,
+                                );
+                            if !remote_setup_recovery_should_dispatch(recovery_decision)? {
+                                let (_, current_status, _) = self
+                                    .owned
+                                    .project_environment_setups
+                                    .get_entry_with_cancellation(
+                                        &execution.operation_id,
+                                        caller_user_id,
+                                    )?;
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
                             }
+                            if let Some(current_status) = self.recovery_dispatch_status_if_lost(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                                caller_user_id,
+                            )? {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            self.await_remote_setup_binding_recovery(
+                                execution.clone(),
+                                status.attempt,
+                                observation_generation,
+                                observation_deadline,
+                            )
+                            .await?
                         }
                         Err(error)
                             if is_missing_remote_setup_operation(&error)
@@ -233,6 +328,8 @@ impl KernelRuntimeState {
                                 .remote_recovery_dispatch_allowed(
                                     &execution.operation_id,
                                     status.attempt,
+                                    binding_id,
+                                    observation_generation,
                                 )
                             {
                                 let (_, current_status, current_cancel_requested) = self
@@ -402,6 +499,141 @@ impl KernelRuntimeState {
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupRetried { status })
             }
             _ => Err(setup_error("unsupported project environment setup request")),
+        }
+    }
+
+    fn recovery_dispatch_status_if_lost(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+        caller_user_id: &str,
+    ) -> Result<Option<ProjectEnvironmentSetupStatus>, DaemonError> {
+        if self
+            .owned
+            .project_environment_setups
+            .remote_recovery_dispatch_allowed(
+                operation_id,
+                attempt,
+                binding_id,
+                observation_generation,
+            )
+        {
+            return Ok(None);
+        }
+        let (_, current_status, current_cancel_requested) =
+            self.owned
+                .project_environment_setups
+                .get_entry_with_cancellation(operation_id, caller_user_id)?;
+        if current_cancel_requested
+            || matches!(
+                current_status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return Ok(Some(current_status));
+        }
+        Err(remote_setup_recovery_transport_error(
+            "the setup attempt or worker binding changed before recovery dispatch",
+        ))
+    }
+
+    async fn await_remote_setup_binding_recovery(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+        observation_generation: u64,
+        observation_deadline: Instant,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let state = self.clone();
+        tokio::spawn(async move {
+            let store = state.owned.project_environment_setups.clone();
+            let Some(stale_binding_id) = execution.remote_leased_agent_id.clone() else {
+                let _ = result_tx.send(Err(setup_error(
+                    "binding recovery requires a stale leased-agent binding",
+                )));
+                return;
+            };
+            let mut recovery_reservation = RemoteSetupRecoveryReservationGuard::new(
+                &store,
+                &execution.operation_id,
+                attempt,
+                &stale_binding_id,
+                observation_generation,
+            );
+            let result = match refresh_remote_setup_binding(&state, &execution, attempt).await {
+                Ok(rebound_execution) => match rebound_execution.remote_leased_agent_id.clone() {
+                    Some(rebound_binding_id) => {
+                        recovery_reservation.rebind(&rebound_binding_id);
+                        match state.recovery_dispatch_status_if_lost(
+                            &execution.operation_id,
+                            attempt,
+                            &rebound_binding_id,
+                            observation_generation,
+                            &execution.owner_user_id,
+                        ) {
+                            Ok(Some(status)) => {
+                                recovery_reservation.disarm();
+                                store.clear_remote_recovery(&execution.operation_id);
+                                Ok(status)
+                            }
+                            Ok(None) => {
+                                match retry_remote_setup_with_deadline(
+                                        &state,
+                                        &rebound_execution,
+                                        observation_deadline,
+                                    )
+                                    .await
+                                    {
+                                        Ok(setup) => match state
+                                            .reconcile_remote_project_environment_setup_with_observation(
+                                                &rebound_execution,
+                                                setup,
+                                                Some(observation_generation),
+                                            ) {
+                                            Ok(status) => {
+                                                recovery_reservation.disarm();
+                                                Ok(status)
+                                            }
+                                            Err(error) => Err(error),
+                                        },
+                                        Err(error) => Err(error),
+                                    }
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    None => Err(setup_error(
+                        "refreshed remote setup lost its leased-agent binding",
+                    )),
+                },
+                Err(error) => Err(error),
+            };
+            let result = match result {
+                Err(error) if remote_setup_recovery_permanent_rejection_code(&error).is_some() => {
+                    recovery_reservation.disarm();
+                    store.clear_remote_recovery(&execution.operation_id);
+                    state.settle_remote_setup_recovery_rejection(&execution, attempt, &error);
+                    Err(error)
+                }
+                result => result,
+            };
+            let _ = result_tx.send(result);
+        });
+
+        let wait = observation_timeout(observation_deadline)?;
+        match tokio::time::timeout(wait, result_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(remote_setup_recovery_transport_error(
+                "the binding refresh recovery task ended before it reported a result",
+            )),
+            Err(_) => Err(remote_setup_recovery_transport_error(
+                "the binding refresh recovery continues after the observation deadline",
+            )),
         }
     }
 
@@ -1567,6 +1799,59 @@ mod tests {
             ),
             RemoteSetupRecoveryDecision::Unknown,
             "cancelling replay observation must fence duplicate dispatch until explicit recovery"
+        );
+    }
+
+    #[test]
+    fn dropped_recovery_observation_after_binding_refresh_fences_the_new_binding() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-old", observation_generation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        let mut reservation = RemoteSetupRecoveryReservationGuard::new(
+            &store,
+            "setup-1",
+            1,
+            "leased-agent-old",
+            observation_generation,
+        );
+        store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                "leased-agent-new".to_string(),
+            )
+            .expect("the active recovery should rebind to the fresh lease");
+        reservation.rebind("leased-agent-new");
+        drop(reservation);
+
+        let next_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Stale,
+            "the old lease must never regain the dropped recovery reservation"
+        );
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-new",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Unknown,
+            "a dropped refresh observer must fence duplicate dispatch on the fresh lease"
         );
     }
 

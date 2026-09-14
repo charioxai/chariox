@@ -171,11 +171,34 @@ pub(super) async fn retry_remote_setup(
     .await
 }
 
-pub(super) async fn refresh_remote_setup_binding_and_retry(
+pub(super) async fn retry_remote_setup_with_deadline(
+    state: &KernelRuntimeState,
+    execution: &SetupExecution,
+    deadline: Instant,
+) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+    let (relay_config, target) =
+        remote_relay_context_by_deadline(state, execution, deadline).await?;
+    send_setup_request_with_timeout(
+        state,
+        relay_config,
+        target,
+        RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+            leased_agent_id: remote_leased_agent_id(execution)?,
+            operation_id: execution.operation_id.clone(),
+            home_session_id: execution.session_id.clone(),
+            home_agent_id: execution.agent_id.clone(),
+        },
+        RelaySetupResponseKind::Retried,
+        observation_timeout(deadline)?,
+    )
+    .await
+}
+
+pub(super) async fn refresh_remote_setup_binding(
     state: &KernelRuntimeState,
     execution: &SetupExecution,
     attempt: u32,
-) -> Result<(SetupExecution, RelayProjectEnvironmentSetupStatus), DaemonError> {
+) -> Result<SetupExecution, DaemonError> {
     let stale_leased_agent_id = remote_leased_agent_id(execution)?;
     let current_agent = state.owned.agent_store.get_agent(&execution.agent_id)?;
     let current_binding = current_agent
@@ -212,8 +235,7 @@ pub(super) async fn refresh_remote_setup_binding_and_retry(
             &stale_leased_agent_id,
             rebound_execution.leased_agent_id.clone(),
         )?;
-    let setup = retry_remote_setup(state, &rebound_execution).await?;
-    Ok((rebound_execution, setup))
+    Ok(rebound_execution)
 }
 
 fn remote_leased_agent_id(execution: &SetupExecution) -> Result<String, DaemonError> {

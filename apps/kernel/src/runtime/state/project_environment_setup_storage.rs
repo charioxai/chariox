@@ -135,6 +135,10 @@ impl RemoteSetupRecoveryReservationGuard {
     pub(super) fn disarm(&mut self) {
         self.armed = false;
     }
+
+    pub(super) fn rebind(&mut self, binding_id: &str) {
+        self.binding_id = binding_id.to_owned();
+    }
 }
 
 impl Drop for RemoteSetupRecoveryReservationGuard {
@@ -454,13 +458,55 @@ impl ProjectEnvironmentSetupStore {
                 return Err(setup_error("local setup has no remote binding to refresh"));
             }
         }
-        entry.execution.remote_leased_agent_id = Some(replacement_leased_agent_id);
+        entry.execution.remote_leased_agent_id = Some(replacement_leased_agent_id.clone());
         entry.fingerprint = setup_fingerprint(&entry.execution)?;
         let execution = entry.execution.clone();
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.rebind_remote_recovery_binding(
+            operation_id,
+            attempt,
+            expected_leased_agent_id,
+            &replacement_leased_agent_id,
+        );
         Ok(execution)
+    }
+
+    fn rebind_remote_recovery_binding(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        expected_leased_agent_id: &str,
+        replacement_leased_agent_id: &str,
+    ) {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        let Some(recovery) = remote_recoveries.recoveries.get_mut(operation_id) else {
+            return;
+        };
+        match recovery {
+            RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt,
+                binding_id,
+                ..
+            }
+            | RemoteSetupRecoveryState::Unknown {
+                attempt: current_attempt,
+                binding_id,
+                ..
+            }
+            | RemoteSetupRecoveryState::Acknowledged {
+                attempt: current_attempt,
+                binding_id,
+                ..
+            } if *current_attempt == attempt && binding_id == expected_leased_agent_id => {
+                *binding_id = replacement_leased_agent_id.to_owned();
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn rebind_remote_worker_target(
@@ -635,6 +681,8 @@ impl ProjectEnvironmentSetupStore {
         &self,
         operation_id: &str,
         attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
     ) -> bool {
         let entries = self
             .entries
@@ -662,8 +710,12 @@ impl ProjectEnvironmentSetupStore {
             remote_recoveries.recoveries.get(operation_id),
             Some(RemoteSetupRecoveryState::InFlight {
                 attempt: current_attempt,
-                ..
+                observation_generation: current_generation,
+                binding_id: current_binding_id,
             }) if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && current_binding_id == binding_id
+                && entry.execution.remote_leased_agent_id.as_deref() == Some(binding_id)
         )
     }
 

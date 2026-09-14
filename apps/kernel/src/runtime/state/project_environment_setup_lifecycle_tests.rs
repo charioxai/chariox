@@ -15,7 +15,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 #[cfg(unix)]
@@ -1538,16 +1538,19 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // public Get must either perform the kernel-owned refresh and return
     // attempt 2, or reject stale attempt-1 state while leaving home on
     // attempt 2 for the bounded recovery poll below.
-    let first_post_restart = runtime
-        .execute_project_environment_setup_request(
+    let first_post_restart = tokio::time::timeout(
+        Duration::from_secs(2),
+        runtime.execute_project_environment_setup_request(
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                 GetProjectEnvironmentSetupStatusRequest {
                     operation_id: restart_operation_id.to_string(),
                 },
             ),
             "user-1",
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("first post-restart Get must remain within the observation deadline");
     match first_post_restart {
         Ok(response) => {
             let status = response_status(response);
@@ -1579,16 +1582,19 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     let recovery_deadline = Instant::now() + Duration::from_secs(2);
     let recovered = loop {
-        let result = runtime
-            .execute_project_environment_setup_request(
+        let result = tokio::time::timeout(
+            recovery_deadline.saturating_duration_since(Instant::now()),
+            runtime.execute_project_environment_setup_request(
                 LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                     GetProjectEnvironmentSetupStatusRequest {
                         operation_id: restart_operation_id.to_string(),
                     },
                 ),
                 "user-1",
-            )
-            .await;
+            ),
+        )
+        .await
+        .expect("post-restart recovery Get must remain within the total deadline");
         match result {
             Ok(response) => {
                 let status = response_status(response);
@@ -1783,7 +1789,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         empty_worker_task,
     ) = spawn_external_worker_fixture(
         relay_url.clone(),
-        worker_registration,
+        worker_registration.clone(),
         config_worker.relay_private_key.clone(),
         config_home.relay_public_key.clone(),
         ExternalWorkerFixtureMode::Empty,
@@ -1833,6 +1839,189 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     empty_worker_task
         .await
         .expect("empty external worker should stop");
+
+    // Exercise the distinct stale-attempt path through the authenticated
+    // public Start/Cancel/Retry/Get seam. The retained worker keeps its
+    // attempt-one Cancelled record while the home accepts Retry attempt two;
+    // the first recovery Retry response is withheld so a concurrent Get must
+    // observe the shared same-attempt reservation rather than dispatching a
+    // duplicate. The old accepted Retry response is released only after the
+    // recovery response, proving late settlement cannot rewind the home.
+    let (
+        withheld_worker_shutdown,
+        withheld_retry_release_tx,
+        withheld_retry_seen,
+        withheld_recovery_retry_seen,
+        withheld_second_get_seen,
+        withheld_retry_release_applied,
+        withheld_retry_count,
+        withheld_worker_task,
+    ) = spawn_external_worker_fixture_with_withheld_retry(
+        relay_url.clone(),
+        worker_registration,
+        config_worker.relay_private_key.clone(),
+        config_home.relay_public_key.clone(),
+    );
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some(),
+        "withheld-retry worker should register before public stale-attempt recovery"
+    );
+
+    let stale_attempt_operation_id = "setup-stale-attempt-recovery";
+    let stale_attempt_started = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: stale_attempt_operation_id.to_string(),
+                ..start_request.clone()
+            }),
+            "user-1",
+        )
+        .await
+        .expect("public stale-attempt Start should be accepted");
+    let stale_attempt_started_status = response_status(stale_attempt_started);
+    assert_eq!(stale_attempt_started_status.attempt, 1);
+    assert_eq!(
+        stale_attempt_started_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+
+    let stale_attempt_cancelled = response_status(
+        get_setup_status(
+            &runtime,
+            stale_attempt_operation_id,
+            "user-1",
+            "retained worker attempt-one cancellation before public Retry",
+        )
+        .await,
+    );
+    assert_eq!(
+        stale_attempt_cancelled.phase,
+        ProjectEnvironmentSetupPhase::Cancelled
+    );
+    assert_eq!(stale_attempt_cancelled.attempt, 1);
+    assert!(stale_attempt_cancelled.retryable);
+
+    let stale_attempt_retry = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
+                operation_id: stale_attempt_operation_id.to_string(),
+                session_id: session_id.clone(),
+            }),
+            "user-1",
+        )
+        .await
+        .expect("home should accept stale-attempt Retry");
+    let stale_attempt_retry_status = response_status(stale_attempt_retry);
+    assert_eq!(stale_attempt_retry_status.attempt, 2);
+    assert_eq!(
+        stale_attempt_retry_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    tokio::time::timeout(Duration::from_secs(2), withheld_retry_seen)
+        .await
+        .expect("worker should observe the accepted Retry before its response is withheld")
+        .expect("withheld Retry barrier should remain available");
+
+    let first_stale_get = tokio::spawn({
+        let runtime = runtime.clone();
+        async move {
+            runtime
+                .execute_project_environment_setup_request(
+                    LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                        GetProjectEnvironmentSetupStatusRequest {
+                            operation_id: stale_attempt_operation_id.to_string(),
+                        },
+                    ),
+                    "user-1",
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), withheld_recovery_retry_seen)
+        .await
+        .expect("stale-attempt recovery should reach the worker Retry request")
+        .expect("recovery Retry barrier should remain available");
+
+    let second_stale_get = tokio::spawn({
+        let runtime = runtime.clone();
+        async move {
+            runtime
+                .execute_project_environment_setup_request(
+                    LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                        GetProjectEnvironmentSetupStatusRequest {
+                            operation_id: stale_attempt_operation_id.to_string(),
+                        },
+                    ),
+                    "user-1",
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), withheld_second_get_seen)
+        .await
+        .expect("concurrent stale-attempt polling should reach the worker")
+        .expect("concurrent Get barrier should remain available");
+    let second_stale_get_error = tokio::time::timeout(Duration::from_secs(2), second_stale_get)
+        .await
+        .expect("concurrent stale-attempt Get should remain bounded")
+        .expect("concurrent stale-attempt Get should not panic")
+        .expect_err("the concurrent Get must be fenced while recovery Retry is in flight");
+    assert!(
+        second_stale_get_error
+            .to_string()
+            .contains("same-attempt replay is already in flight"),
+        "concurrent stale-attempt polling should expose the shared reservation: {second_stale_get_error}"
+    );
+
+    let _ = withheld_retry_release_tx.send(());
+    tokio::time::timeout(Duration::from_secs(2), withheld_retry_release_applied)
+        .await
+        .expect("withheld Retry responses should be released after concurrent polling")
+        .expect("withheld Retry release barrier should remain available");
+    let first_stale_get_status = response_status(
+        tokio::time::timeout(Duration::from_secs(2), first_stale_get)
+            .await
+            .expect("stale-attempt recovery Get should remain bounded")
+            .expect("stale-attempt recovery Get should not panic")
+            .expect("stale-attempt recovery Get should reconcile the current attempt"),
+    );
+    assert_eq!(
+        first_stale_get_status.operation_id,
+        stale_attempt_operation_id
+    );
+    assert_eq!(
+        first_stale_get_status.attempt, 2,
+        "stale worker attempt-one status must never be returned after home Retry"
+    );
+    assert_eq!(
+        first_stale_get_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    assert_eq!(
+        withheld_retry_count.load(Ordering::Acquire),
+        2,
+        "one accepted Retry and one shared stale-attempt recovery Retry are allowed; concurrent Get must not add another"
+    );
+
+    let _ = withheld_worker_shutdown.send(());
+    withheld_worker_task
+        .await
+        .expect("withheld-retry external worker should stop");
     let _ = shutdown_home_tx.send(true);
     connector_home.await.expect("home connector should stop");
     let _ = server_shutdown_tx.send(());
@@ -1923,6 +2112,7 @@ fn setup_transport_recovery_relay_auth(
 enum ExternalWorkerFixtureMode {
     Stateful,
     Empty,
+    WithheldRetry,
 }
 
 #[cfg(unix)]
@@ -1936,6 +2126,15 @@ struct ExternalWorkerSetupState {
     target_platform: String,
     definition: Option<ProjectEnvironmentDefinition>,
     attempt: u32,
+}
+
+#[cfg(unix)]
+struct ExternalWorkerRetryControl {
+    release_retry_rx: oneshot::Receiver<()>,
+    release_retry_applied_tx: Option<oneshot::Sender<()>>,
+    recovery_retry_seen_tx: Option<oneshot::Sender<()>>,
+    second_get_seen_tx: Option<oneshot::Sender<()>>,
+    retry_count: Arc<AtomicUsize>,
 }
 
 #[cfg(unix)]
@@ -1963,8 +2162,63 @@ fn spawn_external_worker_fixture(
         shutdown_rx,
         start_seen_tx,
         retry_seen_tx,
+        None,
     ));
     (shutdown_tx, start_seen_rx, retry_seen_rx, task)
+}
+
+#[cfg(unix)]
+fn spawn_external_worker_fixture_with_withheld_retry(
+    relay_url: String,
+    registration: DaemonRegistration,
+    worker_private_key: String,
+    home_public_key: String,
+) -> (
+    oneshot::Sender<()>,
+    oneshot::Sender<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (release_retry_tx, release_retry_rx) = oneshot::channel();
+    let (release_retry_applied_tx, release_retry_applied_rx) = oneshot::channel();
+    let (start_seen_tx, start_seen_rx) = oneshot::channel();
+    let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
+    let (recovery_retry_seen_tx, recovery_retry_seen_rx) = oneshot::channel();
+    let (second_get_seen_tx, second_get_seen_rx) = oneshot::channel();
+    let retry_count = Arc::new(AtomicUsize::new(0));
+    let retry_control = ExternalWorkerRetryControl {
+        release_retry_rx,
+        release_retry_applied_tx: Some(release_retry_applied_tx),
+        recovery_retry_seen_tx: Some(recovery_retry_seen_tx),
+        second_get_seen_tx: Some(second_get_seen_tx),
+        retry_count: Arc::clone(&retry_count),
+    };
+    let task = tokio::spawn(run_external_worker_fixture(
+        relay_url,
+        registration,
+        worker_private_key,
+        home_public_key,
+        ExternalWorkerFixtureMode::WithheldRetry,
+        shutdown_rx,
+        start_seen_tx,
+        retry_seen_tx,
+        Some(retry_control),
+    ));
+    (
+        shutdown_tx,
+        release_retry_tx,
+        retry_seen_rx,
+        recovery_retry_seen_rx,
+        second_get_seen_rx,
+        release_retry_applied_rx,
+        retry_count,
+        task,
+    )
 }
 
 #[cfg(unix)]
@@ -1977,6 +2231,7 @@ async fn run_external_worker_fixture(
     mut shutdown_rx: oneshot::Receiver<()>,
     start_seen_tx: oneshot::Sender<()>,
     retry_seen_tx: oneshot::Sender<()>,
+    retry_control: Option<ExternalWorkerRetryControl>,
 ) {
     let (mut socket, _) =
         match tokio::time::timeout(Duration::from_secs(3), connect_async(&relay_url)).await {
@@ -1998,12 +2253,59 @@ async fn run_external_worker_fixture(
 
     let mut start_seen_tx = Some(start_seen_tx);
     let mut retry_seen_tx = Some(retry_seen_tx);
+    let mut retry_control = retry_control;
     let mut state: Option<ExternalWorkerSetupState> = None;
+    let mut held_retry_responses: Vec<(String, RelayProjectEnvironmentSetupStatus)> = Vec::new();
+    let mut retry_responses_released = false;
     loop {
         let message = tokio::select! {
             _ = &mut shutdown_rx => {
                 let _ = socket.close(None).await;
                 return;
+            }
+            _ = async {
+                if let Some(control) = retry_control.as_mut() {
+                    let _ = (&mut control.release_retry_rx).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if mode == ExternalWorkerFixtureMode::WithheldRetry
+                && !retry_responses_released
+                && !held_retry_responses.is_empty() => {
+                retry_responses_released = true;
+                if let Some(setup_state) = state.as_mut() {
+                    setup_state.attempt = 2;
+                }
+                // The recovery Retry is appended after the accepted public
+                // Retry. Release it first so the accepted response is truly
+                // late and cannot be mistaken for the recovery observation.
+                let held_retry_responses = std::mem::take(&mut held_retry_responses);
+                for (relay_request_id, setup) in held_retry_responses.into_iter().rev() {
+                    let response = RelayEnvelope::DaemonIncomingPeerResponse {
+                        relay_request_id,
+                        encrypted_response: Some(encrypt_external_worker_response(
+                            &worker_private_key,
+                            &home_public_key,
+                            RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
+                        )),
+                        error: None,
+                    };
+                    let Ok(response_payload) = serde_json::to_string(&response) else {
+                        return;
+                    };
+                    if socket
+                        .send(Message::Text(response_payload.into()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                if let Some(control) = retry_control.as_mut() {
+                    if let Some(release_retry_applied_tx) = control.release_retry_applied_tx.take() {
+                        let _ = release_retry_applied_tx.send(());
+                    }
+                }
             }
             message = socket.next() => message,
         };
@@ -2071,7 +2373,10 @@ async fn run_external_worker_fixture(
                     definition,
                     attempt: request_attempt,
                 };
-                if mode == ExternalWorkerFixtureMode::Stateful {
+                if matches!(
+                    mode,
+                    ExternalWorkerFixtureMode::Stateful | ExternalWorkerFixtureMode::WithheldRetry
+                ) {
                     state = Some(setup_state.clone());
                 }
                 let setup = external_worker_setup_status(
@@ -2091,10 +2396,24 @@ async fn run_external_worker_fixture(
             }
             RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { operation_id, .. } => {
                 match state.as_ref().filter(|setup_state| {
-                    mode == ExternalWorkerFixtureMode::Stateful
-                        && setup_state.operation_id == operation_id
+                    matches!(
+                        mode,
+                        ExternalWorkerFixtureMode::Stateful
+                            | ExternalWorkerFixtureMode::WithheldRetry
+                    ) && setup_state.operation_id == operation_id
                 }) {
                     Some(setup_state) => {
+                        if mode == ExternalWorkerFixtureMode::WithheldRetry
+                            && setup_state.attempt == 1
+                            && held_retry_responses.len() >= 2
+                        {
+                            if let Some(control) = retry_control.as_mut() {
+                                if let Some(second_get_seen_tx) = control.second_get_seen_tx.take()
+                                {
+                                    let _ = second_get_seen_tx.send(());
+                                }
+                            }
+                        }
                         let phase = if setup_state.attempt == 1 {
                             ProjectEnvironmentSetupPhase::Cancelled
                         } else {
@@ -2124,31 +2443,78 @@ async fn run_external_worker_fixture(
                 }
             }
             RelayPeerRequest::RetryLeasedProjectEnvironmentSetup { operation_id, .. }
-                if mode == ExternalWorkerFixtureMode::Stateful
-                    && state
-                        .as_ref()
-                        .is_some_and(|setup_state| setup_state.operation_id == operation_id) =>
+                if matches!(
+                    mode,
+                    ExternalWorkerFixtureMode::Stateful | ExternalWorkerFixtureMode::WithheldRetry
+                ) && state
+                    .as_ref()
+                    .is_some_and(|setup_state| setup_state.operation_id == operation_id) =>
             {
                 let setup_state = state.as_mut().expect("stateful setup should be present");
-                setup_state.attempt = 2;
-                if let Some(retry_seen_tx) = retry_seen_tx.take() {
-                    let _ = retry_seen_tx.send(());
+                if mode == ExternalWorkerFixtureMode::WithheldRetry {
+                    let retry_number = retry_control
+                        .as_ref()
+                        .expect("withheld-retry mode should have control")
+                        .retry_count
+                        .fetch_add(1, Ordering::AcqRel)
+                        + 1;
+                    if retry_number > 2 {
+                        (
+                            None,
+                            Some(RelayError {
+                                code: PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+                                message: "duplicate stale-attempt Retry reached fixture"
+                                    .to_string(),
+                                retryable: false,
+                            }),
+                        )
+                    } else {
+                        if retry_number == 2 {
+                            if let Some(control) = retry_control.as_mut() {
+                                if let Some(recovery_retry_seen_tx) =
+                                    control.recovery_retry_seen_tx.take()
+                                {
+                                    let _ = recovery_retry_seen_tx.send(());
+                                }
+                            }
+                        }
+                        if retry_number == 1 {
+                            if let Some(retry_seen_tx) = retry_seen_tx.take() {
+                                let _ = retry_seen_tx.send(());
+                            }
+                        }
+                        let mut response_state = setup_state.clone();
+                        response_state.attempt = 2;
+                        let setup = external_worker_setup_status(
+                            &response_state,
+                            ProjectEnvironmentSetupPhase::Requested,
+                            2,
+                        );
+                        held_retry_responses.push((relay_request_id, setup));
+                        continue;
+                    }
+                } else {
+                    setup_state.attempt = 2;
+                    if let Some(retry_seen_tx) = retry_seen_tx.take() {
+                        let _ = retry_seen_tx.send(());
+                    }
+                    let attempt = setup_state.attempt;
+                    let setup = external_worker_setup_status(
+                        setup_state,
+                        ProjectEnvironmentSetupPhase::Requested,
+                        attempt,
+                    );
+                    let response =
+                        RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup };
+                    (
+                        Some(encrypt_external_worker_response(
+                            &worker_private_key,
+                            &home_public_key,
+                            response,
+                        )),
+                        None,
+                    )
                 }
-                let attempt = setup_state.attempt;
-                let setup = external_worker_setup_status(
-                    setup_state,
-                    ProjectEnvironmentSetupPhase::Requested,
-                    attempt,
-                );
-                let response = RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup };
-                (
-                    Some(encrypt_external_worker_response(
-                        &worker_private_key,
-                        &home_public_key,
-                        response,
-                    )),
-                    None,
-                )
             }
             _ => (
                 None,
