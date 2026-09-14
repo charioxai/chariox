@@ -89,6 +89,21 @@ impl KernelRuntimeState {
                                         | ProjectEnvironmentSetupPhase::Validating
                                 ) =>
                         {
+                            let redispatch_gate = self
+                                .owned
+                                .project_environment_setups
+                                .ordering_gate(&execution.operation_id);
+                            let _redispatch_guard = redispatch_gate.lock().await;
+                            let (_, _, cancel_requested) = self
+                                .owned
+                                .project_environment_setups
+                                .get_entry_with_cancellation(
+                                    &execution.operation_id,
+                                    caller_user_id,
+                                )?;
+                            if cancel_requested {
+                                return Err(error);
+                            }
                             // An authenticated worker reply proves that this
                             // operation never reached that worker. Re-send
                             // the original operation and keep its attempt;
@@ -172,18 +187,39 @@ impl KernelRuntimeState {
                     .owned
                     .project_environment_setups
                     .get_entry(&request.operation_id, caller_user_id)?;
+                if execution.remote_leased_agent_id.is_some() {
+                    self.owned
+                        .project_environment_setups
+                        .request_cancel_ordered(
+                            &request.operation_id,
+                            &request.session_id,
+                            caller_user_id,
+                            true,
+                        )
+                        .await?;
+                    let status = match cancel_remote_setup(self, &execution).await {
+                        Ok(setup) => {
+                            self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        }
+                        Err(error) if is_missing_remote_setup_operation(&error) => self
+                            .owned
+                            .project_environment_setups
+                            .settle_cancel_without_worker(
+                                &request.operation_id,
+                                &request.session_id,
+                                caller_user_id,
+                            )
+                            .await?,
+                        Err(error) => return Err(error),
+                    };
+                    return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status });
+                }
                 self.owned.project_environment_setups.request_cancel(
                     &request.operation_id,
                     &request.session_id,
                     caller_user_id,
-                    execution.remote_leased_agent_id.is_some(),
+                    false,
                 )?;
-                if execution.remote_leased_agent_id.is_some() {
-                    let setup = cancel_remote_setup(self, &execution).await?;
-                    let status =
-                        self.reconcile_remote_project_environment_setup(&execution, setup)?;
-                    return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status });
-                }
                 let status = self
                     .owned
                     .project_environment_setups

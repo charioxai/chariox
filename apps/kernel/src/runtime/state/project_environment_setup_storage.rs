@@ -43,6 +43,7 @@ pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
+    ordering_gates: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 pub(super) struct SetupExecutionGuard {
@@ -64,6 +65,7 @@ impl Default for ProjectEnvironmentSetupStore {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
             durable_state_store: None,
             execution_settled: Arc::new(tokio::sync::Notify::new()),
+            ordering_gates: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 }
@@ -76,6 +78,7 @@ impl ProjectEnvironmentSetupStore {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
             durable_state_store: Some(durable_state_store.clone()),
             execution_settled: Arc::new(tokio::sync::Notify::new()),
+            ordering_gates: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let events =
             match durable_state_store.load_events_by_kind("project.environment_setup.updated") {
@@ -395,6 +398,71 @@ impl ProjectEnvironmentSetupStore {
         drop(entries);
         self.persist(&persisted);
         Ok(status)
+    }
+
+    pub(super) async fn request_cancel_ordered(
+        &self,
+        operation_id: &str,
+        session_id: &str,
+        caller_user_id: &str,
+        requires_worker_acknowledgement: bool,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        let gate = self.ordering_gate(operation_id);
+        let _guard = gate.lock().await;
+        self.request_cancel(
+            operation_id,
+            session_id,
+            caller_user_id,
+            requires_worker_acknowledgement,
+        )
+    }
+
+    pub(super) async fn settle_cancel_without_worker(
+        &self,
+        operation_id: &str,
+        session_id: &str,
+        caller_user_id: &str,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        let gate = self.ordering_gate(operation_id);
+        let _guard = gate.lock().await;
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        ensure_entry_owner(entry, session_id, caller_user_id)?;
+        if !entry.cancel_requested || entry.active_executions != 0 {
+            return Err(setup_error(
+                "setup cancellation cannot settle without a worker acknowledgement",
+            ));
+        }
+        entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+        entry.status.message = Some(
+            "setup cancellation completed because the worker had no matching operation"
+                .to_string(),
+        );
+        entry.status.failure_code = None;
+        entry.status.failure_message = None;
+        entry.status.retryable = true;
+        entry.status.updated_at_ms = crate::session::unix_epoch_ms();
+        let status = entry.status.clone();
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        Ok(status)
+    }
+
+    pub(super) fn ordering_gate(&self, operation_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut gates = self
+            .ordering_gates
+            .lock()
+            .expect("setup ordering gate lock should not be poisoned");
+        gates
+            .entry(operation_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub(super) fn begin_execution(
