@@ -3189,7 +3189,7 @@ mod tests {
                 RelayPeerResponse::ManagedContextImportFailed {
                     code,
                     retryable: false,
-                } if code == "invalid_request"
+                } if code == "invalid_managed_context"
             ),
             "invalid digest arm response: {invalid_digest_response:?}"
         );
