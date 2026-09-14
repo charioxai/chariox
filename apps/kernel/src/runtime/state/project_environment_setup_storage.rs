@@ -558,7 +558,7 @@ impl ProjectEnvironmentSetupStore {
                 *current_attempt == attempt
                     && current_binding_id == binding_id
                     && observation_generation
-                        .map_or(true, |generation| generation == *current_generation)
+                        .map_or(true, |generation| generation >= *current_generation)
             }
             _ => false,
         };
