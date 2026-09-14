@@ -57,6 +57,9 @@ use crate::session::CreateSessionRequest;
 const MAX_PROVIDER_FIXTURE_TRACE_ENTRIES: usize = 64;
 
 #[cfg(unix)]
+const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
+
+#[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
@@ -447,7 +450,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
     config_worker.remote_lease_capacity = Some(1);
     config_worker.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
         kernel_id: config_home.daemon_id.clone(),
-        realm_id: "realm-transport-recovery".to_string(),
+        realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
         user_id: "user-1".to_string(),
         relay_public_key: config_home.relay_public_key.clone(),
     });
@@ -458,7 +461,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
             "account_id": "account-transport-recovery",
             "user_id": "user-1",
             "account_slug": "account-transport-recovery",
-            "realm_id": "realm-transport-recovery",
+            "realm_id": SETUP_TRANSPORT_RECOVERY_REALM,
             "relay_url": "wss://relay.example.test",
             "issuer_id": "issuer-transport-recovery",
             "machine_id": config_worker.host_machine_id,
@@ -479,7 +482,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
             "homeCaller": {
                 "accountId": "account-transport-recovery",
                 "userId": "user-1",
-                "realmId": "realm-transport-recovery",
+                "realmId": SETUP_TRANSPORT_RECOVERY_REALM,
                 "machineId": config_home.host_machine_id,
                 "kernelId": config_home.daemon_id,
                 "relayPublicKey": config_home.relay_public_key
@@ -544,7 +547,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
             home_kernel_id: config_home.daemon_id.clone(),
             authenticated_machine_id: config_home.host_machine_id.clone(),
             owner_user_id: "user-1".to_string(),
-            realm_id: "realm-transport-recovery".to_string(),
+            realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
             public_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
                 &config_home.relay_public_key,
             ),
@@ -669,14 +672,28 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
     );
     for daemon_id in [&config_home.daemon_id, &config_worker.daemon_id] {
         for _ in 0..200 {
-            if registry.read().await.daemon(daemon_id).is_some() {
+            if registry
+                .read()
+                .await
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, daemon_id)
+                .is_some()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        let registry_snapshot = registry.read().await;
+        // `daemon()` is intentionally the default-realm lookup. A missing
+        // entry here must not hide a successful scoped-token registration in
+        // the fixture's explicit realm, or turn a real auth rejection into a
+        // timeout-only diagnostic.
         assert!(
-            registry.read().await.daemon(daemon_id).is_some(),
-            "daemon {daemon_id} should register with the relay"
+            registry_snapshot
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, daemon_id)
+                .is_some(),
+            "daemon {daemon_id} should register in relay realm {SETUP_TRANSPORT_RECOVERY_REALM}; default-realm-entry={}, registered-daemon-count={}",
+            registry_snapshot.daemon(daemon_id).is_some(),
+            registry_snapshot.daemon_count(),
         );
     }
 
@@ -743,7 +760,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         if registry
             .read()
             .await
-            .daemon(&config_worker.daemon_id)
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
             .is_none()
         {
             worker_disconnected = true;
@@ -799,7 +816,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         if registry
             .read()
             .await
-            .daemon(&config_worker.daemon_id)
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
             .is_some()
         {
             break;
@@ -810,7 +827,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         registry
             .read()
             .await
-            .daemon(&config_worker.daemon_id)
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
             .is_some(),
         "worker should re-register before recovery is queried"
     );
@@ -878,7 +895,7 @@ fn setup_transport_recovery_relay_auth(
                 issuer: "project-environment-setup-test".to_string(),
                 subject: config_home.daemon_id.clone(),
                 subject_kind: RelaySubjectKind::Kernel,
-                realm_id: "realm-transport-recovery".to_string(),
+                realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
                 allowed_actions: allowed_actions.clone(),
                 allowed_targets: None,
                 issued_at_ms: 1,
@@ -905,7 +922,7 @@ fn setup_transport_recovery_relay_auth(
                 issuer: "project-environment-setup-test".to_string(),
                 subject: config_worker.daemon_id.clone(),
                 subject_kind: RelaySubjectKind::Kernel,
-                realm_id: "realm-transport-recovery".to_string(),
+                realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
                 allowed_actions,
                 allowed_targets: Some(vec![config_home.daemon_id.clone()]),
                 issued_at_ms: 1,
