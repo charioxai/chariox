@@ -541,7 +541,6 @@ test("real public create binds and starts the home-owned slice before attach use
             name: "managed-parity-run-1-selkies",
             backend: "ssh_docker",
             displayMode: "headed",
-            displayBackend: "selkies",
             workerKernelRef: "worker-ref-1",
             base: "clean",
           }));
