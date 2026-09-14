@@ -534,9 +534,28 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let app_home = Arc::new(tokio::sync::Mutex::new(
         crate::DaemonApp::bootstrap(config_home.clone()).unwrap(),
     ));
-    let app_worker = Arc::new(tokio::sync::Mutex::new(
-        crate::DaemonApp::bootstrap(config_worker.clone()).unwrap(),
-    ));
+    let app_worker = {
+        let app = crate::DaemonApp::bootstrap(config_worker.clone()).unwrap();
+        let provider_profiles = app.provider_account_profile_registry();
+        let provider_account_owner =
+            crate::account_profile::provider_account_authority_owner_user_id(
+                &config_worker,
+                "user-1",
+            );
+        let profiles = provider_profiles
+            .migrate_effective_defaults(&provider_account_owner, &workspace)
+            .unwrap();
+        for profile in profiles {
+            crate::test_support::authenticate_provider_account(
+                &provider_profiles,
+                &provider_account_owner,
+                &profile.provider,
+                &profile.profile_id,
+            )
+            .unwrap();
+        }
+        Arc::new(tokio::sync::Mutex::new(app))
+    };
     let (session_id, agent_id, project_id) = {
         let mut app = app_home.lock().await;
         let (session, agent) = app
@@ -581,7 +600,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .create_leased_agent_from_base_directory(
                 &workspace,
                 &lease.id,
-                "dev-stub",
+                "opencode",
                 "default",
                 None,
                 None,
@@ -650,24 +669,22 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             "opencode/test-model",
         )
         .with_agent_id(&backing_agent_id)
-        .with_owner_user_id("user-1");
-        let mut provider_run = RuntimeProviderRun::new(
-            "setup-recovery-provider-run",
-            &launch_request,
-            ProviderLaunchResult {
-                endpoint_mode: AgentEndpointMode::Managed,
-                process_label: "opencode-project-environment-recovery-fixture".into(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-                pty_env_remove: Vec::new(),
-                working_directory: Some(workspace.clone()),
-                structured_endpoint: Some(provider_fixture.address()),
-            },
+        .with_owner_user_id("user-1")
+        .with_variant(Some("fixture".to_string()))
+        .with_structured_endpoint(provider_fixture.address());
+        let provider_run = app
+            .launch_provider(launch_request)
+            .expect("worker utility provider should be prepared through the normal launch path");
+        assert_eq!(
+            provider_run.endpoint_mode(),
+            AgentEndpointMode::External,
+            "the simulated OpenCode endpoint must use the external adapter path"
         );
-        provider_run.mark_running();
-        app.providers_mut().insert_run_for_test(provider_run);
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running,
+            "the prepared worker provider context must remain live for replay"
+        );
     }
     let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app_worker),
@@ -680,8 +697,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         project_id: project_id.clone(),
         session_id: session_id.clone(),
         agent_id: agent_id.clone(),
-        execution_session_id: backing_session_id,
-        execution_agent_id: backing_agent_id,
+        execution_session_id: backing_session_id.clone(),
+        execution_agent_id: backing_agent_id.clone(),
         workspace_id: workspace.display().to_string(),
         target_worker_id: config_worker.host_machine_id.clone(),
         target_platform: target_platform.clone(),
@@ -1505,6 +1522,12 @@ async fn run_external_worker_fixture(
             Ok(request) => request,
             Err(_) => return,
         };
+        // Protocol 52 has no attempt field on Start, so a fresh worker's
+        // first local operation is attempt 1. Once the production recovery
+        // contract carries the home's attempt, this boundary fixture follows
+        // that serialized value automatically rather than pinning a valid
+        // recovery implementation to attempt 1.
+        let request_attempt = external_worker_request_attempt(&request);
         let (encrypted_response, error) = match request {
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
                 operation_id,
@@ -1527,7 +1550,7 @@ async fn run_external_worker_fixture(
                     target_worker_id,
                     target_platform,
                     definition,
-                    attempt: 1,
+                    attempt: request_attempt,
                 };
                 if mode == ExternalWorkerFixtureMode::Stateful {
                     state = Some(setup_state.clone());
@@ -1535,7 +1558,7 @@ async fn run_external_worker_fixture(
                 let setup = external_worker_setup_status(
                     &setup_state,
                     ProjectEnvironmentSetupPhase::Requested,
-                    1,
+                    request_attempt,
                 );
                 let response = RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup };
                 (
@@ -1635,6 +1658,16 @@ async fn run_external_worker_fixture(
             return;
         }
     }
+}
+
+#[cfg(unix)]
+fn external_worker_request_attempt(request: &RelayPeerRequest) -> u32 {
+    serde_json::to_value(request)
+        .ok()
+        .and_then(|value| value.get("attempt").and_then(serde_json::Value::as_u64))
+        .and_then(|attempt| u32::try_from(attempt).ok())
+        .filter(|attempt| *attempt > 0)
+        .unwrap_or(1)
 }
 
 #[cfg(unix)]
@@ -1847,6 +1880,16 @@ fn serve_provider_request(
     match (method, path) {
         ("GET", "/global/health") => {
             write_json_response(&mut stream, 200, &serde_json::json!({"healthy": true}));
+        }
+        ("POST", path) if path.starts_with("/mcp/") && path.ends_with("/connect") => {
+            write_json_response(&mut stream, 200, &serde_json::json!(true));
+        }
+        ("GET", "/mcp") => {
+            write_json_response(
+                &mut stream,
+                200,
+                &serde_json::json!({"chariox": {"status": "connected"}}),
+            );
         }
         ("POST", "/session") => {
             let mut state = state
