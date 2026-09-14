@@ -150,13 +150,14 @@ mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
+mod large_codex_resume;
 mod leased_output;
 mod prompt_cancellation;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
-mod structured_output;
 mod structured_exit_diagnostic;
+mod structured_output;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {
