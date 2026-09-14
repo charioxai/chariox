@@ -527,13 +527,18 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let app_worker = {
         let app = crate::DaemonApp::bootstrap(config_worker.clone()).unwrap();
         let provider_profiles = app.provider_account_profile_registry();
+        let provider_account_owner =
+            crate::account_profile::provider_account_authority_owner_user_id(
+                &config_worker,
+                "user-1",
+            );
         let profiles = provider_profiles
-            .migrate_effective_defaults("user-1", &workspace)
+            .migrate_effective_defaults(&provider_account_owner, &workspace)
             .unwrap();
         for profile in profiles {
             crate::test_support::authenticate_provider_account(
                 &provider_profiles,
-                "user-1",
+                &provider_account_owner,
                 &profile.provider,
                 &profile.profile_id,
             )
