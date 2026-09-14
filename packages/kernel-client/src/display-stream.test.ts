@@ -210,9 +210,36 @@ test("display ingress backlog is bounded before a stalled decode and discarded a
     await waitForClose(socket)
     assert.equal(socket.closeCount, 1)
     releaseFirst()
-    await assert.rejects(withDeadline(stream.receive()), /receive buffer exceeded/)
+    await assert.rejects(withDeadline(stream.receive()), /ingress exceeded its bounded capacity/)
     await new Promise<void>((resolve) => queueMicrotask(resolve))
-    await assert.rejects(withDeadline(stream.receive()), /receive buffer exceeded/)
+    await assert.rejects(withDeadline(stream.receive()), /ingress exceeded its bounded capacity/)
+  } finally {
+    releaseFirst()
+    await stream.close()
+  }
+})
+
+test("display ingress byte budget closes before the pending packet count", async () => {
+  const { stream, socket } = await openFixture()
+  let releaseFirst = () => {}
+  const stalledFirst = {
+    size: 1,
+    async arrayBuffer() {
+      return new Promise<ArrayBuffer>((resolve) => {
+        releaseFirst = () => resolve(new ArrayBuffer(1))
+      })
+    },
+  }
+  socket.emit("message", stalledFirst, true)
+  await new Promise<void>((resolve) => queueMicrotask(resolve))
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      socket.emit("message", new Uint8Array(1024 * 1024), true)
+    }
+    await waitForClose(socket)
+    assert.equal(socket.closeCount, 1)
+    releaseFirst()
+    await assert.rejects(withDeadline(stream.receive()), /ingress exceeded its bounded capacity/)
   } finally {
     releaseFirst()
     await stream.close()

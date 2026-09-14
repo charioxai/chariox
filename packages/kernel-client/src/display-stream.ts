@@ -12,7 +12,10 @@ const DISPLAY_WIRE_PROTOCOL = "chariox-display-v1"
 const DISPLAY_FRAGMENT_BYTES = 64 * 1024
 const DISPLAY_MESSAGE_BYTES = 4 * 1024 * 1024
 const DISPLAY_ENCRYPTED_PACKET_BYTES = 128 * 1024
+const DISPLAY_INGRESS_PACKET_BYTES = DISPLAY_ENCRYPTED_PACKET_BYTES * 2
 const DISPLAY_RECEIVE_QUEUE_MESSAGES = 16
+const DISPLAY_INGRESS_PENDING_MESSAGES = DISPLAY_RECEIVE_QUEUE_MESSAGES
+const DISPLAY_INGRESS_PENDING_BYTES = DISPLAY_INGRESS_PACKET_BYTES * DISPLAY_INGRESS_PENDING_MESSAGES
 const DISPLAY_CONNECT_TIMEOUT_MS = 10_000
 const DISPLAY_CLOSE_TIMEOUT_MS = 1_000
 
@@ -117,6 +120,8 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
   }> = []
   private sendTail: Promise<void> = Promise.resolve()
   private ingressTail: Promise<void> = Promise.resolve()
+  private ingressPendingCount = 0
+  private ingressPendingBytes = 0
   private queuedBytes = 0
   private sendSequence = 0
   private receiveSequence = 0
@@ -138,9 +143,25 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     this.peerPublicKey = requireText(endpoint.peer_public_key, "endpoint.peer_public_key")
     this.streamId = requireText(endpoint.stream_id, "endpoint.stream_id")
     const onMessage = (...args: unknown[]) => {
+      if (this.closed || this.failure) return
+      const raw = socketMessageValue(args)
+      const packetBytes = socketMessageByteLength(raw)
+      if (
+        this.ingressPendingCount >= DISPLAY_INGRESS_PENDING_MESSAGES
+        || this.ingressPendingBytes > DISPLAY_INGRESS_PENDING_BYTES - packetBytes
+      ) {
+        this.fail(displayError("display ingress exceeded its bounded capacity"))
+        return
+      }
+      this.ingressPendingCount += 1
+      this.ingressPendingBytes += packetBytes
       this.ingressTail = this.ingressTail
         .then(() => this.acceptSocketMessage(args))
         .catch((error: unknown) => this.fail(error))
+        .finally(() => {
+          this.ingressPendingCount -= 1
+          this.ingressPendingBytes -= packetBytes
+        })
     }
     const onError = () => this.fail(displayError("WebSocket reported a transport error"))
     const onClose = () => {
@@ -270,7 +291,8 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     }
     const raw = socketMessageValue(args)
     const bytes = await socketMessageBytes(raw)
-    if (bytes.byteLength > DISPLAY_ENCRYPTED_PACKET_BYTES * 2) {
+    if (this.closed || this.failure) return
+    if (bytes.byteLength > DISPLAY_INGRESS_PACKET_BYTES) {
       throw displayError("received an oversized Selkies packet")
     }
     const payload = parseEncryptedPayload(bytes)
@@ -278,6 +300,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
       throw displayError("received an oversized encrypted Selkies packet")
     }
     const plaintext = await decryptRelayPayload(this.viewer.privateKey, payload, this.peerPublicKey)
+    if (this.closed || this.failure) return
     const fragment = parseDisplayFragment(plaintext)
     if (
       fragment.protocol !== DISPLAY_WIRE_PROTOCOL
@@ -296,6 +319,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     ) {
       throw displayError("received invalid or oversized display fragments")
     }
+    if (this.closed || this.failure) return
     this.receiveSequence += 1
     this.partialKind = fragment.kind
     this.partial = concatBytes(this.partial, data)
@@ -473,6 +497,18 @@ function socketMessageValue(args: unknown[]): unknown {
   const value = args[0]
   if (args.length === 1 && isRecord(value) && "data" in value) return value.data
   return value
+}
+
+function socketMessageByteLength(value: unknown): number {
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return value.byteLength
+  if (typeof value === "string") return new TextEncoder().encode(value).byteLength
+  if (isRecord(value)) {
+    const size = value.byteLength ?? value.size
+    if (typeof size === "number" && Number.isSafeInteger(size) && size >= 0) return size
+  }
+  // Blob-like values can expose their size asynchronously; reserve one
+  // maximum packet so an unknown-sized value cannot consume unbounded ingress.
+  return DISPLAY_INGRESS_PACKET_BYTES
 }
 
 async function socketMessageBytes(value: unknown): Promise<Uint8Array> {
