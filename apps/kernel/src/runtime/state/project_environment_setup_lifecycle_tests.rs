@@ -569,7 +569,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .create_leased_agent_from_base_directory(
                 &workspace,
                 &lease.id,
-                "dev-stub",
+                "opencode",
                 "default",
                 None,
                 None,
