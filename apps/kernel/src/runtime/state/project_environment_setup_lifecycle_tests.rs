@@ -1188,6 +1188,13 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         "worker transport should be interrupted before public Retry"
     );
 
+    // The connector is gone, but its router and app still hold the durable
+    // state owner. Release every original worker handle before accepting the
+    // home Retry and reopening the same durable state path.
+    drop(worker_runtime);
+    drop(worker_router);
+    drop(app_worker);
+
     let retry_accepted = runtime
         .execute_project_environment_setup_request(
             LocalDaemonRequest::RetryProjectEnvironmentSetup(
@@ -1229,9 +1236,6 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // Rebootstrap the same worker from the same durable state path. No setup
     // entry is fabricated: the public Cancel above persisted the worker's
     // attempt-one state, which this fresh app must restore.
-    drop(worker_runtime);
-    drop(worker_router);
-    drop(app_worker);
     let restarted_worker_app = Arc::new(tokio::sync::Mutex::new(
         crate::DaemonApp::bootstrap(config_worker.clone())
             .expect("worker should restore its durable setup state"),
