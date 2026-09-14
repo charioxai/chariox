@@ -67,16 +67,11 @@ pub(crate) async fn complete_managed_context_import(
     )
     .await
     .map_err(cloud_completion_error)?;
-    if !response.ready
-        || response.observed_state != "ready"
-        || response.context_manifest_digest != context_manifest_digest
-    {
-        return Err(completion_error(
-            "Cloud returned an invalid managed context completion result",
-            false,
-        ));
-    }
-    Ok(())
+    validate_completion_response(
+        &response,
+        context_manifest_digest,
+        "Cloud returned an invalid managed context completion result",
+    )
 }
 
 pub(crate) fn validate_disposable_worker_completion_binding(
@@ -152,14 +147,23 @@ pub(crate) async fn complete_disposable_managed_context_import(
     )
     .await
     .map_err(cloud_completion_error)?;
+    validate_completion_response(
+        &response,
+        context_manifest_digest,
+        "Cloud returned an invalid disposable worker context completion result",
+    )
+}
+
+fn validate_completion_response(
+    response: &CompleteManagedContextResponse,
+    expected_context_manifest_digest: &str,
+    rejection_message: &str,
+) -> Result<(), DaemonError> {
     if !response.ready
         || response.observed_state != "ready"
-        || response.context_manifest_digest != context_manifest_digest
+        || response.context_manifest_digest != expected_context_manifest_digest
     {
-        return Err(completion_error(
-            "Cloud returned an invalid disposable worker context completion result",
-            false,
-        ));
+        return Err(completion_error(rejection_message, false));
     }
     Ok(())
 }
@@ -282,5 +286,40 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cloud_completion_rejects_not_ready_or_manifest_digest_mismatch() {
+        let expected_digest = format!("sha256:{}", "a".repeat(64));
+        let valid = CompleteManagedContextResponse {
+            ready: true,
+            observed_state: "ready".to_string(),
+            context_manifest_digest: expected_digest.clone(),
+        };
+        assert!(validate_completion_response(&valid, &expected_digest, "invalid").is_ok());
+
+        for response in [
+            CompleteManagedContextResponse {
+                ready: false,
+                observed_state: "provisioning".to_string(),
+                context_manifest_digest: expected_digest.clone(),
+            },
+            CompleteManagedContextResponse {
+                ready: true,
+                observed_state: "ready".to_string(),
+                context_manifest_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+        ] {
+            let error = validate_completion_response(&response, &expected_digest, "invalid")
+                .expect_err("invalid completion response must be rejected");
+            assert!(matches!(
+                error,
+                DaemonError::ManagedContext {
+                    code: "managed_context_cloud_completion_rejected",
+                    retryable: false,
+                    ..
+                }
+            ));
+        }
     }
 }
