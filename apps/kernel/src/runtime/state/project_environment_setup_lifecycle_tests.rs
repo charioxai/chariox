@@ -812,41 +812,52 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         "a transient worker status error must not manufacture terminal failure"
     );
 
-    let mut terminal = None;
-    for _ in 0..=super::MAX_REMOTE_SETUP_TRANSPORT_FAILURES {
-        let observation = runtime
-            .execute_project_environment_setup_request(
-                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
-                    GetProjectEnvironmentSetupStatusRequest {
-                        operation_id: "setup-transport-recovery".to_string(),
-                    },
-                ),
-                "user-1",
-            )
-            .await;
-        match observation {
-            Ok(response) => {
-                terminal = Some(response_status(response));
-                break;
-            }
-            Err(error) => assert!(
-                error.to_string().contains("relay") || error.to_string().contains("transport"),
-                "transport uncertainty should remain observable: {error:?}"
+    for round in 0..4 {
+        let reader_a = runtime.execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: "setup-transport-recovery".to_string(),
+                },
             ),
+            "user-1",
+        );
+        let reader_b = runtime.execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: "setup-transport-recovery".to_string(),
+                },
+            ),
+            "user-1",
+        );
+        let (reader_a, reader_b) = tokio::join!(reader_a, reader_b);
+        for (reader, observation) in [("reader-a", reader_a), ("reader-b", reader_b)] {
+            let error = observation.expect_err(&format!(
+                "transport observation {round} from {reader} must remain unavailable"
+            ));
+            assert!(
+                error.to_string().contains("relay") || error.to_string().contains("transport"),
+                "transport uncertainty should remain observable from {reader}: {error:?}"
+            );
         }
     }
-    let terminal =
-        terminal.expect("a permanently unreachable setup should expose a terminal status");
+    let (_, uncertain) = runtime
+        .owned
+        .project_environment_setups
+        .get_entry("setup-transport-recovery", "user-1")
+        .expect("uncertain setup should remain owned by the caller");
     assert_eq!(
-        terminal.phase,
-        ProjectEnvironmentSetupPhase::Failed,
-        "bounded transport uncertainty must become an observable failure"
+        uncertain.phase,
+        ProjectEnvironmentSetupPhase::Requested,
+        "transport observations must not manufacture worker-authoritative failure"
     );
     assert_eq!(
-        terminal.failure_code.as_deref(),
-        Some("worker_status_unavailable")
+        uncertain.attempt, 1,
+        "transport observations must preserve the active setup attempt"
     );
-    assert!(!terminal.retryable);
+    assert!(
+        uncertain.retryable,
+        "an uncertain active setup must retain its original retryability until a worker status arrives"
+    );
     let retry = runtime
         .execute_project_environment_setup_request(
             LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
@@ -903,7 +914,11 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         .await
         .expect("replayed public start should remain idempotent");
     let replayed_status = response_status(replayed);
-    assert_eq!(replayed_status.phase, ProjectEnvironmentSetupPhase::Failed);
+    assert_eq!(
+        replayed_status.phase,
+        ProjectEnvironmentSetupPhase::Requested,
+        "replayed public start must not settle an uncertain operation or dispatch a duplicate attempt"
+    );
     assert_eq!(replayed_status.attempt, 1);
     let ready = get_setup_status(
         &runtime,
