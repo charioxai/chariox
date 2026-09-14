@@ -248,7 +248,15 @@ mod prompt_tests {
         CodexTurnTracker,
     };
     use crate::error::DaemonError;
+    use crate::prompt_assembly::{PromptEnvelope, PromptManifest};
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::net::TcpListener;
+    use std::thread;
+    use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
     #[test]
     fn active_steering_preserves_the_existing_codex_thread() {
@@ -321,6 +329,142 @@ mod prompt_tests {
             &json!({"data": [{"id": "turn-other", "status": "completed"}]}),
             "turn-target"
         ));
+    }
+
+    #[test]
+    fn resumed_prompt_drains_large_response_and_preserves_interleaved_notification() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
+        let address = listener
+            .local_addr()
+            .expect("resolve Codex websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Codex websocket client");
+            let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
+
+            let resume_request = read_json_request(&mut socket, "thread/resume");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "thread/tokenUsage/updated",
+                        "params": {
+                            "threadId": "thread-reused",
+                            "turnId": "turn-before-failed-prompt",
+                            "tokenUsage": {
+                                "total": {"totalTokens": 42},
+                                "last": {"totalTokens": 7},
+                                "modelContextWindow": 100
+                            }
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send interleaved resume notification");
+
+            // Keep the response large enough to exercise tungstenite frame growth and the
+            // kernel's read loop while the notification above is interleaved with it.
+            let large_history = "resume-history".repeat(220_000);
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": resume_request["id"],
+                        "result": {
+                            "thread": {"id": "thread-reused"},
+                            "model": "gpt-5.5",
+                            "history": large_history
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send large resume response");
+
+            let turn_request = read_json_request(&mut socket, "turn/start");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": turn_request["id"],
+                        "result": {"turn": {"id": "turn-after-resume"}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send turn admission response");
+        });
+
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let request = LaunchProviderRequest::new(
+            "session-resume-submit",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        )
+        .with_agent_id("agent-resume-submit");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex-test".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = RuntimeProviderRun::new("provider-run-resume-submit", &request, launch_result);
+        let mut state = super::super::state::CodexRuntimeState::pending(
+            endpoint,
+            Some("thread-reused".to_string()),
+            socket,
+            1,
+        );
+
+        super::super::prompt::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new(
+                "continue after the failed prompt",
+                "",
+                Vec::new(),
+                PromptManifest::current(),
+            ),
+        )
+        .expect("resumed prompt should admit the next turn");
+
+        assert_eq!(state.thread_id(), "thread-reused");
+        assert_eq!(state.active_turn_id.as_deref(), Some("turn-after-resume"));
+        assert!(state.buffered_notifications.iter().any(|notification| {
+            matches!(
+                notification,
+                CodexNotification::TokenUsageUpdated {
+                    thread_id,
+                    turn_id,
+                    ..
+                } if thread_id == "thread-reused" && turn_id == "turn-before-failed-prompt"
+            )
+        }));
+
+        drop(state);
+        server.join().expect("join Codex websocket fixture");
+    }
+
+    fn read_json_request(
+        socket: &mut tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>,
+        expected_method: &str,
+    ) -> serde_json::Value {
+        let message = socket.read().expect("read Codex request");
+        let Message::Text(text) = message else {
+            panic!("expected text Codex request");
+        };
+        let request: serde_json::Value =
+            serde_json::from_str(&text).expect("parse Codex request payload");
+        assert_eq!(request["method"], expected_method);
+        request
     }
 }
 
