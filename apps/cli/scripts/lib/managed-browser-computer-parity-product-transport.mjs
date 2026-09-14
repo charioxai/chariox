@@ -10,11 +10,13 @@ const OPERATOR_SESSION_ENV = "CHARIOX_MANAGED_PARITY_SESSION_ID"
  * The operator supplies only non-secret target references here. LocalIpcClient
  * consumes the normal one-shot local-auth configuration itself, resolves a
  * scoped relay connection through the home kernel, and keeps the relay token
- * in memory. This adapter deliberately implements only the first verified
- * product step; every other harness step fails closed until its real public
- * operation has been mapped.
+ * in memory. This adapter deliberately implements only operations whose
+ * public request and response contracts have been verified. A Selkies display
+ * endpoint is authorization metadata; it is not a display attachment or
+ * stream. The latter therefore fails closed until the released client exposes
+ * that operation.
  */
-export async function createManagedBrowserComputerParityTransport({ evidenceRoot } = {}) {
+export async function createManagedBrowserComputerParityTransport({ evidenceRoot, signal } = {}) {
   if (typeof evidenceRoot !== "string" || evidenceRoot.trim() === "") {
     throw new Error("managed parity transport requires an external evidenceRoot")
   }
@@ -33,12 +35,17 @@ export async function createManagedBrowserComputerParityTransport({ evidenceRoot
   const homeClient = new LocalIpcClient(homeKernelUrl)
   let connection
   try {
-    const response = await homeClient.send(requestApi.resolveKernelClientConnectionRequest({
-      kernelRef: targetKernelRef,
-      machineRef: targetMachineRef,
-      clientId,
-      sessionId,
-    }))
+    const response = await sendWithAbortSignal(
+      homeClient,
+      requestApi.resolveKernelClientConnectionRequest({
+        kernelRef: targetKernelRef,
+        machineRef: targetMachineRef,
+        clientId,
+        sessionId,
+      }),
+      signal,
+      "resolve target",
+    )
     connection = resolvedConnection(response)
   } finally {
     await homeClient.close().catch(() => {})
@@ -79,9 +86,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({ cl
   if (!client || typeof client.send !== "function") {
     throw new Error("managed parity transport requires a public kernel client")
   }
-  if (!requestApi
-    || typeof requestApi.relayStatusRequest !== "function"
-    || typeof requestApi.getRoomEnvironmentStateRequest !== "function") {
+  if (!requestApi || typeof requestApi.getSliceDisplayEndpointRequest !== "function") {
     throw new Error("managed parity transport requires released kernel request constructors")
   }
 
@@ -93,12 +98,12 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({ cl
       if (signal?.aborted) {
         throw new Error("managed parity selkies.attach was aborted before the public request")
       }
-      return runSelkiesAttach({ client, requestApi, request })
+      return runSelkiesAttach({ client, requestApi, request, signal })
     },
   }
 }
 
-async function runSelkiesAttach({ client, requestApi, request }) {
+async function runSelkiesAttach({ client, requestApi, request, signal }) {
   const binding = request?.binding
   if (!binding || typeof binding !== "object") {
     throw new Error("managed parity selkies.attach requires a target binding")
@@ -110,35 +115,87 @@ async function runSelkiesAttach({ client, requestApi, request }) {
     throw new Error("managed parity selkies.attach requires a documented client")
   }
 
-  const relayResponse = await client.send(requestApi.relayStatusRequest())
-  const relayStatus = responseVariant(relayResponse, "RelayStatus", "selkies.attach").status
-  if (relayStatus?.configured !== true
-    || relayStatus.connected !== true
-    || relayStatus.relay_token_configured !== true) {
-    throw new Error("managed parity selkies.attach requires a connected configured relay")
+  if (!hasText(request.sliceId) || !hasText(request.attachmentId) || !hasText(request.viewerPublicKey)) {
+    throw new Error(
+      "managed parity selkies.attach requires sliceId, attachmentId, and viewerPublicKey for public display authorization",
+    )
   }
-  const environmentResponse = await client.send(
-    requestApi.getRoomEnvironmentStateRequest(requireText(binding.roomId, "binding.roomId")),
+  const sliceId = request.sliceId.trim()
+  const attachmentId = request.attachmentId.trim()
+  const viewerPublicKey = request.viewerPublicKey.trim()
+  const displayEndpointResponse = await sendWithAbortSignal(
+    client,
+    requestApi.getSliceDisplayEndpointRequest(sliceId, {
+      sessionId: requireText(binding.roomId, "binding.roomId"),
+      attachmentId,
+      viewerPublicKey,
+    }),
+    signal,
+    "selkies.attach display authorization",
   )
-  const environment = responseVariant(
-    environmentResponse,
-    "RoomEnvironmentState",
-    "selkies.attach",
-  ).environment
-  const result = {
-    kernelId: requireText(relayStatus?.daemon_id, "RelayStatus.status.daemon_id"),
-    machineId: requireText(relayStatus?.machine_id, "RelayStatus.status.machine_id"),
-    roomId: requireText(environment?.session_id, "RoomEnvironmentState.environment.session_id"),
-    environmentId: requireText(environment?.environment_id, "RoomEnvironmentState.environment.environment_id"),
-    client: request.client,
-    displayBackend: request.displayBackend,
+  const endpoint = responseVariant(
+    displayEndpointResponse,
+    "SliceDisplayEndpoint",
+    "selkies.attach display authorization",
+  ).endpoint
+  if (!endpoint || typeof endpoint !== "object") {
+    throw new Error("managed parity selkies.attach display authorization returned no endpoint")
   }
-  for (const field of ["kernelId", "machineId", "roomId", "environmentId"]) {
-    if (result[field] !== binding[field]) {
-      throw new Error(`managed parity target identity mismatch for selkies.attach: ${field}`)
+  if (endpoint.slice_id !== sliceId || endpoint.kind !== "selkies") {
+    throw new Error("managed parity selkies.attach display authorization returned the wrong Selkies endpoint")
+  }
+  requireText(endpoint.url, "SliceDisplayEndpoint.endpoint.url")
+  requireText(endpoint.access, "SliceDisplayEndpoint.endpoint.access")
+  requireText(endpoint.stream_protocol, "SliceDisplayEndpoint.endpoint.stream_protocol")
+  requireText(endpoint.stream_id, "SliceDisplayEndpoint.endpoint.stream_id")
+  requireText(endpoint.peer_public_key, "SliceDisplayEndpoint.endpoint.peer_public_key")
+  throw new Error(
+    "managed parity selkies.attach has no public Selkies display-stream connection API after authorization",
+  )
+}
+
+async function sendWithAbortSignal(client, request, signal, step) {
+  if (signal?.aborted) {
+    closeAfterAbort(client)
+    throw abortError(step)
+  }
+  const operation = Promise.resolve().then(() => client.send(request))
+  if (!signal) return operation
+
+  let abort
+  const aborted = new Promise((_, reject) => {
+    abort = () => {
+      closeAfterAbort(client)
+      reject(abortError(step))
     }
+  })
+  signal.addEventListener("abort", abort, { once: true })
+  if (signal.aborted) abort()
+  try {
+    return await Promise.race([operation, aborted])
+  } finally {
+    signal.removeEventListener("abort", abort)
   }
-  return result
+}
+
+function abortError(step) {
+  const error = new Error(`managed parity ${step} was aborted while the public request was in flight`)
+  error.name = "AbortError"
+  return error
+}
+
+function closeAfterAbort(client) {
+  const close = typeof client.close === "function"
+    ? client.close
+    : typeof client.destroy === "function"
+      ? client.destroy
+      : null
+  if (!close) return
+  try {
+    Promise.resolve(close.call(client)).catch(() => {})
+  } catch {
+    // Abort must reject the public operation even if transport teardown fails.
+  }
 }
 
 function resolvedConnection(response) {
@@ -176,4 +233,8 @@ function requireText(value, label) {
     throw new Error(`managed parity response requires ${label}`)
   }
   return value
+}
+
+function hasText(value) {
+  return typeof value === "string" && value.trim() !== ""
 }

@@ -34,6 +34,7 @@ try {
   await mkdir(runDir, { recursive: true, mode: 0o700 })
   transport = await imported.createManagedBrowserComputerParityTransport({
     evidenceRoot: runDir,
+    signal: interruption.signal,
   })
   const report = await runManagedBrowserComputerParityHarness({ config, transport, signal: interruption.signal })
   const resultPath = path.join(runDir, "managed-browser-computer-parity.json")

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { createECDH } from "node:crypto";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const moduleUrl = new URL("./managed-browser-computer-parity-product-transport.mjs", import.meta.url);
 const kernelClientDistUrl = new URL("../../../../packages/kernel-client/dist/ipc.js", import.meta.url);
@@ -97,6 +99,40 @@ test("selkies.attach does not turn metadata into attachment success or read a wo
   assert.equal(sends, 0, "missing display binding must not fall back to worker Room metadata");
 });
 
+test("selkies display authorization aborts an in-flight public request and closes its client", async () => {
+  const imported = await importProductTransport();
+  let sends = 0;
+  let closed = 0;
+  const transport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
+    client: {
+      send() {
+        sends += 1;
+        return new Promise(() => {});
+      },
+      close() {
+        closed += 1;
+      },
+    },
+    requestApi: {
+      getSliceDisplayEndpointRequest: () => ({ GetSliceDisplayEndpoint: { slice_ref: "slice-1" } }),
+    },
+  });
+  const controller = new AbortController();
+  const pending = transport.run("selkies.attach", {
+    binding: { roomId: "room-1" },
+    client: "web",
+    displayBackend: "selkies",
+    sliceId: "slice-1",
+    attachmentId: "attachment-1",
+    viewerPublicKey: "viewer-public-key",
+  }, { signal: controller.signal });
+  await Promise.resolve();
+  assert.equal(sends, 1);
+  controller.abort();
+  await assert.rejects(pending, /aborted while the public request was in flight/);
+  assert.equal(closed, 1);
+});
+
 test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed without a public stream connection API", async () => {
   let LocalIpcClient;
   let getSliceDisplayEndpointRequest;
@@ -107,7 +143,7 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
     ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
     ({ getSliceDisplayEndpointRequest } = await import(kernelRequestsDistUrl.href));
     ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
-    ({ WebSocketServer } = await import("ws"));
+    ({ WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -131,7 +167,7 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
         receivedFrames.push(frame);
         if (frame.kind === "client_connect") {
           assert.equal(frame.auth_token, "operator-test-token");
-          assert.deepEqual(frame.target, { daemon_id: "daemon-1" });
+          assert.deepEqual(frame.target, { daemon_id: "daemon-1", daemon_alias: null });
           const daemon = createECDH("prime256v1");
           const daemonPublicKey = daemon.generateKeys().toString("base64");
           socket.daemon = daemon;
@@ -165,7 +201,7 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
           },
         };
         const encryptedResponse = encryptRelayPayload(
-          envelope.sender_public_key,
+          frame.encrypted_request.sender_public_key,
           Buffer.from(JSON.stringify(response), "utf8"),
         ).payload;
         socket.send(JSON.stringify({
