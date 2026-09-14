@@ -1289,7 +1289,7 @@ async fn first_output_silence_preserves_prompt_without_provider_error() {
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
+async fn quiet_provider_after_output_preserves_active_prompt() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1366,34 +1366,34 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
             true,
         )
         .await
-        .expect("provider output pump should reap inactive provider turn");
+        .expect("provider output pump should observe the quiet turn");
 
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "inactive provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "silence after output must not close a provider turn"
     );
     let run = runtime
         .owned
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "silence after output is not a provider failure"
+    );
     let notices = runtime
         .owned
         .terminal_stream
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices
+        !notices
             .iter()
-            .any(|record| record.message.contains("after its last activity")),
-        "inactivity timeout diagnostic should be visible to attached clients"
+            .any(|record| record.message.contains("Chariox closed this turn")),
+        "a quiet turn must not produce a terminal failure notice"
     );
 }
 
