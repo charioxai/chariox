@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        50
+        51
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -52,7 +52,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        50
+        51
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -121,7 +121,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        50
+        51
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
