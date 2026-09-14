@@ -98,11 +98,28 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
-        self.settle_local_prompt_without_advance_if_matches(
+        self.fail_local_prompt_without_advance_with_termination_if_matches(
             session_id,
             agent_id,
             provider_run_id,
             None,
+            provider_termination,
+        )
+    }
+
+    pub(super) fn fail_local_prompt_without_advance_with_termination_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        expected_prompt_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        self.settle_local_prompt_without_advance_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            expected_prompt_id,
             crate::git_observer::CompletedTurnSettlementStatus::Failed,
             provider_termination,
         )
