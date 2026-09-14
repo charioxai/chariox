@@ -56,6 +56,7 @@ fn room_environment_standard_worker_does_not_infer_project_transfer() {
 }
 
 async fn standard_worker_does_not_infer_project_transfer() {
+    let _env_guard = crate::env_lock::lock();
     let mut fixture = LiveWorker::start_with_fresh_worker_identity().await;
     let source_repository = fixture.home_state.root.join("selected-repository");
     let supporting_directory = fixture.home_state.root.join("selected-directory");
@@ -65,6 +66,11 @@ async fn standard_worker_does_not_infer_project_transfer() {
     let source_repository_id = source_repository.display().to_string();
     let supporting_directory_id = supporting_directory.display().to_string();
     let target_worktree_id = target_worktree.display().to_string();
+    let persisted_pairing_path = fixture
+        .home_state
+        .root
+        .join("daemon")
+        .join("config.json");
 
     init_test_repository(&source_repository, "selected.txt", "selected source\n");
     std::fs::create_dir_all(&supporting_directory).expect("selected directory should exist");
@@ -185,6 +191,16 @@ async fn standard_worker_does_not_infer_project_transfer() {
         "untouched worker state\n"
     );
     fixture.stop().await;
+    assert!(
+        crate::config::DaemonConfig::default_daemon_config_path() == persisted_pairing_path
+            && persisted_pairing_path.exists(),
+        "fresh worker pairing must be scoped below the disposable home fixture"
+    );
+    drop(fixture);
+    assert!(
+        !persisted_pairing_path.exists(),
+        "fresh worker pairing must be removed with the disposable fixture"
+    );
 }
 
 fn init_test_repository(root: &Path, filename: &str, contents: &str) {

@@ -156,12 +156,12 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     })
     .expect("managed context arm should serialize");
     assert_eq!(
-        arm.pointer("/plan/context_id"),
+        arm.pointer("/plan/contextId"),
         Some(&serde_json::json!("context-1"))
     );
     assert!(arm.pointer("/context_id").is_none());
     assert_eq!(
-        arm.pointer("/plan/plan_digest"),
+        arm.pointer("/plan/planDigest"),
         Some(&serde_json::json!(arm_plan_digest))
     );
 
