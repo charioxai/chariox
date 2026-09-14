@@ -20,6 +20,7 @@
     "external-provider-session:drill": "pnpm run build && node scripts/live-external-provider-session-import-drill.mjs",
     "external-provider-live-parity:drill": "pnpm run build && node scripts/live-external-provider-live-parity-drill.mjs",
     "prompt-assembly:drill": "node scripts/live-prompt-assembly-drill.mjs --providers codex,opencode,claude-p,claude-headless",
+    "project-environment:setup-acceptance": "node scripts/live-project-environment-setup-acceptance-drill.mjs",
     "remote-popup:drill": "node scripts/live-remote-popup-drill.mjs --providers opencode,codex",
     "remote-skill:drill": "node scripts/live-remote-skill-drill.mjs",
     "remote-home-extension:matrix-drill": "node scripts/live-remote-home-extension-matrix-drill.mjs",

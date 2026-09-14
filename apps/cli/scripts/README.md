@@ -2,6 +2,10 @@
 
 These scripts exercise Chariox against real provider sessions. Keep them deterministic, cheap, and explicit so future agents can rerun them safely.
 
+## Project Environment Setup Acceptance
+
+`live-project-environment-setup-acceptance-drill.mjs` is the strict Path1 worker drill. It uses public kernel requests for no-definition utility setup, measured worker validation, and provider launch only after authoritative Ready. See [`docs/PROJECT_ENVIRONMENT_SETUP_ACCEPTANCE.md`](../../../docs/PROJECT_ENVIRONMENT_SETUP_ACCEPTANCE.md) for the required worker, managed-environment revision, protocol, account, and cleanup contract. It must not be run against a kernel below protocol 326.
+
 ## Provider Models
 
 - Default live-drill model: use an explicit provider override that is accepted by the current provider account.
