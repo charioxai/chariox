@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use chariox_relay::protocol::{
-    canonical_peer_daemon_id, EncryptedRelayPayload, RelayCallerIdentity,
+    canonical_peer_daemon_id, EncryptedRelayPayload, RelayCallerIdentity, RelayError,
 };
 use tokio::sync::RwLock;
 
@@ -1047,6 +1047,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
             leased_agent_id,
             operation_id,
+            attempt,
             project_id,
             home_session_id,
             home_agent_id,
@@ -1060,6 +1061,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .relay_start_leased_project_environment_setup(
                     &leased_agent_id,
                     operation_id,
+                    attempt,
                     project_id,
                     home_session_id,
                     home_agent_id,
@@ -1632,6 +1634,53 @@ pub(super) async fn handle_daemon_peer_request(
         }
     };
     encrypt_peer_response(&daemon_private_key, &requester_public_key, response)
+}
+
+#[cfg(test)]
+pub(crate) async fn send_authenticated_peer_request_for_test(
+    router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
+    outgoing_tx: &RelayOutgoingSender,
+    from_daemon_id: &str,
+    caller_identity: RelayCallerIdentity,
+    source_private_key: &str,
+    target_public_key: &str,
+    request: RelayPeerRequest,
+) -> Result<RelayPeerResponse, RelayError> {
+    let plaintext = serde_json::to_vec(&request)
+        .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
+    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+        source_private_key,
+        target_public_key,
+        &plaintext,
+    )
+    .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
+    let outcome = handle_daemon_peer_request(
+        router,
+        state,
+        outgoing_tx,
+        from_daemon_id,
+        Some(caller_identity),
+        encrypted_request,
+    )
+    .await;
+    if let Some(error) = outcome.error {
+        return Err(error);
+    }
+    let encrypted_response = outcome.encrypted_response.ok_or_else(|| {
+        relay_error(
+            "test_peer_request_failed",
+            "peer returned no encrypted response",
+            false,
+        )
+    })?;
+    let decrypted = relay_crypto::decrypt_payload_for_private_key(
+        source_private_key,
+        &encrypted_response,
+    )
+    .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
+    serde_json::from_slice(&decrypted.plaintext)
+        .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))
 }
 
 fn managed_context_failure_response(error: &crate::error::DaemonError) -> RelayPeerResponse {
