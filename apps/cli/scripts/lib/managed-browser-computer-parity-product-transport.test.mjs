@@ -830,6 +830,8 @@ test("real public create binds and starts the home-owned slice before attach use
       "StartSlice",
       "RelayStatus",
       "GetRoomEnvironmentState",
+      "RelayStatus",
+      "GetRoomEnvironmentState",
       "AttachToSession",
       "GetSliceDisplayEndpoint",
       "DetachFromSession",

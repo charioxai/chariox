@@ -86,6 +86,8 @@ export async function createManagedBrowserComputerParityTransport({ evidenceRoot
         displayClient: homeClient,
         identityClient: workerClient,
         requestApi,
+        targetKernelRef,
+        targetMachineRef,
         displayTransport: {
           openSelkiesDisplayStream: displayApi.openSelkiesDisplayStream,
           webSocket,
@@ -114,6 +116,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   displayClient = client,
   identityClient = client,
   requestApi,
+  targetKernelRef = null,
+  targetMachineRef = null,
   displayTransport,
 } = {}) {
   if (!client || typeof client.send !== "function") {
@@ -136,33 +140,368 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     throw new Error("managed parity transport requires released identity and Room request constructors")
   }
 
+  const ownedResources = {
+    sliceId: null,
+    attachmentIds: new Set(),
+    attachmentsByClient: new Map(),
+    identity: null,
+  }
+
   return {
     async run(step, request, { signal } = {}) {
-      if (step !== "selkies.attach") {
-        throw new Error(`unsupported managed parity step: ${step}`)
-      }
       if (signal?.aborted) {
-        throw new Error("managed parity selkies.attach was aborted before the public request")
+        throw new Error(`managed parity ${step} was aborted before the public request`)
       }
-      return runSelkiesAttach({
-        client,
-        displayClient,
-        identityClient,
-        requestApi,
-        displayTransport,
-        request,
-        signal,
-      })
+      if (step === "selkies.create") {
+        return runSelkiesCreate({
+          displayClient,
+          identityClient,
+          requestApi,
+          targetKernelRef,
+          targetMachineRef,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "selkies.attach") {
+        return runSelkiesAttach({
+          displayClient,
+          identityClient,
+          requestApi,
+          displayTransport,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "selkies.destroy") {
+        return runSelkiesDestroy({
+          displayClient,
+          requestApi,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "cleanup.perform") {
+        return runCleanup({ displayClient, requestApi, ownedResources, signal })
+      }
+      throw new Error(`unsupported managed parity step: ${step}`)
     },
   }
 }
 
+async function runSelkiesCreate({
+  displayClient,
+  identityClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  ownedResources,
+  request,
+  signal,
+}) {
+  if (ownedResources.sliceId) {
+    throw new Error("managed parity selkies.create already owns a slice; duplicate creation is not allowed")
+  }
+  const binding = requireBinding(request, "selkies.create")
+  if (request.kernelOwnedDefault !== true) {
+    throw new Error("managed parity selkies.create requires the kernel-owned default")
+  }
+  const workerKernelRef = requireText(targetKernelRef, "managed parity target worker kernel reference")
+  const roomId = requireText(binding.roomId, "binding.roomId")
+  const runId = requireText(request.runId, "runId")
+  if (request.displayBackend !== null && request.displayBackend !== undefined) {
+    throw new Error("managed parity selkies.create requires the kernel-owned display backend default")
+  }
+  const createResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.createSliceRequest({
+      name: `${runId}-selkies`,
+      backend: "ssh_docker",
+      displayMode: "headed",
+      workerKernelRef,
+      base: "clean",
+    }),
+    signal,
+    "selkies.create",
+  )
+  const created = responseVariant(createResponse, "SliceCreated", "selkies.create")?.slice
+  const createdSliceId = requireText(created?.id, "SliceCreated.slice.id")
+  // Record the returned ownership identity before any deeper response
+  // validation so cleanup can still delete a resource after a partial failure.
+  ownedResources.sliceId = createdSliceId
+  validateCreatedSlice(created, {
+    roomId,
+    workerKernelRef,
+    targetMachineRef,
+    step: "selkies.create",
+  })
+
+  const bindResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.bindRoomEnvironmentSliceRequest(roomId, ownedResources.sliceId),
+    signal,
+    "selkies.create Room binding",
+  )
+  const bindingResponse = responseVariant(
+    bindResponse,
+    "RoomEnvironmentSlice",
+    "selkies.create Room binding",
+  ).binding
+  validateRoomSliceBinding(bindingResponse, {
+    roomId,
+    sliceId: ownedResources.sliceId,
+    workerKernelRef,
+  })
+
+  const startResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.startSliceRequest(ownedResources.sliceId),
+    signal,
+    "selkies.create slice start",
+  )
+  const started = responseVariant(
+    startResponse,
+    "SliceStarted",
+    "selkies.create slice start",
+  ).slice
+  validateStartedSlice(started, {
+    sliceId: ownedResources.sliceId,
+    roomId,
+    workerKernelRef,
+    binding,
+    targetMachineRef,
+    step: "selkies.create slice start",
+  })
+
+  const identity = await readAuthoritativeBinding({
+    displayClient,
+    identityClient,
+    requestApi,
+    roomId,
+    signal,
+    step: "selkies.create",
+  })
+  assertBinding(identity, binding, "selkies.create")
+  ownedResources.identity = identity
+  return {
+    ...identity,
+    displayBackend: createdDisplayBackend(created, "selkies.create"),
+    sliceId: ownedResources.sliceId,
+  }
+}
+
+async function runSelkiesDestroy({
+  displayClient,
+  requestApi,
+  ownedResources,
+  request,
+  signal,
+}) {
+  const sliceId = resolveOwnedSliceId(request, ownedResources, "selkies.destroy", { requireOwned: true })
+  const identity = ownedResources.identity
+  if (!identity) {
+    throw new Error("managed parity selkies.destroy cannot verify the created target identity")
+  }
+  const attachmentIds = [...ownedResources.attachmentIds]
+  await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step: "selkies.destroy" })
+  const deleteResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
+    signal,
+    "selkies.destroy",
+  )
+  const deleted = responseVariant(deleteResponse, "SliceDeleted", "selkies.destroy").slice
+  validateDeletedSlice(deleted, sliceId, "selkies.destroy")
+  clearOwnedResources(ownedResources)
+  return {
+    ...identity,
+    displayBackend: "selkies",
+    destroyed: true,
+    sliceId,
+    attachmentIds,
+  }
+}
+
+async function runCleanup({ displayClient, requestApi, ownedResources, signal }) {
+  const sliceId = ownedResources.sliceId
+  const attachmentIds = [...ownedResources.attachmentIds]
+  if (sliceId) {
+    await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step: "cleanup.perform" })
+    const deleteResponse = await sendWithAbortSignal(
+      displayClient,
+      requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
+      signal,
+      "cleanup.perform",
+    )
+    const deleted = responseVariant(deleteResponse, "SliceDeleted", "cleanup.perform").slice
+    validateDeletedSlice(deleted, sliceId, "cleanup.perform")
+  }
+  clearOwnedResources(ownedResources)
+  return { cleaned: true, sliceId, attachmentIds }
+}
+
+async function detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step }) {
+  const detach = requireRequestConstructor(requestApi, "detachFromSessionRequest")
+  for (const attachmentId of ownedResources.attachmentIds) {
+    const response = await sendWithAbortSignal(
+      displayClient,
+      detach(attachmentId),
+      signal,
+      `${step} attachment detach`,
+    )
+    const detached = responseVariant(response, "SessionDetached", `${step} attachment detach`).attachment
+    validateSessionAttachment(detached, attachmentId, null, `${step} attachment detach`)
+  }
+}
+
+function requireBinding(request, step) {
+  const binding = request?.binding
+  if (!binding || typeof binding !== "object") {
+    throw new Error(`managed parity ${step} requires a target binding`)
+  }
+  for (const field of ["kernelId", "machineId", "roomId", "environmentId"]) {
+    requireText(binding[field], `${step} binding.${field}`)
+  }
+  return binding
+}
+
+function validateCreatedSlice(slice, { roomId, workerKernelRef, targetMachineRef, step }) {
+  if (!slice || typeof slice !== "object") {
+    throw new Error(`managed parity ${step} returned no created slice`)
+  }
+  requireText(slice.id, `${step} SliceCreated.slice.id`)
+  if (slice.backend !== "ssh_docker") {
+    throw new Error(`managed parity ${step} created a non-managed slice backend`)
+  }
+  if (slice.display_mode !== "headed") {
+    throw new Error(`managed parity ${step} created a non-headed slice`)
+  }
+  if (slice.worker_kernel_ref !== workerKernelRef) {
+    throw new Error(`managed parity ${step} created a slice for the wrong worker reference`)
+  }
+  if (slice.environment_session_id !== undefined
+    && slice.environment_session_id !== null
+    && slice.environment_session_id !== roomId) {
+    throw new Error(`managed parity ${step} created a slice already owned by another Room`)
+  }
+  if (slice.session_id !== undefined && slice.session_id !== null && slice.session_id !== roomId) {
+    throw new Error(`managed parity ${step} created a slice already attached to another Room`)
+  }
+  if (hasText(targetMachineRef) && slice.worker_machine_id !== undefined
+    && slice.worker_machine_id !== null && slice.worker_machine_id !== targetMachineRef) {
+    throw new Error(`managed parity ${step} created a slice for the wrong worker machine`)
+  }
+}
+
+function createdDisplayBackend(slice, step) {
+  const endpoint = slice?.display_endpoint
+  if (!endpoint || typeof endpoint !== "object") {
+    throw new Error(`managed parity ${step} cannot verify the kernel-selected display backend`)
+  }
+  if (endpoint.slice_id !== slice.id || endpoint.kind !== "selkies") {
+    throw new Error(`managed parity ${step} did not return the kernel-selected Selkies backend`)
+  }
+  return endpoint.kind
+}
+
+function validateRoomSliceBinding(binding, { roomId, sliceId, workerKernelRef }) {
+  if (!binding || typeof binding !== "object") {
+    throw new Error("managed parity selkies.create Room binding returned no binding")
+  }
+  if (binding.session_id !== roomId || binding.slice_id !== sliceId) {
+    throw new Error("managed parity selkies.create Room binding returned the wrong Room or slice")
+  }
+  requireText(binding.owner_kernel_id, "RoomEnvironmentSlice.binding.owner_kernel_id")
+  if (binding.worker_kernel_ref !== workerKernelRef) {
+    throw new Error("managed parity selkies.create Room binding returned the wrong worker reference")
+  }
+}
+
+function validateStartedSlice(slice, {
+  sliceId,
+  roomId,
+  workerKernelRef,
+  binding,
+  targetMachineRef,
+  step,
+}) {
+  if (!slice || typeof slice !== "object") {
+    throw new Error(`managed parity ${step} returned no started slice`)
+  }
+  if (slice.id !== sliceId || slice.status !== "running") {
+    throw new Error(`managed parity ${step} did not return the running created slice`)
+  }
+  if (slice.worker_kernel_ref !== workerKernelRef) {
+    throw new Error(`managed parity ${step} returned the wrong worker reference`)
+  }
+  if (slice.environment_session_id !== undefined
+    && slice.environment_session_id !== null && slice.environment_session_id !== roomId) {
+    throw new Error(`managed parity ${step} returned a slice bound to the wrong Room`)
+  }
+  const workerKernelId = requireText(slice.worker_kernel_id, `${step} slice.worker_kernel_id`)
+  const workerMachineId = requireText(slice.worker_machine_id, `${step} slice.worker_machine_id`)
+  if (workerKernelId !== binding.kernelId || workerMachineId !== binding.machineId) {
+    throw new Error(`managed parity ${step} returned worker identities different from the target binding`)
+  }
+  if (hasText(targetMachineRef) && workerMachineId !== targetMachineRef) {
+    throw new Error(`managed parity ${step} returned a worker machine different from configured target`)
+  }
+}
+
+function validateSessionAttachment(attachment, expectedId, roomId, step) {
+  if (!attachment || typeof attachment !== "object") {
+    throw new Error(`managed parity ${step} returned no attachment`)
+  }
+  const attachmentId = requireText(attachment.id, `${step} attachment.id`)
+  if (expectedId && attachmentId !== expectedId) {
+    throw new Error(`managed parity ${step} returned a different attachment identity`)
+  }
+  if (roomId !== null && attachment.session_id !== roomId) {
+    throw new Error(`managed parity ${step} attached a different Room`)
+  }
+  return attachmentId
+}
+
+function validateDeletedSlice(slice, sliceId, step) {
+  if (!slice || typeof slice !== "object" || slice.id !== sliceId) {
+    throw new Error(`managed parity ${step} returned a different deleted slice identity`)
+  }
+}
+
+function resolveOwnedSliceId(request, ownedResources, step, { requireOwned = false } = {}) {
+  if (requireOwned && !ownedResources.sliceId) {
+    throw new Error(`managed parity ${step} requires a tracked owned slice before deletion`)
+  }
+  const requestedSliceId = hasText(request?.sliceId) ? request.sliceId.trim() : null
+  if (requestedSliceId && ownedResources.sliceId && requestedSliceId !== ownedResources.sliceId) {
+    throw new Error(`managed parity ${step} rejected a stale slice identity`)
+  }
+  return requireText(requestedSliceId ?? ownedResources.sliceId, `${step} sliceId`)
+}
+
+function requireRequestConstructor(requestApi, name) {
+  if (!requestApi || typeof requestApi[name] !== "function") {
+    throw new Error(`managed parity requires released kernel request constructor ${name}`)
+  }
+  return requestApi[name]
+}
+
+function clearOwnedResources(ownedResources) {
+  ownedResources.sliceId = null
+  ownedResources.attachmentIds.clear()
+  ownedResources.attachmentsByClient.clear()
+  ownedResources.identity = null
+}
+
 async function runSelkiesAttach({
-  client,
   displayClient,
   identityClient,
   requestApi,
   displayTransport,
+  ownedResources,
   request,
   signal,
 }) {
@@ -177,28 +516,46 @@ async function runSelkiesAttach({
     throw new Error("managed parity selkies.attach requires a documented client")
   }
 
-  if (displayTransport?.openSelkiesDisplayStream) {
-    if (!hasText(request.sliceId) || !hasText(request.attachmentId)) {
-      throw new Error(
-        "managed parity selkies.attach requires sliceId and attachmentId for a public display stream",
-      )
-    }
-    const roomId = requireText(binding.roomId, "binding.roomId")
-    const identity = await readAuthoritativeBinding({
+  if (!displayTransport?.openSelkiesDisplayStream
+    && !hasText(request.sliceId)
+    && !ownedResources.sliceId
+    && !hasText(request.attachmentId)) {
+    throw new Error(
+      "managed parity selkies.attach requires sliceId, attachmentId, and viewerPublicKey for public display authorization",
+    )
+  }
+
+  const roomId = requireText(binding.roomId, "binding.roomId")
+  const sliceId = resolveOwnedSliceId(request, ownedResources, "selkies.attach")
+  const identity = displayTransport?.openSelkiesDisplayStream
+    ? await readAuthoritativeBinding({
       displayClient,
       identityClient,
       requestApi,
       roomId,
       signal,
+      step: "selkies.attach",
     })
-    assertBinding(identity, binding, "selkies.attach")
+    : null
+  if (identity) assertBinding(identity, binding, "selkies.attach")
+
+  const { attachmentId } = await resolveAttachment({
+    displayClient,
+    requestApi,
+    ownedResources,
+    request,
+    roomId,
+    signal,
+  })
+
+  if (displayTransport?.openSelkiesDisplayStream) {
     let stream
     try {
       stream = await displayTransport.openSelkiesDisplayStream({
         client: displayClient,
-        sliceId: request.sliceId.trim(),
+        sliceId,
         sessionId: roomId,
-        attachmentId: request.attachmentId.trim(),
+        attachmentId,
         webSocket: displayTransport.webSocket,
         signal,
         connectTimeoutMs: request.connectTimeoutMs ?? DISPLAY_CONNECT_TIMEOUT_MS,
@@ -227,6 +584,8 @@ async function runSelkiesAttach({
         client: request.client,
         displayBackend: request.displayBackend,
         attached: true,
+        sliceId,
+        attachmentId,
         displayProtocol: stream.endpoint.stream_protocol,
         displayStreamId: stream.endpoint.stream_id,
         startupMessage: {
@@ -244,18 +603,16 @@ async function runSelkiesAttach({
     }
   }
 
-  if (!hasText(request.sliceId) || !hasText(request.attachmentId) || !hasText(request.viewerPublicKey)) {
+  if (!hasText(request.viewerPublicKey)) {
     throw new Error(
-      "managed parity selkies.attach requires sliceId, attachmentId, and viewerPublicKey for public display authorization",
+      "managed parity selkies.attach requires viewerPublicKey for public display authorization",
     )
   }
-  const sliceId = request.sliceId.trim()
-  const attachmentId = request.attachmentId.trim()
   const viewerPublicKey = request.viewerPublicKey.trim()
   const displayEndpointResponse = await sendWithAbortSignal(
-    client,
+    displayClient,
     requestApi.getSliceDisplayEndpointRequest(sliceId, {
-      sessionId: requireText(binding.roomId, "binding.roomId"),
+      sessionId: roomId,
       attachmentId,
       viewerPublicKey,
     }),
@@ -283,6 +640,49 @@ async function runSelkiesAttach({
   )
 }
 
+async function resolveAttachment({
+  displayClient,
+  requestApi,
+  ownedResources,
+  request,
+  roomId,
+  signal,
+}) {
+  const requestedAttachmentId = hasText(request.attachmentId) ? request.attachmentId.trim() : null
+  const clientKey = `${roomId}:${request.client}`
+  const knownAttachmentId = ownedResources.attachmentsByClient.get(clientKey)
+  if (requestedAttachmentId) {
+    if (knownAttachmentId && knownAttachmentId !== requestedAttachmentId) {
+      throw new Error("managed parity selkies.attach rejected a stale attachment identity")
+    }
+    return { attachmentId: requestedAttachmentId, owned: false }
+  }
+  if (knownAttachmentId) return { attachmentId: knownAttachmentId, owned: true }
+
+  const attach = requireRequestConstructor(requestApi, "attachToSessionRequest")
+  const runId = requireText(request.runId, "runId")
+  const response = await sendWithAbortSignal(
+    displayClient,
+    attach(roomId, `managed-parity-${request.client}-${runId}`),
+    signal,
+    "selkies.attach Room attachment",
+  )
+  const attachment = responseVariant(
+    response,
+    "SessionAttached",
+    "selkies.attach Room attachment",
+  ).attachment
+  const attachmentId = validateSessionAttachment(
+    attachment,
+    null,
+    roomId,
+    "selkies.attach Room attachment",
+  )
+  ownedResources.attachmentIds.add(attachmentId)
+  ownedResources.attachmentsByClient.set(clientKey, attachmentId)
+  return { attachmentId, owned: true }
+}
+
 async function receiveDisplayMessageUntil(stream, signal, deadline, matches, description) {
   while (true) {
     const remainingMs = deadline - Date.now()
@@ -294,33 +694,40 @@ async function receiveDisplayMessageUntil(stream, signal, deadline, matches, des
   }
 }
 
-async function readAuthoritativeBinding({ displayClient, identityClient, requestApi, roomId, signal }) {
+async function readAuthoritativeBinding({
+  displayClient,
+  identityClient,
+  requestApi,
+  roomId,
+  signal,
+  step = "selkies.attach",
+}) {
   const relayResponse = await sendWithAbortSignal(
     identityClient,
     requestApi.relayStatusRequest(),
     signal,
-    "selkies.attach relay identity",
+    `${step} relay identity`,
   )
-  const relayStatus = responseVariant(relayResponse, "RelayStatus", "selkies.attach relay identity").status
+  const relayStatus = responseVariant(relayResponse, "RelayStatus", `${step} relay identity`).status
   if (relayStatus?.configured !== true || relayStatus.connected !== true) {
-    throw new Error("managed parity selkies.attach requires a connected configured relay")
+    throw new Error(`managed parity ${step} requires a connected configured relay`)
   }
   const environmentResponse = await sendWithAbortSignal(
     displayClient,
     requestApi.getRoomEnvironmentStateRequest(roomId),
     signal,
-    "selkies.attach Room state",
+    `${step} Room state`,
   )
   const environment = responseVariant(
     environmentResponse,
     "RoomEnvironmentState",
-    "selkies.attach Room state",
+    `${step} Room state`,
   ).environment
   return {
-    kernelId: requireText(relayStatus?.daemon_id, "RelayStatus.status.daemon_id"),
-    machineId: requireText(relayStatus?.machine_id, "RelayStatus.status.machine_id"),
-    roomId: requireText(environment?.session_id, "RoomEnvironmentState.environment.session_id"),
-    environmentId: requireText(environment?.environment_id, "RoomEnvironmentState.environment.environment_id"),
+    kernelId: requireText(relayStatus?.daemon_id, `${step} RelayStatus.status.daemon_id`),
+    machineId: requireText(relayStatus?.machine_id, `${step} RelayStatus.status.machine_id`),
+    roomId: requireText(environment?.session_id, `${step} RoomEnvironmentState.environment.session_id`),
+    environmentId: requireText(environment?.environment_id, `${step} RoomEnvironmentState.environment.environment_id`),
   }
 }
 
