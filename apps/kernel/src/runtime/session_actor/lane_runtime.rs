@@ -22,6 +22,8 @@ use super::focus_projection::FocusedAgentProjection;
 use super::lane_resolution;
 use super::store::SessionRuntimeStore;
 
+const ROOM_INTERRUPT_LANE_SUFFIX: &str = "::room-interrupt";
+
 #[derive(Debug)]
 struct SessionCommandEnvelope {
     command_id: String,
@@ -88,7 +90,8 @@ impl SessionRuntime {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session_id = self.resolve_session_lane_key(&request).await?;
-        let lane = self.session_lane(&session_id).await;
+        let lane_id = session_command_lane_id(&request, &session_id);
+        let lane = self.session_lane(&lane_id, &session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_session_actor_user_id(&command);
         let telemetry = LaneCommandTrace::new(
@@ -115,7 +118,7 @@ impl SessionRuntime {
                 log_lane_enqueued(
                     &telemetry,
                     "session",
-                    &session_id,
+                    &lane_id,
                     self.queue_limit,
                     queue_depth_before,
                     queue_depth_after,
@@ -126,7 +129,7 @@ impl SessionRuntime {
                 log_lane_enqueue_failed(
                     &telemetry,
                     "session",
-                    &session_id,
+                    &lane_id,
                     self.queue_limit,
                     queue_depth_before,
                     &message,
@@ -147,7 +150,7 @@ impl SessionRuntime {
             response,
             LocalDaemonResponse::SessionEnded { .. } | LocalDaemonResponse::SessionDeleted { .. }
         ) {
-            self.remove_session_lane(&session_id).await;
+            self.remove_session_lanes(&session_id).await;
         }
         Ok(response)
     }
@@ -160,28 +163,34 @@ impl SessionRuntime {
             .await
     }
 
-    async fn session_lane(&self, session_id: &str) -> mpsc::Sender<SessionCommandEnvelope> {
+    async fn session_lane(
+        &self,
+        lane_id: &str,
+        session_id: &str,
+    ) -> mpsc::Sender<SessionCommandEnvelope> {
         let mut lanes = self.lanes.lock().await;
-        if let Some(lane) = lanes.get(session_id) {
+        if let Some(lane) = lanes.get(lane_id) {
             return lane.clone();
         }
         let (tx, rx) = mpsc::channel(self.queue_limit);
-        lanes.insert(session_id.to_string(), tx.clone());
+        lanes.insert(lane_id.to_string(), tx.clone());
         tokio::spawn(run_session_command_lane(
             self.store.clone(),
             self.focus_projection.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
             self.terminal_stream.clone(),
+            lane_id.to_string(),
             session_id.to_string(),
             rx,
         ));
         tx
     }
 
-    async fn remove_session_lane(&self, session_id: &str) {
+    async fn remove_session_lanes(&self, session_id: &str) {
         let mut lanes = self.lanes.lock().await;
         lanes.remove(session_id);
+        lanes.remove(&format!("{session_id}{ROOM_INTERRUPT_LANE_SUFFIX}"));
     }
 
     #[allow(dead_code)]
@@ -221,7 +230,7 @@ impl SessionRuntime {
         command_type: impl Into<String>,
         request: LocalDaemonRequest,
     ) -> Result<oneshot::Receiver<Result<LocalDaemonResponse, DaemonError>>, DaemonError> {
-        let lane = self.session_lane(session_id).await;
+        let lane = self.session_lane(session_id, session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let command_id = command_id.into();
         let command_type = command_type.into();
@@ -254,6 +263,7 @@ async fn run_session_command_lane(
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     terminal_stream: TerminalStreamStore,
+    lane_id: String,
     session_id: String,
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
@@ -270,7 +280,7 @@ async fn run_session_command_lane(
         log_lane_dispatched(
             &envelope.telemetry,
             "session",
-            &session_id,
+            &lane_id,
             dispatch_started_at_ms,
         );
         crate::logging::info_with_fields(
@@ -278,6 +288,7 @@ async fn run_session_command_lane(
             "session kernel command dispatched",
             serde_json::json!({
                 "session_id": session_id,
+                "lane_id": lane_id,
                 "command_id": envelope.command_id,
                 "command_type": envelope.command_type,
             }),
@@ -292,7 +303,7 @@ async fn run_session_command_lane(
         log_lane_completed(
             &envelope.telemetry,
             "session",
-            &session_id,
+            &lane_id,
             dispatch_started_at_ms,
             &result,
         );
@@ -322,6 +333,18 @@ async fn run_session_command_lane(
     }
 }
 
+fn session_command_lane_id(request: &LocalDaemonRequest, session_id: &str) -> String {
+    if matches!(
+        request,
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_)
+            | LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_)
+    ) {
+        format!("{session_id}{ROOM_INTERRUPT_LANE_SUFFIX}")
+    } else {
+        session_id.to_string()
+    }
+}
+
 fn command_session_actor_user_id(command: &KernelCommand) -> String {
     match command.caller.caller_kind {
         KernelCallerKind::LocalClient | KernelCallerKind::Metaagent => command
@@ -336,6 +359,44 @@ fn command_session_actor_user_id(command: &KernelCommand) -> String {
             .user_id
             .clone()
             .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::{
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentStateRequest,
+        RequestRoomEnvironmentInputTakeoverRequest,
+    };
+    use crate::session::InputTarget;
+
+    #[test]
+    fn room_interrupts_use_one_lane_independent_from_ordinary_session_work() {
+        let cancel =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-7".to_string(),
+            });
+        let takeover = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: InputTarget::Desktop,
+            },
+        );
+        let query = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(
+            session_command_lane_id(&cancel, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(
+            session_command_lane_id(&takeover, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(session_command_lane_id(&query, "session-1"), "session-1");
     }
 }
 

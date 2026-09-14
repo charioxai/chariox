@@ -3,8 +3,56 @@ use crate::error::DaemonError;
 
 impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
+        if self.lease_worker_home_caller_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "lease_worker_home_caller",
+                message: "invalid home caller binding",
+            });
+        }
+        if let Some(home) = &self.lease_worker_home_caller {
+            if self.kernel_runtime_role != super::KernelRuntimeRole::RemoteLeaseWorker
+                || [
+                    &home.kernel_id,
+                    &home.realm_id,
+                    &home.user_id,
+                    &home.relay_public_key,
+                ]
+                .iter()
+                .any(|value| value.trim().is_empty())
+            {
+                return Err(DaemonError::InvalidConfig {
+                    field: "lease_worker_home_caller",
+                    message: "selected home requires worker role and nonempty identity",
+                });
+            }
+        }
+        if let Some(message) = self.kernel_runtime_role_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_runtime_role",
+                message,
+            });
+        }
+        if let Some(message) = self.remote_lease_capacity_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "remote_lease_capacity",
+                message,
+            });
+        }
+        if self.kernel_runtime_role == super::KernelRuntimeRole::RemoteLeaseWorker
+            && self
+                .remote_lease_capacity
+                .is_none_or(|capacity| capacity == 0)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "remote_lease_capacity",
+                message: "must be a positive integer for a remote lease worker",
+            });
+        }
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
+        if let Some(binding) = &self.room_environment_worker_binding {
+            binding.validate(&self.host_machine_id)?;
+        }
         self.validate_publication_control_state_root()?;
         if self
             .relay_url

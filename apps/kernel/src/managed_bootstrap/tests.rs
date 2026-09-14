@@ -20,6 +20,8 @@ use super::supervisor::run_kernel_once;
 use super::ManagedKernelContextPlan;
 use crate::error::DaemonError;
 
+mod disposable_worker;
+
 struct FakeCloud {
     exchange_response: ExchangeResponse,
     exchange_calls: Mutex<Vec<ExchangeRequest>>,
@@ -644,16 +646,18 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
         "Environment=HOME=/var/lib/chariox-docker/home",
         "Environment=XDG_RUNTIME_DIR=/run/chariox-docker",
         "Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock",
-        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh",
+        "ExecStartPre=+/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh prepare",
+        "ExecStart=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh start",
+        "ExecStartPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh ready",
+        "ExecStopPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh stop",
         "RuntimeDirectory=chariox-docker",
         "RuntimeDirectoryMode=0700",
         "StateDirectory=chariox-docker",
         "StateDirectoryMode=0700",
-        "Delegate=yes",
         "ProtectSystem=strict",
-        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs",
         "ProtectKernelTunables=false",
-        "RestrictSUIDSGID=false",
+        "RestrictSUIDSGID=true",
+        "NoNewPrivileges=true",
         "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker",
     ] {
         assert!(
@@ -665,7 +669,12 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
     assert!(!unit.contains("User=root"));
     assert!(!unit.contains("SupplementaryGroups=chariox-slice"));
     assert!(!unit.contains("/var/lib/chariox/home"));
-    assert!(!unit.contains("RestrictSUIDSGID=true"));
+    let engine = include_str!("../../slice-linux-docker/chariox-rootless-engine.service");
+    assert!(engine.contains("ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=systemd"));
+    assert!(engine.contains("Delegate=cpu cpuset io memory pids"));
+    assert!(engine.contains("Restart=no"));
+    assert!(!engine.contains("/var/run/docker.sock"));
+    assert!(!engine.lines().any(|line| line.starts_with("User=")));
 }
 
 #[test]
@@ -705,17 +714,17 @@ fn managed_systemd_unit_remains_eligible_after_one_time_envelope_removal() {
     assert!(!unit.contains("ConditionPathExists=/var/lib/chariox/managed-bootstrap.json"));
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
-    config: BootstrapConfig,
+    pub(super) config: BootstrapConfig,
     now: chrono::DateTime<Utc>,
-    release_digest: String,
+    pub(super) release_digest: String,
     token: String,
     kernel_started_marker: PathBuf,
 }
 
 impl Fixture {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-bootstrap-{label}-{}-{}",
             std::process::id(),
@@ -725,7 +734,7 @@ impl Fixture {
         let kernel_binary = root.join("bin").join("chariox-kernel");
         fs::create_dir_all(kernel_binary.parent().expect("kernel parent"))
             .expect("create kernel parent");
-        let kernel_fixture = b"#!/bin/sh\nreceipt=\"$CHARIOX_HOME/managed/bootstrap-receipt.json\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$CHARIOX_HOME/managed/kernel-started\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
+        let kernel_fixture = b"#!/bin/sh\nreceipt=\"${CHARIOX_DISPOSABLE_WORKER_RECEIPT:-$CHARIOX_HOME/managed/bootstrap-receipt.json}\"\nmarker=\"${CHARIOX_KERNEL_STARTED_MARKER:-$CHARIOX_HOME/managed/kernel-started}\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$marker\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
         fs::write(&kernel_binary, kernel_fixture).expect("write kernel fixture");
         #[cfg(unix)]
         {
@@ -845,7 +854,7 @@ impl Fixture {
         format!("sha256:{:x}", Sha256::digest(&manifest))
     }
 
-    fn cleanup(self) {
+    pub(super) fn cleanup(self) {
         let _ = fs::remove_dir_all(self.root);
     }
 }

@@ -1,5 +1,6 @@
 import type { ShellContext } from "@chariox/kernel-client/shell-core"
 import { executeShellLine } from "@chariox/kernel-client/shell-script"
+import type { ShellExecutorDeps } from "@chariox/kernel-client/shell-executor"
 
 import type {
   RuntimeSession,
@@ -38,6 +39,7 @@ type WorkspaceShellSubmitDeps = {
   client: LocalIpcClient
   clientId?: string | undefined
   executeShellLine?: typeof executeShellLine
+  openRoomViewer?: ShellExecutorDeps["openRoomViewer"]
   workspaceShellContext: () => ShellContext
   setWorkspaceShellContext: (context: ShellContext) => void
   nextEntryId: () => number
@@ -77,7 +79,11 @@ export async function submitWorkspaceShellCommand(
   const context = deps.workspaceShellContext()
   const output: string[] = []
   const runShellLine = deps.executeShellLine ?? executeShellLine
-  const result = await runShellLine(command, context, { client: deps.client, clientId: deps.clientId }, (text) => output.push(text))
+  const result = await runShellLine(command, context, {
+    client: deps.client,
+    clientId: deps.clientId,
+    ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
+  }, (text) => output.push(text))
   const rendered = output.join("").trimEnd()
   const nextContext = result.context
   deps.setWorkspaceShellContext(nextContext)

@@ -26,6 +26,7 @@ type CommandCenterCommandExecutorDeps = {
   onKernel: CommandHandler<"kernel">
   onMachine: CommandHandler<"machine">
   onSlice: CommandHandler<"slice">
+  onRoom: CommandHandler<"room">
   onRelay: CommandHandler<"relay">
   onCloud: CommandHandler<"cloud">
   onCollab: CommandHandler<"collab">
@@ -92,6 +93,7 @@ export function createCommandCenterCommandExecutor(
       onKernel: contained(deps.onKernel),
       onMachine: contained(deps.onMachine),
       onSlice: contained(deps.onSlice),
+      onRoom: contained(deps.onRoom),
       onRelay: contained(deps.onRelay),
       onCloud: contained(deps.onCloud),
       onCollab: contained(deps.onCollab),

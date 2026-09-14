@@ -24,7 +24,7 @@ pub(crate) struct DurableWorkflowRunPage {
 }
 
 impl DurableKernelStateStore {
-    pub(crate) fn with_workflow_runtime_transition_lock<T>(
+    pub(crate) fn with_projection_transition_lock<T>(
         &self,
         transition: impl FnOnce() -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
@@ -32,10 +32,17 @@ impl DurableKernelStateStore {
             .workflow_runtime_transition_lock
             .lock()
             .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.lock_workflow_runtime_transition",
+                operation: "durable_state.lock_projection_transition",
                 message: error.to_string(),
             })?;
         transition()
+    }
+
+    pub(crate) fn with_workflow_runtime_transition_lock<T>(
+        &self,
+        transition: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        self.with_projection_transition_lock(transition)
     }
 
     pub(crate) fn persist_workflow_runtime_transition(

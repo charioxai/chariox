@@ -92,6 +92,8 @@ const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
     include_str!("provider/workspace_commit_message_instructions.md");
 const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
     include_str!("provider/semantic_recall_search_instructions.md");
+const UTILITY_PROJECT_ENVIRONMENT_SETUP: &str =
+    include_str!("provider/project_environment_setup_instructions.md");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
@@ -1066,6 +1068,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             "utility/semantic-recall-search",
             UTILITY_SEMANTIC_RECALL_SEARCH,
         ),
+        BundledPromptTemplate::new(
+            "utility/project-environment-setup",
+            UTILITY_PROJECT_ENVIRONMENT_SETUP,
+        ),
     ]
 }
 
@@ -1121,6 +1127,7 @@ fn prompt_component_tag(template_id: &str) -> String {
         }
         "utility/workspace-commit-message" => "workspace-commit-message-instructions",
         "utility/semantic-recall-search" => "semantic-recall-search-instructions",
+        "utility/project-environment-setup" => "project-environment-setup-instructions",
         _ => return template_id.replace('/', "-"),
     }
     .to_string()
@@ -1386,9 +1393,9 @@ mod tests {
             &path,
             concat!(
                 "You are running inside a Chariox slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.\n\n",
-                "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.\n\n",
+                "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, `slice_clipboard_write` to write clipboard text without reading it back, and `slice_open_url` to open a URL in the slice browser.\n\n",
                 "Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.\n\n",
-                "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
+                "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns every visible occurrence in reading order using native screen coordinates. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
             ),
         )
         .expect("legacy slice default should write");

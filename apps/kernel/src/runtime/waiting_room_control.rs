@@ -131,16 +131,17 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
                 limit: Some(25),
             },
         );
-    let external_working_agents = session_projection.external_observed_working_agents();
     let runtime_projects = runtime_state.list_waiting_room_projects(caller_user_id);
     let slices = runtime_state.list_slices();
-    let (runtime_sessions, session_revision) = session_projection.list_shared_with_revision();
+    let (runtime_sessions, external_working_agents, session_revision, external_working_generation) =
+        session_projection.waiting_room_snapshot();
     let runtime_sessions = runtime_sessions.unwrap_or_else(|| Arc::from([]));
     let mut snapshot = build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions.as_ref(),
         session_revision,
         waiting_room_session_summaries,
         &metaagent_events,
+        external_working_generation,
         &external_working_agents,
         &runtime_projects,
         &slices,

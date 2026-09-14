@@ -77,6 +77,7 @@ impl CodexClient {
         let mut params = json!({
             "approvalPolicy": policy.approval_policy,
             "approvalsReviewer": "user",
+            "ephemeral": false,
             "sandbox": policy.sandbox,
             "personality": "pragmatic",
             "persistExtendedHistory": true,

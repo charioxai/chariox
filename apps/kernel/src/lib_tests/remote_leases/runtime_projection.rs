@@ -101,6 +101,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
                 message_id: "old-completion".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some("previous-home-prompt".into()),
+                provider_termination: None,
             }],
         )
         .unwrap();
@@ -284,6 +285,7 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
                 message_id: "failed-turn-1".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some(prompt.id().into()),
+                provider_termination: None,
             }],
         )
         .unwrap();
@@ -379,6 +381,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         message_id: "assistant-msg-1".to_string(),
         completed_at_ms,
         home_prompt_id: Some(prompt.id().to_string()),
+        provider_termination: None,
     };
 
     RemoteLeaseRuntime::new(&mut app)
@@ -486,6 +489,73 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
 }
 
 #[test]
+fn remote_runtime_projection_preserves_authoritative_provider_termination() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            CreateSessionRequest::new("workspace-termination", "worktree-termination")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-termination",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+    let PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "remote prompt that exits",
+            Vec::new(),
+        )
+        .expect("prompt should start")
+    else {
+        panic!("prompt should be active");
+    };
+    let termination = crate::provider::ProviderRunTermination::process_exit(137, 9_999);
+
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-exited",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![RelayProjectedCompletion {
+                message_id: "provider-exit-1".to_string(),
+                completed_at_ms: 9_999,
+                home_prompt_id: Some(prompt.id().to_string()),
+                provider_termination: Some(termination.clone()),
+            }],
+        )
+        .expect("termination projection should settle");
+
+    assert_eq!(
+        app.agents()
+            .get_agent(agent.id())
+            .expect("agent should remain projected")
+            .state(),
+        crate::agent::AgentState::Error,
+    );
+    let completed = app
+        .completed_git_turn_snapshot_store()
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("failed remote turn should remain projected");
+    assert_eq!(
+        completed.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+    );
+    assert_eq!(completed.provider_termination, Some(termination));
+}
+
+#[test]
 fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -518,6 +588,7 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         message_id: "assistant-msg-1".to_string(),
         completed_at_ms: 1234,
         home_prompt_id: Some(first.id().to_string()),
+        provider_termination: None,
     };
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
@@ -615,6 +686,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                 message_id: "prior-native-completion".to_string(),
                 completed_at_ms: 1234,
                 home_prompt_id: None,
+                provider_termination: None,
             }],
         )
         .expect("unscoped native completion should be ignored");
@@ -642,6 +714,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                 message_id: "current-home-completion".to_string(),
                 completed_at_ms: 5678,
                 home_prompt_id: Some(prompt.id().to_string()),
+                provider_termination: None,
             }],
         )
         .expect("scoped home completion should settle the prompt");
@@ -672,6 +745,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                 message_id: "native-completion".to_string(),
                 completed_at_ms: 6789,
                 home_prompt_id: None,
+                provider_termination: None,
             }],
         )
         .expect("unscoped completion should settle a native-origin prompt");

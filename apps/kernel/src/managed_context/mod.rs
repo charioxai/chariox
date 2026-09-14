@@ -1,6 +1,7 @@
 pub(crate) mod cloud_completion;
 pub mod development;
 pub(crate) mod empty;
+pub(crate) mod git_credential_enrollment;
 pub mod kernel;
 pub(crate) mod outbound;
 pub(crate) mod outbound_service;

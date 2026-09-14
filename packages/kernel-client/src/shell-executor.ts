@@ -22,7 +22,7 @@ import {
 } from "./shell-remote-command.js"
 import { executeSessionCommand } from "./shell-session-command.js"
 import { executeCloudCommand } from "./shell-cloud-command.js"
-import { executeSliceCommand } from "./shell-slice-command.js"
+import { executeSliceCommand, type ShellSliceCommandDeps } from "./shell-slice-command.js"
 import { executePromptCommand } from "./shell-prompt-command.js"
 import { executeProviderCommand } from "./shell-provider-command.js"
 import { executeKernelCommand } from "./shell-kernel-command.js"
@@ -41,7 +41,7 @@ export type ShellExecutorDeps = ShellPlacementDeps & {
   client: ShellKernelClient
   clientId?: string | undefined
   readSecret?: ((prompt: string) => Promise<string>) | undefined
-}
+} & Pick<ShellSliceCommandDeps, "openRoomViewer">
 
 export async function executeShellCommand(
   parsed: ParsedShellCommand,

@@ -5,11 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use crate::error::DaemonError;
 use crate::local::{WorkspaceRepoFileEntry, WorkspaceRepoFileListing};
 use crate::runtime::workspace_git_changes::workspace_git_file_changes;
-use crate::runtime::workspace_git_common::{
-    detect_git_branch, resolve_repo_root, workspace_default_compare_ref,
-};
+use crate::runtime::workspace_git_common::{detect_git_branch, workspace_default_compare_ref};
 
-use super::shared::current_unix_ms;
+use super::shared::{contained_directory, current_unix_ms, file_error, workspace_file_root};
 
 pub(crate) fn list_workspace_repo_files(
     workspace_id: &str,
@@ -25,7 +23,10 @@ pub(crate) fn list_workspace_repo_files(
             message: "worktree_id is required".to_string(),
         });
     }
-    let repo_root = resolve_repo_root(worktree_path)?;
+    let (repo_root, has_git) = workspace_file_root(worktree_path)?;
+    if !has_git {
+        return list_directory_files(workspace_id, worktree_id, &repo_root, path_prefix, limit);
+    }
     let repo_root_string = repo_root.display().to_string();
     let prefix = normalize_repo_file_prefix(path_prefix.unwrap_or_default());
     let branch = detect_git_branch(worktree_path).ok();
@@ -111,6 +112,74 @@ pub(crate) fn list_workspace_repo_files(
         total_entries: total_entries.min(u32::MAX as usize) as u32,
         truncated,
         entries,
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+fn list_directory_files(
+    workspace_id: &str,
+    worktree_id: &str,
+    root: &std::path::Path,
+    path_prefix: Option<&str>,
+    limit: Option<u32>,
+) -> Result<WorkspaceRepoFileListing, DaemonError> {
+    // Validate before normalization so an absolute path is not silently made relative.
+    let raw_prefix = path_prefix.unwrap_or_default().trim();
+    let directory = contained_directory(root, raw_prefix)?;
+    let prefix = normalize_repo_file_prefix(raw_prefix);
+    let limit = limit.unwrap_or(400).clamp(1, 1000) as usize;
+    let mut total_entries = 0_u32;
+    let mut entries = BTreeMap::new();
+    for item in std::fs::read_dir(directory).map_err(file_error)? {
+        let item = item.map_err(file_error)?;
+        let name = item.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == ".git" {
+            continue;
+        }
+        let resolved = match std::fs::canonicalize(item.path()) {
+            Ok(path) if path.starts_with(root) => path,
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(file_error(error)),
+        };
+        let metadata = std::fs::metadata(resolved).map_err(file_error)?;
+        if !metadata.is_dir() && !metadata.is_file() {
+            continue;
+        }
+        let entry = WorkspaceRepoFileEntry {
+            path: if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            },
+            name: name.to_string(),
+            kind: if metadata.is_dir() {
+                "directory"
+            } else {
+                "file"
+            }
+            .to_string(),
+            changed: false,
+            status: None,
+            additions: 0,
+            deletions: 0,
+        };
+        total_entries = total_entries.saturating_add(1);
+        entries.insert((!metadata.is_dir(), name.to_string()), entry);
+        // Keep memory bounded while retaining deterministic directory-first ordering.
+        if entries.len() > limit {
+            entries.pop_last();
+        }
+    }
+    Ok(WorkspaceRepoFileListing {
+        workspace_id: workspace_id.to_string(),
+        worktree_id: worktree_id.to_string(),
+        path_prefix: prefix,
+        compare_ref: String::new(),
+        total_entries,
+        truncated: total_entries as usize > entries.len(),
+        entries: entries.into_values().collect(),
         generated_at_ms: current_unix_ms(),
     })
 }

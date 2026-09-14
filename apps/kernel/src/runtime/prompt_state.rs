@@ -319,8 +319,18 @@ impl PromptStateOwner {
     pub(crate) fn submit_prepared_prompt(
         &self,
         session: &RuntimeSession,
+        prompt: PromptQueueItem,
+        force_queue: bool,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.submit_prepared_prompt_with_queue_policy(session, prompt, force_queue, true)
+    }
+
+    pub(crate) fn submit_prepared_prompt_with_queue_policy(
+        &self,
+        session: &RuntimeSession,
         mut prompt: PromptQueueItem,
         force_queue: bool,
+        allow_queue: bool,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
         let mut owner = self
@@ -356,6 +366,12 @@ impl PromptStateOwner {
             state.active_prompt = Some(prompt.clone());
             Ok(PromptSubmissionOutcome::Started { prompt })
         } else {
+            if !allow_queue {
+                return Err(DaemonError::LocalTransport {
+                    operation: "send agent message",
+                    message: "target agent is busy; retry when its provider is ready".to_string(),
+                });
+            }
             let pending_prompt_id = owner.next_pending_prompt_id();
             let state = owner.ensure_agent_state(session, &agent_id);
             if state.queued_prompts.len() >= PROMPT_QUEUE_LIMIT {
@@ -1139,6 +1155,51 @@ impl PromptStateOwnerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_queue_admission_rejects_a_busy_target_without_mutation() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-direct-message",
+            None,
+            "workspace-direct-message",
+            "worktree-direct-message",
+            "machine-direct-message",
+            "daemon-direct-message",
+        );
+        let active = PromptQueueItem::new(
+            "active-prompt",
+            "attachment-1",
+            "agent-1",
+            "active task",
+            PromptStatus::Queued,
+        );
+        assert!(matches!(
+            owner
+                .submit_prepared_prompt(&session, active, false)
+                .expect("first prompt should start"),
+            PromptSubmissionOutcome::Started { .. }
+        ));
+
+        let message = PromptQueueItem::new(
+            "agent-message",
+            "attachment-2",
+            "agent-1",
+            "new information",
+            PromptStatus::Queued,
+        );
+        assert!(owner
+            .submit_prepared_prompt_with_queue_policy(&session, message, false, false)
+            .is_err());
+        assert_eq!(owner.queued_prompt_count_for_agent(&session, "agent-1"), 0);
+        assert_eq!(
+            owner
+                .active_prompt_for_agent(&session, "agent-1")
+                .expect("first prompt should remain active")
+                .id(),
+            "active-prompt"
+        );
+    }
 
     #[test]
     fn submit_prepared_prompt_rejects_queue_overflow() {

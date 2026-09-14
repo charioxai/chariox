@@ -2,10 +2,7 @@ use crate::agent::RemoteAgentBinding;
 use crate::app::{DaemonApp, KernelRemotePromptDispatch};
 use crate::error::DaemonError;
 use crate::session::{PromptCancellation, PromptCompletion, PromptQueueItem};
-use crate::transport::relay_client::{
-    send_peer_request_via_temporary_connection,
-    send_peer_request_via_temporary_connection_with_timeout,
-};
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
@@ -208,8 +205,9 @@ impl<'a> KernelAgentService<'a> {
         let (required_mcps, required_skills, remote_extension_manifest) =
             self.app.remote_prompt_capabilities_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
-        let result = match self.app.block_on_relay_future(
-            send_peer_request_via_temporary_connection_with_timeout(
+        let result = match self
+            .app
+            .send_remote_prompt_peer_request_with_credential_retry(
                 &relay_config,
                 ClientTarget {
                     daemon_id: Some(dispatch.worker_kernel_id.clone()),
@@ -227,10 +225,10 @@ impl<'a> KernelAgentService<'a> {
                     required_mcps,
                     required_skills,
                     remote_extension_manifest,
+                    provider_launch_credential: None,
                 },
-                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-            ),
-        ) {
+                &agent,
+            ) {
             Ok(RelayPeerResponse::LeasedPromptSubmitted {
                 provider_run_id, ..
             }) => Ok(provider_run_id),
@@ -276,10 +274,11 @@ impl<'a> KernelAgentService<'a> {
                         leased_agent_id: remote_execution.leased_agent_id.clone(),
                     },
                 ));
-        let remote_provider_run_id = match completion_response {
+        let (remote_provider_run_id, provider_termination) = match completion_response {
             Ok(response) => match response {
                 RelayPeerResponse::LeasedPromptCompleted {
                     provider_run_id,
+                    provider_termination,
                     git_observations,
                     workspace_live_sync_change,
                     ..
@@ -294,7 +293,7 @@ impl<'a> KernelAgentService<'a> {
                             Some(&remote_execution.worker_kernel_id),
                         );
                     }
-                    provider_run_id
+                    (provider_run_id, provider_termination)
                 }
                 other => {
                     return Err(DaemonError::LocalTransport {
@@ -315,7 +314,7 @@ impl<'a> KernelAgentService<'a> {
                         "error": error.to_string(),
                     }),
                 );
-                None
+                (None, None)
             }
             Err(error) => return Err(error),
         };
@@ -326,6 +325,11 @@ impl<'a> KernelAgentService<'a> {
             .app
             .agents()
             .set_remote_execution_active_worker_provider_run_id(&agent_id, None)?;
+        let settlement_status = if provider_termination.is_some() {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        };
         Ok(KernelPromptOwnerCompletion {
             session_id,
             agent_id,
@@ -334,7 +338,8 @@ impl<'a> KernelAgentService<'a> {
             remote_execution: Some(remote_execution),
             remote_provider_run_id,
             next_queued_prompt,
-            settlement_status: crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            settlement_status,
+            provider_termination,
         })
     }
 
@@ -342,6 +347,12 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         completion: KernelPromptOwnerCompletion,
     ) -> Result<PromptCompletion, DaemonError> {
+        if completion.provider_termination.is_some() {
+            let _ = self
+                .app
+                .agents()
+                .mark_unexpected_provider_exit_error(&completion.agent_id, true);
+        }
         let remote_provider_run_id = remote_completion_provider_run_id(
             completion.remote_execution.as_ref(),
             completion.remote_provider_run_id.as_deref(),
@@ -366,7 +377,7 @@ impl<'a> KernelAgentService<'a> {
             );
         self.app
             .completed_git_turn_snapshot_store()
-            .record_prompt_settlement(
+            .record_prompt_settlement_with_termination(
                 &completion.session_id,
                 &completion.agent_id,
                 &remote_provider_run_id,
@@ -374,6 +385,7 @@ impl<'a> KernelAgentService<'a> {
                 settled_at_ms,
                 started_at_ms,
                 completion.settlement_status,
+                completion.provider_termination.clone(),
             );
         let recipient_attachment_ids = self
             .app
@@ -486,8 +498,9 @@ impl<'a> KernelAgentService<'a> {
             let (required_mcps, required_skills, remote_extension_manifest) =
                 self.app.remote_prompt_capabilities_for_agent(&agent)?;
             let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
-            let response = self.app.block_on_relay_future(
-                send_peer_request_via_temporary_connection_with_timeout(
+            let response = self
+                .app
+                .send_remote_prompt_peer_request_with_credential_retry(
                     &relay_config,
                     ClientTarget {
                         daemon_id: Some(worker_kernel_id.to_string()),
@@ -522,10 +535,10 @@ impl<'a> KernelAgentService<'a> {
                         required_mcps,
                         required_skills,
                         remote_extension_manifest,
+                        provider_launch_credential: None,
                     },
-                    crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-                ),
-            );
+                    &agent,
+                );
             let remote_provider_run_id = match response {
                 Ok(RelayPeerResponse::LeasedPromptSubmitted {
                     provider_run_id, ..
