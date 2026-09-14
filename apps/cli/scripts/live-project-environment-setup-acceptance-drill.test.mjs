@@ -6,20 +6,23 @@ import path from 'node:path'
 
 import {
   DEFAULT_ACCOUNT_PROFILE,
+  DEFAULT_CLOUD_ALLOCATION_GET_TIMEOUT_MS,
   DEFAULT_EFFORT,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   PROJECT_ENVIRONMENT_SETUP_MINIMUM_PROTOCOL,
   assertProviderLaunchAfterReady,
+  buildDisposableWorkerAllocationPath,
   buildProjectEnvironmentSetupRequestInput,
   buildProjectEnvironmentSetupRequests,
   classifyProjectEnvironmentSetupCapabilityProbeError,
+  fetchDisposableWorkerAllocation,
   isUnknownRequestVariant,
   parseProjectEnvironmentSetupArguments,
   runProjectEnvironmentSetupAcceptance,
   selectApprovedPath1Worker,
   validateCreatedRemoteSession,
-  validateManagedPath1Environment,
+  validatePath1DisposableWorkerAllocation,
   validateProjectEnvironmentSetupOptions,
   validateReadyProjectEnvironmentSetup,
   validateSelectedProject,
@@ -39,9 +42,11 @@ function options(overrides = {}) {
     localAuthToken: null,
     homeDaemonId: null,
     homeDaemonAlias: null,
+    homeKernelId: 'home-kernel-path1',
     workerMachineId: 'machine-path1',
     workerKernelId: 'kernel-path1',
-    managedEnvironmentId: 'environment-path1',
+    disposableWorkerAllocationId: 'allocation-path1',
+    expectedRuntimeReleaseDigest: `sha256:${'a'.repeat(64)}`,
     projectId: 'project-selected',
     workspaceId: 'workspace-selected',
     worktreeId: 'worktree-selected',
@@ -58,6 +63,23 @@ function options(overrides = {}) {
     reportPath: null,
     allowTerminalBeforeCancel: false,
     help: false,
+    ...overrides,
+  }
+}
+
+function allocationFixture(options, overrides = {}) {
+  return {
+    allocationId: options.disposableWorkerAllocationId,
+    homeKernelId: options.homeKernelId,
+    homeRelayRealmId: 'realm-path1',
+    runtimeMachineId: options.workerMachineId,
+    runtimeKernelId: options.workerKernelId,
+    desiredState: 'running',
+    observedState: 'ready',
+    desiredRevision: 7,
+    observedRevision: 7,
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    runtimeReleaseDigest: options.expectedRuntimeReleaseDigest,
     ...overrides,
   }
 }
@@ -133,6 +155,7 @@ function makeOrchestrationModules(
 ) {
   let clientInstance = null
   const calls = []
+  const allocationLookups = []
   const statuses = [...statusSequence]
   let operationId = 'operation-live-test'
   let projectListCount = 0
@@ -180,7 +203,7 @@ function makeOrchestrationModules(
   const requests = {
     listRemoteMachinesRequest: () => request('ListRemoteMachines', null),
     listRemoteMachineKernelsRequest: (machineRef) => request('ListRemoteMachineKernels', { machine_ref: machineRef }),
-    getManagedEnvironmentRequest: (environmentId) => request('GetManagedEnvironment', { environmentId }),
+    relayStatusRequest: () => request('RelayStatus', null),
     listProjectsRequest: (includeArchived = false) => request('ListProjects', { include_archived: includeArchived }),
     createSessionRequest: (workspaceId, worktreeId, alias, defaults, sliceRef, liveSync, kernelRef, placement, projectSelection) => request('CreateSession', {
       workspace_id: workspaceId,
@@ -284,15 +307,17 @@ function makeOrchestrationModules(
       if (variant === 'ListRemoteMachineKernels') {
         return { RemoteMachineKernelsListed: { machine_ref: options.workerMachineId, kernels: [workerFixture().kernel] } }
       }
-      if (variant === 'GetManagedEnvironment') {
-        return { ManagedEnvironment: { environment: {
-          environmentId: options.managedEnvironmentId,
-          desiredState: 'running',
-          observedState: 'ready',
-          runtimeMachineId: options.workerMachineId,
-          runtimeKernelId: options.workerKernelId,
-          runtimeReleaseDigest: 'sha256:path1-runtime-live-test',
-        } } }
+      if (variant === 'RelayStatus') return {
+        RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          relay_url: 'wss://relay.example',
+          relay_token_configured: true,
+          daemon_id: options.homeKernelId,
+          daemon_alias: 'home-path1',
+          machine_id: 'home-machine-path1',
+          machine_alias: 'home-machine-path1',
+        } },
       }
       if (variant === 'ListProjects') {
         projectListCount += 1
@@ -353,8 +378,19 @@ function makeOrchestrationModules(
   }
 
   return {
-    modules: { LocalIpcClient: InjectedPublicKernelClient, requests },
-    inspect: () => ({ calls, client: clientInstance }),
+    modules: {
+      LocalIpcClient: InjectedPublicKernelClient,
+      requests,
+      cloud: {
+        accountId: 'account-path1',
+        homeRelayRealmId: 'realm-path1',
+        getDisposableWorkerAllocation: async (allocationId) => {
+          allocationLookups.push(allocationId)
+          return allocationFixture(options)
+        },
+      },
+    },
+    inspect: () => ({ calls, client: clientInstance, allocationLookups }),
   }
 }
 
@@ -373,7 +409,9 @@ test('strict inputs preserve selected identities and use Luna max defaults', () 
     '--kernel-url', 'wss://home.example/kernel',
     '--worker-machine-id', 'machine-path1',
     '--worker-kernel-id', 'kernel-path1',
-    '--managed-environment-id', 'environment-path1',
+    '--home-kernel-id', 'home-kernel-path1',
+    '--disposable-worker-allocation-id', 'allocation-path1',
+    '--expected-runtime-release-digest', `sha256:${'a'.repeat(64)}`,
     '--project-id', 'project-selected',
     '--workspace-id', 'workspace-selected',
     '--worktree-id', 'worktree-selected',
@@ -386,10 +424,15 @@ test('strict inputs preserve selected identities and use Luna max defaults', () 
   assert.equal(DEFAULT_MODEL, 'gpt-5.6-luna')
   assert.equal(parsed.model, DEFAULT_MODEL)
   assert.equal(parsed.effort, DEFAULT_EFFORT)
+  assert.equal(parsed.expectedRuntimeReleaseDigest, `sha256:${'a'.repeat(64)}`)
   assert.deepEqual(parsed.validationCommands, ['rustc --version'])
   assert.throws(
     () => validateProjectEnvironmentSetupOptions({ ...parsed, workerKernelId: null }),
     /--worker-kernel-id is required/,
+  )
+  assert.throws(
+    () => validateProjectEnvironmentSetupOptions({ ...parsed, expectedRuntimeReleaseDigest: 'sha256:short' }),
+    /--expected-runtime-release-digest must be sha256/,
   )
 })
 
@@ -431,32 +474,120 @@ test('setup request plan calls the official builders without supplying a definit
   })
 })
 
-test('worker and managed environment checks require the exact approved Path1 target and revision', () => {
+test('disposable-worker allocation proof requires exact Path1 identities, revisions, expiry, and release identity', () => {
   const input = options()
   const worker = selectApprovedPath1Worker(
     [workerFixture().machine],
     [workerFixture().kernel],
     input,
   )
-  const environment = validateManagedPath1Environment({
-    environmentId: 'environment-path1',
-    desiredState: 'running',
-    observedState: 'ready',
-    runtimeMachineId: 'machine-path1',
-    runtimeKernelId: 'kernel-path1',
-    runtimeReleaseDigest: 'sha256:path1-release',
-  }, input, worker)
-  assert.equal(environment.runtimeReleaseDigest, 'sha256:path1-release')
+  const allocation = validatePath1DisposableWorkerAllocation(allocationFixture(input), input, worker, {
+    homeKernelId: input.homeKernelId,
+    homeRelayRealmId: 'realm-path1',
+    nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+  })
+  assert.equal(allocation.runtimeReleaseDigest, `sha256:${'a'.repeat(64)}`)
+  assert.equal(allocation.allocationId, 'allocation-path1')
   assert.throws(
-    () => validateManagedPath1Environment({
-      environmentId: 'environment-path1',
-      desiredState: 'running',
-      observedState: 'ready',
-      runtimeMachineId: 'machine-path1',
-      runtimeKernelId: 'kernel-other',
-      runtimeReleaseDigest: 'sha256:path1-release',
-    }, input, worker),
-    /does not match kernel-path1/,
+    () => validatePath1DisposableWorkerAllocation(null, input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /allocation-path1 was not returned/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { allocationId: 'allocation-other' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /allocation-path1 was not returned/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { homeKernelId: 'home-other' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /allocation home kernel home-other does not match connected home kernel home-kernel-path1/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { homeRelayRealmId: 'realm-other' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /allocation home relay realm realm-other does not match authenticated Cloud realm realm-path1/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { runtimeMachineId: 'machine-other' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /runtime machine machine-other does not match machine-path1/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { runtimeKernelId: 'kernel-other' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /runtime kernel kernel-other does not match kernel-path1/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { desiredRevision: 8 }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /revisions do not match/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { expiresAt: '2020-01-01T00:00:00.000Z' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /expired/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { runtimeReleaseDigest: 'sha256:not-a-digest' }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /release identity is not an exact sha256 digest/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, {
+      runtimeReleaseDigest: `sha256:${'b'.repeat(64)}`,
+    }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /allocation release identity does not match the expected allocation release identity/,
+  )
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, { runtimeReleaseDigest: undefined }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /release identity is not an exact sha256 digest/,
+  )
+  assert.equal(buildDisposableWorkerAllocationPath('allocation/path1', 'account/path1'), '/disposable-workers/allocation%2Fpath1?accountId=account%2Fpath1')
+  assert.throws(
+    () => validatePath1DisposableWorkerAllocation(allocationFixture(input, {
+      observedState: 'provisioning',
+    }), input, worker, {
+      homeKernelId: input.homeKernelId,
+      homeRelayRealmId: 'realm-path1',
+      nowMs: Date.parse('2026-01-01T00:00:00.000Z'),
+    }),
+    /not ready\/running/,
   )
   assert.throws(
     () => selectApprovedPath1Worker(
@@ -638,7 +769,7 @@ test('injected orchestration polls requested, exercises cancel/retry, and launch
     inspect = fixture.inspect
     return runProjectEnvironmentSetupAcceptance(runOptions, fixture.modules)
   })
-  const { calls, client } = inspect()
+  const { calls, client, allocationLookups } = inspect()
   const variants = calls.map((entry) => entry.variant)
   const startIndex = variants.indexOf('StartProjectEnvironmentSetup')
   const cancelIndex = variants.indexOf('CancelProjectEnvironmentSetup')
@@ -664,7 +795,18 @@ test('injected orchestration polls requested, exercises cancel/retry, and launch
   assert.equal(report.setup.definition.origin, 'utility_generated')
   assert.equal(report.worker.machineId, 'machine-path1')
   assert.equal(report.worker.kernelId, 'kernel-path1')
-  assert.equal(report.worker.runtimeReleaseDigest, 'sha256:path1-runtime-live-test')
+  assert.equal(report.worker.disposableWorkerAllocationId, 'allocation-path1')
+  assert.equal(report.worker.homeKernelId, 'home-kernel-path1')
+  assert.equal(report.worker.homeRelayRealmId, 'realm-path1')
+  assert.equal(report.worker.desiredRevision, 7)
+  assert.equal(report.worker.observedRevision, 7)
+  assert.equal(report.worker.observedState, 'ready')
+  assert.equal(report.worker.desiredState, 'running')
+  assert.equal(report.worker.expiresAt, '2099-01-01T00:00:00.000Z')
+  assert.deepEqual(report.worker.allocationReleaseIdentity, {
+    expectedRuntimeReleaseDigest: `sha256:${'a'.repeat(64)}`,
+    observedRuntimeReleaseDigest: `sha256:${'a'.repeat(64)}`,
+  })
   assert.equal(report.options.provider, 'codex')
   assert.equal(report.options.accountProfile, 'codex-1')
   assert.equal(report.options.model, 'gpt-5.6-luna')
@@ -707,6 +849,46 @@ test('injected orchestration polls requested, exercises cancel/retry, and launch
   assert.equal(client.subscribeCount, 1)
   assert.equal(client.unsubscribeCount, 1)
   assert.equal(client.handlers.size, 0)
+  assert.deepEqual(allocationLookups, ['allocation-path1'])
+})
+
+test('Cloud allocation GET uses account scope, bearer auth, timeout, and redirect rejection without leaking auth errors', async () => {
+  const profile = {
+    apiUrl: 'https://cloud.example.test/',
+    accountId: 'account/path1',
+    realmId: 'realm-path1',
+    cloudSessionToken: 'synthetic-cloud-session-token',
+  }
+  let requestUrl = null
+  let requestInit = null
+  const body = allocationFixture(options())
+  const result = await fetchDisposableWorkerAllocation(
+    profile,
+    'allocation/path1',
+    async (url, init) => {
+      requestUrl = url
+      requestInit = init
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  )
+  assert.deepEqual(result, body)
+  assert.equal(requestUrl, 'https://cloud.example.test/disposable-workers/allocation%2Fpath1?accountId=account%2Fpath1')
+  assert.equal(requestInit.redirect, 'error')
+  assert.ok(requestInit.signal instanceof AbortSignal)
+  assert.equal(requestInit.signal.aborted, false)
+  assert.equal(new Headers(requestInit.headers).get('authorization'), 'Bearer synthetic-cloud-session-token')
+  assert.equal(DEFAULT_CLOUD_ALLOCATION_GET_TIMEOUT_MS, 30_000)
+  await assert.rejects(
+    () => fetchDisposableWorkerAllocation(
+      profile,
+      'allocation/path1',
+      async () => { throw Object.assign(new Error('token should not escape'), { name: 'AbortError' }) },
+    ),
+    /timed out/,
+  )
 })
 
 test('cleanup failure makes the injected orchestration report failed and non-live', async () => {

@@ -12,6 +12,8 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 
 export const PROJECT_ENVIRONMENT_SETUP_MINIMUM_PROTOCOL = 326
 export const PROJECT_ENVIRONMENT_SETUP_RELAY_PEER_MINIMUM_PROTOCOL = 51
+export const DISPOSABLE_WORKER_RELEASE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/
+export const DEFAULT_CLOUD_ALLOCATION_GET_TIMEOUT_MS = 30_000
 export const DEFAULT_PROVIDER = 'codex'
 export const DEFAULT_ACCOUNT_PROFILE = 'codex-1'
 export const DEFAULT_MODEL = 'gpt-5.6-luna'
@@ -46,9 +48,11 @@ export function parseProjectEnvironmentSetupArguments(argv, environment = proces
     localAuthToken: environment.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN?.trim() || null,
     homeDaemonId: environment.CHARIOX_HOME_DAEMON_ID?.trim() || null,
     homeDaemonAlias: environment.CHARIOX_HOME_DAEMON_ALIAS?.trim() || null,
+    homeKernelId: environment.CHARIOX_PATH1_HOME_KERNEL_ID?.trim() || null,
     workerMachineId: environment.CHARIOX_PATH1_WORKER_MACHINE_ID?.trim() || null,
     workerKernelId: environment.CHARIOX_PATH1_WORKER_KERNEL_ID?.trim() || null,
-    managedEnvironmentId: environment.CHARIOX_PATH1_MANAGED_ENVIRONMENT_ID?.trim() || null,
+    disposableWorkerAllocationId: environment.CHARIOX_PATH1_DISPOSABLE_WORKER_ALLOCATION_ID?.trim() || null,
+    expectedRuntimeReleaseDigest: environment.CHARIOX_PATH1_EXPECTED_RUNTIME_RELEASE_DIGEST?.trim() || null,
     projectId: environment.CHARIOX_PROJECT_ID?.trim() || null,
     workspaceId: environment.CHARIOX_WORKSPACE_ID?.trim() || null,
     worktreeId: environment.CHARIOX_WORKTREE_ID?.trim() || null,
@@ -85,9 +89,11 @@ export function parseProjectEnvironmentSetupArguments(argv, environment = proces
     else if (arg === '--relay-token') options.relayToken = valueAfter(argv, index, arg), index += 1
     else if (arg === '--home-daemon-id' || arg === '--target-daemon-id') options.homeDaemonId = valueAfter(argv, index, arg), index += 1
     else if (arg === '--home-daemon-alias' || arg === '--target-daemon-alias') options.homeDaemonAlias = valueAfter(argv, index, arg), index += 1
+    else if (arg === '--home-kernel-id') options.homeKernelId = valueAfter(argv, index, arg), index += 1
     else if (arg === '--worker-machine-id') options.workerMachineId = valueAfter(argv, index, arg), index += 1
     else if (arg === '--worker-kernel-id') options.workerKernelId = valueAfter(argv, index, arg), index += 1
-    else if (arg === '--managed-environment-id') options.managedEnvironmentId = valueAfter(argv, index, arg), index += 1
+    else if (arg === '--disposable-worker-allocation-id') options.disposableWorkerAllocationId = valueAfter(argv, index, arg), index += 1
+    else if (arg === '--expected-runtime-release-digest') options.expectedRuntimeReleaseDigest = valueAfter(argv, index, arg), index += 1
     else if (arg === '--project-id') options.projectId = valueAfter(argv, index, arg), index += 1
     else if (arg === '--workspace-id') options.workspaceId = valueAfter(argv, index, arg), index += 1
     else if (arg === '--worktree-id') options.worktreeId = valueAfter(argv, index, arg), index += 1
@@ -122,9 +128,11 @@ export function validateProjectEnvironmentSetupOptions(options) {
     throw new Error('--relay-url requires a relay token and --home-daemon-id or --home-daemon-alias')
   }
   const required = [
+    ['--home-kernel-id', options.homeKernelId],
     ['--worker-machine-id', options.workerMachineId],
     ['--worker-kernel-id', options.workerKernelId],
-    ['--managed-environment-id', options.managedEnvironmentId],
+    ['--disposable-worker-allocation-id', options.disposableWorkerAllocationId],
+    ['--expected-runtime-release-digest', options.expectedRuntimeReleaseDigest],
     ['--project-id', options.projectId],
     ['--workspace-id', options.workspaceId],
     ['--worktree-id', options.worktreeId],
@@ -143,6 +151,9 @@ export function validateProjectEnvironmentSetupOptions(options) {
     if (!value?.trim()) throw new Error(`${flag} must not be empty`)
   }
   if (options.provider === 'dev-stub') throw new Error('live project setup acceptance requires an official provider, not dev-stub')
+  if (!DISPOSABLE_WORKER_RELEASE_DIGEST_PATTERN.test(options.expectedRuntimeReleaseDigest || '')) {
+    throw new Error('--expected-runtime-release-digest must be sha256: followed by 64 lowercase hexadecimal characters')
+  }
   if (options.validationCommands.length === 0) {
     throw new Error('at least one --validation-command is required; validation counts may not be fabricated')
   }
@@ -173,8 +184,10 @@ export function printProjectEnvironmentSetupHelp() {
     '  CHARIOX_RELAY_TOKEN supplies the relay credential without putting it in shell history',
     '',
     'Target identity (all are required):',
+    '  --home-kernel-id HOME_KERNEL_ID',
     '  --worker-machine-id MACHINE_ID --worker-kernel-id KERNEL_ID',
-    '  --managed-environment-id ENVIRONMENT_ID --project-id PROJECT_ID',
+    '  --disposable-worker-allocation-id ALLOCATION_ID --project-id PROJECT_ID',
+    '  --expected-runtime-release-digest sha256: plus 64 lowercase hexadecimal characters',
     '  --workspace-id WORKSPACE_ID --worktree-id WORKTREE_ID',
     '  --target-platform linux-x86_64',
     '',
@@ -255,6 +268,16 @@ export function buildProjectEnvironmentSetupRequests(requests, input) {
   }
 }
 
+export function buildDisposableWorkerAllocationPath(allocationId, accountId) {
+  if (typeof allocationId !== 'string' || !allocationId.trim()) {
+    throw new Error('disposable worker allocation ID is required')
+  }
+  if (typeof accountId !== 'string' || !accountId.trim()) {
+    throw new Error('Cloud account ID is required for the disposable worker allocation GET')
+  }
+  return `/disposable-workers/${encodeURIComponent(allocationId)}?accountId=${encodeURIComponent(accountId)}`
+}
+
 export function selectApprovedPath1Worker(machines, kernels, options) {
   const machine = (machines || []).find((candidate) => candidate.machine_id === options.workerMachineId)
   if (!machine) throw new Error(`selected worker machine ${options.workerMachineId} is absent from home inventory`)
@@ -280,23 +303,50 @@ export function selectApprovedPath1Worker(machines, kernels, options) {
   return { machine, kernel, account }
 }
 
-export function validateManagedPath1Environment(environment, options, worker) {
-  if (!environment || environment.environmentId !== options.managedEnvironmentId) {
-    throw new Error(`managed environment ${options.managedEnvironmentId} was not returned by the selected home kernel`)
+export function validatePath1DisposableWorkerAllocation(allocation, options, worker, homeIdentity = {}) {
+  if (!homeIdentity.homeKernelId?.trim() || !homeIdentity.homeRelayRealmId?.trim()) {
+    throw new Error('allocation proof requires the connected home kernel and authenticated Cloud realm identities')
   }
-  if (environment.observedState !== 'ready' || environment.desiredState !== 'running') {
-    throw new Error(`managed environment ${options.managedEnvironmentId} is not ready/running`)
+  if (!allocation || allocation.allocationId !== options.disposableWorkerAllocationId) {
+    throw new Error(`disposable worker allocation ${options.disposableWorkerAllocationId} was not returned by the account-scoped Cloud GET`)
   }
-  if (environment.runtimeMachineId !== worker.machine.machine_id) {
-    throw new Error(`managed environment runtime machine ${environment.runtimeMachineId} does not match ${worker.machine.machine_id}`)
+  if (allocation.homeKernelId !== homeIdentity.homeKernelId) {
+    throw new Error(`allocation home kernel ${allocation.homeKernelId} does not match connected home kernel ${homeIdentity.homeKernelId}`)
   }
-  if (environment.runtimeKernelId !== worker.kernel.kernel_id) {
-    throw new Error(`managed environment runtime kernel ${environment.runtimeKernelId} does not match ${worker.kernel.kernel_id}`)
+  if (allocation.homeRelayRealmId !== homeIdentity.homeRelayRealmId) {
+    throw new Error(`allocation home relay realm ${allocation.homeRelayRealmId} does not match authenticated Cloud realm ${homeIdentity.homeRelayRealmId}`)
   }
-  if (!environment.runtimeReleaseDigest?.trim()) {
-    throw new Error('managed environment has no trusted runtime release digest; worker revision cannot be proven')
+  if (allocation.observedState !== 'ready' || allocation.desiredState !== 'running') {
+    throw new Error(`disposable worker allocation ${options.disposableWorkerAllocationId} is not ready/running`)
   }
-  return environment
+  if (!Number.isSafeInteger(allocation.desiredRevision)
+    || !Number.isSafeInteger(allocation.observedRevision)
+    || allocation.desiredRevision !== allocation.observedRevision) {
+    throw new Error(`disposable worker allocation ${options.disposableWorkerAllocationId} desired and observed revisions do not match`)
+  }
+  if (allocation.runtimeMachineId !== worker.machine.machine_id) {
+    throw new Error(`allocation runtime machine ${allocation.runtimeMachineId} does not match ${worker.machine.machine_id}`)
+  }
+  if (allocation.runtimeKernelId !== worker.kernel.kernel_id) {
+    throw new Error(`allocation runtime kernel ${allocation.runtimeKernelId} does not match ${worker.kernel.kernel_id}`)
+  }
+  const expiresAtMs = Date.parse(allocation.expiresAt)
+  const nowMs = homeIdentity.nowMs ?? Date.now()
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+    throw new Error(`disposable worker allocation ${options.disposableWorkerAllocationId} is expired or has an invalid expiry`)
+  }
+  if (typeof allocation.runtimeReleaseDigest !== 'string'
+    || !DISPOSABLE_WORKER_RELEASE_DIGEST_PATTERN.test(allocation.runtimeReleaseDigest)) {
+    throw new Error('allocation release identity is not an exact sha256 digest')
+  }
+  if (typeof options.expectedRuntimeReleaseDigest !== 'string'
+    || !DISPOSABLE_WORKER_RELEASE_DIGEST_PATTERN.test(options.expectedRuntimeReleaseDigest)) {
+    throw new Error('expected allocation release identity is not an exact sha256 digest')
+  }
+  if (allocation.runtimeReleaseDigest !== options.expectedRuntimeReleaseDigest) {
+    throw new Error('allocation release identity does not match the expected allocation release identity')
+  }
+  return allocation
 }
 
 export function validateSelectedProject(project, options) {
@@ -476,6 +526,72 @@ async function loadKernelClientModules() {
   return { LocalIpcClient, requests }
 }
 
+export async function fetchDisposableWorkerAllocation(
+  profile,
+  allocationId,
+  fetchImplementation = globalThis.fetch,
+  timeoutMs = DEFAULT_CLOUD_ALLOCATION_GET_TIMEOUT_MS,
+) {
+  if (!profile?.apiUrl?.trim() || !profile.accountId?.trim() || !profile.realmId?.trim()) {
+    throw new Error('authenticated Cloud profile is required for the disposable worker allocation GET')
+  }
+  if (!profile.cloudSessionToken?.trim()) {
+    throw new Error('authenticated Cloud session is required for the disposable worker allocation GET')
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('disposable worker allocation GET timeout must be a positive integer')
+  }
+  let response
+  try {
+    response = await fetchImplementation(
+      `${profile.apiUrl.trim().replace(/\/+$/, '')}${buildDisposableWorkerAllocationPath(allocationId, profile.accountId)}`,
+      {
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${profile.cloudSessionToken}`,
+        },
+        redirect: 'error',
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    )
+  } catch (error) {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+      throw new Error('Cloud disposable worker allocation GET timed out')
+    }
+    throw new Error('Cloud disposable worker allocation GET failed before a response')
+  }
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(`Cloud disposable worker allocation GET failed with HTTP ${response.status}`)
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('Cloud disposable worker allocation GET returned an invalid JSON object')
+  }
+  return body
+}
+
+async function loadCloudAllocationModules() {
+  const preferencesPath = path.join(cliRoot, 'dist', 'preferences.js')
+  try {
+    await access(preferencesPath)
+  } catch {
+    throw new Error(`live acceptance prerequisites are absent: built CLI preferences module ${preferencesPath}`)
+  }
+  const { loadPreferences, relayCloudProfile } = await import(pathToFileURL(preferencesPath).href)
+  const profile = relayCloudProfile(await loadPreferences())
+  if (!profile?.apiUrl?.trim() || !profile.accountId?.trim() || !profile.realmId?.trim()) {
+    throw new Error('live acceptance prerequisites are absent: the normal CLI Cloud profile is not linked')
+  }
+  if (!profile.cloudSessionToken?.trim()) {
+    throw new Error('live acceptance prerequisites are absent: the normal CLI Cloud profile is not authenticated')
+  }
+  return {
+    accountId: profile.accountId,
+    homeRelayRealmId: profile.realmId,
+    getDisposableWorkerAllocation: (allocationId) => fetchDisposableWorkerAllocation(profile, allocationId),
+  }
+}
+
 function setupCapabilityDiagnostic() {
   return {
     capability: 'Project environment setup',
@@ -633,9 +749,10 @@ function reportSafeOptions(options) {
     connection: options.relayUrl ? 'relay-to-home-kernel' : 'home-kernel',
     homeDaemonId: options.homeDaemonId,
     homeDaemonAlias: options.homeDaemonAlias,
+    homeKernelId: options.homeKernelId,
     workerMachineId: options.workerMachineId,
     workerKernelId: options.workerKernelId,
-    managedEnvironmentId: options.managedEnvironmentId,
+    disposableWorkerAllocationId: options.disposableWorkerAllocationId,
     projectId: options.projectId,
     workspaceId: options.workspaceId,
     worktreeId: options.worktreeId,
@@ -644,6 +761,7 @@ function reportSafeOptions(options) {
     accountProfile: options.accountProfile,
     model: options.model,
     effort: options.effort,
+    expectedRuntimeReleaseDigest: options.expectedRuntimeReleaseDigest,
     validationCommandCountRequested: options.validationCommands.length,
     promptSubmitted: false,
   }
@@ -776,9 +894,11 @@ export async function runProjectEnvironmentSetupAcceptance(options, modules = nu
   }
   let failure = null
   let requests = null
+  let cloud = null
   try {
     const loaded = modules || await loadKernelClientModules()
     requests = loaded.requests
+    cloud = loaded.cloud || await loadCloudAllocationModules()
     const endpoint = options.relayUrl || options.kernelUrl
     context.client = new loaded.LocalIpcClient(endpoint, options.relayUrl
       ? {
@@ -792,6 +912,14 @@ export async function runProjectEnvironmentSetupAcceptance(options, modules = nu
     }
 
     report.protocol.capability = await verifySetupCapability(context, requests)
+    const relayStatusResponse = await sendTracked(context, requests.relayStatusRequest())
+    const homeRelayStatus = requireResponseVariant(relayStatusResponse, ['RelayStatus'], 'RelayStatus').status
+    if (!homeRelayStatus?.daemon_id?.trim()) {
+      throw new Error('connected home kernel did not expose a public daemon identity')
+    }
+    if (homeRelayStatus.daemon_id !== options.homeKernelId) {
+      throw new Error(`connected home kernel ${homeRelayStatus.daemon_id} does not match selected ${options.homeKernelId}`)
+    }
     const machineResponse = await sendTracked(context, requests.listRemoteMachinesRequest())
     const machines = requireResponseVariant(machineResponse, ['RemoteMachinesListed'], 'ListRemoteMachines').machines
     const kernelResponse = await sendTracked(
@@ -800,18 +928,30 @@ export async function runProjectEnvironmentSetupAcceptance(options, modules = nu
     )
     const kernels = requireResponseVariant(kernelResponse, ['RemoteMachineKernelsListed'], 'ListRemoteMachineKernels').kernels
     const worker = selectApprovedPath1Worker(machines, kernels, options)
-    const managedResponse = await sendTracked(
-      context,
-      requests.getManagedEnvironmentRequest(options.managedEnvironmentId),
-    )
-    const managedEnvironment = requireResponseVariant(managedResponse, ['ManagedEnvironment'], 'GetManagedEnvironment').environment
-    validateManagedPath1Environment(managedEnvironment, options, worker)
+    const allocation = await cloud.getDisposableWorkerAllocation(options.disposableWorkerAllocationId)
+    validatePath1DisposableWorkerAllocation(allocation, options, worker, {
+      homeKernelId: homeRelayStatus.daemon_id,
+      homeRelayRealmId: cloud.homeRelayRealmId,
+    })
     report.worker = {
       machineId: worker.machine.machine_id,
       kernelId: worker.kernel.kernel_id,
       platform: options.targetPlatform,
-      runtimeReleaseDigest: managedEnvironment.runtimeReleaseDigest,
-      managedEnvironmentId: managedEnvironment.environmentId,
+      cloudAccountId: cloud.accountId,
+      disposableWorkerAllocationId: allocation.allocationId,
+      homeKernelId: allocation.homeKernelId,
+      homeRelayRealmId: allocation.homeRelayRealmId,
+      desiredState: allocation.desiredState,
+      observedState: allocation.observedState,
+      desiredRevision: allocation.desiredRevision,
+      observedRevision: allocation.observedRevision,
+      runtimeMachineId: allocation.runtimeMachineId,
+      runtimeKernelId: allocation.runtimeKernelId,
+      expiresAt: allocation.expiresAt,
+      allocationReleaseIdentity: {
+        expectedRuntimeReleaseDigest: options.expectedRuntimeReleaseDigest,
+        observedRuntimeReleaseDigest: allocation.runtimeReleaseDigest,
+      },
     }
 
     const initialProjectsResponse = await sendTracked(context, requests.listProjectsRequest(false))
