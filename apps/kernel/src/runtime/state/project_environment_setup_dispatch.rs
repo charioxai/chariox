@@ -95,6 +95,51 @@ pub(super) async fn retry_remote_setup(
     .await
 }
 
+pub(super) async fn refresh_remote_setup_binding_and_retry(
+    state: &KernelRuntimeState,
+    execution: &SetupExecution,
+    attempt: u32,
+) -> Result<(SetupExecution, RelayProjectEnvironmentSetupStatus), DaemonError> {
+    let stale_leased_agent_id = remote_leased_agent_id(execution)?;
+    let current_agent = state.owned.agent_store.get_agent(&execution.agent_id)?;
+    let current_binding = current_agent
+        .remote_execution()
+        .ok_or_else(|| setup_error("selected agent lost its remote worker binding"))?;
+    if current_binding.leased_agent_id != stale_leased_agent_id {
+        return Err(setup_error(
+            "remote setup binding changed before its stale lease could be refreshed",
+        ));
+    }
+    let agent_id = execution.agent_id.clone();
+    let rebound_agent = state
+        .with_app_side_effect_blocking(move |app| app.refresh_remote_agent_binding(&agent_id))
+        .await?;
+    let rebound_execution = rebound_agent
+        .remote_execution()
+        .ok_or_else(|| setup_error("agent lost its remote execution after binding refresh"))?;
+    if rebound_execution.worker_machine_id != execution.target_worker_id
+        || rebound_execution.worker_kernel_id.trim().is_empty()
+        || rebound_execution.execution_lease_id.trim().is_empty()
+        || rebound_execution.leased_agent_id.trim().is_empty()
+        || !rebound_execution.relay_peer_protocol_compatible()
+    {
+        return Err(setup_error(
+            "refreshed remote setup binding does not match the selected worker",
+        ));
+    }
+    let rebound_execution = state
+        .owned
+        .project_environment_setups
+        .rebind_remote_leased_agent(
+            &execution.operation_id,
+            attempt,
+            &stale_leased_agent_id,
+            rebound_execution.leased_agent_id.clone(),
+        )?;
+    let setup = retry_remote_setup(state, &rebound_execution).await?;
+    Ok((rebound_execution, setup))
+}
+
 fn remote_leased_agent_id(execution: &SetupExecution) -> Result<String, DaemonError> {
     execution
         .remote_leased_agent_id

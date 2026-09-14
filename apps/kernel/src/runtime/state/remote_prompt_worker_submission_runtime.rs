@@ -156,8 +156,9 @@ async fn refresh_remote_prompt_binding(
             "leased_agent_id": dispatch.leased_agent_id,
         }),
     );
+    let agent_id = dispatch.agent_id.clone();
     let agent = state
-        .with_app_side_effect(|app| app.refresh_remote_agent_binding(&dispatch.agent_id))
+        .with_app_side_effect_blocking(move |app| app.refresh_remote_agent_binding(&agent_id))
         .await?;
     let Some(remote_execution) = agent.remote_execution().cloned() else {
         return Err(DaemonError::LocalTransport {

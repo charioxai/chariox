@@ -72,6 +72,9 @@ const MAX_PROVIDER_FIXTURE_TRACE_ENTRIES: usize = 64;
 const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 
 #[cfg(unix)]
+const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
+
+#[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
@@ -452,6 +455,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some(home_relay_token.clone());
     config_home.relay_heartbeat_ms = 50;
+    config_home.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
 
     let mut config_worker = DaemonConfig::for_tests();
     let worker_relay_token = "setup-transport-recovery-worker-token".to_string();
@@ -460,6 +464,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     config_worker.relay_url = Some(relay_url.clone());
     config_worker.relay_token = Some(worker_relay_token.clone());
     config_worker.relay_heartbeat_ms = 50;
+    config_worker.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
     config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config_worker.accept_remote_leases = true;
     config_worker.remote_lease_capacity = Some(1);
@@ -645,7 +650,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     }
 
     let target_platform = actual_worker_platform();
-    let validation_command = "command -v sh".to_string();
+    let validation_command = "sleep 1; command -v sh".to_string();
     let definition = ProjectEnvironmentDefinition {
         schema_version: 1,
         origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
@@ -959,7 +964,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             state_worker,
             shutdown_worker_rx,
             relay_url.clone(),
-            worker_relay_token,
+            worker_relay_token.clone(),
         ),
     );
     for _ in 0..200 {
@@ -1019,12 +1024,18 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await,
         );
-        if matches!(
-            status.phase,
-            ProjectEnvironmentSetupPhase::Preparing
-                | ProjectEnvironmentSetupPhase::Validating
-                | ProjectEnvironmentSetupPhase::Ready
-        ) {
+        assert_eq!(
+            status.operation_id, dispatch_never_arrived_operation_id,
+            "authenticated redispatch must retain the requested operation identity"
+        );
+        assert_eq!(
+            status.attempt, 1,
+            "authenticated redispatch must retain the original operation attempt"
+        );
+        // Preparing and Validating still have a live worker task holding the
+        // runtime state. Wait for worker-authoritative Ready before replacing
+        // the worker so that task has returned and released its state owner.
+        if status.phase == ProjectEnvironmentSetupPhase::Ready {
             break status;
         }
         assert!(
@@ -1091,14 +1102,83 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     assert_eq!(worker_status.phase, ProjectEnvironmentSetupPhase::Ready);
     assert_eq!(worker_status.attempt, 1);
 
-    // Start a separate operation through an authenticated external worker
-    // fixture. Its first Get is worker-authoritative Cancelled, allowing the
-    // public Retry to advance the home's attempt to 2 without touching either
-    // kernel's private setup store.
+    // This is deliberately separate from the process-restart case below. A
+    // connector interruption leaves the worker process and its attempt-one
+    // record alive while home Retry advances the authoritative attempt to 2.
+    // Recovery must replay through the same authenticated binding after the
+    // connector returns; it must not accept a stale Ready/attempt-one record.
+    let reconnect_operation_id = "setup-retry-before-worker-reconnect";
+    let reconnect_start_request = StartProjectEnvironmentSetupRequest {
+        operation_id: reconnect_operation_id.to_string(),
+        ..start_request.clone()
+    };
+    let reconnect_started = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(reconnect_start_request),
+            "user-1",
+        )
+        .await
+        .expect("public connector-recovery Start should be accepted");
+    let reconnect_started_status = response_status(reconnect_started);
+    assert_eq!(reconnect_started_status.attempt, 1);
+    assert_eq!(
+        reconnect_started_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    let reconnect_active_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                reconnect_operation_id,
+                "user-1",
+                "worker acceptance before connector interruption",
+            )
+            .await,
+        );
+        assert_eq!(status.attempt, 1);
+        assert!(!matches!(
+            status.phase,
+            ProjectEnvironmentSetupPhase::Failed
+                | ProjectEnvironmentSetupPhase::Cancelled
+                | ProjectEnvironmentSetupPhase::Ready
+        ));
+        if matches!(
+            status.phase,
+            ProjectEnvironmentSetupPhase::Preparing | ProjectEnvironmentSetupPhase::Validating
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < reconnect_active_deadline,
+            "worker did not expose an active setup before connector interruption: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let reconnect_cancelled = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                CancelProjectEnvironmentSetupRequest {
+                    operation_id: reconnect_operation_id.to_string(),
+                    session_id: session_id.clone(),
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("public connector-recovery Cancel should be acknowledged by the worker");
+    let reconnect_cancelled_status = response_status(reconnect_cancelled);
+    assert_eq!(
+        reconnect_cancelled_status.phase,
+        ProjectEnvironmentSetupPhase::Cancelled
+    );
+    assert_eq!(reconnect_cancelled_status.attempt, 1);
+    assert!(reconnect_cancelled_status.retryable);
+
     let _ = shutdown_worker_tx.send(true);
     connector_worker
         .await
-        .expect("worker connector should stop before external restart");
+        .expect("worker connector should stop before connector-only Retry");
     let worker_disconnected = async {
         for _ in 0..200 {
             if registry
@@ -1116,13 +1196,455 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     .await;
     assert!(
         worker_disconnected,
-        "worker should be disconnected before external restart"
+        "worker connector should be absent before connector-only Retry"
+    );
+    let reconnect_retry = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
+                operation_id: reconnect_operation_id.to_string(),
+                session_id: session_id.clone(),
+            }),
+            "user-1",
+        )
+        .await
+        .expect("home should accept connector-only Retry while delivery is interrupted");
+    let reconnect_retry_status = response_status(reconnect_retry);
+    assert_eq!(
+        reconnect_retry_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    assert_eq!(reconnect_retry_status.attempt, 2);
+    let (_, reconnect_home_status, _) = runtime
+        .owned
+        .project_environment_setups
+        .get_entry_with_cancellation(reconnect_operation_id, "user-1")
+        .expect("connector-recovery home operation should remain owned");
+    assert_eq!(reconnect_home_status.attempt, 2);
+    assert_eq!(
+        reconnect_home_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
     );
 
+    // Reconnect the same worker app/router without replacing its process or
+    // durable store. Its authenticated binding and attempt-one record remain
+    // the only worker state available to this scenario.
+    let state_worker = {
+        let app = app_worker.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+    let connector_worker = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&worker_router),
+            state_worker,
+            shutdown_worker_rx,
+            relay_url.clone(),
+            worker_relay_token.clone(),
+        ),
+    );
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some(),
+        "same worker should re-register after connector-only interruption"
+    );
+    let reconnect_deadline = Instant::now() + Duration::from_secs(2);
+    let reconnect_first_status = loop {
+        let result = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: reconnect_operation_id.to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        match result {
+            Ok(response) => {
+                let status = response_status(response);
+                assert_eq!(
+                    status.attempt, 2,
+                    "connector recovery must never return stale attempt-one status"
+                );
+                break status;
+            }
+            Err(error) => {
+                assert!(
+                    Instant::now() < reconnect_deadline,
+                    "same worker remained unreachable after connector re-registration: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    assert_eq!(reconnect_first_status.attempt, 2);
+    let reconnect_recovery_deadline = Instant::now() + Duration::from_secs(2);
+    let reconnect_recovered = loop {
+        let result = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: reconnect_operation_id.to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        match result {
+            Ok(response) => {
+                let status = response_status(response);
+                assert_eq!(status.attempt, 2);
+                if status.phase == ProjectEnvironmentSetupPhase::Ready
+                    || (status.phase == ProjectEnvironmentSetupPhase::Failed && status.retryable)
+                {
+                    break status;
+                }
+            }
+            Err(error) => {
+                let (_, status, _) = runtime
+                    .owned
+                    .project_environment_setups
+                    .get_entry_with_cancellation(reconnect_operation_id, "user-1")
+                    .expect("connector recovery home operation should remain owned");
+                assert_eq!(status.attempt, 2);
+                assert_ne!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Ready,
+                    "connector recovery must not project stale Ready state"
+                );
+                assert!(
+                    Instant::now() < reconnect_recovery_deadline,
+                    "connector recovery remained unreachable: {error}; status={status:?}"
+                );
+            }
+        }
+        assert!(
+            Instant::now() < reconnect_recovery_deadline,
+            "connector recovery did not reach attempt two or an explicit retryable failure"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(reconnect_recovered.attempt, 2);
+    assert!(
+        reconnect_recovered.phase == ProjectEnvironmentSetupPhase::Ready
+            || (reconnect_recovered.phase == ProjectEnvironmentSetupPhase::Failed
+                && reconnect_recovered.retryable),
+        "connector recovery must end Ready or in an explicit retryable failure: {reconnect_recovered:?}"
+    );
+
+    // Exercise the public retry boundary while the authenticated worker is
+    // still real and connected after the connector-only recovery. Retry is accepted by the home before its
+    // asynchronous worker dispatch is observed; interrupt that dispatch,
+    // then restore the same worker durable state with its prior attempt.
     let worker_registration = {
         let mut app = app_worker.lock().await;
         app.relay_registration()
     };
+    let restart_operation_id = "setup-retry-before-worker-restart";
+    let restart_start_request = StartProjectEnvironmentSetupRequest {
+        operation_id: restart_operation_id.to_string(),
+        ..start_request.clone()
+    };
+    let restart_started = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(restart_start_request),
+            "user-1",
+        )
+        .await
+        .expect("public restart-recovery Start should be accepted");
+    let restart_started_status = response_status(restart_started);
+    assert_eq!(restart_started_status.attempt, 1);
+    assert_eq!(
+        restart_started_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    let active_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                restart_operation_id,
+                "user-1",
+                "worker acceptance before retry interruption",
+            )
+            .await,
+        );
+        assert_eq!(status.attempt, 1);
+        assert!(!matches!(
+            status.phase,
+            ProjectEnvironmentSetupPhase::Failed
+                | ProjectEnvironmentSetupPhase::Cancelled
+                | ProjectEnvironmentSetupPhase::Ready
+        ));
+        if matches!(
+            status.phase,
+            ProjectEnvironmentSetupPhase::Preparing | ProjectEnvironmentSetupPhase::Validating
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < active_deadline,
+            "worker did not expose an active setup before retry interruption: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let cancelled = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                CancelProjectEnvironmentSetupRequest {
+                    operation_id: restart_operation_id.to_string(),
+                    session_id: session_id.clone(),
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("public restart-recovery Cancel should be acknowledged by the worker");
+    let cancelled_status = response_status(cancelled);
+    assert_eq!(
+        cancelled_status.phase,
+        ProjectEnvironmentSetupPhase::Cancelled
+    );
+    assert_eq!(cancelled_status.attempt, 1);
+    assert!(cancelled_status.retryable);
+
+    let _ = shutdown_worker_tx.send(true);
+    connector_worker
+        .await
+        .expect("worker connector should stop before retry interruption");
+    let worker_disconnected = async {
+        for _ in 0..200 {
+            if registry
+                .read()
+                .await
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+                .is_none()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+    .await;
+    assert!(
+        worker_disconnected,
+        "worker transport should be interrupted before public Retry"
+    );
+
+    // The connector is gone, but its router and app still hold the durable
+    // state owner. Release every original worker handle before accepting the
+    // home Retry and reopening the same durable state path.
+    drop(worker_runtime);
+    drop(worker_router);
+    drop(app_worker);
+
+    let retry_accepted = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
+                operation_id: restart_operation_id.to_string(),
+                session_id: session_id.clone(),
+            }),
+            "user-1",
+        )
+        .await
+        .expect("home must accept a legitimate retry before worker dispatch");
+    let retry_accepted_status = response_status(retry_accepted);
+    assert_eq!(
+        retry_accepted_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    assert_eq!(retry_accepted_status.attempt, 2);
+
+    let disconnected_get = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: restart_operation_id.to_string(),
+                },
+            ),
+            "user-1",
+        )
+        .await;
+    assert!(
+        disconnected_get.is_err(),
+        "public Get must observe the controlled worker interruption: {disconnected_get:?}"
+    );
+    let (_, after_retry, _) = runtime
+        .owned
+        .project_environment_setups
+        .get_entry_with_cancellation(restart_operation_id, "user-1")
+        .expect("home retry state should remain owned");
+    assert_eq!(after_retry.attempt, 2);
+    assert_eq!(after_retry.phase, ProjectEnvironmentSetupPhase::Requested);
+
+    // Rebootstrap the same worker from the same durable state path. No setup
+    // entry is fabricated: the public Cancel above persisted the worker's
+    // attempt-one state, which this fresh app must restore.
+    let restarted_worker_app = Arc::new(tokio::sync::Mutex::new(
+        crate::DaemonApp::bootstrap(config_worker.clone())
+            .expect("worker should restore its durable setup state"),
+    ));
+    let restarted_worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&restarted_worker_app),
+        1,
+    ));
+    let restarted_worker_state = restarted_worker_app.lock().await.relay_client_state();
+    let (restarted_shutdown_worker_tx, restarted_shutdown_worker_rx) = watch::channel(false);
+    let restarted_connector_worker = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&restarted_worker_router),
+            restarted_worker_state,
+            restarted_shutdown_worker_rx,
+            relay_url.clone(),
+            worker_relay_token.clone(),
+        ),
+    );
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some(),
+        "restored worker should re-register before public recovery"
+    );
+
+    // A restarted worker loses its ephemeral lease ownership. The first
+    // public Get must either perform the kernel-owned refresh and return
+    // attempt 2, or reject stale attempt-1 state while leaving home on
+    // attempt 2 for the bounded recovery poll below.
+    let first_post_restart = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: restart_operation_id.to_string(),
+                },
+            ),
+            "user-1",
+        )
+        .await;
+    match first_post_restart {
+        Ok(response) => {
+            let status = response_status(response);
+            assert_eq!(
+                status.attempt, 2,
+                "restart recovery must never return stale attempt-one status"
+            );
+        }
+        Err(error) => {
+            let (_, status, _) = runtime
+                .owned
+                .project_environment_setups
+                .get_entry_with_cancellation(restart_operation_id, "user-1")
+                .expect("home setup must remain owned during restart recovery");
+            assert_eq!(status.attempt, 2);
+            assert_ne!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready,
+                "stale worker status must never be accepted as Ready"
+            );
+            assert!(
+                error.to_string().contains("remote")
+                    || error.to_string().contains("relay")
+                    || error.to_string().contains("setup"),
+                "restart rejection should remain a scoped setup/remote diagnostic: {error}"
+            );
+        }
+    }
+
+    let recovery_deadline = Instant::now() + Duration::from_secs(2);
+    let recovered = loop {
+        let result = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: restart_operation_id.to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        match result {
+            Ok(response) => {
+                let status = response_status(response);
+                assert_eq!(
+                    status.attempt, 2,
+                    "public recovery must never return a stale worker attempt"
+                );
+                if status.phase == ProjectEnvironmentSetupPhase::Ready
+                    || (status.phase == ProjectEnvironmentSetupPhase::Failed && status.retryable)
+                {
+                    break status;
+                }
+            }
+            Err(error) => {
+                let (_, status, _) = runtime
+                    .owned
+                    .project_environment_setups
+                    .get_entry_with_cancellation(restart_operation_id, "user-1")
+                    .expect("home setup must remain owned during recovery");
+                assert_eq!(status.attempt, 2);
+                assert_ne!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Ready,
+                    "stale worker status must never be accepted as Ready"
+                );
+                if status.phase == ProjectEnvironmentSetupPhase::Failed && status.retryable {
+                    break status;
+                }
+                assert!(
+                    Instant::now() < recovery_deadline,
+                    "home setup remained permanently unreachable after worker restart: {error}; status={status:?}"
+                );
+            }
+        }
+        assert!(
+            Instant::now() < recovery_deadline,
+            "home setup did not progress or expose an explicit recoverable failure"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(recovered.attempt, 2);
+    assert!(
+        recovered.phase == ProjectEnvironmentSetupPhase::Ready
+            || (recovered.phase == ProjectEnvironmentSetupPhase::Failed && recovered.retryable),
+        "recovery must end Ready or in an explicit retryable failure: {recovered:?}"
+    );
+
+    let _ = restarted_shutdown_worker_tx.send(true);
+    restarted_connector_worker
+        .await
+        .expect("restored worker connector should stop");
+
+    // Start a separate operation through an authenticated external worker
+    // fixture. Its first Get is worker-authoritative Cancelled, allowing the
+    // public Retry to advance the home's attempt to 2 without touching either
+    // kernel's private setup store.
     let retry_operation_id = "setup-worker-attempt-recovery";
     let (fake_worker_shutdown, fake_worker_start_seen, fake_worker_retry_seen, fake_worker_task) =
         spawn_external_worker_fixture(
