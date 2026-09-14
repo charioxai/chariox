@@ -56,7 +56,7 @@ fn room_environment_standard_worker_does_not_infer_project_transfer() {
 }
 
 async fn standard_worker_does_not_infer_project_transfer() {
-    let mut fixture = LiveWorker::start().await;
+    let mut fixture = LiveWorker::start_with_fresh_worker_identity().await;
     let source_repository = fixture.home_state.root.join("selected-repository");
     let supporting_directory = fixture.home_state.root.join("selected-directory");
     let fresh_worker = fixture._worker_state.root.join("fresh-worker");

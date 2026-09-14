@@ -70,6 +70,39 @@ impl LiveWorker {
         home_vault_backend: Option<crate::config::CredentialVaultBackend>,
         managed_slice_worker: bool,
     ) -> Self {
+        Self::start_configured_with_home_vault_and_worker_id(
+            private_relay,
+            browser_controller,
+            home_vault_backend,
+            managed_slice_worker,
+            "environment-worker".to_string(),
+        )
+        .await
+    }
+
+    async fn start_with_fresh_worker_identity() -> Self {
+        let worker_kernel_id = format!(
+            "environment-worker-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        );
+        Self::start_configured_with_home_vault_and_worker_id(
+            false,
+            false,
+            None,
+            false,
+            worker_kernel_id,
+        )
+        .await
+    }
+
+    async fn start_configured_with_home_vault_and_worker_id(
+        private_relay: bool,
+        browser_controller: bool,
+        home_vault_backend: Option<crate::config::CredentialVaultBackend>,
+        managed_slice_worker: bool,
+        worker_kernel_id: String,
+    ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
         const LOCAL_SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
@@ -137,7 +170,7 @@ impl LiveWorker {
                 Some(home_state.config.relay_public_key.clone());
         }
         home_state.config.daemon_id = "environment-home".to_string();
-        worker_state.config.daemon_id = "environment-worker".to_string();
+        worker_state.config.daemon_id = worker_kernel_id.clone();
         worker_state.config.daemon_alias = Some(if managed_slice_worker {
             "slice:slice-1:worker:test".to_string()
         } else {
@@ -248,7 +281,7 @@ impl LiveWorker {
                         worker_registry
                             .read()
                             .await
-                            .daemon("environment-worker")
+                            .daemon(&worker_kernel_id)
                             .is_some()
                     };
                 if registered {
