@@ -300,15 +300,17 @@ fn compatibility_output_pump_preserves_quiet_provider_turn() {
         .providers()
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run.terminal_diagnostic().is_none(),
-        "silence is not an authoritative provider failure");
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "silence is not an authoritative provider failure"
+    );
     let notices = app
         .terminal_mut()
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        !notices.iter().any(|record| record
-            .message
-            .contains("Chariox closed this turn")),
+        !notices
+            .iter()
+            .any(|record| record.message.contains("Chariox closed this turn")),
         "clients must not receive a fabricated terminal failure"
     );
 }

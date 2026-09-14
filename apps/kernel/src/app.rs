@@ -110,10 +110,8 @@ pub(crate) use legacy_workflow_history::LegacyWorkflowHistoryStore;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
-    provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
     provider_inactivity_timeout_candidates, provider_inactivity_timeout_diagnostic,
-    ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
-    PROVIDER_OUTPUT_TIMEOUT_MS,
+    ProviderInactivityTimeoutCandidate, PROVIDER_OUTPUT_TIMEOUT_MS,
 };
 pub(crate) use provider_launch_failure_retry::{
     ProviderLaunchFailureRetry, ProviderLaunchFailureRetryScheduleOutcome,

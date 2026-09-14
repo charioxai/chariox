@@ -1147,7 +1147,7 @@ async fn structured_output_resume_retries_without_losing_the_finished_batch() {
 }
 
 #[tokio::test]
-async fn first_output_timeout_projects_error_and_closes_prompt() {
+async fn first_output_silence_preserves_prompt_without_provider_error() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1232,25 +1232,25 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
             true,
         )
         .await
-        .expect("provider output pump should reap silent timeout");
+        .expect("provider output pump should observe the quiet turn");
 
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "silent provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "elapsed silence alone must not close the active prompt"
     );
     let run = runtime
         .owned
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "quiet execution is not a provider failure"
+    );
     let provider_errors = runtime
         .owned
         .terminal_stream
@@ -1260,13 +1260,8 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
         .collect::<Vec<_>>();
     assert_eq!(
         provider_errors.len(),
-        1,
-        "an unprojected terminal failure should surface exactly one provider error"
-    );
-    assert!(
-        String::from_utf8_lossy(&provider_errors[0].bytes)
-            .contains("Provider prompt produced no output"),
-        "the visible provider error should preserve the terminal diagnostic"
+        0,
+        "quiet execution must not emit a fabricated provider error"
     );
     let durable_errors = runtime
         .owned
@@ -1278,18 +1273,18 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
         .collect::<Vec<_>>();
     assert_eq!(
         durable_errors.len(),
-        1,
-        "the provider error should be durable across reload"
+        0,
+        "quiet execution must not persist a fabricated provider error"
     );
     let notices = runtime
         .owned
         .terminal_stream
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices.iter().any(|record| record
-            .message
-            .contains("Provider prompt produced no output")),
-        "timeout diagnostic should be visible to attached clients"
+        !notices
+            .iter()
+            .any(|record| record.message.contains("Chariox closed this turn")),
+        "clients must not be told a quiet turn failed"
     );
 }
 
