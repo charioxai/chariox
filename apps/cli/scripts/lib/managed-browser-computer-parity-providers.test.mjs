@@ -10,6 +10,7 @@ import {
   runSelkiesProviders,
   SELKIES_PROVIDER_STATE_EVIDENCE_SCHEMA,
 } from "./managed-browser-computer-parity-providers.mjs"
+import { createManagedBrowserComputerParityTransportFromPublicClient } from "./managed-browser-computer-parity-product-transport.mjs"
 
 const kernelClientDistUrl = new URL("../../../../packages/kernel-client/dist/ipc.js", import.meta.url)
 const kernelRequestsDistUrl = new URL("../../../../packages/kernel-client/dist/ipc-requests.js", import.meta.url)
@@ -45,7 +46,7 @@ const providerThreadIds = Object.freeze({
   claude: "claude-thread-fixture",
 })
 
-test("selkies.providers joins the official harness to separate Room and worker public clients", async () => {
+test("selkies.providers keeps Room authority separate from worker provider observations", async () => {
   const modules = await loadPublicClientModules()
   const { LocalIpcClient } = modules.kernelClient
   const requestApi = modules.requestApi
@@ -60,14 +61,7 @@ test("selkies.providers joins the official harness to separate Room and worker p
     targetDaemonId: binding.kernelId,
   })
   try {
-    let harnessArguments
-    const result = await runSelkiesProviderAcceptance({
-      // Production supplies the existing official provider harness here. This
-      // controlled fixture only exercises its public result contract.
-      officialProviderHarness: async (argumentsValue) => {
-        harnessArguments = argumentsValue
-        return fixtureOfficialProviderHarness(argumentsValue)
-      },
+    const result = await runSelkiesProviders({
       homeClient,
       workerClient,
       requestApi,
@@ -76,13 +70,10 @@ test("selkies.providers joins the official harness to separate Room and worker p
         binding,
         providerProfiles,
         providerRunIds,
+        providerPromptIds: fixtureProviderPromptIds(),
       },
     })
 
-    assert.equal(harnessArguments.homeClient, homeClient)
-    assert.equal(harnessArguments.workerClient, workerClient)
-    assert.equal(harnessArguments.requestApi, requestApi)
-    assert.deepEqual(harnessArguments.providers, ["codex", "opencode", "claude"])
     assert.deepEqual(result.providers, {
       codex: "official",
       opencode: "official",
@@ -124,12 +115,12 @@ test("selkies.providers joins the official harness to separate Room and worker p
   }
 })
 
-test("selkies.providers rejects a harness result without a real prompt/tool/final round trip", async () => {
+test("production selkies.providers dispatch executes public prompt/tool/final rounds", async () => {
   const modules = await loadPublicClientModules()
   const { LocalIpcClient } = modules.kernelClient
   const requestApi = modules.requestApi
   const homeRelay = await createControlledRelay({ requestApi, role: "home" })
-  const workerRelay = await createControlledRelay({ requestApi, role: "worker" })
+  const workerRelay = await createControlledRelay({ requestApi, role: "worker", execution: true })
   const homeClient = new LocalIpcClient(homeRelay.endpoint, {
     relayAuthToken: "operator-test-token",
     targetDaemonId: homeBinding.kernelId,
@@ -139,30 +130,56 @@ test("selkies.providers rejects a harness result without a real prompt/tool/fina
     targetDaemonId: binding.kernelId,
   })
   try {
+    const transport = createManagedBrowserComputerParityTransportFromPublicClient({
+      client: workerClient,
+      displayClient: homeClient,
+      identityClient: workerClient,
+      requestApi,
+    })
+    const result = await transport.run("selkies.providers", { displayBackend: "selkies", binding })
+    assert.deepEqual(result.providers, { codex: "official", opencode: "official", claude: "official" })
+    assert.equal(new Set(workerRelay.spawnedAgentIds).size, 3)
+    assert.equal(workerRelay.submitRequests, 3)
+    assert.equal(workerRelay.launchRequests, 0, "official harness uses the released SpawnAgent public path")
+    assert.equal(workerRelay.requests.some((request) => "SubmitPrompt" in request), true)
+    assert.equal(workerRelay.requests.some((request) => "GetSessionHistoryBlobContent" in request), true)
+    assert.deepEqual(result.providerStateEvidence.persistedHistory, { codex: true, opencode: true, claude: true })
+  } finally {
+    await closeClientsAndRelays(homeClient, workerClient, homeRelay, workerRelay)
+  }
+})
+
+test("production selkies.providers fails when public execution omits a durable tool round trip", async () => {
+  const modules = await loadPublicClientModules()
+  const { LocalIpcClient } = modules.kernelClient
+  const requestApi = modules.requestApi
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({ requestApi, role: "worker", execution: true, omitToolProvider: "codex" })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: binding.kernelId,
+  })
+  try {
+    const transport = createManagedBrowserComputerParityTransportFromPublicClient({
+      client: workerClient,
+      displayClient: homeClient,
+      identityClient: workerClient,
+      requestApi,
+    })
     await assert.rejects(
-      () => runSelkiesProviderAcceptance({
-        officialProviderHarness: async () => ({
-          providerRunIds,
-          executionEvidence: {
-            ...fixtureOfficialExecutionEvidence(),
-            codex: {
-              ...fixtureOfficialExecutionEvidence().codex,
-              tool: { observed: false, id: "" },
-            },
-          },
-        }),
-        homeClient,
-        workerClient,
-        requestApi,
-        request: {
-          displayBackend: "selkies",
-          binding,
-          providerProfiles,
-        },
-      }),
-      /requires an official codex prompt\/tool\/final round trip/,
+      () => transport.run("selkies.providers", { displayBackend: "selkies", binding }),
+      /requires a completed durable provider tool call for codex/,
     )
-    assert.equal(workerRelay.requests.some((request) => "GetSessionHistoryOutline" in request), true)
+    assert.equal(workerRelay.submitRequests, 3)
+    assert.equal(
+      workerRelay.requests.some((request) => "GetSessionHistoryBlobContent" in request),
+      false,
+      "missing durable tool evidence must fail closed before fabricating a blob round trip",
+    )
   } finally {
     await closeClientsAndRelays(homeClient, workerClient, homeRelay, workerRelay)
   }
@@ -209,7 +226,7 @@ test("selkies.providers does not accept an advertised catalog without authentica
         binding,
         providerProfiles,
         providerRunIds,
-        officialExecutionEvidence: fixtureOfficialExecutionEvidence(),
+        providerPromptIds: fixtureProviderPromptIds(),
       },
     }),
     /requires authenticated provider runtime observation/,
@@ -242,7 +259,7 @@ test("selkies.providers does not treat a Starting process as official provider e
           binding,
           providerProfiles,
           providerRunIds,
-          officialExecutionEvidence: fixtureOfficialExecutionEvidence(),
+          providerPromptIds: fixtureProviderPromptIds(),
         },
       }),
       /requires an official authenticated target provider runtime observation/,
@@ -281,7 +298,7 @@ test("selkies.providers permits supported provider import metadata without claim
         binding,
         providerProfiles,
         providerRunIds,
-        officialExecutionEvidence: fixtureOfficialExecutionEvidence(),
+        providerPromptIds: fixtureProviderPromptIds(),
       },
     })
     assert.equal(result.providerStateEvidence.externalProviderImportsObserved.codex, true)
@@ -292,7 +309,7 @@ test("selkies.providers permits supported provider import metadata without claim
   }
 })
 
-test("selkies.providers fails closed without official harness execution evidence", async () => {
+test("selkies.providers fails closed without a public SubmitPrompt identity", async () => {
   const requests = []
   const client = { send: async (request) => { requests.push(request); throw new Error("unexpected public request") } }
   const requestApi = minimalRequestApi()
@@ -309,7 +326,7 @@ test("selkies.providers fails closed without official harness execution evidence
         providerRunIds,
       },
     }),
-    /execution evidence from the official provider harness/,
+    /requires prompt identities returned by public SubmitPrompt/,
   )
   assert.deepEqual(requests, [])
 })
@@ -339,7 +356,7 @@ test("selkies.providers rejects durable history that omits one provider round tr
           binding,
           providerProfiles,
           providerRunIds,
-          officialExecutionEvidence: fixtureOfficialExecutionEvidence(),
+          providerPromptIds: fixtureProviderPromptIds(),
         },
       }),
       /requires a completed worker prompt\/tool\/final turn for claude/,
@@ -354,7 +371,12 @@ test("selkies.providers rejects a completed output without a persisted provider 
   const { LocalIpcClient } = modules.kernelClient
   const requestApi = modules.requestApi
   const homeRelay = await createControlledRelay({ requestApi, role: "home" })
-  const workerRelay = await createControlledRelay({ requestApi, role: "worker", omitToolProvider: "codex" })
+  const workerRelay = await createControlledRelay({
+    requestApi,
+    role: "worker",
+    execution: true,
+    omitToolProvider: "codex",
+  })
   const homeClient = new LocalIpcClient(homeRelay.endpoint, {
     relayAuthToken: "operator-test-token",
     targetDaemonId: homeBinding.kernelId,
@@ -366,7 +388,6 @@ test("selkies.providers rejects a completed output without a persisted provider 
   try {
     await assert.rejects(
       () => runSelkiesProviderAcceptance({
-        officialProviderHarness: async (argumentsValue) => fixtureOfficialProviderHarness(argumentsValue),
         homeClient,
         workerClient,
         requestApi,
@@ -376,7 +397,7 @@ test("selkies.providers rejects a completed output without a persisted provider 
           providerProfiles,
         },
       }),
-      /requires a completed worker prompt\/tool\/final turn for codex/,
+      /requires a completed durable provider tool call for codex/,
     )
   } finally {
     await closeClientsAndRelays(homeClient, workerClient, homeRelay, workerRelay)
@@ -408,7 +429,7 @@ test("selkies.providers rejects a changed provider thread across worker runs", a
           binding,
           providerProfiles,
           providerRunIds,
-          officialExecutionEvidence: fixtureOfficialExecutionEvidence(),
+          providerPromptIds: fixtureProviderPromptIds(),
         },
       }),
       /provider thread changed across runs for opencode/,
@@ -442,6 +463,7 @@ async function closeClientsAndRelays(homeClient, workerClient, homeRelay, worker
 async function createControlledRelay({
   requestApi,
   role,
+  execution = false,
   importedProviderRunId = null,
   providerRunState = "Running",
   omitProvider = null,
@@ -458,7 +480,9 @@ async function createControlledRelay({
   const requests = []
   let launchRequests = 0
   let credentialRequests = 0
+  let submitRequests = 0
   let serverError
+  const executionState = execution ? createExecutionFixtureState({ omitToolProvider }) : null
 
   server.on("connection", (socket) => {
     socket.on("message", (raw) => {
@@ -483,6 +507,7 @@ async function createControlledRelay({
         requests.push(envelope.request)
         const request = envelope.request
         if ("LaunchProviderRun" in request || "LaunchProviderRuns" in request) launchRequests += 1
+        if ("SubmitPrompt" in request) submitRequests += 1
         if ("GetProviderAccountProfile" in request || "SetProviderAccountCredential" in request) credentialRequests += 1
         if (role === "worker" && "GetRoomEnvironmentState" in request) {
           throw new Error("worker must not own the Room environment query")
@@ -492,6 +517,7 @@ async function createControlledRelay({
         }
         const response = responseFor(request, requestApi, {
           role,
+          executionState,
           importedProviderRunId,
           providerRunState,
           omitProvider,
@@ -523,6 +549,12 @@ async function createControlledRelay({
     get credentialRequests() {
       return credentialRequests
     },
+    get submitRequests() {
+      return submitRequests
+    },
+    get spawnedAgentIds() {
+      return executionState ? [...executionState.agents.keys()] : []
+    },
     get serverError() {
       return serverError
     },
@@ -534,14 +566,365 @@ async function createControlledRelay({
   }
 }
 
+function createExecutionFixtureState({ omitToolProvider = null } = {}) {
+  return {
+    omitToolProvider,
+    agents: new Map(),
+    runs: new Map(),
+    prompts: new Map(),
+    actions: [],
+    nextSequence: 1,
+  }
+}
+
+function executionResponseFor(request, requestApi, state) {
+  if ("RelayStatus" in request) {
+    return {
+      RelayStatus: {
+        status: {
+          configured: true,
+          connected: true,
+          daemon_id: binding.kernelId,
+          machine_id: binding.machineId,
+          daemon_alias: null,
+          machine_alias: null,
+          relay_url: "ws://relay.test",
+          relay_token_configured: true,
+        },
+      },
+    }
+  }
+  if ("GetRoomEnvironmentState" in request) {
+    throw new Error("execution worker must not provide the Room environment query")
+  }
+  if ("GetProviderCommandCatalogs" in request) {
+    return { ProviderCommandCatalogs: { catalogs: shippedCatalogs() } }
+  }
+  if ("GetProviderCatalog" in request) {
+    const provider = request.GetProviderCatalog.provider
+    return { ProviderCatalog: { catalog: executionCatalog(provider) } }
+  }
+  if ("GetProviderAuthStatus" in request) {
+    const value = request.GetProviderAuthStatus
+    return {
+      ProviderAuthStatus: {
+        status: {
+          provider: value.provider,
+          auth_state: "authenticated",
+          account_profile: value.account_profile,
+          identity_summary: null,
+          plan: null,
+          login_hint: null,
+          detected_version: "fixture",
+        },
+      },
+    }
+  }
+  if ("SpawnAgent" in request) {
+    const value = request.SpawnAgent
+    const provider = value.provider
+    const model = value.model ?? `${provider}-model`
+    const agentId = `execution-agent-${provider}`
+    const runId = `execution-run-${provider}`
+    const threadId = `execution-thread-${provider}`
+    const agent = {
+      id: agentId,
+      agent_ref: `@${provider}`,
+      session_id: binding.roomId,
+      alias: value.alias ?? null,
+      provider,
+      model,
+      account_profile: value.account_profile ?? "default",
+      state: "Idle",
+      is_processing: false,
+      worktree_id: null,
+      workspace_id: null,
+      remote_execution: null,
+    }
+    state.agents.set(agentId, agent)
+    state.runs.set(runId, executionRun({ provider, agentId, runId, threadId, model, accountProfile: agent.account_profile }))
+    return { AgentSpawned: { agent } }
+  }
+  if ("AttachToSession" in request) {
+    return {
+      SessionAttached: {
+        attachment: {
+          id: `execution-attachment-${state.agents.size}`,
+          session_id: binding.roomId,
+          client_id: request.AttachToSession.client_id,
+          capability_level: "FullTerminal",
+        },
+      },
+    }
+  }
+  if ("SubmitPrompt" in request) {
+    const value = request.SubmitPrompt
+    const agent = state.agents.get(value.target_agent_id)
+    if (!agent) throw new Error(`unknown execution fixture agent ${value.target_agent_id}`)
+    const run = [...state.runs.values()].find((candidate) => candidate.agent_instance_id === agent.id)
+    if (!run) throw new Error(`unknown execution fixture run for ${agent.id}`)
+    const promptId = `execution-prompt-${run.provider}`
+    state.prompts.set(agent.id, { promptId, run, prompt: value.prompt })
+    state.actions.push(executionAction(agent.id, state.nextSequence++))
+    return {
+      PromptSubmitted: {
+        outcome: { Started: { prompt: { id: promptId } } },
+        session: executionSession(state),
+        agent_activity: {},
+        agent_activity_revision: 1,
+      },
+    }
+  }
+  if ("ListRoomEnvironmentActionHistory" in request) {
+    return {
+      RoomEnvironmentActionHistoryListed: {
+        page: { actions: state.actions },
+      },
+    }
+  }
+  if ("GetSessionState" in request) {
+    return { SessionState: { session: executionSession(state) } }
+  }
+  if ("GetSessionHistoryOutline" in request) {
+    const requestedAgentIds = request.GetSessionHistoryOutline.agent_ids ?? [...state.agents.keys()]
+    return {
+      SessionHistoryOutline: {
+        agents: requestedAgentIds.map((agentId) => ({
+          agent_id: agentId,
+          turns: executionTurns(state, agentId),
+        })),
+      },
+    }
+  }
+  if ("GetSessionHistoryBlobContent" in request
+    && request.GetSessionHistoryBlobContent.blob_id.startsWith("history-tool-")) {
+    assert.equal(role, "worker")
+    const blobId = request.GetSessionHistoryBlobContent.blob_id
+    const match = /^history-tool-(codex|opencode|claude)-(previous|current)$/.exec(blobId)
+    assert.ok(match)
+    const [, provider, phase] = match
+    return {
+      SessionHistoryBlobContent: {
+        blob_id: blobId,
+        entries: [historyToolEntry({ provider, phase })],
+      },
+    }
+  }
+  if ("GetSessionHistoryBlobContent" in request) {
+    const value = request.GetSessionHistoryBlobContent
+    const promptState = state.prompts.get(value.agent_id)
+    if (!promptState || state.omitToolProvider === promptState.run.provider) {
+      return { SessionHistoryBlobContent: { blob_id: value.blob_id, entries: [] } }
+    }
+    return {
+      SessionHistoryBlobContent: {
+        blob_id: value.blob_id,
+        entries: [executionToolEntry(promptState.run, value.blob_id)],
+      },
+    }
+  }
+  if ("GetProviderRun" in request) {
+    const run = state.runs.get(request.GetProviderRun.provider_run_id)
+    if (!run) throw new Error(`unknown execution fixture run ${request.GetProviderRun.provider_run_id}`)
+    return { ProviderRun: { provider_run: run } }
+  }
+  throw new Error("unexpected execution public request: " + JSON.stringify(request))
+}
+
+function executionCatalog(provider) {
+  return {
+    all: [{
+      id: provider,
+      name: provider,
+      models: {
+        [`${provider}-model`]: { id: `${provider}-model`, name: `${provider} model`, status: "active", variants: {} },
+      },
+    }],
+    default: { [provider]: `${provider}-model` },
+    connected: [provider],
+  }
+}
+
+function executionRun({ provider, agentId, runId, threadId, model, accountProfile }) {
+  return {
+    id: runId,
+    session_id: binding.roomId,
+    agent_instance_id: agentId,
+    owner_user_id: "user-1",
+    adapter_key: provider,
+    provider,
+    account_profile: accountProfile,
+    model,
+    variant: null,
+    usage_tokens_total: null,
+    state: "Running",
+    endpoint_mode: "managed",
+    client_interface: "chariox",
+    process_label: `${provider}-official-fixture-process`,
+    pty_target: null,
+    pty_program: null,
+    pty_args: [],
+    pty_env: {},
+    pty_env_remove: [],
+    working_directory: null,
+    structured_endpoint: null,
+    runtime_mcp_server_url: null,
+    mcp_servers: [],
+    remote_extension_manifest: {},
+    provider_config_overrides: {},
+    write_access_mode: "unrestricted",
+    execution_mode: "build",
+    permission_level: "yolo",
+    control_capabilities: [],
+    resume_state: {},
+    external_provider_import: null,
+    provider_session_id: threadId,
+    started_at_ms: 1,
+    last_activity_at_ms: 2,
+  }
+}
+
+function executionSession(state) {
+  return {
+    id: binding.roomId,
+    project_id: "project-1",
+    workspace_id: "workspace-1",
+    worktree_id: "worktree-1",
+    owner_user_id: "user-1",
+    created_at_ms: 1,
+    status: "active",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: null,
+    max_agents: 16,
+    agents: [...state.agents.values()],
+  }
+}
+
+function executionAction(agentId, sequence) {
+  return {
+    action_id: `execution-action-${agentId}`,
+    sequence,
+    idempotency_key: null,
+    actor_id: `agent:${agentId}`,
+    runtime_generation: 1,
+    mode: "computer",
+    kind: "pointer_click",
+    arguments: { kind: "pointer_click", x: 640, y: 400, button: "left", click_count: 1, viewport_revision: 1 },
+    targets: [{ kind: "desktop" }],
+    state: "completed",
+    cancellation_requested: false,
+    submitted_at_ms: 1,
+    started_at_ms: 1,
+    finished_at_ms: 2,
+    outcome: { status: "completed" },
+  }
+}
+
+function executionTurns(state, agentId) {
+  const promptState = state.prompts.get(agentId)
+  if (!promptState) return []
+  const { run, promptId } = promptState
+  const turnId = `execution-turn-${run.provider}`
+  const providerTurnId = `execution-provider-turn-${run.provider}`
+  const pageEntry = (kind, text, timestampMs) => ({
+    entry_index: kind === "user_prompt" ? 0 : 1,
+    fragment_start: 0,
+    fragment_end: text.length,
+    total_chars: text.length,
+    entry: {
+      session_id: binding.roomId,
+      provider_run_id: run.id,
+      agent_id: agentId,
+      source_attachment_id: null,
+      prompt_origin: "chariox",
+      kind,
+      merge_key: kind === "provider_tool" ? `tool-call-${run.provider}` : null,
+      source: null,
+      external_provider: run.provider,
+      external_provider_session_id: run.provider_session_id,
+      external_provider_turn_id: providerTurnId,
+      observed_at_ms: timestampMs,
+      external_observation: null,
+      attachments: [],
+      text,
+      timestamp_ms: timestampMs,
+    },
+  })
+  const turn = {
+    turn_id: turnId,
+    prompt_id: promptId,
+    prompt_origin: "chariox",
+    external_provider: run.provider,
+    external_provider_session_id: run.provider_session_id,
+    external_provider_turn_id: providerTurnId,
+    started_at_ms: 1,
+    lifecycle: "completed",
+    completed_at_ms: 3,
+    user_prompt: pageEntry("user_prompt", promptState.prompt, 1),
+    entries: [pageEntry("provider_output", `completed ${run.provider} execution`, 3)],
+    summary: null,
+    blobs: state.omitToolProvider === run.provider ? [] : [{
+      blob_id: `execution-tool-${run.provider}`,
+      kind: "provider_tool",
+      title: "slice_mouse · COMPLETED",
+      summary: "official provider tool round trip",
+      sequence_start: 2,
+      sequence_end: 2,
+      entry_count: 1,
+      total_chars: 100,
+      timestamp_ms: 2,
+    }],
+  }
+  return [turn]
+}
+
+function executionToolEntry(run, blobId) {
+  const text = JSON.stringify({
+    id: `tool-call-${run.provider}`,
+    tool: "slice_mouse",
+    status: "completed",
+    input: { action: "click", x: 640, y: 400, button: "left" },
+    output: "completed",
+  })
+  return {
+    entry_index: 1,
+    fragment_start: 0,
+    fragment_end: text.length,
+    total_chars: text.length,
+    entry: {
+      session_id: binding.roomId,
+      provider_run_id: run.id,
+      agent_id: run.agent_instance_id,
+      source_attachment_id: null,
+      prompt_origin: "chariox",
+      kind: "provider_tool",
+      merge_key: `tool-call-${run.provider}`,
+      source: null,
+      external_provider: run.provider,
+      external_provider_session_id: run.provider_session_id,
+      external_provider_turn_id: `execution-provider-turn-${run.provider}`,
+      observed_at_ms: 2,
+      external_observation: null,
+      attachments: [],
+      text,
+      timestamp_ms: 2,
+    },
+  }
+}
+
 function responseFor(request, requestApi, {
   role = "worker",
+  executionState = null,
   importedProviderRunId = null,
   providerRunState = "Running",
   omitProvider = null,
   omitToolProvider = null,
   mismatchProvider = null,
 } = {}) {
+  if (executionState) return executionResponseFor(request, requestApi, executionState)
   if ("RelayStatus" in request) {
     assert.equal(role, "worker")
     return {
@@ -603,6 +986,19 @@ function responseFor(request, requestApi, {
           login_hint: null,
           detected_version: "fixture",
         },
+      },
+    }
+  }
+  if ("GetSessionHistoryBlobContent" in request) {
+    assert.equal(role, "worker")
+    const blobId = request.GetSessionHistoryBlobContent.blob_id
+    const match = /^history-tool-(codex|opencode|claude)-(previous|current)$/.exec(blobId)
+    assert.ok(match)
+    const [, provider, phase] = match
+    return {
+      SessionHistoryBlobContent: {
+        blob_id: blobId,
+        entries: [historyToolEntry({ provider, phase })],
       },
     }
   }
@@ -684,28 +1080,25 @@ function expectedWorkerRequests(requestApi) {
     expected.push(requestApi.getProviderRunRequest(providerRunIds[provider].previous))
   }
   expected.push(requestApi.getSessionHistoryOutlineRequest(binding.roomId, ["agent-1"], 20))
+  for (const provider of ["codex", "opencode", "claude"]) {
+    expected.push(requestApi.getSessionHistoryBlobContentRequest(
+      binding.roomId,
+      "agent-1",
+      `history-tool-${provider}-current`,
+    ))
+    expected.push(requestApi.getSessionHistoryBlobContentRequest(
+      binding.roomId,
+      "agent-1",
+      `history-tool-${provider}-previous`,
+    ))
+  }
   return expected
 }
 
-function fixtureOfficialProviderHarness({ request } = {}) {
-  const runRefs = request?.providerRunIds ?? providerRunIds
-  return {
-    providerRunIds: runRefs,
-    executionEvidence: fixtureOfficialExecutionEvidence(runRefs),
-  }
-}
-
-function fixtureOfficialExecutionEvidence(runRefs = providerRunIds) {
+function fixtureProviderPromptIds() {
   return Object.fromEntries(["codex", "opencode", "claude"].map((provider) => [
     provider,
-    {
-      provider,
-      providerRunId: runRefs[provider].current,
-      previousProviderRunId: runRefs[provider].previous,
-      prompt: { submitted: true, id: "fixture-prompt-" + provider },
-      tool: { observed: true, id: "fixture-tool-" + provider },
-      final: { observed: true, turnId: "fixture-turn-" + provider + "-current" },
-    },
+    "fixture-prompt-" + provider + "-current",
   ]))
 }
 
@@ -725,6 +1118,9 @@ function minimalRequestApi() {
         agent_ids: agentIds,
         latest_prompt_count: latestPromptCount,
       },
+    }),
+    getSessionHistoryBlobContentRequest: (sessionId, agentId, blobId) => ({
+      GetSessionHistoryBlobContent: { session_id: sessionId, agent_id: agentId, blob_id: blobId },
     }),
   }
 }
@@ -750,6 +1146,8 @@ function completedProviderTurns({ omitProvider = null, omitToolProvider = null, 
         lifecycle: "completed",
         completed_at_ms: 20,
         user_prompt: historyPageEntry({
+          provider,
+          phase,
           providerRunId,
           threadId,
           kind: "user_prompt",
@@ -757,6 +1155,8 @@ function completedProviderTurns({ omitProvider = null, omitToolProvider = null, 
           timestampMs: 10,
         }),
         entries: [historyPageEntry({
+          provider,
+          phase,
           providerRunId,
           threadId,
           kind: "provider_output",
@@ -785,7 +1185,40 @@ function historyToolBlob({ provider, phase }) {
   }
 }
 
-function historyPageEntry({ providerRunId, threadId, kind, text, timestampMs }) {
+function historyToolEntry({ provider, phase }) {
+  const text = JSON.stringify({
+    id: `fixture-tool-${provider}-${phase}`,
+    tool: "slice_mouse",
+    status: "completed",
+    output: "completed",
+  })
+  return {
+    entry_index: 1,
+    fragment_start: 0,
+    fragment_end: text.length,
+    total_chars: text.length,
+    entry: {
+      session_id: binding.roomId,
+      provider_run_id: providerRunIds[provider][phase],
+      agent_id: "agent-1",
+      source_attachment_id: null,
+      prompt_origin: "chariox",
+      kind: "provider_tool",
+      merge_key: `fixture-tool-${provider}-${phase}`,
+      source: null,
+      external_provider: provider,
+      external_provider_session_id: providerThreadIds[provider],
+      external_provider_turn_id: `fixture-provider-turn-${provider}-${phase}`,
+      observed_at_ms: 15,
+      external_observation: null,
+      attachments: [],
+      text,
+      timestamp_ms: 15,
+    },
+  }
+}
+
+function historyPageEntry({ provider, phase, providerRunId, threadId, kind, text, timestampMs }) {
   return {
     entry_index: 0,
     fragment_start: 0,
@@ -800,9 +1233,11 @@ function historyPageEntry({ providerRunId, threadId, kind, text, timestampMs }) 
       kind,
       merge_key: null,
       source: null,
-      external_provider: null,
+      external_provider: provider ?? null,
       external_provider_session_id: threadId,
-      external_provider_turn_id: "fixture-provider-turn",
+      external_provider_turn_id: provider && phase
+        ? `fixture-provider-turn-${provider}-${phase}`
+        : "fixture-provider-turn",
       observed_at_ms: timestampMs,
       external_observation: null,
       attachments: [],

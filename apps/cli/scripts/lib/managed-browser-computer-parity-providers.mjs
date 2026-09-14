@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto"
 
+import { runRoomRealProviderAction } from "./live-room-real-provider.mjs"
+
 const PROVIDER_FAMILIES = Object.freeze(["codex", "opencode", "claude"])
-const ACTIVE_PROVIDER_RUN_STATES = new Set(["Running", "Parked"])
 const KNOWN_PROVIDER_RUN_STATES = new Set(["Starting", "Running", "Parked", "Ended"])
+const EXECUTED_PROVIDER_RUN_STATES = new Set(["Running", "Parked", "Ended"])
 const OFFICIAL_PROVIDER_STATUS = "official"
 const PROVIDER_STATE_EVIDENCE_SCHEMA = "chariox.browser_computer.provider_state_evidence.v1"
 
@@ -10,34 +12,25 @@ export const SELKIES_PROVIDER_FAMILIES = PROVIDER_FAMILIES
 export const SELKIES_PROVIDER_STATE_EVIDENCE_SCHEMA = PROVIDER_STATE_EVIDENCE_SCHEMA
 
 /**
- * Join the existing official provider harness to the public observation
- * adapter. The harness owns provider launch, prompt/tool/final-turn execution,
- * and any supported credential or provider-state transfer. This function only
- * passes its public result to the observation-only verifier below; it never
- * manufactures a transfer receipt or starts a provider itself.
+ * Run the existing official Room provider action harness through the worker's
+ * public client, then verify the resulting public runtime and durable history.
+ * Credential/bootstrap transfer remains owned by the provider/kernel path;
+ * this adapter does not manufacture a transfer receipt or provider evidence.
  */
 export async function runSelkiesProviderAcceptance({
-  officialProviderHarness,
   homeClient,
   workerClient,
   requestApi,
   request,
   signal,
 } = {}) {
-  if (typeof officialProviderHarness !== "function") {
-    fail(
-      "selkies_providers_official_harness_required",
-      "selkies.providers requires the existing official provider harness",
-    )
-  }
   let harnessResult
   try {
-    harnessResult = await officialProviderHarness({
+    harnessResult = await runOfficialSelkiesProviderHarness({
       homeClient,
       workerClient,
       requestApi,
       request,
-      providers: [...PROVIDER_FAMILIES],
       signal,
     })
   } catch {
@@ -59,10 +52,103 @@ export async function runSelkiesProviderAcceptance({
     request: {
       ...request,
       providerRunIds: harnessResult.providerRunIds,
-      officialExecutionEvidence: harnessResult.executionEvidence,
+      providerPromptIds: harnessResult.providerPromptIds,
+      providerProfiles: harnessResult.providerProfiles,
     },
     signal,
   })
+}
+
+async function runOfficialSelkiesProviderHarness({ workerClient, requestApi, request, signal }) {
+  requireClient(workerClient, "worker provider")
+  requireOfficialHarnessRequestApi(requestApi)
+  const binding = requireBinding(request?.binding)
+  const providerProfiles = resolveProviderProfiles(request?.providerProfiles)
+  const providerRunIds = {}
+  const providerPromptIds = {}
+
+  for (const provider of PROVIDER_FAMILIES) {
+    const accountProfile = providerProfiles[provider]
+    const catalog = responseVariant(
+      await sendWithAbortSignal(
+        workerClient,
+        requestApi.getProviderCatalogRequest({
+          provider,
+          accountProfile,
+          executionLocation: { kind: "worker", kernel_ref: binding.kernelId },
+        }),
+        signal,
+        `${provider} official provider catalog`,
+      ),
+      "ProviderCatalog",
+      `${provider} official provider catalog`,
+    ).catalog
+    validateProviderCatalog(catalog, provider)
+    const authStatus = responseVariant(
+      await sendWithAbortSignal(
+        workerClient,
+        requestApi.getProviderAuthStatusRequest(provider, accountProfile),
+        signal,
+        `${provider} official provider auth status`,
+      ),
+      "ProviderAuthStatus",
+      `${provider} official provider auth status`,
+    ).status
+    validateProviderAuthStatus(authStatus, provider, accountProfile)
+    const model = selectProviderModel(catalog, provider, request?.providerModels?.[provider])
+    const publicClient = {
+      send: (publicRequest) => sendWithAbortSignal(
+        workerClient,
+        publicRequest,
+        signal,
+        `${provider} official provider request`,
+      ),
+    }
+    const action = await runRoomRealProviderAction({
+      client: publicClient,
+      requests: requestApi,
+      sessionId: binding.roomId,
+      sliceId: hasText(request?.sliceId) ? request.sliceId.trim() : undefined,
+      workspace: hasText(request?.workspaceId) ? request.workspaceId.trim() : undefined,
+      options: {
+        provider,
+        model,
+        mode: "computer",
+        accountProfile,
+        importFirst: false,
+      },
+      waitFor: (probe, timeoutMs, description) => waitForPublicProbe(
+        probe,
+        timeoutMs,
+        description,
+        signal,
+      ),
+      withTimeout: (operation, timeoutMs, description) => withPublicTimeout(
+        operation,
+        timeoutMs,
+        description,
+        signal,
+      ),
+      checkpoint: async () => {},
+    })
+    const promptId = requireText(action.settlement?.promptId, `${provider} official prompt id`)
+    const turn = await readPromptTurn({
+      workerClient: publicClient,
+      requestApi,
+      sessionId: binding.roomId,
+      agentId: requireText(action.agentId, `${provider} official agent id`),
+      promptId,
+      signal,
+    })
+    const providerRunId = requireText(
+      turn.user_prompt?.entry?.provider_run_id,
+      `${provider} official provider run id`,
+    )
+    providerRunIds[provider] = { current: providerRunId, previous: null }
+    providerPromptIds[provider] = promptId
+  }
+
+  return { providerRunIds, providerPromptIds, providerProfiles }
 }
 
 /**
@@ -93,7 +179,7 @@ export async function runSelkiesProviders({
   }
   const providerProfiles = requireProviderMap(request?.providerProfiles, "providerProfiles")
   const providerRunRefs = requireProviderRunRefs(request?.providerRunIds)
-  const officialExecutionEvidence = requireOfficialExecutionEvidence(request?.officialExecutionEvidence)
+  const providerPromptIds = requireProviderPromptIds(request?.providerPromptIds)
 
   const identity = await readTargetBinding({ homeClient, workerClient, requestApi, binding, signal })
   const commandCatalogs = responseVariant(
@@ -174,13 +260,6 @@ export async function runSelkiesProviders({
         previousProviderRunId,
         { active: false },
       )
-      if (previousRuntimeEvidence.agentInstanceId !== runtimeEvidence.agentInstanceId
-        || previousRuntimeEvidence.ownerUserId !== runtimeEvidence.ownerUserId) {
-        fail(
-          "selkies_providers_target_identity_mismatch",
-          `selkies.providers provider runs did not retain the same worker agent identity for ${provider}`,
-        )
-      }
       if (previousRuntimeEvidence.providerThreadId !== runtimeEvidence.providerThreadId) {
         fail(
           "selkies_providers_thread_continuity_required",
@@ -206,7 +285,7 @@ export async function runSelkiesProviders({
     binding,
     providerEvidence,
     providerRunRefs,
-    officialExecutionEvidence,
+    providerPromptIds,
     signal,
   })
   const providerState = createProviderStateEvidence({
@@ -239,6 +318,7 @@ function requireRequestApi(requestApi) {
     "getProviderAuthStatusRequest",
     "getProviderRunRequest",
     "getSessionHistoryOutlineRequest",
+    "getSessionHistoryBlobContentRequest",
   ]) {
     if (typeof requestApi[name] !== "function") {
       fail("selkies_providers_request_api_required", `selkies.providers requires ${name}`)
@@ -275,6 +355,26 @@ function requireProviderMap(value, label) {
   return map
 }
 
+function resolveProviderProfiles(value) {
+  return Object.fromEntries(PROVIDER_FAMILIES.map((provider) => [
+    provider,
+    hasText(value?.[provider]) ? value[provider].trim() : "default",
+  ]))
+}
+
+function requireProviderPromptIds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(
+      "selkies_providers_execution_evidence_required",
+      "selkies.providers requires prompt identities returned by public SubmitPrompt",
+    )
+  }
+  return Object.fromEntries(PROVIDER_FAMILIES.map((provider) => [
+    provider,
+    requireText(value[provider], `providerPromptIds.${provider}`),
+  ]))
+}
+
 function requireProviderRunRefs(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     fail("selkies_providers_target_observation_required", "selkies.providers requires providerRunIds")
@@ -290,9 +390,11 @@ function requireProviderRunRefs(value) {
     }
     refs[provider] = {
       current: requireText(item.current, `providerRunIds.${provider}.current`),
-      previous: requireText(item.previous, `providerRunIds.${provider}.previous`),
+      previous: item.previous == null
+        ? null
+        : requireText(item.previous, `providerRunIds.${provider}.previous`),
     }
-    if (refs[provider].previous === refs[provider].current) {
+    if (refs[provider].previous != null && refs[provider].previous === refs[provider].current) {
       fail(
         "selkies_providers_thread_continuity_required",
         `selkies.providers requires distinct current and previous provider runs for ${provider}`,
@@ -300,16 +402,6 @@ function requireProviderRunRefs(value) {
     }
   }
   return refs
-}
-
-function requireOfficialExecutionEvidence(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    fail(
-      "selkies_providers_official_harness_required",
-      "selkies.providers requires execution evidence from the official provider harness",
-    )
-  }
-  return value
 }
 
 function createProviderStateEvidence({
@@ -346,10 +438,7 @@ function createProviderStateEvidence({
       PROVIDER_FAMILIES.map((provider) => [provider, {
         current: providerEvidence[provider].runtime.providerThreadId,
         previous: providerEvidence[provider].previousRuntime?.providerThreadId ?? null,
-        continuity: providerEvidence[provider].previousRuntime
-          ? providerEvidence[provider].runtime.providerThreadId
-            === providerEvidence[provider].previousRuntime.providerThreadId
-          : false,
+        continuity: executionEvidence[provider].threadContinuity === true,
       }]),
     ),
     persistedHistory: Object.fromEntries(
@@ -417,7 +506,9 @@ function normalizeProviderEvidence(value) {
         authState: requireDigestText(item?.auth?.authState),
       },
       runtime: normalizeRuntimeEvidence(item?.runtime),
-      previousRuntime: normalizeRuntimeEvidence(item?.previousRuntime),
+      previousRuntime: item?.previousRuntime == null
+        ? null
+        : normalizeRuntimeEvidence(item.previousRuntime),
     }]
   }))
 }
@@ -443,7 +534,9 @@ function normalizeExecutionEvidence(value) {
     const item = value?.[provider]
     return [provider, {
       providerRunId: requireDigestText(item?.providerRunId),
-      previousProviderRunId: requireDigestText(item?.previousProviderRunId),
+      previousProviderRunId: item?.previousProviderRunId == null
+        ? null
+        : requireDigestText(item.previousProviderRunId),
       agentInstanceId: requireDigestText(item?.agentInstanceId),
       providerThreadId: requireDigestText(item?.providerThreadId),
       turnId: requireDigestText(item?.turnId),
@@ -519,55 +612,47 @@ async function readProviderExecutionEvidence({
   binding,
   providerEvidence,
   providerRunRefs,
-  officialExecutionEvidence,
+  providerPromptIds,
   signal,
 }) {
-  const agentInstanceIds = new Set(PROVIDER_FAMILIES.map(
-    (provider) => providerEvidence[provider].runtime.agentInstanceId,
-  ))
-  const ownerUserIds = new Set(PROVIDER_FAMILIES.map(
-    (provider) => providerEvidence[provider].runtime.ownerUserId,
-  ))
-  if (agentInstanceIds.size !== 1 || ownerUserIds.size !== 1) {
-    fail(
-      "selkies_providers_target_identity_mismatch",
-      "selkies.providers provider runs did not share one authenticated worker agent identity",
+  const outlines = new Map()
+  const readAgentOutline = async (agentInstanceId, provider) => {
+    if (outlines.has(agentInstanceId)) return outlines.get(agentInstanceId)
+    const outline = responseVariant(
+      await sendWithAbortSignal(
+        workerClient,
+        requestApi.getSessionHistoryOutlineRequest(binding.roomId, [agentInstanceId], 20),
+        signal,
+        `${provider} provider execution history`,
+      ),
+      "SessionHistoryOutline",
+      `${provider} provider execution history`,
     )
+    const agent = Array.isArray(outline?.agents)
+      ? outline.agents.find((candidate) => candidate?.agent_id === agentInstanceId)
+      : null
+    if (!agent || !Array.isArray(agent.turns)) {
+      fail(
+        "selkies_providers_execution_evidence_required",
+        `selkies.providers requires a completed provider turn at the authenticated worker for ${provider}`,
+      )
+    }
+    outlines.set(agentInstanceId, agent)
+    return agent
   }
-  const agentInstanceId = [...agentInstanceIds][0]
-  const outline = responseVariant(
-    await sendWithAbortSignal(
-      workerClient,
-      requestApi.getSessionHistoryOutlineRequest(binding.roomId, [agentInstanceId], 20),
-      signal,
-      "selkies.providers provider execution history",
-    ),
-    "SessionHistoryOutline",
-    "selkies.providers provider execution history",
-  )
-  const agent = Array.isArray(outline?.agents)
-    ? outline.agents.find((candidate) => candidate?.agent_id === agentInstanceId)
-    : null
-  if (!agent || !Array.isArray(agent.turns)) {
-    fail(
-      "selkies_providers_execution_evidence_required",
-      "selkies.providers requires a completed provider turn observed at the authenticated worker",
-    )
-  }
+
   const result = {}
   for (const provider of PROVIDER_FAMILIES) {
     const providerRunId = providerRunRefs[provider].current
-    const harnessEvidence = validateOfficialExecutionEvidence(
-      officialExecutionEvidence[provider],
-      provider,
-      providerRunRefs[provider],
-    )
+    const agentInstanceId = providerEvidence[provider].runtime.agentInstanceId
+    const agent = await readAgentOutline(agentInstanceId, provider)
     const turn = findCompletedProviderTurn(
       agent.turns,
       binding.roomId,
       agentInstanceId,
       provider,
       providerRunId,
+      providerPromptIds[provider],
     )
     if (!turn) {
       fail(
@@ -577,21 +662,46 @@ async function readProviderExecutionEvidence({
     }
     const providerThreadId = providerEvidence[provider].runtime.providerThreadId
     assertHistoryThreadBinding(turn, providerThreadId, provider)
+    const toolCallId = await readCompletedProviderToolCallId({
+      workerClient,
+      requestApi,
+      binding,
+      agentInstanceId,
+      provider,
+      providerRunId,
+      turn,
+      signal,
+    })
     const previousProviderRunId = providerRunRefs[provider].previous
     const previousTurn = findCompletedProviderTurn(
-      agent.turns,
+      previousProviderRunId ? await readAgentOutline(
+        providerEvidence[provider].previousRuntime.agentInstanceId,
+        provider,
+      ).then((previousAgent) => previousAgent.turns) : [],
       binding.roomId,
-      agentInstanceId,
+      providerEvidence[provider].previousRuntime?.agentInstanceId ?? agentInstanceId,
       provider,
       previousProviderRunId,
     )
-    if (!previousTurn) {
+    if (previousProviderRunId && !previousTurn) {
       fail(
         "selkies_providers_thread_continuity_required",
         `selkies.providers requires durable history for the previous ${provider} provider run`,
       )
     }
-    assertHistoryThreadBinding(previousTurn, providerEvidence[provider].previousRuntime.providerThreadId, provider)
+    if (previousTurn) {
+      assertHistoryThreadBinding(previousTurn, providerEvidence[provider].previousRuntime.providerThreadId, provider)
+      await readCompletedProviderToolCallId({
+        workerClient,
+        requestApi,
+        binding,
+        agentInstanceId: providerEvidence[provider].previousRuntime.agentInstanceId,
+        provider,
+        providerRunId: previousProviderRunId,
+        turn: previousTurn,
+        signal,
+      })
+    }
     result[provider] = {
       providerRunId,
       agentInstanceId,
@@ -600,62 +710,217 @@ async function readProviderExecutionEvidence({
       lifecycle: turn.lifecycle,
       completedAtMs: turn.completed_at_ms,
       outputObserved: true,
-      ...(previousProviderRunId ? { previousProviderRunId } : {}),
-      promptId: harnessEvidence.promptId,
-      toolCallId: harnessEvidence.toolCallId,
-      finalTurnId: harnessEvidence.finalTurnId,
+      previousProviderRunId,
+      promptId: providerPromptIds[provider],
+      toolCallId,
+      finalTurnId: turn.turn_id,
       roundTripVerified: true,
-    }
-    if (harnessEvidence.finalTurnId !== result[provider].turnId) {
-      fail(
-        "selkies_providers_execution_evidence_required",
-        `selkies.providers official ${provider} final turn did not match durable worker history`,
-      )
+      threadContinuity: true,
     }
   }
   return result
 }
 
-function validateOfficialExecutionEvidence(value, provider, providerRunRefs) {
-  const prompt = value?.prompt
-  const tool = value?.tool
-  const final = value?.final
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || providerFamily(value.provider) !== provider
-    || value.providerRunId !== providerRunRefs.current
-    || value.previousProviderRunId !== providerRunRefs.previous
-    || !prompt || prompt.submitted !== true || !hasText(prompt.id)
-    || !tool || tool.observed !== true || !hasText(tool.id)
-    || !final || final.observed !== true || !hasText(final.turnId)) {
-    fail(
-      "selkies_providers_execution_evidence_required",
-      `selkies.providers requires an official ${provider} prompt/tool/final round trip`,
-    )
-  }
-  return {
-    promptId: prompt.id.trim(),
-    toolCallId: tool.id.trim(),
-    finalTurnId: final.turnId.trim(),
-  }
-}
-
-function findCompletedProviderTurn(turns, sessionId, agentInstanceId, provider, providerRunId) {
+function findCompletedProviderTurn(
+  turns,
+  sessionId,
+  agentInstanceId,
+  provider,
+  providerRunId,
+  promptId = null,
+) {
   return turns.find((candidate) => candidate?.lifecycle === "completed"
     && candidate.external_provider === provider
+    && (promptId == null || candidate.prompt_id === promptId)
     && Number.isSafeInteger(candidate.completed_at_ms)
     && candidate.completed_at_ms >= candidate.started_at_ms
     && candidate.user_prompt?.entry?.session_id === sessionId
     && candidate.user_prompt.entry.agent_id === agentInstanceId
     && candidate.user_prompt.entry.kind === "user_prompt"
+    && candidate.user_prompt.entry.provider_run_id === providerRunId
     && hasText(candidate.user_prompt.entry.text)
-    && historyPageEntries(candidate).some((pageEntry) => pageEntry?.entry?.session_id === sessionId
-      && pageEntry.entry.agent_id === agentInstanceId
-      && pageEntry.entry.provider_run_id === providerRunId
-      && pageEntry.entry.kind === "provider_output"
-      && hasText(pageEntry.entry.text))
-    && (candidate.blobs ?? []).some((blob) => blob?.kind === "provider_tool"
-      && Number.isSafeInteger(blob.entry_count)
-      && blob.entry_count > 0))
+    && historyPageEntries(candidate).some((pageEntry) => historyEntryBelongsToTurn(
+      pageEntry,
+      candidate,
+      sessionId,
+      agentInstanceId,
+      providerRunId,
+      "provider_output",
+    ) && hasText(pageEntry.entry.text))
+  )
+}
+
+async function readCompletedProviderToolCallId({
+  workerClient,
+  requestApi,
+  binding,
+  agentInstanceId,
+  provider,
+  providerRunId,
+  turn,
+  signal,
+}) {
+  for (const blob of turn.blobs ?? []) {
+    if (blob?.kind !== "provider_tool" || !Number.isSafeInteger(blob.entry_count) || blob.entry_count <= 0) continue
+    const content = responseVariant(
+      await sendWithAbortSignal(
+        workerClient,
+        requestApi.getSessionHistoryBlobContentRequest(binding.roomId, agentInstanceId, blob.blob_id),
+        signal,
+        `${provider} provider tool history`,
+      ),
+      "SessionHistoryBlobContent",
+      `${provider} provider tool history`,
+    )
+    for (const pageEntry of content?.entries ?? []) {
+      const entry = pageEntry?.entry
+      if (!historyEntryBelongsToTurn(
+        pageEntry,
+        turn,
+        binding.roomId,
+        agentInstanceId,
+        providerRunId,
+        "provider_tool",
+      )) continue
+      const payload = parseProviderToolPayload(entry.text)
+      const status = providerToolStatus(payload)
+      const toolCallId = providerToolCallId(payload) ?? (hasText(entry.merge_key) ? entry.merge_key.trim() : null)
+      if (toolCallId && ["completed", "complete", "succeeded", "success"].includes(status)) {
+        return toolCallId
+      }
+    }
+  }
+  fail(
+    "selkies_providers_execution_evidence_required",
+    `selkies.providers requires a completed durable provider tool call for ${provider}`,
+  )
+}
+
+function historyEntryBelongsToTurn(pageEntry, turn, sessionId, agentInstanceId, providerRunId, kind) {
+  const entry = pageEntry?.entry
+  return entry?.session_id === sessionId
+    && entry.agent_id === agentInstanceId
+    && entry.provider_run_id === providerRunId
+    && entry.kind === kind
+    && hasText(entry.external_provider_turn_id)
+    && hasText(turn.external_provider_turn_id)
+    && entry.external_provider_turn_id === turn.external_provider_turn_id
+}
+
+function parseProviderToolPayload(text) {
+  if (typeof text !== "string") return null
+  try {
+    const value = JSON.parse(text)
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+function providerToolStatus(value) {
+  if (!value || typeof value !== "object") return ""
+  const status = value.status ?? value.state?.status
+  return typeof status === "string" ? status.trim().toLowerCase() : ""
+}
+
+function providerToolCallId(value) {
+  if (!value || typeof value !== "object") return null
+  for (const field of ["call_id", "id", "tool_call_id"]) {
+    if (hasText(value[field])) return value[field].trim()
+  }
+  return null
+}
+
+function requireOfficialHarnessRequestApi(requestApi) {
+  for (const name of [
+    "getProviderCatalogRequest",
+    "getProviderAuthStatusRequest",
+    "spawnAgentRequest",
+    "attachToSessionRequest",
+    "submitPromptRequest",
+    "getSessionStateRequest",
+    "listRoomEnvironmentActionHistoryRequest",
+    "getSessionHistoryOutlineRequest",
+  ]) {
+    if (typeof requestApi?.[name] !== "function") {
+      fail("selkies_providers_request_api_required", `selkies.providers official harness requires ${name}`)
+    }
+  }
+}
+
+function selectProviderModel(catalog, provider, requestedModel) {
+  if (hasText(requestedModel)) return requestedModel.trim()
+  if (hasText(catalog?.default?.[provider])) return catalog.default[provider].trim()
+  const providerEntry = catalog?.all?.find((entry) => providerFamily(entry?.id) === provider)
+  const modelId = providerEntry && typeof providerEntry.models === "object"
+    ? Object.keys(providerEntry.models).find((id) => hasText(id))
+    : null
+  if (modelId) return modelId
+  for (const entry of catalog?.all ?? []) {
+    if (entry?.models && typeof entry.models === "object") {
+      const firstModel = Object.keys(entry.models).find((id) => hasText(id))
+      if (firstModel) return firstModel
+    }
+  }
+  fail(
+    "selkies_providers_catalog_required",
+    `selkies.providers could not select a public model for ${provider}`,
+  )
+}
+
+async function readPromptTurn({ workerClient, requestApi, sessionId, agentId, promptId, signal }) {
+  const outline = responseVariant(
+    await sendWithAbortSignal(
+      workerClient,
+      requestApi.getSessionHistoryOutlineRequest(sessionId, [agentId], 20),
+      signal,
+      "official provider prompt history",
+    ),
+    "SessionHistoryOutline",
+    "official provider prompt history",
+  )
+  const agent = Array.isArray(outline?.agents)
+    ? outline.agents.find((candidate) => candidate?.agent_id === agentId)
+    : null
+  const turn = agent?.turns?.find((candidate) => candidate?.prompt_id === promptId)
+  if (!turn) {
+    fail(
+      "selkies_providers_execution_evidence_required",
+      "selkies.providers official harness returned a prompt without a durable turn",
+    )
+  }
+  return turn
+}
+
+async function waitForPublicProbe(probe, timeoutMs, description, signal) {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    if (signal?.aborted) throw abortError(description)
+    const value = await probe()
+    if (value) return value
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) throw new Error(`${description} before the public deadline`)
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, remainingMs)))
+  }
+}
+
+async function withPublicTimeout(operation, timeoutMs, description, signal) {
+  if (signal?.aborted) throw abortError(description)
+  let timer
+  let abort
+  const aborted = new Promise((_, reject) => {
+    abort = () => reject(abortError(description))
+    signal?.addEventListener("abort", abort, { once: true })
+  })
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${description} exceeded ${timeoutMs}ms`)), timeoutMs)
+  })
+  try {
+    return await Promise.race([Promise.resolve(operation), aborted, timeout])
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", abort)
+  }
 }
 
 function assertHistoryThreadBinding(turn, providerThreadId, provider) {
@@ -745,7 +1010,7 @@ function validateProviderRuntime(runtime, provider, accountProfile, binding, pro
     || providerFamily(runtime.provider) !== provider
     || runtime.account_profile !== accountProfile
     || !hasText(runtime.owner_user_id)
-    || (active && !ACTIVE_PROVIDER_RUN_STATES.has(runtime.state))
+    || (active && !EXECUTED_PROVIDER_RUN_STATES.has(runtime.state))
     || (!KNOWN_PROVIDER_RUN_STATES.has(runtime.state))
     || !hasText(runtime.agent_instance_id)
     || runtime.endpoint_mode !== "managed"

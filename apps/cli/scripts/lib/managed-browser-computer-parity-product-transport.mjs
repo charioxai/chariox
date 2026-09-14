@@ -1,6 +1,8 @@
 import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 
+import { runSelkiesProviderAcceptance } from "./managed-browser-computer-parity-providers.mjs"
+
 const OPERATOR_ENDPOINT_ENV = "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL"
 const TARGET_KERNEL_ENV = "CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF"
 const TARGET_MACHINE_ENV = "CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF"
@@ -138,6 +140,18 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
 
   return {
     async run(step, request, { signal } = {}) {
+      if (step === "selkies.providers") {
+        if (signal?.aborted) {
+          throw new Error("managed parity selkies.providers was aborted before the public request")
+        }
+        return runSelkiesProviderAcceptance({
+          homeClient: displayClient,
+          workerClient: client,
+          requestApi,
+          request,
+          signal,
+        })
+      }
       if (step !== "selkies.attach") {
         throw new Error(`unsupported managed parity step: ${step}`)
       }

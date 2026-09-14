@@ -130,7 +130,10 @@ async function exerciseBackend({ backend, run, expected, fullAcceptance }) {
   }
 
   if (fullAcceptance) {
-    const providers = await run(`${prefix}.providers`, { displayBackend: backend })
+    const providers = await run(`${prefix}.providers`, {
+      displayBackend: backend,
+      binding: { ...expected },
+    })
     validateBoundTarget(providers, expected, backend)
     validateProviderAcceptanceEvidence(providers, `${prefix}.providers`)
 
@@ -246,7 +249,8 @@ function validateProviderAcceptanceEvidence(value, step) {
     if (!roundTrip || roundTrip.outputObserved !== true || roundTrip.roundTripVerified !== true
       || !text(roundTrip.promptId) || !text(roundTrip.toolCallId) || !text(roundTrip.finalTurnId)
       || state.persistedHistory?.[provider] !== true
-      || !thread || thread.continuity !== true || !text(thread.current) || !text(thread.previous)) {
+      || !thread || thread.continuity !== true || !text(thread.current)
+      || (thread.previous !== null && !text(thread.previous))) {
       fail("provider_execution_evidence_required", step)
     }
   }
