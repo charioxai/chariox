@@ -6,6 +6,15 @@ use crate::transport::flow_control;
 
 use super::super::KernelAgentService;
 
+fn merge_remote_provider_termination(
+    worker_provider_termination: Option<crate::provider::ProviderRunTermination>,
+    explicit_provider_termination: Option<crate::provider::ProviderRunTermination>,
+) -> Option<crate::provider::ProviderRunTermination> {
+    // Normal completion supplies no local diagnostic, so retain the authenticated worker value;
+    // an explicit caller diagnostic remains authoritative when one is supplied.
+    explicit_provider_termination.or(worker_provider_termination)
+}
+
 pub(super) enum KernelPromptCompletionAdmission {
     Remote {
         session_id: String,
@@ -102,7 +111,10 @@ impl<'a> KernelAgentService<'a> {
             KernelPromptCompletionAdmission::Remote { .. } => {
                 let mut completed = self.complete_remote_prompt_from_admission(admission)?;
                 completed.settlement_status = settlement_status;
-                completed.provider_termination = provider_termination.clone();
+                completed.provider_termination = merge_remote_provider_termination(
+                    completed.provider_termination,
+                    provider_termination.clone(),
+                );
                 self.finish_remote_prompt_completion(completed)?
             }
             KernelPromptCompletionAdmission::Local { .. } => {
@@ -667,5 +679,34 @@ impl<'a> KernelAgentService<'a> {
                 }),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_remote_provider_termination;
+    use crate::provider::ProviderRunTermination;
+
+    #[test]
+    fn remote_completion_keeps_worker_termination_without_explicit_diagnostic() {
+        let worker = ProviderRunTermination::process_exit(23, 17_600);
+
+        assert_eq!(
+            merge_remote_provider_termination(Some(worker.clone()), None),
+            Some(worker),
+        );
+    }
+
+    #[test]
+    fn explicit_remote_termination_overrides_worker_termination() {
+        let explicit = ProviderRunTermination::signal("SIGTERM", 17_601);
+
+        assert_eq!(
+            merge_remote_provider_termination(
+                Some(ProviderRunTermination::process_exit(23, 17_600)),
+                Some(explicit.clone()),
+            ),
+            Some(explicit),
+        );
     }
 }
