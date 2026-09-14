@@ -43,7 +43,9 @@ mod project_environment_setup_validation;
 use project_environment_setup_dispatch::*;
 use project_environment_setup_policy::*;
 pub(super) use project_environment_setup_storage::ProjectEnvironmentSetupStore;
-use project_environment_setup_storage::{RemoteSetupRecoveryDecision, SetupEntry, SetupExecution};
+use project_environment_setup_storage::{
+    RemoteSetupRecoveryDecision, RemoteSetupRecoveryReservationGuard, SetupEntry, SetupExecution,
+};
 use project_environment_setup_validation::*;
 
 impl KernelRuntimeState {
@@ -156,9 +158,10 @@ impl KernelRuntimeState {
                             .await
                             {
                                 Ok((rebound_execution, setup)) => self
-                                    .reconcile_remote_project_environment_setup(
+                                    .reconcile_remote_project_environment_setup_with_observation(
                                         &rebound_execution,
                                         setup,
+                                        Some(observation_generation),
                                     )?,
                                 Err(error) => {
                                     self.settle_remote_setup_recovery_rejection(
@@ -257,6 +260,13 @@ impl KernelRuntimeState {
                                     "the setup attempt changed before replay dispatch",
                                 ));
                             }
+                            let mut recovery_reservation = RemoteSetupRecoveryReservationGuard::new(
+                                &self.owned.project_environment_setups,
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            );
                             match start_remote_setup_with_deadline(
                                 self,
                                 &execution,
@@ -272,16 +282,11 @@ impl KernelRuntimeState {
                                             setup,
                                             Some(observation_generation),
                                         ) {
-                                        Ok(status) => status,
+                                        Ok(status) => {
+                                            recovery_reservation.disarm();
+                                            status
+                                        }
                                         Err(error) => {
-                                            self.owned
-                                                .project_environment_setups
-                                                .mark_remote_recovery_unknown(
-                                                    &execution.operation_id,
-                                                    status.attempt,
-                                                    binding_id,
-                                                    observation_generation,
-                                                );
                                             return Err(error);
                                         }
                                     }
@@ -289,17 +294,10 @@ impl KernelRuntimeState {
                                 Err(error)
                                     if remote_prompt_error_should_retry_transport(&error) =>
                                 {
-                                    self.owned
-                                        .project_environment_setups
-                                        .mark_remote_recovery_unknown(
-                                            &execution.operation_id,
-                                            status.attempt,
-                                            binding_id,
-                                            observation_generation,
-                                        );
                                     return Err(error);
                                 }
                                 Err(error) => {
+                                    recovery_reservation.disarm();
                                     self.owned
                                         .project_environment_setups
                                         .clear_remote_recovery(&execution.operation_id);
@@ -1507,6 +1505,68 @@ mod tests {
             store.begin_remote_recovery("setup-1", 1, "leased-agent-2", fresh_observation,),
             RemoteSetupRecoveryDecision::Stale,
             "an observation from an old binding must be fenced"
+        );
+    }
+
+    #[test]
+    fn unscoped_start_cannot_acknowledge_a_recovery_reservation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", observation_generation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        store.mark_remote_recovery_observed("setup-1", 1, "leased-agent-1", None);
+
+        let next_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-1",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::InFlight,
+            "an unscoped Start response must not acknowledge a newer Get reservation"
+        );
+    }
+
+    #[test]
+    fn dropped_recovery_observation_becomes_unknown_for_the_same_fence() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", observation_generation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        {
+            let _reservation = RemoteSetupRecoveryReservationGuard::new(
+                &store,
+                "setup-1",
+                1,
+                "leased-agent-1",
+                observation_generation,
+            );
+        }
+
+        let next_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-1",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Unknown,
+            "cancelling replay observation must fence duplicate dispatch until explicit recovery"
         );
     }
 

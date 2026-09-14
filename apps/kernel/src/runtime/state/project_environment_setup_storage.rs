@@ -105,6 +105,51 @@ impl Drop for SetupExecutionGuard {
     }
 }
 
+pub(super) struct RemoteSetupRecoveryReservationGuard {
+    store: ProjectEnvironmentSetupStore,
+    operation_id: String,
+    attempt: u32,
+    binding_id: String,
+    observation_generation: u64,
+    armed: bool,
+}
+
+impl RemoteSetupRecoveryReservationGuard {
+    pub(super) fn new(
+        store: &ProjectEnvironmentSetupStore,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) -> Self {
+        Self {
+            store: store.clone(),
+            operation_id: operation_id.to_owned(),
+            attempt,
+            binding_id: binding_id.to_owned(),
+            observation_generation,
+            armed: true,
+        }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RemoteSetupRecoveryReservationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.store.mark_remote_recovery_unknown(
+                &self.operation_id,
+                self.attempt,
+                &self.binding_id,
+                self.observation_generation,
+            );
+        }
+    }
+}
+
 impl Default for ProjectEnvironmentSetupStore {
     fn default() -> Self {
         Self {
@@ -661,6 +706,12 @@ impl ProjectEnvironmentSetupStore {
         binding_id: &str,
         observation_generation: Option<u64>,
     ) {
+        // Only a status Get carries an observation generation. A Start or
+        // Retry response may race with a newer recovery reservation, so it
+        // cannot acknowledge that reservation without the matching fence.
+        let Some(observation_generation) = observation_generation else {
+            return;
+        };
         let mut remote_recoveries = self
             .remote_recoveries
             .lock()
@@ -680,8 +731,7 @@ impl ProjectEnvironmentSetupStore {
             ) => {
                 *current_attempt == attempt
                     && current_binding_id == binding_id
-                    && observation_generation
-                        .map_or(true, |generation| generation >= *current_generation)
+                    && observation_generation >= *current_generation
             }
             _ => false,
         };
