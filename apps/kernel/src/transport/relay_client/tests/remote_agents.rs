@@ -1,5 +1,6 @@
 #![allow(unused_imports)]
 use super::support::*;
+use crate::session::PromptSubmissionOutcome;
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
