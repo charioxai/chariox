@@ -1147,7 +1147,7 @@ async fn structured_output_resume_retries_without_losing_the_finished_batch() {
 }
 
 #[tokio::test]
-async fn first_output_timeout_projects_error_and_closes_prompt() {
+async fn first_output_silence_preserves_prompt_without_provider_error() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1232,25 +1232,25 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
             true,
         )
         .await
-        .expect("provider output pump should reap silent timeout");
+        .expect("provider output pump should observe the quiet turn");
 
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "silent provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "elapsed silence alone must not close the active prompt"
     );
     let run = runtime
         .owned
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "quiet execution is not a provider failure"
+    );
     let provider_errors = runtime
         .owned
         .terminal_stream
@@ -1260,13 +1260,8 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
         .collect::<Vec<_>>();
     assert_eq!(
         provider_errors.len(),
-        1,
-        "an unprojected terminal failure should surface exactly one provider error"
-    );
-    assert!(
-        String::from_utf8_lossy(&provider_errors[0].bytes)
-            .contains("Provider prompt produced no output"),
-        "the visible provider error should preserve the terminal diagnostic"
+        0,
+        "quiet execution must not emit a fabricated provider error"
     );
     let durable_errors = runtime
         .owned
@@ -1278,23 +1273,23 @@ async fn first_output_timeout_projects_error_and_closes_prompt() {
         .collect::<Vec<_>>();
     assert_eq!(
         durable_errors.len(),
-        1,
-        "the provider error should be durable across reload"
+        0,
+        "quiet execution must not persist a fabricated provider error"
     );
     let notices = runtime
         .owned
         .terminal_stream
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices.iter().any(|record| record
-            .message
-            .contains("Provider prompt produced no output")),
-        "timeout diagnostic should be visible to attached clients"
+        !notices
+            .iter()
+            .any(|record| record.message.contains("Chariox closed this turn")),
+        "clients must not be told a quiet turn failed"
     );
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
+async fn quiet_provider_after_output_preserves_active_prompt() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1371,39 +1366,39 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
             true,
         )
         .await
-        .expect("provider output pump should reap inactive provider turn");
+        .expect("provider output pump should observe the quiet turn");
 
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "inactive provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "silence after output must not close a provider turn"
     );
     let run = runtime
         .owned
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "silence after output is not a provider failure"
+    );
     let notices = runtime
         .owned
         .terminal_stream
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices
+        !notices
             .iter()
-            .any(|record| record.message.contains("after its last activity")),
-        "inactivity timeout diagnostic should be visible to attached clients"
+            .any(|record| record.message.contains("Chariox closed this turn")),
+        "a quiet turn must not produce a terminal failure notice"
     );
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
+async fn quiet_provider_preserves_running_and_completed_tool_turns() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1486,9 +1481,14 @@ async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
         .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
 
     runtime
-        .reap_provider_inactivity_timeouts(session.id())
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
         .await
-        .expect("active tool should suppress the inactivity timeout");
+        .expect("running tool should remain active during silence");
     assert!(runtime
         .owned
         .session_snapshot(session.id())
@@ -1521,19 +1521,24 @@ async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
         .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
 
     runtime
-        .reap_provider_inactivity_timeouts(session.id())
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
         .await
-        .expect("completed tool should restore the inactivity timeout");
+        .expect("completed tool does not complete the provider turn");
     assert!(runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist")
         .active_prompt_for_agent(agent.id())
-        .is_none());
+        .is_some());
 }
 
 #[tokio::test]
-async fn provider_inactivity_timeout_retires_managed_process() {
+async fn quiet_provider_keeps_managed_process_alive() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1607,7 +1612,7 @@ async fn provider_inactivity_timeout_retires_managed_process() {
             true,
         )
         .await
-        .expect("provider output pump should reap inactive provider turn");
+        .expect("provider output pump should preserve quiet execution");
 
     assert_eq!(
         runtime
@@ -1616,15 +1621,16 @@ async fn provider_inactivity_timeout_retires_managed_process() {
             .get_run(run.id())
             .expect("provider run should remain addressable")
             .state(),
-        crate::provider::ProviderRunState::Ended,
+        crate::provider::ProviderRunState::Running,
     );
     assert!(
-        !crate::runtime::process_health::process_running(pid),
-        "terminal timeout must stop the managed provider child"
+        crate::runtime::process_health::process_running(pid),
+        "silence must not stop the managed provider child"
     );
-    let tracking = runtime.owned.provider_process_tracking.snapshot();
-    assert!(tracking.run_processes.is_empty());
-    assert!(tracking.processes.is_empty());
+    runtime
+        .fail_owned_provider_prompt(session.id(), run.id(), "test cleanup", true)
+        .await
+        .expect("test provider should be cleaned up");
 }
 
 #[tokio::test]
@@ -1690,7 +1696,7 @@ async fn meta_mode_activation_registers_pending_provider_reload_when_agent_busy(
 }
 
 #[tokio::test]
-async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
+async fn metaagent_receives_required_failed_turn_event_on_provider_failure() {
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -1802,14 +1808,14 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     runtime
-        .pump_owned_provider_output(
+        .fail_owned_provider_prompt(
             session.id(),
             worker_run.id(),
-            vec![attachment.id().to_string()],
+            "provider reported a terminal failure",
             true,
         )
         .await
-        .expect("provider output pump should reap silent timeout");
+        .expect("explicit provider failure should settle the turn");
 
     let events =
         runtime
@@ -1820,7 +1826,7 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
     assert_eq!(events[0].source_agent_id.as_deref(), Some(agent.id()));
     assert!(events[0]
         .summary
-        .contains("Provider prompt produced no output"));
+        .contains("provider reported a terminal failure"));
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
