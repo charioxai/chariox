@@ -269,6 +269,17 @@ mod tests {
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "project_environment_setup_not_found");
         assert!(!relay_error.retryable);
+
+        let rejected = DaemonError::LocalTransport {
+            operation: "project environment setup",
+            message: "requested platform does not match this worker".to_string(),
+        };
+        let rejected_relay_error = map_relay_error(&rejected);
+        assert_eq!(
+            rejected_relay_error.code,
+            "project_environment_setup_rejected"
+        );
+        assert!(!rejected_relay_error.retryable);
     }
 
     #[test]
