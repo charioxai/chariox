@@ -921,6 +921,7 @@ test("real public create binds and starts the home-owned slice before attach use
     ]);
     assert.ifError(serverError);
 
+    const inventoryResults = [];
     for (const mode of ["zero", "duplicate"]) {
       inventoryMode = mode;
       const invalidTransport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
@@ -929,6 +930,7 @@ test("real public create binds and starts the home-owned slice before attach use
           bindRoomEnvironmentSliceRequest,
           createSliceRequest,
           deleteSliceRequest,
+          detachFromSessionRequest,
           getRoomEnvironmentResourceInventoryRequest,
           getRoomEnvironmentStateRequest,
           getSliceRequest,
@@ -941,8 +943,9 @@ test("real public create binds and starts the home-owned slice before attach use
         targetKernelRef: "worker-ref-1",
         targetMachineRef: "machine-1",
       });
-      await assert.rejects(
-        () => invalidTransport.run("selkies.create", {
+      let error;
+      try {
+        await invalidTransport.run("selkies.create", {
           runId: `managed-parity-run-${mode}`,
           binding: {
             kernelId: "daemon-1",
@@ -952,11 +955,21 @@ test("real public create binds and starts the home-owned slice before attach use
           },
           displayBackend: null,
           kernelOwnedDefault: true,
-        }),
-        /exactly one worker browser and profile identity/,
-      );
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      inventoryResults.push({
+        mode,
+        rejectedForCardinality: error instanceof Error
+          && /exactly one worker browser and profile identity/.test(error.message),
+      });
       await invalidTransport.run("cleanup.perform", { scope: "run_owned_resources" });
     }
+    assert.deepEqual(inventoryResults, [
+      { mode: "zero", rejectedForCardinality: true },
+      { mode: "duplicate", rejectedForCardinality: true },
+    ]);
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));

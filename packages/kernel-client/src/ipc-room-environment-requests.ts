@@ -7,7 +7,7 @@ export const roomEnvironmentActionCancellationMinimumProtocolVersion = 277
 export const roomEnvironmentActionHistoryMinimumProtocolVersion = 279
 export const roomEnvironmentSliceBindingMinimumProtocolVersion = 282
 export const roomEnvironmentScreenshotMinimumProtocolVersion = 296
-export const roomEnvironmentResourceInventoryMinimumProtocolVersion = 329
+export const roomEnvironmentResourceInventoryMinimumProtocolVersion = 330
 export const roomEnvironmentBrowserHistoryMinimumProtocolVersion = 305
 export const roomEnvironmentBrowserTabActionsMinimumProtocolVersion = 306
 
