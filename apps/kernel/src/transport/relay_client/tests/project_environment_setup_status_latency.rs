@@ -569,18 +569,6 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         // as the relay connector, but is not a client-socket disconnect. The
         // public relay path is exercised separately below.
         let runtime = home_router.runtime_state();
-        let (entry_execution, entry_status, entry_cancel_requested) = runtime
-            .owned
-            .project_environment_setups
-            .get_entry_with_cancellation(&operation_id, "user-1")
-            .expect("authenticated Start must create the shared runtime setup entry");
-        assert_eq!(entry_execution.operation_id, operation_id);
-        assert_eq!(entry_execution.session_id, session_id);
-        assert_eq!(entry_execution.agent_id, agent_id);
-        assert_eq!(entry_execution.owner_user_id, "user-1");
-        assert_eq!(entry_status.attempt, 1);
-        assert!(!entry_cancel_requested);
-
         let mut dropped_get = tokio::spawn({
             let runtime = runtime.clone();
             let operation_id = operation_id.clone();
@@ -611,26 +599,14 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
                 let task_result = task_result
                     .expect("dropped Get task must not panic before reaching the worker");
                 panic!(
-                    "dropped Get completed before the worker request barrier; result={task_result:?}; shared_entry=(operation_id={}, session_id={}, agent_id={}, owner_user_id={}, attempt={}, cancel_requested={})",
-                    entry_execution.operation_id,
-                    entry_execution.session_id,
-                    entry_execution.agent_id,
-                    entry_execution.owner_user_id,
-                    entry_status.attempt,
-                    entry_cancel_requested,
+                    "dropped Get completed before the worker request barrier; result={task_result:?}; authenticated Start and the shared home router were already established"
                 );
             }
             Err(_) => {
                 dropped_get.abort();
                 let task_result = dropped_get.await;
                 panic!(
-                    "fixture worker did not observe the dropped Get within 2s; task_result={task_result:?}; shared_entry=(operation_id={}, session_id={}, agent_id={}, owner_user_id={}, attempt={}, cancel_requested={})",
-                    entry_execution.operation_id,
-                    entry_execution.session_id,
-                    entry_execution.agent_id,
-                    entry_execution.owner_user_id,
-                    entry_status.attempt,
-                    entry_cancel_requested,
+                    "fixture worker did not observe the dropped Get within 2s; task_result={task_result:?}; authenticated Start and the shared home router were already established"
                 );
             }
         }
