@@ -1,4 +1,9 @@
-//! Public project-environment setup lifecycle against a confirmed worker.
+//! Test-only public project-environment setup lifecycle harness.
+//!
+//! The provider is a simulated local OpenCode HTTP endpoint and the confirmed
+//! worker receipt is fabricated. The validation step still executes an actual
+//! `/bin/sh` command, but this is not real VM provisioning or project-toolchain
+//! installation acceptance.
 
 #[cfg(unix)]
 use std::collections::BTreeMap;
@@ -24,12 +29,11 @@ use super::*;
 use crate::config::{DaemonConfig, KernelRuntimeRole};
 #[cfg(unix)]
 use crate::local::{
-    CancelProjectEnvironmentSetupRequest, CreateSessionRequest,
-    GetProjectEnvironmentSetupStatusRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
-    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind, RetryProjectEnvironmentSetupRequest,
-    StartProjectEnvironmentSetupRequest,
+    CancelProjectEnvironmentSetupRequest, GetProjectEnvironmentSetupStatusRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentDefinition,
+    ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
+    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    RetryProjectEnvironmentSetupRequest, StartProjectEnvironmentSetupRequest,
 };
 #[cfg(unix)]
 use crate::provider::{
@@ -37,16 +41,18 @@ use crate::provider::{
 };
 #[cfg(unix)]
 use crate::runtime::router::CommandRouter;
+#[cfg(unix)]
+use crate::session::CreateSessionRequest;
 
 #[cfg(unix)]
 #[tokio::test]
-async fn public_setup_lifecycle_validates_supplied_definition_on_fresh_worker() {
+async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn public_setup_lifecycle_generates_definition_and_validates_fresh_worker_tooling() {
+async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Generated).await;
 }
 
