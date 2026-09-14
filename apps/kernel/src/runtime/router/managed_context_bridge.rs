@@ -68,6 +68,15 @@ impl CommandRouter {
         &self,
         request: RelayManagedContextArmRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.relay_arm_managed_context_import_with_home_caller(request, None)
+            .await
+    }
+
+    pub(crate) async fn relay_arm_managed_context_import_with_home_caller(
+        &self,
+        request: RelayManagedContextArmRequest,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         let RelayManagedContextArmRequest {
             identity,
             source_kernel_id,
@@ -79,7 +88,12 @@ impl CommandRouter {
             archive_sha256,
             archive_size_bytes,
         } = request;
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let plan = if let Some(registration) = self.managed_kernel_registration.as_ref() {
             let static_authorization = managed_context_caller(self, &identity, &source_kernel_id);
             match static_authorization {
@@ -181,7 +195,30 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        self.relay_begin_managed_context_import_with_home_caller(
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_begin_managed_context_import_with_home_caller(
+        &self,
+        identity: RelayCallerIdentity,
+        source_kernel_id: String,
+        transfer_id: String,
+        capability: String,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.begin(
@@ -199,6 +236,15 @@ impl CommandRouter {
         &self,
         request: RelayManagedContextChunkRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.relay_upload_managed_context_chunk_with_home_caller(request, None)
+            .await
+    }
+
+    pub(crate) async fn relay_upload_managed_context_chunk_with_home_caller(
+        &self,
+        request: RelayManagedContextChunkRequest,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         let RelayManagedContextChunkRequest {
             identity,
             source_kernel_id,
@@ -208,7 +254,12 @@ impl CommandRouter {
             bytes,
             chunk_sha256,
         } = request;
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.upload_chunk(
@@ -234,7 +285,30 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        self.relay_get_managed_context_import_status_with_home_caller(
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_get_managed_context_import_status_with_home_caller(
+        &self,
+        identity: RelayCallerIdentity,
+        source_kernel_id: String,
+        transfer_id: String,
+        capability: String,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.get_status(
@@ -255,7 +329,30 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        self.relay_finalize_managed_context_import_with_home_caller(
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_finalize_managed_context_import_with_home_caller(
+        &self,
+        identity: RelayCallerIdentity,
+        source_kernel_id: String,
+        transfer_id: String,
+        capability: String,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let registration = self.managed_kernel_registration.clone();
         let completion_config = self.config_projection.snapshot();
         let provider_account_target = ManagedContextProviderAccountImportTarget {
@@ -623,7 +720,7 @@ fn managed_context_caller(
     identity: &RelayCallerIdentity,
     source_kernel_id: &str,
 ) -> Result<AuthorizedManagedContextCaller, DaemonError> {
-    let caller = managed_context_transfer_caller(router, identity, source_kernel_id)?;
+    let caller = managed_context_transfer_caller(router, identity, source_kernel_id, None)?;
     let key_thumbprint = caller.key_thumbprint.clone();
     let registration = router.managed_kernel_registration.as_ref().ok_or_else(|| {
         managed_context_authorization_error(
@@ -664,6 +761,7 @@ fn managed_context_transfer_caller(
     router: &CommandRouter,
     identity: &RelayCallerIdentity,
     source_kernel_id: &str,
+    disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
 ) -> Result<ManagedContextTransferCaller, DaemonError> {
     let owner_user_id = identity.user_id.clone().ok_or_else(|| {
         managed_context_authorization_error(
@@ -705,7 +803,10 @@ fn managed_context_transfer_caller(
         });
     }
 
-    let home_caller = router.confirmed_disposable_worker_home_caller()?;
+    let home_caller = match disposable_home_caller {
+        Some(home_caller) => home_caller.clone(),
+        None => router.confirmed_disposable_worker_home_caller()?,
+    };
     let source_subject_matches = match identity.subject_kind {
         chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == home_caller.kernel_id,
         chariox_relay::auth::RelaySubjectKind::Machine => {
