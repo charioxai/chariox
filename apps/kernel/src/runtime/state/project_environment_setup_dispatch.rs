@@ -4,6 +4,23 @@ use chariox_relay::protocol::ClientTarget;
 
 const REMOTE_SETUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(240);
 
+fn setup_response_timeout(
+    relay_config: &crate::config::DaemonConfig,
+    response_kind: RelaySetupResponseKind,
+) -> Duration {
+    // Status is an observation and follows the kernel's configured relay
+    // request budget (60s by default). Control operations keep their longer
+    // setup budget; a status timeout must not trigger or settle setup.
+    match response_kind {
+        RelaySetupResponseKind::Status => {
+            Duration::from_millis(relay_config.relay_request_timeout_ms)
+        }
+        RelaySetupResponseKind::Started
+        | RelaySetupResponseKind::Cancelled
+        | RelaySetupResponseKind::Retried => REMOTE_SETUP_RESPONSE_TIMEOUT,
+    }
+}
+
 pub(super) async fn start_remote_setup(
     state: &KernelRuntimeState,
     execution: &SetupExecution,
@@ -149,6 +166,7 @@ async fn send_setup_request(
     request: RelayPeerRequest,
     response_kind: RelaySetupResponseKind,
 ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+    let response_timeout = setup_response_timeout(&relay_config, response_kind);
     let response = match state.connected_relay_state_for_config(&relay_config).await {
         Some(relay_state) => {
             crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -156,7 +174,7 @@ async fn send_setup_request(
                 &relay_state,
                 target,
                 request,
-                REMOTE_SETUP_RESPONSE_TIMEOUT,
+                response_timeout,
             )
             .await
         }
@@ -165,7 +183,7 @@ async fn send_setup_request(
                 &relay_config,
                 target,
                 request,
-                REMOTE_SETUP_RESPONSE_TIMEOUT,
+                response_timeout,
             )
             .await
         }

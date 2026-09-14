@@ -79,6 +79,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some("secret".to_string());
     config_home.relay_heartbeat_ms = 50;
+    config_home.relay_request_timeout_ms = 100;
 
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-status-latency-worker".to_string();
