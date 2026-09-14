@@ -959,7 +959,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             state_worker,
             shutdown_worker_rx,
             relay_url.clone(),
-            worker_relay_token,
+            worker_relay_token.clone(),
         ),
     );
     for _ in 0..200 {
