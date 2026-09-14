@@ -38,6 +38,7 @@ pub(super) async fn controller_placement_lifecycle() {
 }
 
 struct LiveWorker {
+    _home_persistence_environment: Option<HomePersistenceEnvironment>,
     home: Arc<CommandRouter>,
     worker: Arc<CommandRouter>,
     rooms: Vec<String>,
@@ -69,6 +70,42 @@ impl LiveWorker {
         browser_controller: bool,
         home_vault_backend: Option<crate::config::CredentialVaultBackend>,
         managed_slice_worker: bool,
+    ) -> Self {
+        Self::start_configured_with_home_vault_and_worker_id(
+            private_relay,
+            browser_controller,
+            home_vault_backend,
+            managed_slice_worker,
+            "environment-worker".to_string(),
+            false,
+        )
+        .await
+    }
+
+    async fn start_with_fresh_worker_identity() -> Self {
+        let worker_kernel_id = format!(
+            "environment-worker-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        );
+        Self::start_configured_with_home_vault_and_worker_id(
+            false,
+            false,
+            None,
+            false,
+            worker_kernel_id,
+            true,
+        )
+        .await
+    }
+
+    async fn start_configured_with_home_vault_and_worker_id(
+        private_relay: bool,
+        browser_controller: bool,
+        home_vault_backend: Option<crate::config::CredentialVaultBackend>,
+        managed_slice_worker: bool,
+        worker_kernel_id: String,
+        isolate_home_persistence: bool,
     ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
@@ -137,13 +174,16 @@ impl LiveWorker {
                 Some(home_state.config.relay_public_key.clone());
         }
         home_state.config.daemon_id = "environment-home".to_string();
-        worker_state.config.daemon_id = "environment-worker".to_string();
+        worker_state.config.daemon_id = worker_kernel_id.clone();
         worker_state.config.daemon_alias = Some(if managed_slice_worker {
             "slice:slice-1:worker:test".to_string()
         } else {
             "desktop-worker".to_string()
         });
         worker_state.config.host_machine_id = "slice:slice-1".to_string();
+        let home_persistence_environment = isolate_home_persistence.then(|| {
+            HomePersistenceEnvironment::set("CHARIOX_HOME", home_state.root.as_os_str())
+        });
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
         if browser_controller {
@@ -170,6 +210,7 @@ impl LiveWorker {
         }
         let worker = Arc::new(worker);
         let mut fixture = Self {
+            _home_persistence_environment: home_persistence_environment,
             home: Arc::clone(&home),
             worker: Arc::clone(&worker),
             rooms,
@@ -248,7 +289,7 @@ impl LiveWorker {
                         worker_registry
                             .read()
                             .await
-                            .daemon("environment-worker")
+                            .daemon(&worker_kernel_id)
                             .is_some()
                     };
                 if registered {
@@ -359,6 +400,28 @@ impl LiveWorker {
                     .await
                     .expect("relay port released"),
             );
+        }
+    }
+}
+
+struct HomePersistenceEnvironment {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl HomePersistenceEnvironment {
+    fn set(name: &'static str, value: &std::ffi::OsStr) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+}
+
+impl Drop for HomePersistenceEnvironment {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
         }
     }
 }

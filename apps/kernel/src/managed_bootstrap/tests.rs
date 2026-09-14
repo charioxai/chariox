@@ -734,7 +734,7 @@ impl Fixture {
         let kernel_binary = root.join("bin").join("chariox-kernel");
         fs::create_dir_all(kernel_binary.parent().expect("kernel parent"))
             .expect("create kernel parent");
-        let kernel_fixture = b"#!/bin/sh\nreceipt=\"$CHARIOX_HOME/managed/bootstrap-receipt.json\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$CHARIOX_HOME/managed/kernel-started\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
+        let kernel_fixture = b"#!/bin/sh\nreceipt=\"${CHARIOX_DISPOSABLE_WORKER_RECEIPT:-$CHARIOX_HOME/managed/bootstrap-receipt.json}\"\nmarker=\"${CHARIOX_KERNEL_STARTED_MARKER:-$CHARIOX_HOME/managed/kernel-started}\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$marker\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
         fs::write(&kernel_binary, kernel_fixture).expect("write kernel fixture");
         #[cfg(unix)]
         {

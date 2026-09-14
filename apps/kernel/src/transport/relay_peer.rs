@@ -76,7 +76,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 48 carries private browser-cookie import commands and bounded results.
 /// Version 50 carries bounded provider-run termination metadata across leased execution.
 /// Version 51 carries kernel-owned project-environment setup dispatch and status.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 51;
+/// Version 52 carries the source-selected managed-context plan in import arm requests.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 52;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 
@@ -818,8 +819,7 @@ pub enum RelayPeerRequest {
         required_mcps: Vec<RequiredRemoteMcp>,
     },
     ArmManagedContextImport {
-        context_id: String,
-        plan_digest: String,
+        plan: crate::managed_context::package::ManagedContextPlanBinding,
         target_environment_id: String,
         target_kernel_id: String,
         target_key_thumbprint: String,
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 52);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1172,8 +1172,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_51() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_52() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 52);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,

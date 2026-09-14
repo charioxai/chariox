@@ -40,7 +40,12 @@ pub(super) fn authorize_entry<'a>(
         || entry.source_key_thumbprint != caller.key_thumbprint
         || entry.owner_user_id != caller.owner_user_id
         || entry.realm_id != caller.realm_id
-        || entry.target_environment_id != caller.target_environment_id
+        || caller
+            .target_environment_id
+            .as_deref()
+            .is_some_and(|target_environment_id| {
+                entry.target_environment_id != target_environment_id
+            })
         || entry.target_kernel_id != caller.target_kernel_id
         || entry.target_key_thumbprint != caller.target_key_thumbprint
     {

@@ -77,4 +77,6 @@ pub use workspace::*;
 /// Version 323 projects bounded provider-run termination metadata with failed turns.
 /// Version 325 preserves failed turn lifecycle in retained history outlines.
 /// Version 326 adds kernel-owned project environment setup and readiness operations.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 326;
+/// Version 327 carries the source-selected managed-context plan required for
+/// confirmed disposable-worker imports.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 327;

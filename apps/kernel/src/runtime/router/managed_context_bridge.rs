@@ -4,7 +4,8 @@ use chariox_relay::protocol::RelayCallerIdentity;
 
 use crate::error::DaemonError;
 use crate::managed_context::cloud_completion::{
-    complete_managed_context_import, context_manifest_digest,
+    complete_disposable_managed_context_import, complete_managed_context_import,
+    context_manifest_digest, validate_disposable_worker_completion_binding,
     validate_managed_context_completion_binding,
 };
 use crate::managed_context::git_credential_enrollment::{
@@ -43,8 +44,7 @@ struct AuthorizedManagedContextCaller {
 pub(crate) struct RelayManagedContextArmRequest {
     pub identity: RelayCallerIdentity,
     pub source_kernel_id: String,
-    pub context_id: String,
-    pub plan_digest: String,
+    pub plan: crate::managed_context::package::ManagedContextPlanBinding,
     pub target_environment_id: String,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
@@ -68,11 +68,19 @@ impl CommandRouter {
         &self,
         request: RelayManagedContextArmRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.relay_arm_managed_context_import_with_home_caller(request, None)
+            .await
+    }
+
+    pub(crate) async fn relay_arm_managed_context_import_with_home_caller(
+        &self,
+        request: RelayManagedContextArmRequest,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         let RelayManagedContextArmRequest {
             identity,
             source_kernel_id,
-            context_id,
-            plan_digest,
+            plan,
             target_environment_id,
             target_kernel_id,
             target_key_thumbprint,
@@ -80,53 +88,61 @@ impl CommandRouter {
             archive_sha256,
             archive_size_bytes,
         } = request;
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
-        let registration = self.managed_kernel_registration.as_ref().ok_or_else(|| {
-            managed_context_authorization_error(
-                "context imports require a confirmed Chariox-managed kernel",
-            )
-        })?;
-        let static_authorization = managed_context_caller(self, &identity, &source_kernel_id);
-        let plan = match static_authorization {
-            Ok(authorization)
-                if authorization.plan.context_id == context_id
-                    && authorization.plan.plan_digest == plan_digest =>
-            {
-                authorization.plan
-            }
-            authorization => {
-                if !registration
-                    .context_plan
-                    .as_ref()
-                    .is_some_and(|plan| plan.is_empty())
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
+        let plan = if let Some(registration) = self.managed_kernel_registration.as_ref() {
+            let static_authorization = managed_context_caller(self, &identity, &source_kernel_id);
+            match static_authorization {
+                Ok(authorization)
+                    if authorization.plan.context_id == plan.context_id
+                        && authorization.plan.plan_digest == plan.plan_digest =>
                 {
-                    return match authorization {
-                        Err(error) => Err(error),
-                        Ok(_) => Err(managed_context_authorization_error(
-                            "managed context selection does not match the Cloud launch plan",
-                        )),
-                    };
+                    authorization.plan
                 }
-                let config = self.config_projection.snapshot();
-                authorize_git_credential_enrollment(
-                    &config,
-                    registration,
-                    GitCredentialEnrollmentSource {
-                        subject: &identity.subject,
-                        subject_kind: identity.subject_kind,
-                        kernel_id: &source_kernel_id,
-                        key_thumbprint: &caller.key_thumbprint,
-                        owner_user_id: &caller.owner_user_id,
-                        realm_id: &caller.realm_id,
-                    },
-                    &context_id,
-                    &plan_digest,
-                )
-                .await?
+                authorization => {
+                    if !registration
+                        .context_plan
+                        .as_ref()
+                        .is_some_and(|launch_plan| launch_plan.is_empty())
+                    {
+                        return match authorization {
+                            Err(error) => Err(error),
+                            Ok(_) => Err(managed_context_authorization_error(
+                                "managed context selection does not match the Cloud launch plan",
+                            )),
+                        };
+                    }
+                    let config = self.config_projection.snapshot();
+                    authorize_git_credential_enrollment(
+                        &config,
+                        registration,
+                        GitCredentialEnrollmentSource {
+                            subject: &identity.subject,
+                            subject_kind: identity.subject_kind,
+                            kernel_id: &source_kernel_id,
+                            key_thumbprint: &caller.key_thumbprint,
+                            owner_user_id: &caller.owner_user_id,
+                            realm_id: &caller.realm_id,
+                        },
+                        &plan.context_id,
+                        &plan.plan_digest,
+                    )
+                    .await?
+                }
             }
+        } else {
+            crate::managed_context::package::validate_plan_binding(&plan)?;
+            plan
         };
         let config = self.config_projection.snapshot();
-        if caller.target_environment_id != target_environment_id
+        if caller
+            .target_environment_id
+            .as_deref()
+            .is_some_and(|expected| expected != target_environment_id)
             || caller.target_kernel_id != target_kernel_id
             || caller.target_key_thumbprint != target_key_thumbprint
         {
@@ -179,7 +195,30 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        self.relay_begin_managed_context_import_with_home_caller(
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_begin_managed_context_import_with_home_caller(
+        &self,
+        identity: RelayCallerIdentity,
+        source_kernel_id: String,
+        transfer_id: String,
+        capability: String,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.begin(
@@ -197,6 +236,15 @@ impl CommandRouter {
         &self,
         request: RelayManagedContextChunkRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.relay_upload_managed_context_chunk_with_home_caller(request, None)
+            .await
+    }
+
+    pub(crate) async fn relay_upload_managed_context_chunk_with_home_caller(
+        &self,
+        request: RelayManagedContextChunkRequest,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         let RelayManagedContextChunkRequest {
             identity,
             source_kernel_id,
@@ -206,7 +254,12 @@ impl CommandRouter {
             bytes,
             chunk_sha256,
         } = request;
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.upload_chunk(
@@ -232,7 +285,30 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
+        self.relay_get_managed_context_import_status_with_home_caller(
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_get_managed_context_import_status_with_home_caller(
+        &self,
+        identity: RelayCallerIdentity,
+        source_kernel_id: String,
+        transfer_id: String,
+        capability: String,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.get_status(
@@ -253,12 +329,31 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_transfer_caller(self, &identity, &source_kernel_id)?;
-        let registration = self.managed_kernel_registration.clone().ok_or_else(|| {
-            managed_context_authorization_error(
-                "context completion requires a confirmed Chariox-managed kernel",
-            )
-        })?;
+        self.relay_finalize_managed_context_import_with_home_caller(
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_finalize_managed_context_import_with_home_caller(
+        &self,
+        identity: RelayCallerIdentity,
+        source_kernel_id: String,
+        transfer_id: String,
+        capability: String,
+        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let caller = managed_context_transfer_caller(
+            self,
+            &identity,
+            &source_kernel_id,
+            disposable_home_caller,
+        )?;
+        let registration = self.managed_kernel_registration.clone();
         let completion_config = self.config_projection.snapshot();
         let provider_account_target = ManagedContextProviderAccountImportTarget {
             registry: self.provider_account_profiles.clone(),
@@ -290,8 +385,8 @@ impl CommandRouter {
         let completion_plan = ready.plan.clone();
         let is_git_credential_enrollment = completion_plan.is_git_credential_enrollment()
             && registration
-                .context_plan
                 .as_ref()
+                .and_then(|registration| registration.context_plan.as_ref())
                 .is_some_and(|plan| plan.is_empty());
         let git_credential_target: Result<
             Option<ManagedContextGitCredentialImportTarget>,
@@ -330,12 +425,22 @@ impl CommandRouter {
         };
 
         let target_private_key = self.relay_private_key();
+        let target_environment_id = ready.target_environment_id.clone();
         let early_terminal_error = if is_git_credential_enrollment {
             None
-        } else {
+        } else if let Some(registration) = registration.as_ref() {
             validate_managed_context_completion_binding(
                 &completion_config,
-                &registration,
+                registration,
+                &completion_plan,
+            )
+            .err()
+        } else {
+            validate_disposable_worker_completion_binding(
+                &completion_config,
+                &target_environment_id,
+                &ready.target_kernel_id,
+                &ready.target_key_thumbprint,
                 &completion_plan,
             )
             .err()
@@ -488,7 +593,17 @@ impl CommandRouter {
         let completion = if is_git_credential_enrollment {
             complete_git_credential_enrollment(
                 &completion_config,
-                &registration,
+                registration
+                    .as_ref()
+                    .expect("Git credential enrollment requires a managed registration"),
+                &completion_plan,
+                &manifest_digest,
+            )
+            .await
+        } else if registration.is_none() {
+            complete_disposable_managed_context_import(
+                &completion_config,
+                &target_environment_id,
                 &completion_plan,
                 &manifest_digest,
             )
@@ -496,7 +611,9 @@ impl CommandRouter {
         } else {
             complete_managed_context_import(
                 &completion_config,
-                &registration,
+                registration
+                    .as_ref()
+                    .expect("managed context completion requires a managed registration"),
                 &completion_plan,
                 &manifest_digest,
             )
@@ -603,7 +720,7 @@ fn managed_context_caller(
     identity: &RelayCallerIdentity,
     source_kernel_id: &str,
 ) -> Result<AuthorizedManagedContextCaller, DaemonError> {
-    let caller = managed_context_transfer_caller(router, identity, source_kernel_id)?;
+    let caller = managed_context_transfer_caller(router, identity, source_kernel_id, None)?;
     let key_thumbprint = caller.key_thumbprint.clone();
     let registration = router.managed_kernel_registration.as_ref().ok_or_else(|| {
         managed_context_authorization_error(
@@ -644,6 +761,7 @@ fn managed_context_transfer_caller(
     router: &CommandRouter,
     identity: &RelayCallerIdentity,
     source_kernel_id: &str,
+    disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
 ) -> Result<ManagedContextTransferCaller, DaemonError> {
     let owner_user_id = identity.user_id.clone().ok_or_else(|| {
         managed_context_authorization_error(
@@ -653,26 +771,60 @@ fn managed_context_transfer_caller(
     let key_thumbprint = identity.public_key_thumbprint.clone().ok_or_else(|| {
         managed_context_authorization_error("managed context source kernel has no bound sender key")
     })?;
-    let registration = router.managed_kernel_registration.as_ref().ok_or_else(|| {
-        managed_context_authorization_error(
-            "context imports require a confirmed Chariox-managed kernel",
-        )
-    })?;
     let config = router.config_projection.snapshot();
     let profile = config.cloud_relay.as_ref().ok_or_else(|| {
         managed_context_authorization_error("managed context target has no Cloud relay profile")
     })?;
-    let source_subject_is_eligible = match identity.subject_kind {
-        chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == source_kernel_id,
-        chariox_relay::auth::RelaySubjectKind::Machine => !identity.subject.trim().is_empty(),
+    let registration = router.managed_kernel_registration.as_ref();
+    if let Some(registration) = registration {
+        let source_subject_is_eligible = match identity.subject_kind {
+            chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == source_kernel_id,
+            chariox_relay::auth::RelaySubjectKind::Machine => !identity.subject.trim().is_empty(),
+            _ => false,
+        };
+        if !source_subject_is_eligible
+            || registration.kernel_id != config.daemon_id
+            || registration.machine_id != config.host_machine_id
+            || profile.realm_id != identity.realm_id
+            || profile.user_id != owner_user_id
+        {
+            return Err(managed_context_authorization_error(
+                "managed context target or owner binding does not match",
+            ));
+        }
+        return Ok(ManagedContextTransferCaller {
+            kernel_id: source_kernel_id.to_string(),
+            key_thumbprint,
+            owner_user_id,
+            realm_id: identity.realm_id.clone(),
+            target_environment_id: Some(registration.environment_id.clone()),
+            target_kernel_id: registration.kernel_id.clone(),
+            target_key_thumbprint: public_key_thumbprint(&config.relay_public_key),
+        });
+    }
+
+    let home_caller = match disposable_home_caller {
+        Some(home_caller) => home_caller.clone(),
+        None => router.confirmed_disposable_worker_home_caller()?,
+    };
+    let source_subject_matches = match identity.subject_kind {
+        chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == home_caller.kernel_id,
+        chariox_relay::auth::RelaySubjectKind::Machine => {
+            identity.subject == home_caller.machine_id
+        }
         _ => false,
     };
-    if !source_subject_is_eligible
-        || registration.kernel_id != config.daemon_id
-        || registration.machine_id != config.host_machine_id
-        || profile.realm_id != identity.realm_id
-        || profile.user_id != owner_user_id
+    if source_kernel_id != home_caller.kernel_id
+        || !source_subject_matches
+        || home_caller.realm_id != identity.realm_id
+        || home_caller.user_id != owner_user_id
+        || public_key_thumbprint(&home_caller.relay_public_key) != key_thumbprint
     {
+        return Err(managed_context_authorization_error(
+            "managed context target or owner binding does not match",
+        ));
+    }
+    if profile.realm_id != home_caller.realm_id || profile.user_id != home_caller.user_id {
         return Err(managed_context_authorization_error(
             "managed context target or owner binding does not match",
         ));
@@ -682,8 +834,8 @@ fn managed_context_transfer_caller(
         key_thumbprint,
         owner_user_id,
         realm_id: identity.realm_id.clone(),
-        target_environment_id: registration.environment_id.clone(),
-        target_kernel_id: registration.kernel_id.clone(),
+        target_environment_id: None,
+        target_kernel_id: config.daemon_id,
         target_key_thumbprint: public_key_thumbprint(&config.relay_public_key),
     })
 }

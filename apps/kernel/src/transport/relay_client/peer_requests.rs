@@ -78,9 +78,17 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    let disposable_home_caller =
+        if router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker {
+            router.confirmed_disposable_worker_home_caller().ok()
+        } else {
+            None
+        };
+    let confirmed_disposable_worker = disposable_home_caller.is_some();
     if managed_context_request(&request)
         && crate::runtime::kernel_runtime_role_policy::ensure_managed_context_import_allowed(
             router.kernel_runtime_role(),
+            confirmed_disposable_worker,
         )
         .is_err()
     {
@@ -95,6 +103,7 @@ pub(super) async fn handle_daemon_peer_request(
     }
     let lease_worker_caller = if router.kernel_runtime_role()
         == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+        && !managed_context_request(&request)
     {
         if !lease_worker_peer_request_allowed(&request) {
             return RelayRequestOutcome {
@@ -1461,8 +1470,7 @@ pub(super) async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::ArmManagedContextImport {
-            context_id,
-            plan_digest,
+            plan,
             target_environment_id,
             target_kernel_id,
             target_key_thumbprint,
@@ -1474,12 +1482,11 @@ pub(super) async fn handle_daemon_peer_request(
                 .clone()
                 .expect("managed context caller checked before dispatch");
             let result = router
-                .relay_arm_managed_context_import(
+                .relay_arm_managed_context_import_with_home_caller(
                     crate::runtime::router::RelayManagedContextArmRequest {
                         identity,
                         source_kernel_id,
-                        context_id,
-                        plan_digest,
+                        plan,
                         target_environment_id,
                         target_kernel_id,
                         target_key_thumbprint,
@@ -1487,6 +1494,7 @@ pub(super) async fn handle_daemon_peer_request(
                         archive_sha256,
                         archive_size_bytes,
                     },
+                    disposable_home_caller.as_ref(),
                 )
                 .await;
             match result {
@@ -1502,11 +1510,12 @@ pub(super) async fn handle_daemon_peer_request(
                 .clone()
                 .expect("managed context caller checked before dispatch");
             let result = router
-                .relay_begin_managed_context_import(
+                .relay_begin_managed_context_import_with_home_caller(
                     identity,
                     source_kernel_id,
                     transfer_id,
                     capability.into_inner(),
+                    disposable_home_caller.as_ref(),
                 )
                 .await;
             match result {
@@ -1552,7 +1561,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .clone()
                 .expect("managed context caller checked before dispatch");
             let result = router
-                .relay_upload_managed_context_chunk(
+                .relay_upload_managed_context_chunk_with_home_caller(
                     crate::runtime::router::RelayManagedContextChunkRequest {
                         identity,
                         source_kernel_id,
@@ -1562,6 +1571,7 @@ pub(super) async fn handle_daemon_peer_request(
                         bytes,
                         chunk_sha256,
                     },
+                    disposable_home_caller.as_ref(),
                 )
                 .await;
             match result {
@@ -1577,11 +1587,12 @@ pub(super) async fn handle_daemon_peer_request(
                 .clone()
                 .expect("managed context caller checked before dispatch");
             let result = router
-                .relay_finalize_managed_context_import(
+                .relay_finalize_managed_context_import_with_home_caller(
                     identity,
                     source_kernel_id,
                     transfer_id,
                     capability.into_inner(),
+                    disposable_home_caller.as_ref(),
                 )
                 .await;
             match result {
@@ -1597,11 +1608,12 @@ pub(super) async fn handle_daemon_peer_request(
                 .clone()
                 .expect("managed context caller checked before dispatch");
             let result = router
-                .relay_get_managed_context_import_status(
+                .relay_get_managed_context_import_status_with_home_caller(
                     identity,
                     source_kernel_id,
                     transfer_id,
                     capability.into_inner(),
+                    disposable_home_caller.as_ref(),
                 )
                 .await;
             match result {
@@ -1971,6 +1983,7 @@ mod tests {
             None
         );
     }
+    use crate::managed_context::package::ManagedContextPlanBinding;
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
         export_transferred_vault_snapshot, lock_chariox_encrypted_vault,
@@ -2390,8 +2403,7 @@ mod tests {
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let request = RelayPeerRequest::ArmManagedContextImport {
-            context_id: "context-1".to_string(),
-            plan_digest: format!("sha256:{}", "f".repeat(64)),
+            plan: ManagedKernelContextPlan::empty_for_tests("context-1").package_binding(),
             target_environment_id: "environment-1".to_string(),
             target_kernel_id: "target-kernel-1".to_string(),
             target_key_thumbprint: "a".repeat(64),
@@ -2830,8 +2842,7 @@ mod tests {
             outgoing_tx: &outgoing_tx,
         };
         let request = RelayPeerRequest::ArmManagedContextImport {
-            context_id: plan.context_id,
-            plan_digest: plan.plan_digest,
+            plan: plan.clone(),
             target_environment_id: "environment-machine-source".to_string(),
             target_kernel_id,
             target_key_thumbprint,
@@ -2952,6 +2963,256 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disposable_worker_peer_arm_requires_confirmed_home_binding_and_valid_plan() {
+        let _env_guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-disposable-peer-arm-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let _home_environment = ScopedEnv::set("CHARIOX_HOME", root.as_os_str());
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("source public key");
+        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
+        let source_kernel_id = "source-kernel-1";
+        let target_machine_id = "worker-machine-peer";
+        let target_kernel_id = "disposable-worker-peer";
+
+        let mut config = DaemonConfig::for_tests();
+        config.user_config_path = root.join("config.toml");
+        config.local_socket_path = root.join("kernel.sock");
+        config = config.with_session_history_root(root.join("sessions"));
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        config.daemon_id = target_kernel_id.to_string();
+        config.host_machine_id = target_machine_id.to_string();
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        config.accept_remote_leases = true;
+        config.remote_lease_capacity = Some(1);
+        config.cloud_relay = Some(test_cloud_profile(
+            "http://127.0.0.1:1".to_string(),
+            target_machine_id.to_string(),
+        ));
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: source_kernel_id.to_string(),
+            realm_id: "realm-1".to_string(),
+            user_id: "user-1".to_string(),
+            relay_public_key: source_public_key.clone(),
+        });
+        let target_public_key = config.relay_public_key.clone();
+        let target_key_thumbprint = public_key_thumbprint(&target_public_key);
+        let release_digest = format!("sha256:{}", "a".repeat(64));
+        let receipt_path = root.join("disposable-worker/bootstrap-receipt.json");
+        fs::create_dir_all(receipt_path.parent().expect("receipt parent"))
+            .expect("create receipt parent");
+        let write_receipt = |status: &str, confirmed_at: Option<&str>| {
+            let receipt = serde_json::json!({
+                "schemaVersion": 1,
+                "status": status,
+                "allocationId": "allocation-peer-arm",
+                "machineId": target_machine_id,
+                "kernelId": target_kernel_id,
+                "relayPublicKey": target_public_key,
+                "runtimeReleaseDigest": release_digest,
+                "homeCaller": {
+                    "accountId": "account-1",
+                    "userId": "user-1",
+                    "realmId": "realm-1",
+                    "machineId": "home-machine-1",
+                    "kernelId": source_kernel_id,
+                    "relayPublicKey": source_public_key,
+                },
+                "confirmedAt": confirmed_at,
+            });
+            crate::config::write_private_file(
+                &receipt_path,
+                &serde_json::to_vec(&receipt).expect("encode disposable receipt"),
+            )
+            .expect("write disposable receipt");
+        };
+        let _receipt_environment = ScopedEnv::set(
+            "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+            receipt_path.as_os_str(),
+        );
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("disposable worker should bootstrap"),
+        ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 1));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let peer_harness = ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
+        let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
+        let context_plan = ManagedKernelContextPlan::source_project_for_tests(
+            "context-disposable-peer",
+            "realm-1",
+            source_kernel_id,
+            &source_key_thumbprint,
+            "project-disposable-peer",
+        );
+        let arm_request = |plan: ManagedContextPlanBinding, target_environment_id: &str| {
+            RelayPeerRequest::ArmManagedContextImport {
+                plan,
+                target_environment_id: target_environment_id.to_string(),
+                target_kernel_id: target_kernel_id.to_string(),
+                target_key_thumbprint: target_key_thumbprint.clone(),
+                capability: RelayManagedContextCapability::new("c".repeat(43)),
+                archive_sha256: "b".repeat(64),
+                archive_size_bytes: 42,
+            }
+        };
+        let valid_request = arm_request(context_plan.package_binding(), "environment-peer");
+
+        write_receipt("exchanged", None);
+        let unconfirmed = send_managed_peer_request(
+            &peer_harness,
+            source_kernel_id,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            valid_request.clone(),
+        )
+        .await;
+        assert!(matches!(
+            unconfirmed,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "kernel_runtime_role_denied"
+        ));
+
+        write_receipt("confirmed", Some("2026-09-14T00:00:00Z"));
+        let mut wrong_home = identity.clone();
+        wrong_home.subject = "other-home-kernel".to_string();
+        let wrong_home_response = send_managed_peer_request(
+            &peer_harness,
+            "other-home-kernel",
+            &wrong_home,
+            &source_private_key,
+            &target_public_key,
+            valid_request.clone(),
+        )
+        .await;
+        assert!(matches!(
+            wrong_home_response,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+
+        let mut wrong_realm = identity.clone();
+        wrong_realm.realm_id = "other-realm".to_string();
+        let wrong_realm_response = send_managed_peer_request(
+            &peer_harness,
+            source_kernel_id,
+            &wrong_realm,
+            &source_private_key,
+            &target_public_key,
+            valid_request.clone(),
+        )
+        .await;
+        assert!(matches!(
+            wrong_realm_response,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+
+        let wrong_private_key = relay_crypto::generate_private_key_base64();
+        let wrong_public_key = relay_crypto::public_key_from_private_key_base64(&wrong_private_key)
+            .expect("wrong source public key");
+        let mut wrong_key = identity.clone();
+        wrong_key.public_key_thumbprint = Some(public_key_thumbprint(&wrong_public_key));
+        let wrong_key_response = send_managed_peer_request(
+            &peer_harness,
+            source_kernel_id,
+            &wrong_key,
+            &wrong_private_key,
+            &target_public_key,
+            valid_request.clone(),
+        )
+        .await;
+        assert!(matches!(
+            wrong_key_response,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+
+        let invalid_target = send_managed_peer_request(
+            &peer_harness,
+            source_kernel_id,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            arm_request(context_plan.package_binding(), " "),
+        )
+        .await;
+        assert!(
+            matches!(
+                &invalid_target,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code,
+                    retryable: false,
+                } if code == "invalid_request"
+            ),
+            "invalid target arm response: {invalid_target:?}"
+        );
+
+        let mut invalid_digest = context_plan.package_binding();
+        invalid_digest.plan_digest = "not-a-digest".to_string();
+        let invalid_digest_response = send_managed_peer_request(
+            &peer_harness,
+            source_kernel_id,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            arm_request(invalid_digest, "environment-peer"),
+        )
+        .await;
+        assert!(
+            matches!(
+                &invalid_digest_response,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code,
+                    retryable: false,
+                } if code == "invalid_managed_context"
+            ),
+            "invalid digest arm response: {invalid_digest_response:?}"
+        );
+
+        let armed = send_managed_peer_request(
+            &peer_harness,
+            source_kernel_id,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            valid_request,
+        )
+        .await;
+        assert!(matches!(
+            armed,
+            RelayPeerResponse::ManagedContextImportArmed { .. }
+        ));
+        drop(router);
+        drop(app);
+        fs::remove_dir_all(root).expect("remove disposable peer arm fixture");
+    }
+
+    #[tokio::test]
     async fn opted_out_managed_kernel_arms_only_a_cloud_authorized_git_enrollment() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-git-enrollment-arm-{}-{}",
@@ -3057,8 +3318,7 @@ mod tests {
                 crate::runtime::router::RelayManagedContextArmRequest {
                     identity: scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX),
                     source_kernel_id: source_kernel_id.to_string(),
-                    context_id: enrollment_binding.context_id.clone(),
-                    plan_digest: enrollment_binding.plan_digest.clone(),
+                    plan: enrollment_binding.clone(),
                     target_environment_id: "environment-git-enrollment".to_string(),
                     target_kernel_id,
                     target_key_thumbprint,
@@ -3302,8 +3562,11 @@ mod tests {
                 crate::runtime::router::RelayManagedContextArmRequest {
                     identity: identity.clone(),
                     source_kernel_id: source_kernel_id.to_string(),
-                    context_id: "wrong-context".to_string(),
-                    plan_digest: plan_digest.clone(),
+                    plan: {
+                        let mut wrong_plan = package.plan.clone();
+                        wrong_plan.context_id = "wrong-context".to_string();
+                        wrong_plan
+                    },
                     target_environment_id: "environment-managed-1".to_string(),
                     target_kernel_id: target_kernel_id.clone(),
                     target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3328,8 +3591,7 @@ mod tests {
                 crate::runtime::router::RelayManagedContextArmRequest {
                     identity: wrong_source_identity,
                     source_kernel_id: source_kernel_id.to_string(),
-                    context_id: context_id.clone(),
-                    plan_digest: plan_digest.clone(),
+                    plan: package.plan.clone(),
                     target_environment_id: "environment-managed-1".to_string(),
                     target_kernel_id: target_kernel_id.clone(),
                     target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3355,8 +3617,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id: context_id.clone(),
-                plan_digest: plan_digest.clone(),
+                plan: package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
                 target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3630,8 +3891,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id: terminal_context_id.clone(),
-                plan_digest: terminal_plan_digest.clone(),
+                plan: terminal_package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
                 target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3783,7 +4043,7 @@ mod tests {
                     key_thumbprint: source_key_thumbprint.clone(),
                     owner_user_id: identity.user_id.clone().expect("source owner"),
                     realm_id: identity.realm_id.clone(),
-                    target_environment_id: "environment-managed-1".to_string(),
+                    target_environment_id: Some("environment-managed-1".to_string()),
                     target_kernel_id: target_kernel_id.clone(),
                     target_key_thumbprint: target_key_thumbprint.clone(),
                 },
@@ -3847,7 +4107,6 @@ mod tests {
             "project-managed-peer",
         );
         let recovery_plan_binding = recovery_plan.package_binding();
-        let recovery_plan_digest = recovery_plan_binding.plan_digest.clone();
         let recovery_vault = export_transferred_vault_snapshot(
             &source_vault_path,
             &recovery_context_id,
@@ -3923,8 +4182,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id: recovery_context_id,
-                plan_digest: recovery_plan_digest,
+                plan: recovery_package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
                 target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3984,7 +4242,7 @@ mod tests {
             key_thumbprint: source_key_thumbprint.clone(),
             owner_user_id: identity.user_id.clone().expect("source owner"),
             realm_id: identity.realm_id.clone(),
-            target_environment_id: "environment-managed-1".to_string(),
+            target_environment_id: Some("environment-managed-1".to_string()),
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
         };
@@ -4071,13 +4329,16 @@ mod tests {
             },
         )
         .await;
-        assert!(matches!(
-            rebound,
-            RelayPeerResponse::ManagedContextImportFailed {
-                ref code,
-                retryable: false,
-            } if code == "unauthorized"
-        ));
+        assert!(
+            matches!(
+                &rebound,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code,
+                    retryable: false,
+                } if code == "managed_context_cloud_completion_rejected"
+            ),
+            "rebound finalize response: {rebound:?}"
+        );
         assert!(!recovery_capability_root.exists());
         assert!(!recovery_vault_path.exists());
         assert!(!recovery_vault_envelope_path.exists());

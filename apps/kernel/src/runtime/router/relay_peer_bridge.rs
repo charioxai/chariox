@@ -13,6 +13,18 @@ impl CommandRouter {
         self.config_projection.snapshot().kernel_runtime_role
     }
 
+    pub(crate) fn confirmed_disposable_worker_home_caller(
+        &self,
+    ) -> Result<crate::managed_bootstrap::worker::CloudHomeCaller, DaemonError> {
+        crate::managed_bootstrap::worker::confirmed_disposable_worker_home_caller(
+            &self.config_projection.snapshot(),
+        )?
+        .ok_or_else(|| DaemonError::KernelRuntimeRoleDenied {
+            role: self.kernel_runtime_role().as_str(),
+            operation: "managed_context.import",
+        })
+    }
+
     pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String)> {
         self.config_projection
             .snapshot()
