@@ -5,6 +5,7 @@ import test from "node:test"
 import {
   makeChildrenEnv,
   parseArgs,
+  waitForLocalDaemon,
 } from "./live-relay-runtime-drill.mjs"
 import {
   ATTACHMENT_RECOVERY_PUBLIC_REQUEST_COUNT,
@@ -80,6 +81,40 @@ test("relay daemon fixture binds token machine identity to kernel registration",
   assert.notEqual(daemonClaims.machine_id, envs.daemonEnv.CHARIOX_DAEMON_ID)
 })
 
+test("local readiness exposes its durable probe session for acceptance accounting", async () => {
+  const calls = []
+  class FakeClient {
+    send(request) {
+      calls.push(request)
+      if (request.kind === "create") {
+        return Promise.resolve({ SessionCreated: { session: { id: "readiness-session" } } })
+      }
+      return Promise.resolve({ SessionEnded: { session_id: request.sessionId } })
+    }
+
+    async close() {}
+  }
+
+  const readinessSessionId = await waitForLocalDaemon(
+    "ws://127.0.0.1:46188",
+    "/tmp/readiness-workspace",
+    "/tmp/readiness-worktree",
+    { exitCode: null, signalCode: null },
+    {
+      LocalIpcClient: FakeClient,
+      createSessionRequest: () => ({ kind: "create" }),
+      endSessionRequest: (sessionId) => ({ kind: "end", sessionId }),
+      deadline: Date.now() + 1_000,
+    },
+  )
+
+  assert.equal(readinessSessionId, "readiness-session")
+  assert.deepEqual(calls, [
+    { kind: "create" },
+    { kind: "end", sessionId: "readiness-session" },
+  ])
+})
+
 test("runnable mode stays on existing encrypted relay fixtures and production recovery wiring", async () => {
   const source = await readFile(drillSourceUrl, "utf8")
   const modeStart = source.indexOf("async function runAttachmentRecoveryScenario")
@@ -91,6 +126,7 @@ test("runnable mode stays on existing encrypted relay fixtures and production re
   assert.match(source, /loadCliModules\(cliRuntimeDir\)/)
   assert.match(source, /makeChildrenEnv\(ports, rootDir\)/)
   assert.match(source, /waitForLocalDaemon\(/)
+  assert.match(source, /readinessSessionId = await waitForLocalDaemon\(/)
   assert.match(source, /waitForRelayTarget\(/)
   assert.match(source, /spawnProcess\(/)
   assert.match(source, /claimExactChildProcess/)
@@ -107,6 +143,11 @@ test("runnable mode stays on existing encrypted relay fixtures and production re
   assert.match(mode, /recoveryDisconnected = true/)
   assert.match(mode, /recoveryController\.recover\(\)/)
   assert.match(source, /assertNoSubmitPromptRequest/)
+  assert.match(mode, /initialSessionIds = new Set\(/)
+  assert.match(mode, /postRecoverySessionIds\.has\(readinessSessionId\)/)
+  assert.match(mode, /newAcceptanceSessions = postRecoveryList\.sessions\.filter\(/)
+  assert.match(mode, /exactly one new acceptance session/)
+  assert.doesNotMatch(mode, /initialList\.sessions\.length, 0/)
   assert.doesNotMatch(mode, /launchProviderRunRequest\(/)
   assert.doesNotMatch(mode, /submitPromptRequest\(/)
   assert.doesNotMatch(mode, /succeeded = true\s+return/)

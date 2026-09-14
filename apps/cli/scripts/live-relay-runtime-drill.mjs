@@ -320,7 +320,7 @@ export async function waitForLocalDaemon(kernelUrl, workspace, worktree, daemonC
         sleep(Math.min(2_000, Math.max(1, deadline - Date.now()))),
       ]).catch(() => {})
       await probe.close()
-      return
+      return session.id
     } catch {
       await probe.close().catch(() => {})
       const termination = childTerminationStatus(daemonChild)
@@ -536,6 +536,7 @@ async function runAttachmentRecoveryScenario({
   envs,
   daemonChild,
   workspace,
+  readinessSessionId,
   context,
 }) {
   const ledger = createAttachmentRecoveryLedger()
@@ -569,7 +570,11 @@ async function runAttachmentRecoveryScenario({
     'SessionsListed',
   )
   ledger.record('initial session list')
-  assert.equal(initialList.sessions.length, 0, 'fresh relay candidate state must have no sessions')
+  const initialSessionIds = new Set(initialList.sessions.map((session) => session.id))
+  assert.ok(
+    initialSessionIds.has(readinessSessionId),
+    'initial relay candidate state must retain the known readiness session',
+  )
 
   const created = unwrap(
     await boundedPublicRequest(
@@ -586,6 +591,7 @@ async function runAttachmentRecoveryScenario({
   const agentId = created.agent.id
   assert.ok(sessionId, 'relay candidate must create a session')
   assert.ok(agentId, 'relay candidate session must include its default agent')
+  assert.notEqual(sessionId, readinessSessionId, 'acceptance session must differ from the readiness session')
   assert.equal(created.agent.session_id, sessionId, 'created agent must belong to the created session')
 
   const attachmentA = unwrap(
@@ -854,9 +860,26 @@ async function runAttachmentRecoveryScenario({
     'SessionsListed',
   )
   ledger.record('post-recovery session list')
-  assert.equal(postRecoveryList.sessions.length, 1, 'relay attachment recovery must not duplicate the session')
+  const postRecoverySessionIds = new Set(postRecoveryList.sessions.map((session) => session.id))
+  assert.ok(
+    postRecoverySessionIds.has(readinessSessionId),
+    'relay attachment recovery must retain the known readiness session',
+  )
+  const newAcceptanceSessions = postRecoveryList.sessions.filter(
+    (session) => !initialSessionIds.has(session.id),
+  )
+  assert.equal(
+    newAcceptanceSessions.length,
+    1,
+    'relay attachment recovery must create exactly one new acceptance session',
+  )
+  assert.equal(
+    newAcceptanceSessions[0].id,
+    sessionId,
+    'the only new relay session must be the acceptance session',
+  )
   assertAttachmentRecoveryState({
-    session: postRecoveryList.sessions[0],
+    session: newAcceptanceSessions[0],
     expectedSessionId: sessionId,
     expectedAttachmentIds: [attachmentB.id, recoveredAttachment.id],
     expectedSession,
@@ -970,6 +993,7 @@ async function main() {
   let envs = null
   let relayBinary = null
   let daemonBinary = null
+  let readinessSessionId = null
   let kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   let relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const attachmentDeadline = options.attachmentRecovery
@@ -1039,7 +1063,7 @@ async function main() {
       ? path.join(rootDir, 'workspace')
       : options.workspace
     if (options.attachmentRecovery) await mkdir(startupWorkspace, { recursive: true })
-    await waitForLocalDaemon(
+    readinessSessionId = await waitForLocalDaemon(
       kernelUrl,
       startupWorkspace,
       startupWorkspace,
@@ -1062,6 +1086,7 @@ async function main() {
         envs,
         daemonChild,
         workspace: startupWorkspace,
+        readinessSessionId,
         context: attachmentContext,
       })
       sessionId = recovery.sessionId
@@ -1070,6 +1095,7 @@ async function main() {
         kernelUrl,
         daemonId: envs.daemonId,
         daemonAlias: envs.daemonAlias,
+        readinessSessionId,
         relayBinary,
         kernelBinary: daemonBinary,
         status: 'ok',
@@ -1270,6 +1296,7 @@ async function main() {
         kernelUrl,
         daemonId: envs?.daemonId ?? null,
         daemonAlias: envs?.daemonAlias ?? null,
+        readinessSessionId,
         sessionId,
         attachmentRecovery: options.attachmentRecovery,
         attachmentRecoveryDetails,
