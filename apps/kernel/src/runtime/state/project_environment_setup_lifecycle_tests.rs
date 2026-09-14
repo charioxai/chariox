@@ -2306,6 +2306,7 @@ async fn run_external_worker_fixture(
                         let _ = release_retry_applied_tx.send(());
                     }
                 }
+                continue;
             }
             message = socket.next() => message,
         };
