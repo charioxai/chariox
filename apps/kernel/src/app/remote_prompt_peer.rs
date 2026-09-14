@@ -119,10 +119,19 @@ fn set_remote_prompt_launch_credential(
 fn response_requires_provider_launch_credential(
     response: &Result<RelayPeerResponse, DaemonError>,
 ) -> bool {
-    let Err(DaemonError::LocalTransport { message, .. }) = response else {
+    let Err(error) = response else {
         return false;
     };
-    message.contains(REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            message.contains(REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+        }
+        DaemonError::RelayTransport { code, message, .. } => {
+            code == REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                || message.contains(REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +145,16 @@ mod tests {
             message: format!("{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: relaunch"),
         });
         assert!(response_requires_provider_launch_credential(&required));
+
+        let structured_required = Err(DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE.to_string(),
+            message: "worker requested a credential for a cold provider launch".to_string(),
+            retryable: false,
+        });
+        assert!(response_requires_provider_launch_credential(
+            &structured_required
+        ));
 
         let unrelated = Err(DaemonError::LocalTransport {
             operation: "read relay peer response",

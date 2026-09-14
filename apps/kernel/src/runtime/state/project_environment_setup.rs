@@ -43,7 +43,7 @@ mod project_environment_setup_validation;
 use project_environment_setup_dispatch::*;
 use project_environment_setup_policy::*;
 pub(super) use project_environment_setup_storage::ProjectEnvironmentSetupStore;
-use project_environment_setup_storage::{SetupEntry, SetupExecution};
+use project_environment_setup_storage::{RemoteSetupRecoveryDecision, SetupEntry, SetupExecution};
 use project_environment_setup_validation::*;
 
 impl KernelRuntimeState {
@@ -69,30 +69,223 @@ impl KernelRuntimeState {
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupStarted { status })
             }
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(request) => {
-                let (execution, status) = self
-                    .owned
-                    .project_environment_setups
-                    .get_entry(&request.operation_id, caller_user_id)?;
+                let (execution, status, cancel_requested) =
+                    self.owned
+                        .project_environment_setups
+                        .get_entry_with_cancellation(&request.operation_id, caller_user_id)?;
                 if execution.remote_leased_agent_id.is_some() {
-                    let setup = get_remote_setup_status(self, &execution).await;
+                    let observation_generation = self
+                        .owned
+                        .project_environment_setups
+                        .begin_remote_observation();
+                    let binding_id = execution
+                        .remote_leased_agent_id
+                        .as_deref()
+                        .expect("remote setup observations require a leased-agent binding");
+                    let observation_deadline = Instant::now()
+                        + remote_setup_observation_budget(&self.owned.config_projection.snapshot());
+                    let setup = get_remote_setup_status_with_deadline(
+                        self,
+                        &execution,
+                        observation_deadline,
+                    )
+                    .await;
                     let status = match setup {
-                        Ok(setup) => {
-                            self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        Ok(setup) => self
+                            .reconcile_remote_project_environment_setup_with_observation(
+                                &execution,
+                                setup,
+                                Some(observation_generation),
+                            )?,
+                        Err(error)
+                            if is_missing_remote_setup_operation(&error)
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                ) =>
+                        {
+                            if cancel_requested {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status,
+                                });
+                            }
+                            match self.owned.project_environment_setups.begin_remote_recovery(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            ) {
+                                RemoteSetupRecoveryDecision::Cancelled => {
+                                    return Ok(
+                                        LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                            status,
+                                        },
+                                    );
+                                }
+                                RemoteSetupRecoveryDecision::InFlight => {
+                                    return Err(remote_setup_recovery_transport_error(
+                                        "the same-attempt replay is already in flight",
+                                    ));
+                                }
+                                RemoteSetupRecoveryDecision::Unknown => {
+                                    return Err(remote_setup_recovery_transport_error(
+                                        "the same-attempt replay result is unresolved",
+                                    ));
+                                }
+                                RemoteSetupRecoveryDecision::Acknowledged => {
+                                    return Ok(
+                                        LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                            status,
+                                        },
+                                    );
+                                }
+                                RemoteSetupRecoveryDecision::Stale => {
+                                    return Err(remote_setup_recovery_transport_error(
+                                        "the setup attempt changed while status was being observed",
+                                    ));
+                                }
+                                RemoteSetupRecoveryDecision::Dispatch => {}
+                            }
+                            // This lock-protected fence linearizes recovery
+                            // dispatch against Cancel/Retry. It is not a
+                            // second unsynchronized snapshot of cancellation.
+                            if !self
+                                .owned
+                                .project_environment_setups
+                                .remote_recovery_dispatch_allowed(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                )
+                            {
+                                let (_, current_status, current_cancel_requested) = self
+                                    .owned
+                                    .project_environment_setups
+                                    .get_entry_with_cancellation(
+                                        &execution.operation_id,
+                                        caller_user_id,
+                                    )?;
+                                if current_cancel_requested
+                                    || matches!(
+                                        current_status.phase,
+                                        ProjectEnvironmentSetupPhase::Ready
+                                            | ProjectEnvironmentSetupPhase::Failed
+                                            | ProjectEnvironmentSetupPhase::Cancelled
+                                    )
+                                {
+                                    return Ok(
+                                        LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                            status: current_status,
+                                        },
+                                    );
+                                }
+                                return Err(remote_setup_recovery_transport_error(
+                                    "the setup attempt changed before replay dispatch",
+                                ));
+                            }
+                            match start_remote_setup_with_deadline(
+                                self,
+                                &execution,
+                                status.attempt,
+                                observation_deadline,
+                            )
+                            .await
+                            {
+                                Ok(setup) => {
+                                    match self
+                                        .reconcile_remote_project_environment_setup_with_observation(
+                                            &execution,
+                                            setup,
+                                            Some(observation_generation),
+                                        ) {
+                                        Ok(status) => status,
+                                        Err(error) => {
+                                            self.owned
+                                                .project_environment_setups
+                                                .mark_remote_recovery_unknown(
+                                                    &execution.operation_id,
+                                                    status.attempt,
+                                                    binding_id,
+                                                    observation_generation,
+                                                );
+                                            return Err(error);
+                                        }
+                                    }
+                                }
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    self.owned
+                                        .project_environment_setups
+                                        .mark_remote_recovery_unknown(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            binding_id,
+                                            observation_generation,
+                                        );
+                                    return Err(error);
+                                }
+                                Err(error) => {
+                                    self.owned
+                                        .project_environment_setups
+                                        .clear_remote_recovery(&execution.operation_id);
+                                    if let DaemonError::RelayTransport {
+                                        code,
+                                        retryable: false,
+                                        ..
+                                    } = &error
+                                    {
+                                        self.owned
+                                            .project_environment_setups
+                                            .mark_failed_non_retryable(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            code,
+                                            "the remote worker rejected project environment setup",
+                                        );
+                                    } else {
+                                        self.owned.project_environment_setups.mark_failed(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            "worker_dispatch_failed",
+                                            "the remote worker could not be reached for environment setup",
+                                        );
+                                    }
+                                    return Err(error);
+                                }
+                            }
                         }
                         Err(error) if remote_prompt_error_should_retry_transport(&error) => {
                             // A relay disconnect is transport uncertainty, not
-                            // a worker-authoritative terminal result. Preserve
-                            // the current operation so a later Get can
-                            // reconcile the worker's actual status.
+                            // a worker-authoritative terminal result. Return
+                            // the structured diagnostic while preserving the
+                            // current operation and attempt for a later Get.
                             return Err(error);
                         }
                         Err(error) => {
-                            self.owned.project_environment_setups.mark_failed(
-                                &execution.operation_id,
-                                status.attempt,
-                                "worker_status_unavailable",
-                                "the remote worker status could not be confirmed",
-                            );
+                            if let DaemonError::RelayTransport {
+                                code,
+                                retryable: false,
+                                ..
+                            } = &error
+                            {
+                                self.owned
+                                    .project_environment_setups
+                                    .mark_failed_non_retryable(
+                                        &execution.operation_id,
+                                        status.attempt,
+                                        code,
+                                        "the remote worker rejected setup status",
+                                    );
+                            } else {
+                                self.owned.project_environment_setups.mark_failed(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    "worker_status_unavailable",
+                                    "the remote worker status could not be confirmed",
+                                );
+                            }
                             return Err(error);
                         }
                     };
@@ -147,6 +340,7 @@ impl KernelRuntimeState {
         target: crate::app::LeasedProjectEnvironmentSetupTarget,
         leased_agent_id: String,
         operation_id: String,
+        attempt: u32,
         project_id: String,
         workspace_id: String,
         target_worker_id: String,
@@ -197,7 +391,7 @@ impl KernelRuntimeState {
         let (status, should_spawn) = self
             .owned
             .project_environment_setups
-            .begin(execution.clone())?;
+            .begin_at_attempt(execution.clone(), attempt)?;
         if should_spawn {
             self.spawn_project_environment_setup(execution.clone(), status.attempt);
         }
@@ -302,7 +496,7 @@ impl KernelRuntimeState {
             let result = if retry {
                 retry_remote_setup(&runtime_state, &execution).await
             } else {
-                start_remote_setup(&runtime_state, &execution).await
+                start_remote_setup(&runtime_state, &execution, attempt).await
             };
             match result {
                 Ok(setup) => {
@@ -326,12 +520,34 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
-                    runtime_state.owned.project_environment_setups.mark_failed(
-                        &execution.operation_id,
-                        attempt,
-                        "worker_dispatch_failed",
-                        "the remote worker could not be reached for environment setup",
-                    );
+                    if remote_prompt_error_should_retry_transport(&error) {
+                        // The worker may still be executing after this
+                        // transport observation. Leave the active operation
+                        // untouched so a later status query can reconcile
+                        // the worker-authoritative result.
+                    } else if let DaemonError::RelayTransport {
+                        code,
+                        retryable: false,
+                        ..
+                    } = &error
+                    {
+                        runtime_state
+                            .owned
+                            .project_environment_setups
+                            .mark_failed_non_retryable(
+                                &execution.operation_id,
+                                attempt,
+                                code,
+                                "the remote worker rejected project environment setup",
+                            );
+                    } else {
+                        runtime_state.owned.project_environment_setups.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "worker_dispatch_failed",
+                            "the remote worker could not be reached for environment setup",
+                        );
+                    }
                     crate::logging::warn_with_fields(
                         "project.environment_setup",
                         "remote setup dispatch failed",
@@ -349,6 +565,15 @@ impl KernelRuntimeState {
         &self,
         execution: &SetupExecution,
         setup: RelayProjectEnvironmentSetupStatus,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        self.reconcile_remote_project_environment_setup_with_observation(execution, setup, None)
+    }
+
+    fn reconcile_remote_project_environment_setup_with_observation(
+        &self,
+        execution: &SetupExecution,
+        setup: RelayProjectEnvironmentSetupStatus,
+        observation_generation: Option<u64>,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let (_, current_status) = self
             .owned
@@ -376,6 +601,7 @@ impl KernelRuntimeState {
             execution,
             setup.status,
             setup.definition,
+            observation_generation,
         )
     }
 
@@ -909,6 +1135,98 @@ mod tests {
             .begin(changed)
             .expect_err("same id with changed input must fail");
         assert!(error.to_string().contains("different setup request"));
+    }
+
+    #[test]
+    fn worker_setup_recovery_preserves_attempt_and_rejects_stale_replay() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let (started, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("worker recovery should start at the home attempt");
+        assert!(should_spawn);
+        assert_eq!(started.attempt, 2);
+
+        let (replayed, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("same worker recovery request should be idempotent");
+        assert!(!should_spawn);
+        assert_eq!(replayed, started);
+
+        let stale = store
+            .begin_at_attempt(execution(), 1)
+            .expect_err("stale worker recovery must not reopen attempt 1");
+        assert!(stale
+            .to_string()
+            .contains("attempt does not match the existing worker operation"));
+
+        let zero = store
+            .begin_at_attempt(execution(), 0)
+            .expect_err("worker recovery must reject an invalid attempt");
+        assert!(zero.to_string().contains("attempt must be positive"));
+    }
+
+    #[test]
+    fn remote_recovery_reopens_only_after_a_fresh_bound_observation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let first_observation = store.begin_remote_observation();
+        let overlapping_observation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", first_observation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        store.mark_remote_recovery_observed(
+            "setup-1",
+            1,
+            "leased-agent-1",
+            Some(first_observation),
+        );
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", overlapping_observation,),
+            RemoteSetupRecoveryDecision::Acknowledged,
+            "an overlapping not-found must not clear an acknowledged replay"
+        );
+
+        let fresh_observation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", fresh_observation,),
+            RemoteSetupRecoveryDecision::Dispatch,
+            "a fresh same-binding not-found may reopen recovery"
+        );
+        store.mark_remote_recovery_unknown("setup-1", 1, "leased-agent-1", first_observation);
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", fresh_observation,),
+            RemoteSetupRecoveryDecision::InFlight,
+            "a stale response must not alter the fresh recovery reservation"
+        );
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-2", fresh_observation,),
+            RemoteSetupRecoveryDecision::Stale,
+            "an observation from an old binding must be fenced"
+        );
+    }
+
+    #[test]
+    fn non_retryable_worker_rejection_does_not_suggest_reconnect() {
+        let store = ProjectEnvironmentSetupStore::default();
+        store.begin(execution()).expect("setup should start");
+        store.mark_failed_non_retryable(
+            "setup-1",
+            1,
+            "worker_rejected",
+            "the worker rejected the setup request",
+        );
+
+        let error = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect_err("a non-retryable worker rejection must remain terminal");
+        let message = error.to_string();
+        assert!(message.contains("rejected by the worker"), "{message}");
+        assert!(message.contains("not retryable"), "{message}");
+        assert!(!message.contains("reconnect"), "{message}");
     }
 
     #[test]

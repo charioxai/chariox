@@ -41,9 +41,25 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
+        DaemonError::LocalTransport { operation, message }
+            if *operation == "project environment setup" =>
+        {
+            let code = if message == "setup operation was not found" {
+                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE
+            } else {
+                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE
+            };
+            relay_error(code, &error.to_string(), false)
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } => relay_error(code, message, *retryable),
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),
@@ -236,6 +252,44 @@ mod tests {
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
         assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn structured_relay_errors_preserve_code_and_retryability() {
+        let error = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "target_disconnected".to_string(),
+            message: "target daemon disconnected from relay".to_string(),
+            retryable: true,
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "target_disconnected");
+        assert_eq!(relay_error.message, "target daemon disconnected from relay");
+        assert!(relay_error.retryable);
+    }
+
+    #[test]
+    fn missing_project_environment_setup_is_an_authenticated_business_error() {
+        let error = DaemonError::LocalTransport {
+            operation: "project environment setup",
+            message: "setup operation was not found".to_string(),
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "project_environment_setup_not_found");
+        assert!(!relay_error.retryable);
+
+        let rejected = DaemonError::LocalTransport {
+            operation: "project environment setup",
+            message: "requested platform does not match this worker".to_string(),
+        };
+        let rejected_relay_error = map_relay_error(&rejected);
+        assert_eq!(
+            rejected_relay_error.code,
+            "project_environment_setup_rejected"
+        );
+        assert!(!rejected_relay_error.retryable);
     }
 
     #[test]

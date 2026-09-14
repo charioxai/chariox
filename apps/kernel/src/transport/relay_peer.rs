@@ -77,9 +77,12 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 50 carries bounded provider-run termination metadata across leased execution.
 /// Version 51 carries kernel-owned project-environment setup dispatch and status.
 /// Version 52 carries the source-selected managed-context plan in import arm requests.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 52;
+/// Version 53 carries the home-authoritative setup attempt on worker redispatch.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 53;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
+pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
+pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
 /// Home-selected execution identity for a leased prompt. Contains no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,6 +707,7 @@ pub enum RelayPeerRequest {
     StartLeasedProjectEnvironmentSetup {
         leased_agent_id: String,
         operation_id: String,
+        attempt: u32,
         project_id: String,
         home_session_id: String,
         home_agent_id: String,
@@ -1107,7 +1111,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 52);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 53);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1172,8 +1176,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_52() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 52);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_53() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 53);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1190,6 +1194,7 @@ mod tests {
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
                 leased_agent_id: "leased-agent-1".to_string(),
                 operation_id: "setup-1".to_string(),
+                attempt: 2,
                 project_id: "project-1".to_string(),
                 home_session_id: "home-session-1".to_string(),
                 home_agent_id: "home-agent-1".to_string(),
@@ -1218,6 +1223,12 @@ mod tests {
                 home_agent_id: "home-agent-1".to_string(),
             },
         ];
+        let start_wire = serde_json::to_value(&requests[0]).expect("setup Start should encode");
+        assert_eq!(
+            start_wire.pointer("/attempt"),
+            Some(&serde_json::json!(2)),
+            "recovery Start must carry the home-authoritative attempt",
+        );
         for request in requests {
             let encoded = serde_json::to_value(&request).expect("setup request should encode");
             let decoded: RelayPeerRequest =
