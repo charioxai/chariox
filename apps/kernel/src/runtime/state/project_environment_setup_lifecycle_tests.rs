@@ -1019,12 +1019,18 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             )
             .await,
         );
-        if matches!(
-            status.phase,
-            ProjectEnvironmentSetupPhase::Preparing
-                | ProjectEnvironmentSetupPhase::Validating
-                | ProjectEnvironmentSetupPhase::Ready
-        ) {
+        assert_eq!(
+            status.operation_id, dispatch_never_arrived_operation_id,
+            "authenticated redispatch must retain the requested operation identity"
+        );
+        assert_eq!(
+            status.attempt, 1,
+            "authenticated redispatch must retain the original operation attempt"
+        );
+        // Preparing and Validating still have a live worker task holding the
+        // runtime state. Wait for worker-authoritative Ready before replacing
+        // the worker so that task has returned and released its state owner.
+        if status.phase == ProjectEnvironmentSetupPhase::Ready {
             break status;
         }
         assert!(
