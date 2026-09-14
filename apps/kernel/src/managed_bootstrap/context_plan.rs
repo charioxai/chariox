@@ -390,6 +390,55 @@ impl ManagedKernelContextPlan {
     }
 
     #[cfg(test)]
+    pub(crate) fn source_project_with_repositories_for_tests(
+        context_id: &str,
+        relay_realm_id: &str,
+        source_machine_id: &str,
+        source_kernel_id: &str,
+        source_key_thumbprint: &str,
+        project_id: &str,
+        repositories: Vec<(DevelopmentRepositoryRole, String, Option<String>)>,
+    ) -> Self {
+        let mut plan = Self {
+            schema_version: 1,
+            context_id: context_id.to_string(),
+            plan_digest: format!("sha256:{}", "0".repeat(64)),
+            source: Some(ManagedKernelContextSource {
+                source_target_id: "source-target-test".to_string(),
+                relay_realm_id: relay_realm_id.to_string(),
+                machine_id: source_machine_id.to_string(),
+                kernel_id: source_kernel_id.to_string(),
+                key_thumbprint: source_key_thumbprint.to_string(),
+            }),
+            kernel_context: ManagedKernelContextSelection::Empty,
+            development_setup: ManagedKernelDevelopmentSetup::SourceProject {
+                project_id: project_id.to_string(),
+                repositories: repositories
+                    .into_iter()
+                    .map(
+                        |(role, workspace_id, worktree_id)| ManagedKernelRepositorySelection {
+                            role: match role {
+                                DevelopmentRepositoryRole::Primary => {
+                                    ManagedKernelRepositoryRole::Primary
+                                }
+                                DevelopmentRepositoryRole::Supporting => {
+                                    ManagedKernelRepositoryRole::Supporting
+                                }
+                            },
+                            workspace_id,
+                            worktree_id,
+                        },
+                    )
+                    .collect(),
+            },
+            provider_accounts: ManagedKernelProviderAccounts::None,
+            git_credentials: ManagedKernelGitCredentials::None,
+        };
+        plan.plan_digest = plan.compute_digest().expect("test plan digest");
+        plan
+    }
+
+    #[cfg(test)]
     pub(crate) fn empty_for_tests(context_id: &str) -> Self {
         let mut plan = Self {
             schema_version: 1,
