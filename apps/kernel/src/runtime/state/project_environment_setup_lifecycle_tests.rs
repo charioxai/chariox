@@ -23,6 +23,14 @@ use std::thread;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use chariox_relay::{
+    RelayAction, RelayAuthVerifier, RelayConfig, RelayServer, RelaySubjectKind, RelayTokenClaims,
+    ScopedTokenVerifier,
+};
+#[cfg(unix)]
+use tokio::sync::{oneshot, watch};
+
 use super::*;
 
 #[cfg(unix)]
@@ -30,9 +38,10 @@ use crate::config::{DaemonConfig, KernelRuntimeRole};
 #[cfg(unix)]
 use crate::local::{
     CancelProjectEnvironmentSetupRequest, GetProjectEnvironmentSetupStatusRequest,
-    LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentDefinition,
-    ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
-    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentCommandResult,
+    ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
+    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStep,
+    ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
     RetryProjectEnvironmentSetupRequest, StartProjectEnvironmentSetupRequest,
 };
 #[cfg(unix)]
@@ -46,6 +55,9 @@ use crate::session::CreateSessionRequest;
 
 #[cfg(unix)]
 const MAX_PROVIDER_FIXTURE_TRACE_ENTRIES: usize = 64;
+
+#[cfg(unix)]
+const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 
 #[cfg(unix)]
 #[tokio::test]
@@ -255,7 +267,8 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let validation_marker = workspace.join("validation-started");
     let validation_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let response = get_setup_status(&runtime, "setup-lifecycle", "user-1").await;
+        let response =
+            get_setup_status(&runtime, "setup-lifecycle", "user-1", "validation polling").await;
         let status = response_status(response);
         if status.phase == ProjectEnvironmentSetupPhase::Validating && validation_marker.exists() {
             break;
@@ -313,7 +326,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
 
     let ready_deadline = Instant::now() + Duration::from_secs(10);
     let ready = loop {
-        let status = response_status(get_setup_status(&runtime, "setup-lifecycle", "user-1").await);
+        let status = response_status(
+            get_setup_status(&runtime, "setup-lifecycle", "user-1", "retry polling").await,
+        );
         match status.phase {
             ProjectEnvironmentSetupPhase::Ready => break status,
             ProjectEnvironmentSetupPhase::Failed => {
@@ -360,10 +375,611 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn public_setup_status_transport_recovery_preserves_operation_until_worker_ready() {
+    let _environment_lock = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-project-environment-transport-recovery-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let worker_home = root.join("worker-home");
+    let workspace = root.join("worker-worktree");
+    let receipt = root.join("receipt.json");
+    std::fs::create_dir_all(&worker_home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    struct Cleanup {
+        root: PathBuf,
+        home: Option<std::ffi::OsString>,
+        receipt: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for (key, value) in [
+                ("CHARIOX_HOME", &self.home),
+                ("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &self.receipt),
+            ] {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        home: std::env::var_os("CHARIOX_HOME"),
+        receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
+    };
+    std::env::set_var("CHARIOX_HOME", &worker_home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
+
+    let listener_seed = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = listener_seed
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("relay listener should have addr");
+    let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
+
+    let mut config_home = DaemonConfig::for_tests();
+    let home_relay_token = "setup-transport-recovery-home-token".to_string();
+    config_home.daemon_id = "home-kernel-transport-recovery".to_string();
+    config_home.host_machine_id = "home-machine-transport-recovery".to_string();
+    config_home.relay_url = Some(relay_url.clone());
+    config_home.relay_token = Some(home_relay_token.clone());
+    config_home.relay_heartbeat_ms = 50;
+
+    let mut config_worker = DaemonConfig::for_tests();
+    let worker_relay_token = "setup-transport-recovery-worker-token".to_string();
+    config_worker.daemon_id = "worker-kernel-transport-recovery".to_string();
+    config_worker.host_machine_id = "worker-machine-transport-recovery".to_string();
+    config_worker.relay_url = Some(relay_url.clone());
+    config_worker.relay_token = Some(worker_relay_token.clone());
+    config_worker.relay_heartbeat_ms = 50;
+    config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config_worker.accept_remote_leases = true;
+    config_worker.remote_lease_capacity = Some(1);
+    config_worker.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: config_home.daemon_id.clone(),
+        realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
+        user_id: "user-1".to_string(),
+        relay_public_key: config_home.relay_public_key.clone(),
+    });
+    config_worker.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": "account-transport-recovery",
+            "user_id": "user-1",
+            "account_slug": "account-transport-recovery",
+            "realm_id": SETUP_TRANSPORT_RECOVERY_REALM,
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-transport-recovery",
+            "machine_id": config_worker.host_machine_id,
+            "machine_credential": format!("mcred_{}", "c".repeat(40))
+        }))
+        .unwrap(),
+    );
+    std::fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": "allocation-transport-recovery",
+            "machineId": config_worker.host_machine_id,
+            "kernelId": config_worker.daemon_id,
+            "relayPublicKey": config_worker.relay_public_key,
+            "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            "homeCaller": {
+                "accountId": "account-transport-recovery",
+                "userId": "user-1",
+                "realmId": SETUP_TRANSPORT_RECOVERY_REALM,
+                "machineId": config_home.host_machine_id,
+                "kernelId": config_home.daemon_id,
+                "relayPublicKey": config_home.relay_public_key
+            },
+            "confirmedAt": "2026-09-14T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    ensure_worker_validation_boundary(&config_worker).expect("fixture is a confirmed worker");
+
+    let relay = Arc::new(RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: None,
+        },
+        setup_transport_recovery_relay_auth(&config_home, &config_worker),
+    ));
+    let registry = relay.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let relay = Arc::clone(&relay);
+        tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let app_home = Arc::new(tokio::sync::Mutex::new(
+        crate::DaemonApp::bootstrap(config_home.clone()).unwrap(),
+    ));
+    let app_worker = Arc::new(tokio::sync::Mutex::new(
+        crate::DaemonApp::bootstrap(config_worker.clone()).unwrap(),
+    ));
+    let (session_id, agent_id, project_id) = {
+        let mut app = app_home.lock().await;
+        let (session, agent) = app
+            .create_session(
+                CreateSessionRequest::new(
+                    workspace.display().to_string(),
+                    workspace.display().to_string(),
+                )
+                .with_owner_user_id("user-1")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+            )
+            .expect("home session should be created");
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            session.project_id().to_string(),
+        )
+    };
+
+    let (lease_id, leased_agent_id, backing_session_id, backing_agent_id) = {
+        let mut app = app_worker.lock().await;
+        let caller = crate::app::LeaseCallerBinding {
+            home_kernel_id: config_home.daemon_id.clone(),
+            authenticated_machine_id: config_home.host_machine_id.clone(),
+            owner_user_id: "user-1".to_string(),
+            realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
+            public_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &config_home.relay_public_key,
+            ),
+        };
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_bound_execution_lease(
+                &config_home.daemon_id,
+                &session_id,
+                &agent_id,
+                false,
+                "user-1",
+                caller,
+            )
+            .expect("worker execution lease should be created");
+        let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent_from_base_directory(
+                &workspace,
+                &lease.id,
+                "dev-stub",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(workspace.display().to_string()),
+                None,
+            )
+            .expect("worker leased agent should be created");
+        (
+            lease.id,
+            leased_agent.id,
+            leased_agent.backing_session_id,
+            leased_agent.backing_agent_id,
+        )
+    };
+    {
+        let app = app_home.lock().await;
+        app.agents()
+            .bind_remote_execution(
+                &agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: config_worker.daemon_id.clone(),
+                    worker_machine_id: config_worker.host_machine_id.clone(),
+                    execution_lease_id: lease_id.clone(),
+                    leased_agent_id: leased_agent_id.clone(),
+                    active_worker_provider_run_id: None,
+                    relay_url: Some(relay_url.clone()),
+                    // Remote setup status uses the home daemon's relay
+                    // identity for metadata discovery and its temporary peer
+                    // registration. The listener seed's `secret` is not an
+                    // accepted scoped token; the verifier below intentionally
+                    // knows only the home and worker tokens.
+                    relay_token: Some(home_relay_token.clone()),
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to the worker");
+    }
+
+    let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app_worker),
+        1,
+    ));
+    let worker_runtime = worker_router.runtime_state();
+    let target_platform = actual_worker_platform();
+    let validation_command = "command -v sh".to_string();
+    let definition = ProjectEnvironmentDefinition {
+        schema_version: 1,
+        origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+        source: ProjectEnvironmentDefinitionSource::Commands,
+        target_platform: target_platform.clone(),
+        source_path: None,
+        setup_steps: vec![ProjectEnvironmentSetupStep {
+            kind: ProjectEnvironmentSetupStepKind::Command,
+            command: validation_command.clone(),
+        }],
+        validation_commands: vec![validation_command.clone()],
+    };
+    let worker_execution = super::SetupExecution {
+        owner_user_id: "user-1".to_string(),
+        operation_id: "setup-transport-recovery".to_string(),
+        project_id: project_id.clone(),
+        session_id: session_id.clone(),
+        agent_id: agent_id.clone(),
+        execution_session_id: backing_session_id,
+        execution_agent_id: backing_agent_id,
+        workspace_id: workspace.display().to_string(),
+        target_worker_id: config_worker.host_machine_id.clone(),
+        target_platform: target_platform.clone(),
+        definition: Some(definition.clone()),
+        validation_commands: Vec::new(),
+        persist_project_definition: false,
+        remote_leased_agent_id: Some(leased_agent_id.clone()),
+    };
+    worker_runtime
+        .owned
+        .project_environment_setups
+        .begin(worker_execution)
+        .expect("worker setup fixture should be seeded");
+
+    let state_home = {
+        let app = app_home.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+    let connector_home = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
+        Arc::clone(&app_home),
+        state_home,
+        shutdown_home_rx,
+    ));
+    let state_worker = {
+        let app = app_worker.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+    let connector_worker = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&worker_router),
+            state_worker,
+            shutdown_worker_rx,
+            relay_url.clone(),
+            worker_relay_token.clone(),
+        ),
+    );
+    for daemon_id in [&config_home.daemon_id, &config_worker.daemon_id] {
+        for _ in 0..200 {
+            if registry
+                .read()
+                .await
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, daemon_id)
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let registry_snapshot = registry.read().await;
+        // `daemon()` is intentionally the default-realm lookup. A missing
+        // entry here must not hide a successful scoped-token registration in
+        // the fixture's explicit realm, or turn a real auth rejection into a
+        // timeout-only diagnostic.
+        assert!(
+            registry_snapshot
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, daemon_id)
+                .is_some(),
+            "daemon {daemon_id} should register in relay realm {SETUP_TRANSPORT_RECOVERY_REALM}; default-realm-entry={}, registered-daemon-count={}",
+            registry_snapshot.daemon(daemon_id).is_some(),
+            registry_snapshot.daemon_count(),
+        );
+    }
+
+    let home_router = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1);
+    let runtime = home_router.runtime_state();
+    let start_request = StartProjectEnvironmentSetupRequest {
+        operation_id: "setup-transport-recovery".to_string(),
+        project_id,
+        session_id: session_id.clone(),
+        agent_id: agent_id.clone(),
+        target_worker_id: config_worker.host_machine_id.clone(),
+        target_platform: target_platform.clone(),
+        definition: Some(definition.clone()),
+        validation_commands: Vec::new(),
+    };
+    let started = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(start_request.clone()),
+            "user-1",
+        )
+        .await
+        .expect("public remote setup start should be accepted");
+    assert_eq!(
+        response_status(started).phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    let initial = get_setup_status(
+        &runtime,
+        "setup-transport-recovery",
+        "user-1",
+        "post-registration status before interruption",
+    )
+    .await;
+    assert_eq!(
+        response_status(initial).phase,
+        ProjectEnvironmentSetupPhase::Requested,
+        "the worker must be queried before it is advanced to Ready"
+    );
+    assert!(
+        worker_runtime.owned.project_environment_setups.update(
+            "setup-transport-recovery",
+            1,
+            |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                entry.status.progress_percent = 100;
+                entry.status.definition_digest = Some(definition.digest());
+                entry.status.validation = Some(ProjectEnvironmentValidation {
+                    worker_id: config_worker.host_machine_id.clone(),
+                    platform: target_platform.clone(),
+                    commands: vec![ProjectEnvironmentCommandResult {
+                        command_digest: super::command_digest(&validation_command),
+                        exit_code: 0,
+                        stdout_bytes: 1,
+                        stderr_bytes: 0,
+                    }],
+                });
+                entry.status.message = Some("worker setup is ready".to_string());
+                entry.status.retryable = false;
+            }
+        ),
+        "worker setup should advance to its authoritative Ready status"
+    );
+
+    let _ = shutdown_worker_tx.send(true);
+    connector_worker
+        .await
+        .expect("interrupted worker connector should stop");
+    let mut worker_disconnected = false;
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_none()
+        {
+            worker_disconnected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        worker_disconnected,
+        "worker transport should be interrupted"
+    );
+
+    let interrupted = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: "setup-transport-recovery".to_string(),
+                },
+            ),
+            "user-1",
+        )
+        .await;
+    assert!(
+        interrupted.is_err(),
+        "status should observe the external worker transport interruption: {interrupted:?}"
+    );
+    let (_, uncertain) = runtime
+        .owned
+        .project_environment_setups
+        .get_entry("setup-transport-recovery", "user-1")
+        .expect("uncertain setup should remain owned by the caller");
+    assert_ne!(
+        uncertain.phase,
+        ProjectEnvironmentSetupPhase::Failed,
+        "a transient worker status error must not manufacture terminal failure"
+    );
+
+    let state_worker = {
+        let app = app_worker.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+    let connector_worker = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&worker_router),
+            state_worker,
+            shutdown_worker_rx,
+            relay_url,
+            worker_relay_token,
+        ),
+    );
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        registry
+            .read()
+            .await
+            .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+            .is_some(),
+        "worker should re-register before recovery is queried"
+    );
+
+    let replayed = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(start_request),
+            "user-1",
+        )
+        .await
+        .expect("replayed public start should remain idempotent");
+    let replayed_status = response_status(replayed);
+    assert_eq!(
+        replayed_status.phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    assert_eq!(replayed_status.attempt, 1);
+    let ready = get_setup_status(
+        &runtime,
+        "setup-transport-recovery",
+        "user-1",
+        "status after worker re-registration",
+    )
+    .await;
+    let ready = response_status(ready);
+    assert_eq!(ready.phase, ProjectEnvironmentSetupPhase::Ready);
+    assert_eq!(ready.attempt, 1);
+    assert_eq!(
+        ready
+            .validation
+            .as_ref()
+            .expect("Ready status should retain measured validation")
+            .worker_id,
+        config_worker.host_machine_id
+    );
+    let (_, worker_status) = worker_runtime
+        .owned
+        .project_environment_setups
+        .get_entry("setup-transport-recovery", "user-1")
+        .expect("worker setup should remain available");
+    assert_eq!(worker_status.phase, ProjectEnvironmentSetupPhase::Ready);
+    assert_eq!(worker_status.attempt, 1);
+
+    let _ = shutdown_home_tx.send(true);
+    let _ = shutdown_worker_tx.send(true);
+    connector_home.await.expect("home connector should stop");
+    connector_worker
+        .await
+        .expect("restored worker connector should stop");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("relay server should stop");
+}
+
+#[cfg(unix)]
+fn setup_transport_recovery_relay_auth(
+    config_home: &DaemonConfig,
+    config_worker: &DaemonConfig,
+) -> RelayAuthVerifier {
+    let allowed_actions = vec![
+        RelayAction::DaemonRegister,
+        RelayAction::DaemonHeartbeat,
+        RelayAction::ClientMetadataRead,
+        RelayAction::PacketRoute,
+        RelayAction::PeerRequest,
+        RelayAction::PeerEvent,
+    ];
+    let claims = [
+        (
+            "setup-transport-recovery-home-token",
+            RelayTokenClaims {
+                issuer: "project-environment-setup-test".to_string(),
+                subject: config_home.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
+                allowed_actions: allowed_actions.clone(),
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: "setup-transport-recovery-home-token".to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_home.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_home.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+        (
+            "setup-transport-recovery-worker-token",
+            RelayTokenClaims {
+                issuer: "project-environment-setup-test".to_string(),
+                subject: config_worker.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: SETUP_TRANSPORT_RECOVERY_REALM.to_string(),
+                allowed_actions,
+                allowed_targets: Some(vec![config_home.daemon_id.clone()]),
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: "setup-transport-recovery-worker-token".to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_worker.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_worker.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(token, claims)| (token.to_string(), claims))
+    .collect();
+    RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+        claims,
+        std::collections::BTreeMap::new(),
+        Some(10),
+    ))
+}
+
+#[cfg(unix)]
 async fn get_setup_status(
     runtime: &crate::runtime::state::KernelRuntimeState,
     operation_id: &str,
     caller_user_id: &str,
+    phase: &str,
 ) -> LocalDaemonResponse {
     runtime
         .execute_project_environment_setup_request(
@@ -375,7 +991,11 @@ async fn get_setup_status(
             caller_user_id,
         )
         .await
-        .expect("public setup status should be available")
+        .unwrap_or_else(|error| {
+            panic!(
+                "public setup status should be available during {phase} (operation {operation_id}, caller {caller_user_id}): {error}"
+            )
+        })
 }
 
 #[cfg(unix)]
