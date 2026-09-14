@@ -907,7 +907,7 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "2f099df9e0c18c28bb8c4ae95bcbc27533ae749936d9bd1c49516c90462fe92e"
+        "981a3f5173ba83254c7c941a91d444ac63f71cdd15840642a7f0d05e124608a9"
     );
     // Only the advertised peer version differs from these historical bindings.
     snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =

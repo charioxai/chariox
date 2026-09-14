@@ -130,6 +130,25 @@ impl ProjectEnvironmentSetupStore {
         &self,
         execution: SetupExecution,
     ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
+        self.begin_with_attempt(execution, None)
+    }
+
+    pub(super) fn begin_at_attempt(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+    ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
+        if attempt == 0 {
+            return Err(setup_error("setup attempt must be positive"));
+        }
+        self.begin_with_attempt(execution, Some(attempt))
+    }
+
+    fn begin_with_attempt(
+        &self,
+        execution: SetupExecution,
+        requested_attempt: Option<u32>,
+    ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
         let fingerprint = setup_fingerprint(&execution)?;
         let mut entries = self
             .entries
@@ -139,6 +158,11 @@ impl ProjectEnvironmentSetupStore {
             if existing.fingerprint != fingerprint {
                 return Err(setup_error(
                     "operation id was already used for a different setup request",
+                ));
+            }
+            if requested_attempt.is_some_and(|attempt| existing.status.attempt != attempt) {
+                return Err(setup_error(
+                    "setup attempt does not match the existing worker operation",
                 ));
             }
             return Ok((existing.status.clone(), false));
@@ -152,7 +176,7 @@ impl ProjectEnvironmentSetupStore {
             worker_id: execution.target_worker_id.clone(),
             platform: execution.target_platform.clone(),
             phase: ProjectEnvironmentSetupPhase::Requested,
-            attempt: 1,
+            attempt: requested_attempt.unwrap_or(1),
             progress_percent: 0,
             definition_digest: execution
                 .definition

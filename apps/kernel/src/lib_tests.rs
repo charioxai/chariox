@@ -242,7 +242,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
 
     let launch_request =
@@ -324,7 +324,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 fn relay_peer_provider_terminal_resize_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
 
     let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
@@ -363,7 +363,7 @@ fn relay_peer_provider_terminal_resize_shape_is_versioned() {
 fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
     let request = RelayPeerRequest::UpdateLeasedAgentProfile {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -389,7 +389,7 @@ fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {

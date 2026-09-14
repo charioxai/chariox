@@ -93,8 +93,8 @@ impl KernelRuntimeState {
                             // operation never reached that worker. Re-send
                             // the original operation and keep its attempt;
                             // worker-side begin() is idempotent for the same
-                            // operation fingerprint.
-                            match start_remote_setup(self, &execution).await {
+                            // operation fingerprint and attempt.
+                            match start_remote_setup(self, &execution, status.attempt).await {
                                 Ok(setup) => self.reconcile_remote_project_environment_setup(
                                     &execution, setup,
                                 )?,
@@ -214,6 +214,7 @@ impl KernelRuntimeState {
         target: crate::app::LeasedProjectEnvironmentSetupTarget,
         leased_agent_id: String,
         operation_id: String,
+        attempt: u32,
         project_id: String,
         workspace_id: String,
         target_worker_id: String,
@@ -264,7 +265,7 @@ impl KernelRuntimeState {
         let (status, should_spawn) = self
             .owned
             .project_environment_setups
-            .begin(execution.clone())?;
+            .begin_at_attempt(execution.clone(), attempt)?;
         if should_spawn {
             self.spawn_project_environment_setup(execution.clone(), status.attempt);
         }
@@ -369,7 +370,7 @@ impl KernelRuntimeState {
             let result = if retry {
                 retry_remote_setup(&runtime_state, &execution).await
             } else {
-                start_remote_setup(&runtime_state, &execution).await
+                start_remote_setup(&runtime_state, &execution, attempt).await
             };
             match result {
                 Ok(setup) => {
@@ -998,6 +999,34 @@ mod tests {
             .begin(changed)
             .expect_err("same id with changed input must fail");
         assert!(error.to_string().contains("different setup request"));
+    }
+
+    #[test]
+    fn worker_setup_recovery_preserves_attempt_and_rejects_stale_replay() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let (started, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("worker recovery should start at the home attempt");
+        assert!(should_spawn);
+        assert_eq!(started.attempt, 2);
+
+        let (replayed, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("same worker recovery request should be idempotent");
+        assert!(!should_spawn);
+        assert_eq!(replayed, started);
+
+        let stale = store
+            .begin_at_attempt(execution(), 1)
+            .expect_err("stale worker recovery must not reopen attempt 1");
+        assert!(stale
+            .to_string()
+            .contains("attempt does not match the existing worker operation"));
+
+        let zero = store
+            .begin_at_attempt(execution(), 0)
+            .expect_err("worker recovery must reject an invalid attempt");
+        assert!(zero.to_string().contains("attempt must be positive"));
     }
 
     #[test]

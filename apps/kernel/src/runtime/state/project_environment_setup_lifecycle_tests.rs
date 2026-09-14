@@ -1253,8 +1253,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     // A fresh external connection reuses only the authenticated registration;
     // it has no setup record. The desired public result is successful
-    // same-operation recovery at attempt 2. The current implementation sends
-    // an unversioned Start, receives a worker attempt 1, and fails reconciliation.
+    // same-operation recovery at the home's attempt 2.
     let (
         empty_worker_shutdown,
         _empty_worker_start_seen,
@@ -1522,11 +1521,9 @@ async fn run_external_worker_fixture(
             Ok(request) => request,
             Err(_) => return,
         };
-        // Protocol 52 has no attempt field on Start, so a fresh worker's
-        // first local operation is attempt 1. Once the production recovery
-        // contract carries the home's attempt, this boundary fixture follows
-        // that serialized value automatically rather than pinning a valid
-        // recovery implementation to attempt 1.
+        // Follow the serialized home-authoritative attempt at this external
+        // relay boundary; do not pin a valid recovery implementation to the
+        // fresh worker's default attempt 1.
         let request_attempt = external_worker_request_attempt(&request);
         let (encrypted_response, error) = match request {
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup {

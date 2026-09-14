@@ -1038,6 +1038,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
             leased_agent_id,
             operation_id,
+            attempt,
             project_id,
             home_session_id,
             home_agent_id,
@@ -1051,6 +1052,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .relay_start_leased_project_environment_setup(
                     &leased_agent_id,
                     operation_id,
+                    attempt,
                     project_id,
                     home_session_id,
                     home_agent_id,
