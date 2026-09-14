@@ -1189,6 +1189,7 @@ fn spawn_missing_then_withheld_replay_worker(
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
     oneshot::Receiver<u32>,
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
