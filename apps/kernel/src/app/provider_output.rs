@@ -19,14 +19,12 @@ mod background;
 mod structured_store;
 #[cfg(test)]
 mod tests;
-mod timeouts;
 
 use background::pump_session_active_prompt_outputs;
 pub(crate) use structured_store::{
     structured_output_batch_should_poll_immediately, StructuredOutputRecordStore,
     STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
 };
-use timeouts::{reap_provider_first_output_timeouts, reap_provider_inactivity_timeouts};
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {
     pub(crate) session_id: &'a str,
@@ -49,8 +47,6 @@ pub(crate) fn pump_terminal_output_for_attachment(
     attachment_id: &str,
 ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
     reap_structured_prompt_jobs(app);
-    reap_provider_first_output_timeouts(app, session_id)?;
-    reap_provider_inactivity_timeouts(app, session_id)?;
     crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)?;
     pump_session_active_prompt_outputs(app, session_id);
@@ -66,26 +62,6 @@ pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) -> Vec<String> {
     let sessions = app.sessions.list_sessions();
     let mut pumped_provider_run_ids = Vec::new();
     for session in sessions {
-        if let Err(error) = reap_provider_first_output_timeouts(app, session.id()) {
-            crate::logging::warn_with_fields(
-                "daemon.provider_output",
-                "provider first-output timeout reap failed",
-                serde_json::json!({
-                    "session_id": session.id(),
-                    "error": error.to_string(),
-                }),
-            );
-        }
-        if let Err(error) = reap_provider_inactivity_timeouts(app, session.id()) {
-            crate::logging::warn_with_fields(
-                "daemon.provider_output",
-                "provider inactivity timeout reap failed",
-                serde_json::json!({
-                    "session_id": session.id(),
-                    "error": error.to_string(),
-                }),
-            );
-        }
         pumped_provider_run_ids.extend(pump_session_active_prompt_outputs(app, session.id()));
     }
     pumped_provider_run_ids
@@ -107,10 +83,6 @@ impl<'a> ProviderOutputPump<'a> {
         request: ProviderOutputPumpRequest<'_>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         self.context.reap_structured_prompt_jobs();
-        self.context
-            .reap_provider_first_output_timeouts(request.session_id)?;
-        self.context
-            .reap_provider_inactivity_timeouts(request.session_id)?;
         let mut provider_run = self
             .context
             .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
@@ -382,14 +354,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
 
     fn reap_structured_prompt_jobs(&mut self) {
         reap_structured_prompt_jobs(self.app);
-    }
-
-    fn reap_provider_first_output_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
-        reap_provider_first_output_timeouts(self.app, session_id)
-    }
-
-    fn reap_provider_inactivity_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
-        reap_provider_inactivity_timeouts(self.app, session_id)
     }
 
     fn reconcile_provider_run_exit(

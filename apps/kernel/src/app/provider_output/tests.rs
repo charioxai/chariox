@@ -124,10 +124,10 @@ fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_erro
         .expect("attachment should attach");
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
-        "codex",
-        "codex",
+        "claude",
+        "claude",
         "default",
-        "gpt-5.4",
+        "sonnet",
     )
     .with_agent_id(agent.id())
     .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
@@ -141,7 +141,7 @@ fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_erro
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
                 "-lc".to_string(),
-                "printf '%s\\n' 'Error: this classifier is under review.' 'The phrase unsupported model is reviewer prose.'; exit 0".to_string(),
+                "printf '%s\\n' 'Error: this classifier is under review.' 'The phrase unsupported model is reviewer prose.'; sleep 5".to_string(),
             ],
             pty_env: std::collections::BTreeMap::new(),
             pty_env_remove: Vec::new(),
@@ -168,29 +168,43 @@ fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_erro
     app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
         .expect("prompt should start");
 
-    for _ in 0..50 {
-        if matches!(
-            app.pty.poll_process_state(run.id()),
-            Ok(crate::pty::PtyProcessState::Exited { .. })
-        ) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut output = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let records = ProviderOutputPump::new(&mut app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: run.id(),
+                recipient_attachment_ids: vec![attachment.id().to_string()],
+                initial_liveness_already_checked: false,
+            })
+            .expect("reviewer output should remain ordinary provider output");
+        output.extend(
+            records
+                .iter()
+                .flat_map(|record| record.bytes.iter().copied()),
+        );
+        if String::from_utf8_lossy(&output).contains("unsupported model is reviewer prose.") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    ProviderOutputPump::new(&mut app)
-        .pump_provider_output(ProviderOutputPumpRequest {
-            session_id: session.id(),
-            provider_run_id: run.id(),
-            recipient_attachment_ids: vec![attachment.id().to_string()],
-            initial_liveness_already_checked: false,
-        })
-        .expect("reviewer output should remain ordinary provider output");
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("Error: this classifier is under review."));
+    assert!(output.contains("unsupported model is reviewer prose."));
 
     let run = app
         .providers()
         .get_run(run.id())
         .expect("provider run should remain available");
-    assert!(run.terminal_diagnostic().is_none());
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "ordinary reviewer output gained a diagnostic: {:?}",
+        run.terminal_diagnostic()
+    );
 }
 
 #[test]
@@ -665,7 +679,7 @@ fn pump_active_prompt_outputs_skips_idle_running_chariox_provider_run() {
 }
 
 #[test]
-fn legacy_pump_reaps_inactive_provider_turn() {
+fn legacy_pump_preserves_quiet_provider_turn() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -731,24 +745,24 @@ fn legacy_pump_reaps_inactive_provider_turn() {
     }
 
     let _ = pump_terminal_output_for_attachment(&mut app, session.id(), attachment.id())
-        .expect("legacy provider output pump should reap inactive provider turn");
+        .expect("legacy provider output pump should preserve quiet execution");
 
     let session = app
         .sessions
         .get_session(session.id())
         .expect("session should still exist");
     assert!(
-        session.active_prompt_for_agent(agent.id()).is_none(),
-        "legacy inactivity timeout must close the active prompt"
+        session.active_prompt_for_agent(agent.id()).is_some(),
+        "legacy pump must not fail a turn because it is quiet"
     );
     let run = app
         .providers
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "silence must not fabricate a terminal diagnostic"
+    );
 }
 
 #[test]
